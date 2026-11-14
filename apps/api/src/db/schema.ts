@@ -226,6 +226,75 @@ export const auditLogs = pgTable('audit_logs', {
   detail: jsonb('detail').$type<Record<string, unknown>>(),
 }, (t) => [index('audit_logs_at_idx').on(t.at), index('audit_logs_action_idx').on(t.action)]);
 
+/**
+ * Social accounts (社交账号, P1): the operator's own platform accounts, modelled apart from devices.
+ * `platform` is a registry id (modules/social/platforms.ts), not a DB enum, so adding a platform needs no migration.
+ * Handles are unique per platform case-insensitively across all owners: one real account is managed only once.
+ * The account's egress proxy is its device's proxy (instances.proxy_id); it is never stored here.
+ * No platform passwords are stored. Rows cascade with their owner; deleting a device unlinks (logged).
+ */
+export const socialAccountGroups = pgTable('social_account_groups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [uniqueIndex('social_account_groups_user_name').on(t.userId, sql`lower(${t.name})`)]);
+
+export const socialAccounts = pgTable('social_accounts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  handle: text('handle').notNull(),
+  displayName: text('display_name'),
+  profileUrl: text('profile_url'),
+  externalId: text('external_id'),
+  groupId: uuid('group_id').references(() => socialAccountGroups.id, { onDelete: 'set null' }),
+  instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
+  loginStatus: text('login_status', { enum: ['unknown', 'logged_in', 'logged_out', 'needs_verification'] }).notNull().default('unknown'),
+  accountStatus: text('account_status', { enum: ['active', 'limited', 'suspended', 'disabled'] }).notNull().default('active'),
+  notes: text('notes'),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('social_accounts_platform_handle').on(t.platform, sql`lower(${t.handle})`),
+  index('social_accounts_user_idx').on(t.userId, t.createdAt),
+  index('social_accounts_group_idx').on(t.groupId),
+  index('social_accounts_instance_platform_idx').on(t.instanceId, t.platform),
+  index('social_accounts_status_idx').on(t.loginStatus, t.accountStatus),
+  index('social_accounts_created_at_idx').on(t.createdAt),
+]);
+
+/** Tag names are unique case-insensitively; the first spelling wins (same rule as media tags). */
+export const socialTags = pgTable('social_tags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('social_tags_name_lower_idx').on(sql`lower(${t.name})`)]);
+
+export const socialAccountTags = pgTable('social_account_tags', {
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => socialTags.id, { onDelete: 'cascade' }),
+}, (t) => [primaryKey({ columns: [t.accountId, t.tagId] }), index('social_account_tags_tag_idx').on(t.tagId)]);
+
+/** Per-account timeline: every field/status change and every device link/unlink (who, what, from → to). */
+export const socialAccountLogs = pgTable('social_account_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  /** null = system (e.g. device deleted). `actorName` is denormalized so entries survive user deletion. */
+  actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  actorName: text('actor_name'),
+  action: text('action', { enum: ['create', 'update', 'status', 'checked', 'link', 'unlink'] }).notNull(),
+  field: text('field'),
+  fromValue: text('from_value'),
+  toValue: text('to_value'),
+  message: text('message'),
+}, (t) => [index('social_account_logs_account_at_idx').on(t.accountId, t.at)]);
+
 export interface InstanceSpec {
   width: number;
   height: number;
@@ -285,4 +354,7 @@ export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type MediaCategory = typeof mediaCategories.$inferSelect;
 export type PoolProxy = typeof proxies.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type SocialAccount = typeof socialAccounts.$inferSelect;
+export type SocialAccountGroup = typeof socialAccountGroups.$inferSelect;
+export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
 export type Role = User['role'];

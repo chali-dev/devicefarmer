@@ -3,6 +3,7 @@ import { db, schema } from '../../db/index.js';
 import type { Instance, Task } from '../../db/schema.js';
 import { events } from '../../lib/events.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
+import { unlinkInstanceAccounts } from '../social/social.js';
 
 /**
  * Instance as exposed to clients: the bound pool proxy's non-secret fields only
@@ -37,7 +38,11 @@ export async function getInstance(id: string): Promise<Instance | undefined> {
 }
 
 export async function deleteInstanceRow(id: string): Promise<void> {
-  await db.delete(schema.instances).where(eq(schema.instances.id, id));
+  await db.transaction(async (tx) => {
+    const [row] = await tx.select({ name: schema.instances.name }).from(schema.instances).where(eq(schema.instances.id, id)).for('update');
+    if (row) await unlinkInstanceAccounts(tx, id, row.name);
+    await tx.delete(schema.instances).where(eq(schema.instances.id, id));
+  });
   events.publish({ type: 'instance.deleted', instanceId: id });
 }
 
