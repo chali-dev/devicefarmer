@@ -12,6 +12,7 @@ const profileColumns = {
   role: schema.users.role,
   displayName: schema.users.displayName,
   email: schema.users.email,
+  builtin: schema.users.builtin,
 };
 
 async function loadProfile(id: string) {
@@ -32,7 +33,7 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     const ok = await bcrypt.compare(req.body.password, u?.passwordHash ?? '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
     if (!u || !ok || u.disabled) throw unauthorized('invalid username or password');
     const token = app.jwt.sign({ sub: u.id });
-    return { token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email } };
+    return { token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email, builtin: u.builtin } };
   });
 
   app.get('/api/auth/me', { preHandler: app.authenticate }, async (req) => ({ user: await loadProfile(req.user.id) }));

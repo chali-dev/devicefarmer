@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 
-export const roleEnum = pgEnum('role', ['admin', 'operator', 'viewer']);
+export const roleEnum = pgEnum('role', ['admin', 'user']);
 
 /**
  * Instance lifecycle (Docker) and device state (adb/STF) are tracked separately:
@@ -16,8 +16,10 @@ export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   username: text('username').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  role: roleEnum('role').notNull().default('viewer'),
+  role: roleEnum('role').notNull().default('user'),
   disabled: boolean('disabled').notNull().default(false),
+  /** The seeded ADMIN_USERNAME account: cannot be deleted, disabled or demoted. */
+  builtin: boolean('builtin').notNull().default(false),
   displayName: text('display_name'),
   email: text('email'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

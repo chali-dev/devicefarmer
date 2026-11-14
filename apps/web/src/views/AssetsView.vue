@@ -277,7 +277,7 @@ async function saveStorage() {
   <a-card title="素材库" size="small">
     <template #extra>
       <a-space wrap>
-        <a-button v-if="auth.canOperate" size="small" type="primary" :disabled="!selected.length" @click="openPush(assets.filter((a) => selected.includes(a.id)))">
+        <a-button size="small" type="primary" :disabled="!selected.length" @click="openPush(assets.filter((a) => selected.includes(a.id)))">
           <SendOutlined /> 推送到设备{{ selected.length ? ` (${selected.length})` : '' }}
         </a-button>
         <a-button v-if="auth.isAdmin" size="small" @click="openStorage"><SettingOutlined /> 存储设置</a-button>
@@ -289,7 +289,7 @@ async function saveStorage() {
       <a-input-search v-model:value="q" placeholder="搜索名称或标签" allow-clear class="search" @search="load" />
       <a-select v-model:value="type" :options="TYPE_OPTIONS" class="type" />
       <a-checkbox
-        v-if="auth.canOperate && assets.length"
+        v-if="assets.length"
         :checked="selected.length > 0 && selected.length === assets.length"
         :indeterminate="selected.length > 0 && selected.length < assets.length"
         @change="(e: any) => (selected = e.target.checked ? assets.map((a) => a.id) : [])"
@@ -297,7 +297,7 @@ async function saveStorage() {
     </div>
 
     <a-upload-dragger
-      v-if="auth.canOperate" :multiple="true" :show-upload-list="false" :custom-request="enqueueUpload as any" class="dragger"
+      :multiple="true" :show-upload-list="false" :custom-request="enqueueUpload as any" class="dragger"
     >
       <p style="margin: 8px 0"><CloudUploadOutlined style="font-size: 24px; color: #1677ff" /></p>
       <p style="margin: 0">{{ uploading ? '上传中…' : '拖拽图片 / 视频 / 文件到此处，或点击选择（可多选）' }}</p>
@@ -313,7 +313,7 @@ async function saveStorage() {
             <VideoCameraOutlined v-else-if="isVideo(a)" class="icon" />
             <FileOutlined v-else class="icon" />
             <a-checkbox
-              v-if="auth.canOperate" class="check" :checked="selected.includes(a.id)"
+              class="check" :checked="selected.includes(a.id)"
               @change="(e: any) => toggleSelect(a.id, e.target.checked)"
             />
             <a-tag v-if="a.storage === 's3'" class="badge" color="blue">S3</a-tag>
@@ -327,11 +327,9 @@ async function saveStorage() {
           </div>
           <div class="actions">
             <a-tooltip title="下载"><a-button type="text" size="small" @click="download(a)"><DownloadOutlined /></a-button></a-tooltip>
-            <template v-if="auth.canOperate">
-              <a-tooltip title="编辑标签"><a-button type="text" size="small" @click="openEdit(a)"><TagsOutlined /></a-button></a-tooltip>
-              <a-tooltip title="推送到设备"><a-button type="text" size="small" @click="openPush([a])"><SendOutlined /></a-button></a-tooltip>
-              <a-tooltip title="删除"><a-button type="text" size="small" danger @click="remove(a)"><DeleteOutlined /></a-button></a-tooltip>
-            </template>
+            <a-tooltip title="编辑标签"><a-button type="text" size="small" @click="openEdit(a)"><TagsOutlined /></a-button></a-tooltip>
+            <a-tooltip title="推送到设备"><a-button type="text" size="small" @click="openPush([a])"><SendOutlined /></a-button></a-tooltip>
+            <a-tooltip v-if="auth.isAdmin" title="删除"><a-button type="text" size="small" danger @click="remove(a)"><DeleteOutlined /></a-button></a-tooltip>
           </div>
         </div>
       </div>

@@ -6,12 +6,10 @@ import type { InstalledApp, ProxyInput } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
-import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 const props = defineProps<{ id: string }>()
 const store = useInstancesStore()
-const auth = useAuthStore()
 const router = useRouter()
 const player = ref<InstanceType<typeof DevicePlayer> | null>(null)
 
@@ -221,11 +219,9 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
           <template #extra>
             <a-space>
               <a-button size="small" :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">截图</a-button>
-              <template v-if="auth.canOperate">
               <a-button size="small" :disabled="inst.status === 'running'" @click="act('start')">启动</a-button>
               <a-button size="small" :disabled="inst.status !== 'running'" @click="act('stop')">停止</a-button>
               <a-button size="small" @click="act('restart')">重启</a-button>
-              </template>
             </a-space>
           </template>
           <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
@@ -311,7 +307,6 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
             <a-button size="small" :loading="appsLoading" :disabled="inst.status !== 'running'" @click="loadApps">刷新</a-button>
           </template>
           <a-upload-dragger
-            v-if="auth.canOperate"
             accept=".apk,.apks,.xapk,.apkm,.zip"
             :show-upload-list="false"
             :custom-request="upload as any"
@@ -328,7 +323,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
               <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>
               <template v-else-if="column.key === 'ops'">
                 <a-tag v-if="record.protected">平台组件</a-tag>
-                <a-space v-else-if="auth.canOperate" :size="0">
+                <a-space v-else :size="0">
                   <a-button type="link" size="small" @click="importToLibrary(record.package)">加入应用库</a-button>
                   <a-button type="link" size="small" danger @click="uninstall(record.package)">卸载</a-button>
                 </a-space>
@@ -341,7 +336,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
           <template #extra>
             <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">出口检测</a-button>
           </template>
-          <a-form layout="vertical" :disabled="!auth.canOperate || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
+          <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
             <a-form-item style="margin-bottom: 8px">
               <a-switch v-model:checked="proxyForm.enabled" size="small" /> <span style="margin-left: 6px">{{ proxyForm.enabled ? '使用代理（断线阻断：代理不可用时禁止直连）' : '直连' }}</span>
             </a-form-item>
@@ -356,7 +351,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
                 </a-form-item>
               </a-col>
             </a-row>
-            <a-button v-if="auth.canOperate" type="primary" size="small" :loading="proxySaving" @click="saveProxy">保存并应用</a-button>
+            <a-button type="primary" size="small" :loading="proxySaving" @click="saveProxy">保存并应用</a-button>
           </a-form>
           <a-descriptions v-if="inst.proxyStatus" :column="{ xs: 1, sm: 2 }" size="small" style="margin-top: 12px">
             <a-descriptions-item label="出口">
@@ -372,7 +367,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
         </a-card>
 
         <a-card size="small" title="设备参数">
-          <a-form layout="vertical" :disabled="!auth.canOperate || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
+          <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
             <a-row :gutter="12">
               <a-col :xs="24" :sm="8">
                 <a-form-item label="系统语言">
@@ -391,7 +386,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
               </a-col>
             </a-row>
             <a-space wrap>
-              <a-button v-if="auth.canOperate" type="primary" size="small" :loading="savingSettings" @click="saveSettings">保存并应用</a-button>
+              <a-button type="primary" size="small" :loading="savingSettings" @click="saveSettings">保存并应用</a-button>
               <span v-if="actual" class="hint">当前：{{ actual.locale || '默认语言' }} · {{ actual.timezone }} · Android {{ actual.release }} · 型号 {{ actual.model }}（型号/IMEI 等硬件标识不可修改）</span>
             </a-space>
           </a-form>

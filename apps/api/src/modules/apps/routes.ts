@@ -2,10 +2,10 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { isProtectedPackage, mediaTarget } from '../../adapters/adb.js';
 import { adb } from '../../services.js';
-import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
+import { assertInstanceAccess } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from './package.js';
@@ -34,7 +34,6 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
    * The upload is stored once and installed on every target as its own task (installs with -r = update).
    */
   app.post('/api/apps/install', async (req, reply) => {
-    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot install apps');
     const file = await req.file();
     if (!file) throw badRequest('missing file');
     const rawIds = (file.fields.instanceIds as { value?: string } | undefined)?.value;
@@ -82,7 +81,6 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/apps/uninstall', {
     schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
   }, async (req, reply) => {
-    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot uninstall apps');
     if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`);
     for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));

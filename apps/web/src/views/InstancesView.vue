@@ -148,12 +148,12 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
     <a-card title="设备列表" size="small">
       <template #extra>
         <a-space wrap>
-          <template v-if="auth.canOperate">
-            <a-button :disabled="!selectedKeys.length" @click="run('start', selectedKeys)">启动</a-button>
-            <a-button :disabled="!selectedKeys.length" @click="run('stop', selectedKeys)">停止</a-button>
-            <a-button :disabled="!selectedKeys.length" @click="run('restart', selectedKeys)">重启</a-button>
-            <a-button :disabled="!selectedKeys.length" @click="openApp('install')">安装应用</a-button>
-            <a-button :disabled="!selectedKeys.length" @click="openApp('uninstall')">卸载应用</a-button>
+          <a-button :disabled="!selectedKeys.length" @click="run('start', selectedKeys)">启动</a-button>
+          <a-button :disabled="!selectedKeys.length" @click="run('stop', selectedKeys)">停止</a-button>
+          <a-button :disabled="!selectedKeys.length" @click="run('restart', selectedKeys)">重启</a-button>
+          <a-button :disabled="!selectedKeys.length" @click="openApp('install')">安装应用</a-button>
+          <a-button :disabled="!selectedKeys.length" @click="openApp('uninstall')">卸载应用</a-button>
+          <template v-if="auth.isAdmin">
             <a-button danger :disabled="!selectedKeys.length" @click="run('delete', selectedKeys)">删除</a-button>
             <a-button type="primary" @click="createOpen = true">创建设备</a-button>
           </template>
@@ -168,8 +168,8 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
         size="middle"
         :pagination="false"
         :scroll="{ x: 760 }"
-        :row-selection="auth.canOperate ? { selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) } : undefined"
-        :locale="{ emptyText: auth.canOperate ? '还没有设备，点击右上角「创建设备」' : '暂无可访问的设备，请联系管理员授权' }"
+        :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
+        :locale="{ emptyText: auth.isAdmin ? '还没有设备，点击右上角「创建设备」' : '暂无可访问的设备，请联系管理员授权' }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">

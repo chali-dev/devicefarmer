@@ -121,25 +121,26 @@ try {
   // ---------- (f) RBAC ----------
   const vname = `viewer_${tag}`;
   const vpass = randomBytes(12).toString('base64url');
-  const vu = await http<{ user: { id: string } }>('POST', '/api/users', admin, { username: vname, password: vpass, role: 'viewer' });
+  const vu = await http<{ user: { id: string } }>('POST', '/api/users', admin, { username: vname, password: vpass, role: 'user' });
   check('create throwaway viewer', vu.status === 201, `${vu.status}`);
   try {
     const viewer = await login(vname, vpass);
     check('viewer can list assets', (await http('GET', '/api/assets', viewer)).status === 200);
     check('viewer can read content', (await download(a1.id, viewer)).status === 200);
     const vUp = await upload(viewer, 'x.png', img, 'image/png');
-    check('viewer upload → 403', vUp.status === 403, `${vUp.status}`);
+    check('user upload → 201', vUp.status === 201, `${vUp.status}`);
+    if (vUp.status === 201) created.push(vUp.body.asset.id);
     const vDel = await http('DELETE', `/api/assets/${a1.id}`, viewer);
     check('viewer delete → 403', vDel.status === 403, `${vDel.status}`);
     const vPatch = await http('PATCH', `/api/assets/${a1.id}`, viewer, { tags: ['x'] });
-    check('viewer patch → 403', vPatch.status === 403, `${vPatch.status}`);
+    check('user patch tags → 200', vPatch.status === 200, `${vPatch.status}`);
     const vPush = await http('POST', '/api/assets/push', viewer, { assetIds: [a1.id], instanceIds: ['00000000-0000-4000-8000-000000000000'] });
-    check('viewer push → 403', vPush.status === 403, `${vPush.status}`);
+    check('user push to non-granted device → 403', vPush.status === 403, `${vPush.status}`);
     check('viewer GET storage settings → 403', (await http('GET', '/api/settings/storage', viewer)).status === 403);
     const vPut = await http('PUT', '/api/settings/storage', viewer, { type: 'local' });
     check('viewer PUT storage settings → 403', vPut.status === 403, `${vPut.status}`);
     check('viewer POST storage test → 403', (await http('POST', '/api/settings/storage/test', viewer)).status === 403);
-    check('asset untouched after viewer attempts', (await download(a1.id, admin)).sha === sha(img));
+    check('asset content untouched after user attempts', (await download(a1.id, admin)).sha === sha(img));
   } finally {
     const d = await http('DELETE', `/api/users/${vu.body.user.id}`, admin);
     check('delete throwaway viewer', d.status === 204 || d.status === 200, `${d.status}`);

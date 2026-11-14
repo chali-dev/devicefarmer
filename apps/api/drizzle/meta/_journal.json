@@ -43,6 +43,13 @@
       "when": 1794661080010,
       "tag": "0005_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794661685800,
+      "tag": "0006_roles_admin_user",
+      "breakpoints": true
     }
   ]
 }

@@ -1,14 +1,41 @@
 import bcrypt from 'bcryptjs';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
+import type { User } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 
-const Role = z.enum(['admin', 'operator', 'viewer']);
-const publicUser = { id: schema.users.id, username: schema.users.username, role: schema.users.role, disabled: schema.users.disabled, createdAt: schema.users.createdAt };
+const Role = z.enum(['admin', 'user']);
+const Id = z.object({ id: z.string().uuid() });
+const publicUser = {
+  id: schema.users.id,
+  username: schema.users.username,
+  displayName: schema.users.displayName,
+  email: schema.users.email,
+  role: schema.users.role,
+  disabled: schema.users.disabled,
+  builtin: schema.users.builtin,
+  createdAt: schema.users.createdAt,
+};
 
-/** User management + instance grants. Admin only. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Locks the target row; 404 when missing. */
+async function lockUser(tx: Tx, id: string): Promise<User> {
+  const [u] = await tx.select().from(schema.users).where(eq(schema.users.id, id)).for('update');
+  if (!u) throw notFound('用户不存在');
+  return u;
+}
+
+/** Refuses a change that would leave no enabled admin (other admins are locked to avoid races). */
+async function assertOtherEnabledAdmin(tx: Tx, exceptId: string, msg: string) {
+  const others = await tx.select({ id: schema.users.id }).from(schema.users)
+    .where(and(eq(schema.users.role, 'admin'), eq(schema.users.disabled, false), ne(schema.users.id, exceptId))).for('update');
+  if (others.length === 0) throw badRequest(msg);
+}
+
+/** User management + device grants. Admin only. */
 export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.requireAdmin);
 
@@ -26,52 +53,87 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     const passwordHash = await bcrypt.hash(req.body.password, 10);
     const [u] = await db.insert(schema.users).values({ username: req.body.username, passwordHash, role: req.body.role })
       .onConflictDoNothing().returning(publicUser);
-    if (!u) throw conflict('username already exists');
+    if (!u) throw conflict('用户名已存在');
     reply.code(201);
     return { user: u };
   });
 
   app.patch('/api/users/:id', {
     schema: {
-      params: z.object({ id: z.string().uuid() }),
+      params: Id,
       body: z.object({ role: Role.optional(), password: z.string().min(8).optional(), disabled: z.boolean().optional() }),
     },
   }, async (req) => {
-    if (req.params.id === req.user.id && (req.body.role && req.body.role !== 'admin' || req.body.disabled)) {
-      throw badRequest('you cannot demote or disable yourself');
-    }
-    const set: Partial<typeof schema.users.$inferInsert> = {};
-    if (req.body.role) set.role = req.body.role;
-    if (req.body.disabled !== undefined) set.disabled = req.body.disabled;
-    if (req.body.password) set.passwordHash = await bcrypt.hash(req.body.password, 10);
-    if (Object.keys(set).length === 0) throw badRequest('nothing to update');
-    const [u] = await db.update(schema.users).set(set).where(eq(schema.users.id, req.params.id)).returning(publicUser);
-    if (!u) throw notFound('user not found');
-    return { user: u };
+    const { role, password, disabled } = req.body;
+    if (role === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update');
+    const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
+    return db.transaction(async (tx) => {
+      const target = await lockUser(tx, req.params.id);
+      const demote = role !== undefined && role !== target.role && target.role === 'admin';
+      const disable = disabled === true && !target.disabled;
+      if (target.builtin) {
+        if (role !== undefined && role !== target.role) throw badRequest('内置管理员的角色不可修改');
+        if (disable) throw badRequest('内置管理员不可禁用');
+        if (password) throw badRequest('内置管理员的密码只能由其本人在个人设置中修改');
+      }
+      if (target.id === req.user.id && (demote || disable)) throw badRequest('不能降级或禁用自己');
+      if (target.role === 'admin' && !target.disabled && (demote || disable)) {
+        await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
+      }
+      const set: Partial<typeof schema.users.$inferInsert> = {};
+      if (role !== undefined) set.role = role;
+      if (disabled !== undefined) set.disabled = disabled;
+      if (passwordHash) set.passwordHash = passwordHash;
+      const [u] = await tx.update(schema.users).set(set).where(eq(schema.users.id, target.id)).returning(publicUser);
+      return { user: u! };
+    });
   });
 
-  app.delete('/api/users/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
-    if (req.params.id === req.user.id) throw badRequest('you cannot delete yourself');
-    const r = await db.delete(schema.users).where(eq(schema.users.id, req.params.id)).returning({ id: schema.users.id });
-    if (r.length === 0) throw notFound('user not found');
+  app.delete('/api/users/:id', { schema: { params: Id } }, async (req, reply) => {
+    await db.transaction(async (tx) => {
+      const target = await lockUser(tx, req.params.id);
+      if (target.builtin) throw badRequest('内置管理员不可删除');
+      if (target.id === req.user.id) throw badRequest('不能删除自己');
+      if (target.role === 'admin' && !target.disabled) await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
+      await tx.delete(schema.users).where(eq(schema.users.id, target.id));
+    });
     reply.code(204);
   });
 
-  /** Replace the set of instances a user may access. */
+  /** Replace the set of devices a user (role `user`) may access. Admins see every device. */
   app.put('/api/users/:id/grants', {
-    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ instanceIds: z.array(z.string().uuid()).max(500) }) },
+    schema: { params: Id, body: z.object({ instanceIds: z.array(z.string().uuid()).max(500) }) },
   }, async (req) => {
     const ids = [...new Set(req.body.instanceIds)];
     await db.transaction(async (tx) => {
-      const [u] = await tx.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, req.params.id));
-      if (!u) throw notFound('user not found');
+      const u = await lockUser(tx, req.params.id);
+      if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权');
       if (ids.length) {
         const found = await tx.select({ id: schema.instances.id }).from(schema.instances).where(inArray(schema.instances.id, ids));
-        if (found.length !== ids.length) throw badRequest('unknown instance id');
+        if (found.length !== ids.length) throw badRequest('设备不存在');
       }
-      await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.userId, req.params.id));
-      if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((instanceId) => ({ userId: req.params.id, instanceId })));
+      await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.userId, u.id));
+      if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((instanceId) => ({ userId: u.id, instanceId })));
     });
     return { instanceIds: ids };
+  });
+
+  /** Replace the set of users (role `user`) that may access one device. */
+  app.put('/api/instances/:id/grants', {
+    schema: { params: Id, body: z.object({ userIds: z.array(z.string().uuid()).max(500) }) },
+  }, async (req) => {
+    const ids = [...new Set(req.body.userIds)];
+    await db.transaction(async (tx) => {
+      const [inst] = await tx.select({ id: schema.instances.id }).from(schema.instances).where(eq(schema.instances.id, req.params.id)).for('update');
+      if (!inst) throw notFound('设备不存在');
+      if (ids.length) {
+        const found = await tx.select({ id: schema.users.id, role: schema.users.role }).from(schema.users).where(inArray(schema.users.id, ids));
+        if (found.length !== ids.length) throw badRequest('用户不存在');
+        if (found.some((u) => u.role !== 'user')) throw badRequest('管理员可访问全部设备，无需授权');
+      }
+      await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
+      if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((userId) => ({ userId, instanceId: inst.id })));
+    });
+    return { userIds: ids };
   });
 };

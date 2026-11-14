@@ -9,7 +9,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { accessibleInstanceIds, assertInstanceAccess, canCreateInstances, roleAllows } from '../auth/rbac.js';
+import { accessibleInstanceIds, assertInstanceAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue, type OpName } from './queue.js';
 import { getInstance, publicInstance, updateInstance } from './repo.js';
 import { proxyKey } from '../network/singbox.js';
@@ -50,7 +50,7 @@ const CreateBody = z.object({
   height: z.number().int().min(480).max(3840).default(1280),
   dpi: z.number().int().min(120).max(640).default(320),
   memoryMb: z.number().int().min(1024).max(16384).optional(),
-  /** Skip the host memory check (admin only) */
+  /** Skip the host memory check */
   force: z.boolean().optional(),
 }).extend(DeviceSettings.shape);
 
@@ -101,9 +101,9 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instance: publicInstance(inst) };
   });
 
-  /** Batch create. Instances are created by the queue; the creator is granted access. */
+  /** Batch create (admin only). Instances are created by the queue. */
   app.post('/api/instances', { schema: { body: CreateBody } }, async (req, reply) => {
-    if (!canCreateInstances(req.user)) throw forbidden('your role cannot create instances');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以创建设备');
     const b = req.body;
     const profile = getProfile(b.profile);
     const avail = (await profileAvailability()).find((p) => p.id === b.profile);
@@ -118,7 +118,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       for (const p of proxies) if (p) await assertProxyNotShared(p);
     }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
-    if (!(b.force && req.user.role === 'admin')) {
+    if (!b.force) {
       const freeMb = await dockerHost.memAvailableMb();
       const needMb = profile.memEstimateMb * b.count + 512; // keep headroom for the host
       if (needMb > freeMb) {
@@ -139,9 +139,6 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
           ...(b.deviceName ? { deviceName: b.deviceName } : {}),
         },
       }))).returning();
-      if (req.user.role !== 'admin') {
-        await tx.insert(schema.instanceGrants).values(inserted.map((i) => ({ userId: req.user.id, instanceId: i.id })));
-      }
       return inserted;
     });
     const taskIds = [];
@@ -159,7 +156,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       }),
     },
   }, async (req, reply) => {
-    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot operate instances');
+    if (req.body.action === 'delete' && !isAdmin(req.user)) throw forbidden('仅管理员可以删除设备');
     const ids = [...new Set(req.body.ids)];
     for (const id of ids) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));

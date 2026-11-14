@@ -167,17 +167,18 @@ try {
   }
 
   // ---- RBAC
-  const vname = `e2e-viewer-${Date.now() % 100000}`;
+  const vname = `e2e-user-${Date.now() % 100000}`;
   const vpass = `pw-${crypto.randomUUID()}`;
-  const vu = await http('POST', '/api/users', adminToken, { username: vname, password: vpass, role: 'viewer' });
-  check('admin creates viewer', vu.status === 201);
+  const vu = await http('POST', '/api/users', adminToken, { username: vname, password: vpass, role: 'user' });
+  check('admin creates user', vu.status === 201);
   viewerId = vu.body.user.id;
   check('grant viewer one instance', (await http('PUT', `/api/users/${viewerId}/grants`, adminToken, { instanceIds: [a.id] })).status === 200);
   const vt = (await http('POST', '/api/auth/login', undefined, { username: vname, password: vpass })).body.token;
   const vlist = await http('GET', '/api/instances', vt);
   check('viewer sees only granted instance', vlist.body.instances.length === 1 && vlist.body.instances[0].id === a.id);
   check('viewer cannot see other instance', (await http('GET', `/api/instances/${b.id}`, vt)).status === 403);
-  check('viewer cannot stop instance', (await http('POST', '/api/instances/actions', vt, { action: 'stop', ids: [a.id] })).status === 403);
+  check('user cannot delete instance', (await http('POST', '/api/instances/actions', vt, { action: 'delete', ids: [a.id] })).status === 403);
+  check('user cannot stop non-granted instance', (await http('POST', '/api/instances/actions', vt, { action: 'stop', ids: [b.id] })).status === 403);
   check('viewer cannot create instances', (await http('POST', '/api/instances', vt, { count: 1 })).status === 403);
   check('viewer cannot manage users', (await http('GET', '/api/users', vt)).status === 403);
   const vs = session(vt, a.id);

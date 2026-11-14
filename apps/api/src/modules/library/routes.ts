@@ -3,7 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { conflict, forbidden, notFound } from '../../lib/errors.js';
-import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
+import { assertInstanceAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { libraryApks, removeLibraryApp } from './library.js';
@@ -31,7 +31,7 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch('/api/library/:id', {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ preinstall: z.boolean() }) },
   }, async (req) => {
-    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot change the library');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改应用库预装设置');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!row) throw notFound('library app not found');
     // Only one version of a package is preinstalled.
@@ -43,7 +43,6 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/library/:id/install', {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(100) }) },
   }, async (req, reply) => {
-    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot install apps');
     const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!lib) throw notFound('library app not found');
     for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
@@ -59,7 +58,7 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/library/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
-    if (req.user.role !== 'admin') throw forbidden('admin only');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以从应用库删除');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!row) throw notFound('library app not found');
     await removeLibraryApp(row);

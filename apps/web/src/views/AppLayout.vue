@@ -5,8 +5,9 @@ import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
-  AppstoreOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, TeamOutlined, UserOutlined,
+  AppstoreOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, SafetyOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
+import { ROLE_TEXT } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -16,8 +17,8 @@ const route = useRoute()
 const router = useRouter()
 
 const collapsed = ref(false)
-const ROLE_TEXT = { admin: '管理员', operator: '运维', viewer: '只读/控制' } as const
-const selected = computed(() => [route.path.startsWith('/users') ? 'users' : route.path.startsWith('/library') ? 'library' : route.path.startsWith('/assets') ? 'assets' : 'instances'])
+const MENU_KEYS = ['users', 'permissions', 'library', 'assets'] as const
+const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
 onBeforeUnmount(() => store.disconnect())
@@ -127,10 +128,16 @@ async function savePassword() {
           <PictureOutlined />
           <span>素材库</span>
         </a-menu-item>
-        <a-menu-item v-if="auth.isAdmin" key="users" @click="router.push('/users')">
-          <TeamOutlined />
-          <span>用户与权限</span>
-        </a-menu-item>
+        <template v-if="auth.isAdmin">
+          <a-menu-item key="users" @click="router.push('/users')">
+            <UserOutlined />
+            <span>用户管理</span>
+          </a-menu-item>
+          <a-menu-item key="permissions" @click="router.push('/permissions')">
+            <SafetyOutlined />
+            <span>权限管理</span>
+          </a-menu-item>
+        </template>
       </a-menu>
     </a-layout-sider>
     <a-layout>

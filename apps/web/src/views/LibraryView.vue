@@ -72,10 +72,11 @@ const columns = [
         <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span style="color: #8c8c8c">({{ record.versionCode }})</span></template>
         <template v-else-if="column.key === 'files'">{{ record.files.length }} 个 APK · {{ size(record) }}</template>
         <template v-else-if="column.key === 'preinstall'">
-          <a-switch :checked="record.preinstall" size="small" :disabled="!auth.canOperate" @change="(v: any) => setPreinstall(record, v)" />
+          <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
+          <span v-else>{{ record.preinstall ? '是' : '—' }}</span>
         </template>
         <template v-else-if="column.key === 'ops'">
-          <a-button v-if="auth.canOperate" type="link" size="small" @click="target = record; targetIds = []">安装到设备</a-button>
+          <a-button type="link" size="small" @click="target = record; targetIds = []">安装到设备</a-button>
           <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">删除</a-button>
         </template>
       </template>

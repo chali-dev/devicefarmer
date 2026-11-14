@@ -4,16 +4,12 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { badRequest, forbidden, notFound } from '../../lib/errors.js';
-import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
+import { assertInstanceAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { createAsset, getAsset, openAsset, removeAsset } from './assets.js';
 
 const Id = z.object({ id: z.string().uuid() });
 const Tag = z.string().trim().min(1).max(32);
-
-function assertCanEdit(role: Parameters<typeof roleAllows>[0]) {
-  if (!roleAllows(role, 'operate')) throw forbidden(`role "${role}" cannot change assets`);
-}
 
 /** Asset library (素材库): upload once, push to many devices' shared storage. */
 export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
@@ -37,7 +33,6 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /** multipart, one file per request; stored on the active backend. */
   app.post('/api/assets', async (req, reply) => {
-    assertCanEdit(req.user.role);
     const file = await req.file({ limits: { fileSize: config.ASSET_MAX_MB * 1024 * 1024, files: 1 } });
     if (!file) throw badRequest('missing file');
     const asset = await createAsset(file.file, file.filename || 'upload', file.mimetype || 'application/octet-stream', req.user.id);
@@ -67,7 +62,6 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch('/api/assets/:id', {
     schema: { params: Id, body: z.object({ name: z.string().trim().min(1).max(200).optional(), tags: z.array(Tag).max(20).optional() }) },
   }, async (req) => {
-    assertCanEdit(req.user.role);
     const asset = await getAsset(req.params.id);
     if (!asset) throw notFound('asset not found');
     const set: { name?: string; tags?: string[] } = {};
@@ -79,7 +73,7 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/assets/:id', { schema: { params: Id } }, async (req, reply) => {
-    assertCanEdit(req.user.role);
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以删除素材');
     const asset = await getAsset(req.params.id);
     if (!asset) throw notFound('asset not found');
     await removeAsset(asset);
