@@ -89,3 +89,49 @@ export interface StorageSettings {
 }
 
 export interface StorageTestResult { ok: boolean; latencyMs: number; error: string | null }
+
+export interface AuditLog {
+  id: string
+  at: string
+  userId: string | null
+  username: string | null
+  action: string
+  target: string | null
+  targetId: string | null
+  method: string
+  path: string
+  status: number
+  ok: boolean
+  ip: string | null
+  detail: Record<string, unknown> | null
+}
+/** Chinese labels for known audit actions (unknown ones are shown raw). */
+export const AUDIT_ACTION_TEXT: Record<string, string> = {
+  'auth.login': '登录',
+  'auth.login_failed': '登录失败',
+  'auth.password_change': '修改密码',
+  'profile.update': '修改个人信息',
+  'user.create': '创建用户',
+  'user.update': '修改用户',
+  'user.delete': '删除用户',
+  'grants.update': '修改设备授权',
+  'device.create': '创建设备',
+  'device.action.start': '启动设备',
+  'device.action.stop': '停止设备',
+  'device.action.restart': '重启设备',
+  'device.action.delete': '删除设备',
+  'device.settings': '修改设备参数',
+  'proxy.set': '设置代理',
+  'app.install': '安装/更新应用',
+  'app.uninstall': '卸载应用',
+  'file.upload': '上传文件到设备',
+  'library.import': '导入应用库',
+  'library.update': '修改应用库预装',
+  'library.install': '从应用库安装',
+  'library.delete': '删除应用库条目',
+  'asset.upload': '上传素材',
+  'asset.update': '修改素材',
+  'asset.delete': '删除素材',
+  'asset.push': '推送素材',
+  'storage.update': '修改存储设置',
+}

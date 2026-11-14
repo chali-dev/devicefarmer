@@ -16,6 +16,7 @@ const router = createRouter({
         { path: 'assets', name: 'assets', component: () => import('../views/AssetsView.vue') },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
+        { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/instances' },

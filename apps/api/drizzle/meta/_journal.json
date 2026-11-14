@@ -50,6 +50,13 @@
       "when": 1794661685800,
       "tag": "0006_roles_admin_user",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794662689424,
+      "tag": "0007_audit_log",
+      "breakpoints": true
     }
   ]
 }

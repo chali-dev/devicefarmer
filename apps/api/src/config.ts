@@ -46,6 +46,8 @@ const Env = z.object({
   /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */
   ASSET_DIR: z.string().default('var/assets'),
   ASSET_MAX_MB: z.coerce.number().int().positive().default(500),
+  /** Audit log (操作日志) entries older than this are deleted at startup and daily. */
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
 });
 
 export const config = Env.parse(process.env);

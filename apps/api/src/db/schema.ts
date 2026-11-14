@@ -110,6 +110,26 @@ export const assets = pgTable('assets', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('assets_created_at_idx').on(t.createdAt)]);
 
+/**
+ * Platform audit log (操作日志). `username` is denormalized so entries survive user deletion;
+ * `detail` holds an allowlisted, redacted summary (never raw request bodies). See modules/audit.
+ */
+export const auditLogs = pgTable('audit_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  userId: uuid('user_id'),
+  username: text('username'),
+  action: text('action').notNull(),
+  target: text('target'),
+  targetId: text('target_id'),
+  method: text('method').notNull(),
+  path: text('path').notNull(),
+  status: integer('status').notNull(),
+  ok: boolean('ok').notNull(),
+  ip: text('ip'),
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+}, (t) => [index('audit_logs_at_idx').on(t.at), index('audit_logs_action_idx').on(t.action)]);
+
 export interface InstanceSpec {
   width: number;
   height: number;
@@ -154,4 +174,5 @@ export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
+export type AuditLog = typeof auditLogs.$inferSelect;
 export type Role = User['role'];

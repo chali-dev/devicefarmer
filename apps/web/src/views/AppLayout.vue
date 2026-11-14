@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
-  AppstoreOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, SafetyOutlined, UserOutlined,
+  AppstoreOutlined, FileSearchOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, SafetyOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
 import { ROLE_TEXT } from '../api/types'
 import { useAuthStore } from '../stores/auth'
@@ -17,7 +17,7 @@ const route = useRoute()
 const router = useRouter()
 
 const collapsed = ref(false)
-const MENU_KEYS = ['users', 'permissions', 'library', 'assets'] as const
+const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'assets'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
@@ -136,6 +136,10 @@ async function savePassword() {
           <a-menu-item key="permissions" @click="router.push('/permissions')">
             <SafetyOutlined />
             <span>权限管理</span>
+          </a-menu-item>
+          <a-menu-item key="audit" @click="router.push('/audit')">
+            <FileSearchOutlined />
+            <span>操作日志</span>
           </a-menu-item>
         </template>
       </a-menu>

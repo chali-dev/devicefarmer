@@ -4,6 +4,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, unauthorized } from '../../lib/errors.js';
+import { auditRequest } from '../audit/audit.js';
 
 /** Public profile of a user (never includes passwordHash). */
 const profileColumns = {
@@ -31,8 +32,16 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     const [u] = await db.select().from(schema.users).where(eq(schema.users.username, req.body.username));
     // Compare even when the user is missing to keep timing similar.
     const ok = await bcrypt.compare(req.body.password, u?.passwordHash ?? '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
-    if (!u || !ok || u.disabled) throw unauthorized('invalid username or password');
+    if (!u || !ok || u.disabled) {
+      // Excluded from the generic hook; only the attempted username is kept, never the password.
+      auditRequest(req, {
+        action: 'auth.login_failed', userId: u?.id ?? null, username: req.body.username.slice(0, 64), target: req.body.username.slice(0, 64), status: 401,
+        detail: { reason: !u ? 'unknown_user' : u.disabled && ok ? 'disabled' : 'bad_password' },
+      });
+      throw unauthorized('invalid username or password');
+    }
     const token = app.jwt.sign({ sub: u.id });
+    auditRequest(req, { action: 'auth.login', userId: u.id, username: u.username, target: u.username, targetId: u.id, status: 200 });
     return { token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email, builtin: u.builtin } };
   });
 

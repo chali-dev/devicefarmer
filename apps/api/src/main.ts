@@ -9,6 +9,9 @@ import { events } from './lib/events.js';
 import { HttpError } from './lib/errors.js';
 import { authPlugin } from './modules/auth/plugin.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { startAuditRetention } from './modules/audit/audit.js';
+import { auditPlugin } from './modules/audit/plugin.js';
+import { auditRoutes } from './modules/audit/routes.js';
 import { controlRoutes } from './modules/control/session.js';
 import { eventsRoutes } from './modules/control/events-ws.js';
 import { instanceRoutes } from './modules/instances/routes.js';
@@ -41,6 +44,8 @@ await app.register(cors, { origin: config.WEB_ORIGIN, credentials: false });
 await app.register(multipart, { limits: { fileSize: config.MAX_APK_MB * 1024 * 1024, files: 1 } });
 await app.register(websocket, { options: { maxPayload: 64 * 1024 } });
 await app.register(authPlugin);
+// Before every route: its hooks record mutating requests platform-wide.
+await app.register(auditPlugin);
 await app.register(authRoutes);
 await app.register(userRoutes);
 await app.register(instanceRoutes);
@@ -50,6 +55,7 @@ await app.register(appRoutes);
 await app.register(libraryRoutes);
 await app.register(assetRoutes);
 await app.register(settingsRoutes);
+await app.register(auditRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed. */
 app.get('/api/health', async (_req, reply) => {
@@ -74,12 +80,14 @@ app.get('/api/health', async (_req, reply) => {
 await events.start();
 const worker = startWorker();
 const stopMonitor = startMonitor(app.log);
+const stopAuditRetention = startAuditRetention(app.log);
 const cleanupTimer = setInterval(() => void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed')), 3600_000);
 
 const shutdown = async () => {
   app.log.info('shutting down');
   stopMonitor();
   clearInterval(cleanupTimer);
+  stopAuditRetention();
   await worker.close();
   await app.close();
   await opsQueue.close();
