@@ -12,7 +12,8 @@ export interface AuthUser { id: string; username: string; role: Role }
  *
  * Both roles may do all three on the devices they can see: `admin` sees every device,
  * `user` only devices granted in `instance_grants`. Creating/deleting devices, user/grant
- * management, storage settings and library/asset deletion are admin-only (see isAdmin).
+ * management, storage settings, library deletion and public media management are admin-only
+ * (see isAdmin; media rules in modules/media/media.ts).
  */
 export type InstanceAction = 'view' | 'control' | 'operate';
 

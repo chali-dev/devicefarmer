@@ -15,12 +15,13 @@ import { auditRoutes } from './modules/audit/routes.js';
 import { controlRoutes } from './modules/control/session.js';
 import { eventsRoutes } from './modules/control/events-ws.js';
 import { instanceRoutes } from './modules/instances/routes.js';
-import { opsQueue, startWorker } from './modules/instances/queue.js';
+import { startWorkers } from './modules/instances/queue.js';
 import { startMonitor } from './modules/monitor/monitor.js';
 import { userRoutes } from './modules/users/routes.js';
 import { appRoutes } from './modules/apps/routes.js';
 import { libraryRoutes } from './modules/library/routes.js';
-import { assetRoutes } from './modules/assets/routes.js';
+import { mediaRoutes } from './modules/media/routes.js';
+import { purgeDeletedMedia } from './modules/media/media.js';
 import { settingsRoutes } from './modules/settings/routes.js';
 import { cleanupUploads } from './modules/apps/package.js';
 import { adb, dockerHost, stf } from './services.js';
@@ -55,7 +56,7 @@ await app.register(controlRoutes);
 await app.register(eventsRoutes);
 await app.register(appRoutes);
 await app.register(libraryRoutes);
-await app.register(assetRoutes);
+await app.register(mediaRoutes);
 await app.register(settingsRoutes);
 await app.register(auditRoutes);
 
@@ -80,19 +81,23 @@ app.get('/api/health', async (_req, reply) => {
 });
 
 await events.start();
-const worker = startWorker();
+const workers = startWorkers();
 const stopMonitor = startMonitor(app.log);
 const stopAuditRetention = startAuditRetention(app.log);
-const cleanupTimer = setInterval(() => void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed')), 3600_000);
+const hourly = () => {
+  void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
+  void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
+};
+setTimeout(() => void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed')), 10_000).unref();
+const cleanupTimer = setInterval(hourly, 3600_000);
 
 const shutdown = async () => {
   app.log.info('shutting down');
   stopMonitor();
   clearInterval(cleanupTimer);
   stopAuditRetention();
-  await worker.close();
   await app.close();
-  await opsQueue.close();
+  await workers.close();
   stf.close();
   await events.close();
   await sqlClient.end();

@@ -29,7 +29,7 @@ const THEMES = computed(() => [
 ])
 
 const collapsed = ref(false)
-const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'assets'] as const
+const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'media'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
@@ -135,9 +135,9 @@ async function savePassword() {
           <AppstoreOutlined />
           <span>{{ t('nav.library') }}</span>
         </a-menu-item>
-        <a-menu-item key="assets" @click="router.push('/assets')">
+        <a-menu-item key="media" @click="router.push('/media')">
           <PictureOutlined />
-          <span>{{ t('nav.assets') }}</span>
+          <span>{{ t('nav.media') }}</span>
         </a-menu-item>
         <template v-if="auth.isAdmin">
           <a-menu-item key="users" @click="router.push('/users')">

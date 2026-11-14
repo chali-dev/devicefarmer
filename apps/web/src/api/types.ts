@@ -80,9 +80,45 @@ export type PlatformEvent =
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
 
-export interface Asset {
-  id: string; name: string; mime: string; size: number; sha256: string
-  storage: 'local' | 's3'; key: string; tags: string[]; createdBy: string | null; createdAt: string
+export type MediaScope = 'public' | 'mine' | 'favorites' | 'all-users'
+export type MediaStatus = 'processing' | 'ready' | 'failed' | 'disabled'
+export interface MediaItem {
+  id: string
+  ownerType: 'public' | 'user'
+  ownerId: string | null
+  ownerName: string | null
+  categoryId: string | null
+  categoryName: string | null
+  name: string
+  fileName: string
+  storage: 'local' | 's3'
+  fileType: 'image' | 'video'
+  mimeType: string
+  fileSize: number
+  width: number | null
+  height: number | null
+  /** seconds (videos) */
+  duration: number | null
+  checksum: string
+  status: MediaStatus
+  error: string | null
+  createdBy: string | null
+  createdAt: string
+  updatedAt: string
+  tags: string[]
+  isFavorite: boolean
+  /** The current user may edit/delete it. */
+  canManage: boolean
+  contentUrl: string
+  thumbnailUrl: string | null
+}
+export interface MediaCategory {
+  id: string; ownerType: 'public' | 'user'; ownerId: string | null; name: string; sort: number; count: number; createdAt: string; updatedAt: string
+}
+export interface MediaFormatLimit { id: string; mime: string; mimes: string[]; exts: string[] }
+export interface MediaLimits {
+  image: { maxMb: number; formats: MediaFormatLimit[] }
+  video: { maxMb: number; formats: MediaFormatLimit[] }
 }
 
 export interface StorageSettings {

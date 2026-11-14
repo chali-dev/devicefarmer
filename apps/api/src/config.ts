@@ -45,7 +45,13 @@ const Env = z.object({
   LIBRARY_DIR: z.string().default('var/library'),
   /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */
   ASSET_DIR: z.string().default('var/assets'),
-  ASSET_MAX_MB: z.coerce.number().int().positive().default(500),
+  /** Media library (素材) limits, enforced by the API (GET /api/media/limits tells the UI). */
+  MEDIA_IMAGE_MAX_MB: z.coerce.number().positive().default(20),
+  MEDIA_VIDEO_MAX_MB: z.coerce.number().positive().default(500),
+  /** Comma-separated subset of: jpeg,png,webp,gif,heic,mp4,mov,webm (heic needs a libvips build with HEVC). */
+  MEDIA_ALLOWED_TYPES: z.string().default('jpeg,png,webp,gif,mp4,mov,webm'),
+  FFMPEG_PATH: z.string().default('ffmpeg'),
+  FFPROBE_PATH: z.string().default('ffprobe'),
   /** Audit log (操作日志) entries older than this are deleted at startup and daily. */
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
 });

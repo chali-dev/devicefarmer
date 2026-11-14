@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', ['admin', 'user']);
 
@@ -62,12 +62,15 @@ export const tasks = pgTable('tasks', {
   type: text('type').notNull(),
   instanceId: uuid('instance_id'),
   instanceName: text('instance_name'),
+  /** What the task works on besides a device, e.g. ref_type 'media' + the media asset id (push-asset, media-process). */
+  refType: text('ref_type'),
+  refId: uuid('ref_id'),
   status: text('status', { enum: ['queued', 'running', 'succeeded', 'failed'] }).notNull().default('queued'),
   error: text('error'),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
-});
+}, (t) => [index('tasks_ref_idx').on(t.refType, t.refId)]);
 
 /**
  * App library: official packages imported from a device where they were installed
@@ -93,22 +96,85 @@ export const settings = pgTable('settings', {
 });
 
 /**
- * Asset library (素材库): images/videos/files pushed to devices' shared storage.
- * `storage` is the backend the object was written to, so switching the active backend
- * later keeps old assets readable (s3 assets are read with the current s3 config).
+ * Media library (素材库). Two owners: `public` (managed by admins, used by everyone) and
+ * `user` (private to owner_id; admins can see/manage all). Files live on the storage backend
+ * recorded in `storage` under public/{images,videos,thumbnails}/ or users/{owner_id}/...,
+ * always with random names. Upload stores the file with status 'processing'; the media-process
+ * queue job computes metadata + thumbnail and sets 'ready' or 'failed' (`error`).
+ * 'disabled' (public only) hides a ready asset from non-admins.
+ * `deleted_at` marks a row whose files are being purged: it is hidden immediately, the files are
+ * deleted, then the row (and its tags/favorites, by cascade) is removed. A row that stays with
+ * deleted_at set means a storage delete failed; purgeDeletedMedia() retries it.
  */
-export const assets = pgTable('assets', {
+const ownerCheck = (name: string) => check(name, sql`(owner_type = 'public' and owner_id is null) or (owner_type = 'user' and owner_id is not null)`);
+
+export const mediaCategories = pgTable('media_categories', {
   id: uuid('id').primaryKey().defaultRandom(),
+  ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  mime: text('mime').notNull(),
-  size: bigint('size', { mode: 'number' }).notNull(),
-  sha256: text('sha256').notNull(),
+  sort: integer('sort').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  unique('media_categories_owner_name').on(t.ownerType, t.ownerId, t.name).nullsNotDistinct(),
+  ownerCheck('media_categories_owner_chk'),
+]);
+
+export const mediaAssets = pgTable('media_assets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').references(() => mediaCategories.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  /** Original upload name, display only (never used as a storage key or device path as-is). */
+  fileName: text('file_name').notNull(),
   storage: text('storage', { enum: ['local', 's3'] }).notNull(),
-  key: text('key').notNull(),
-  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+  fileKey: text('file_key').notNull(),
+  thumbnailKey: text('thumbnail_key'),
+  fileType: text('file_type', { enum: ['image', 'video'] }).notNull(),
+  mimeType: text('mime_type').notNull(),
+  fileSize: bigint('file_size', { mode: 'number' }).notNull(),
+  width: integer('width'),
+  height: integer('height'),
+  /** Seconds (videos). */
+  duration: doublePrecision('duration'),
+  /** sha256 hex of the file. */
+  checksum: text('checksum').notNull(),
+  status: text('status', { enum: ['processing', 'ready', 'failed', 'disabled'] }).notNull().default('processing'),
+  error: text('error'),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('assets_created_at_idx').on(t.createdAt)]);
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (t) => [
+  index('media_assets_owner_idx').on(t.ownerType, t.ownerId),
+  index('media_assets_category_idx').on(t.categoryId),
+  index('media_assets_status_idx').on(t.status),
+  index('media_assets_created_at_idx').on(t.createdAt),
+  index('media_assets_checksum_idx').on(t.checksum),
+  ownerCheck('media_assets_owner_chk'),
+]);
+
+/** Tag names are unique case-insensitively (lower(name) index); the first spelling wins. */
+export const mediaTags = pgTable('media_tags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('media_tags_name_lower_idx').on(sql`lower(${t.name})`)]);
+
+export const mediaAssetTags = pgTable('media_asset_tags', {
+  assetId: uuid('asset_id').notNull().references(() => mediaAssets.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => mediaTags.id, { onDelete: 'cascade' }),
+}, (t) => [primaryKey({ columns: [t.assetId, t.tagId] }), index('media_asset_tags_tag_idx').on(t.tagId)]);
+
+/** Per-user bookmarks of PUBLIC assets (no file copy). */
+export const mediaFavorites = pgTable('media_favorites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  assetId: uuid('asset_id').notNull().references(() => mediaAssets.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [unique('media_favorites_user_asset').on(t.userId, t.assetId), index('media_favorites_asset_idx').on(t.assetId)]);
 
 /**
  * Platform audit log (操作日志). `username` is denormalized so entries survive user deletion;
@@ -173,6 +239,7 @@ export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
-export type Asset = typeof assets.$inferSelect;
+export type MediaAsset = typeof mediaAssets.$inferSelect;
+export type MediaCategory = typeof mediaCategories.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type Role = User['role'];

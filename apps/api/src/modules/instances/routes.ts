@@ -10,7 +10,7 @@ import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, isAdmin } from '../auth/rbac.js';
-import { enqueue, type OpName } from './queue.js';
+import { enqueue, type DeviceOpName } from './queue.js';
 import { getInstance, publicInstance, updateInstance } from './repo.js';
 import { proxyKey } from '../network/singbox.js';
 import type { ProxyConfig } from '../../db/schema.js';
@@ -182,7 +182,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       if (BUSY.includes(r.status)) { skipped.push({ instanceId: r.id, reason: `busy (${r.status})` }); continue; }
       if (req.body.action === 'start' && r.status === 'running') { skipped.push({ instanceId: r.id, reason: 'already running' }); continue; }
       if (req.body.action === 'stop' && r.status === 'stopped') { skipped.push({ instanceId: r.id, reason: 'already stopped' }); continue; }
-      accepted.push({ instanceId: r.id, taskId: await enqueue(req.body.action as OpName, r, req.user.id) });
+      accepted.push({ instanceId: r.id, taskId: await enqueue(req.body.action as DeviceOpName, r, req.user.id) });
     }
     for (const id of ids) if (!rows.some((r) => r.id === id)) skipped.push({ instanceId: id, reason: 'not found' });
     reply.code(202);

@@ -3,7 +3,7 @@ import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
 import { importFromDevice, libraryApks, preinstallApps } from '../library/library.js';
 import { enqueue } from './queue.js';
-import { getAsset, withAssetFile } from '../assets/assets.js';
+import { getMedia, withMediaFile } from '../media/media.js';
 import { mediaTarget } from '../../adapters/adb.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
 
@@ -193,13 +193,18 @@ export async function opImportApp(id: string, pkg: string): Promise<void> {
   await importFromDevice(inst.adbPort, pkg, inst.name);
 }
 
-/** Copies an asset-library file into the device's shared storage (Pictures/Movies/Download by mime). */
+/**
+ * Copies a media-library file into the device's shared storage (Pictures/Movies by type), over
+ * adb from the API host (never through the device's proxy). The device-side name is the asset's
+ * display name with the canonical extension of its verified format.
+ */
 export async function opPushAsset(id: string, assetId: string): Promise<void> {
   const inst = await mustBeRunning(id);
-  const asset = await getAsset(assetId);
-  if (!asset) throw new Error('asset no longer exists');
-  const { remote } = mediaTarget(asset.name, asset.mime);
-  await withAssetFile(asset, (local) => adb.pushMedia(inst.adbPort, local, remote));
+  const asset = await getMedia(assetId);
+  if (!asset) throw new Error('media asset no longer exists');
+  const ext = asset.fileKey.split('.').pop()!;
+  const { remote } = mediaTarget(`${asset.name}.${ext}`, asset.mimeType);
+  await withMediaFile(asset, (local) => adb.pushMedia(inst.adbPort, local, remote));
 }
 
 export async function opUninstallApp(id: string, pkg: string): Promise<void> {

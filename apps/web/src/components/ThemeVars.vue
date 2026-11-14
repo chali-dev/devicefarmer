@@ -24,6 +24,9 @@ watchEffect(() => {
     '--cp-bg-hover': t.colorBgTextHover,
     '--cp-primary': t.colorPrimary,
     '--cp-primary-bg': t.colorPrimaryBg,
+    '--cp-error': t.colorError,
+    '--cp-warning': t.colorWarning,
+    '--cp-mask': t.colorBgMask,
   }
   const root = document.documentElement
   for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v)

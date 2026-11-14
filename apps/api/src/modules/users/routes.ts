@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { User } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { purgeOwnerMedia } from '../media/media.js';
 
 const Role = z.enum(['admin', 'user']);
 const Id = z.object({ id: z.string().uuid() });
@@ -90,11 +91,19 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/users/:id', { schema: { params: Id } }, async (req, reply) => {
-    await db.transaction(async (tx) => {
+    const checkDeletable = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
       const target = await lockUser(tx, req.params.id);
       if (target.builtin) throw badRequest('内置管理员不可删除', 'users.builtin_delete');
       if (target.id === req.user.id) throw badRequest('不能删除自己', 'users.self_delete');
       if (target.role === 'admin' && !target.disabled) await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
+      return target;
+    };
+    // Validate first, then purge the user's private media files (rows would only cascade, leaving
+    // files behind), then delete the user (checks repeated under the lock).
+    await db.transaction(checkDeletable);
+    await purgeOwnerMedia(req.params.id);
+    await db.transaction(async (tx) => {
+      const target = await checkDeletable(tx);
       await tx.delete(schema.users).where(eq(schema.users.id, target.id));
     });
     reply.code(204);

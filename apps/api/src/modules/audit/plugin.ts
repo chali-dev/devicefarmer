@@ -31,7 +31,7 @@ export const AUDIT_EXCLUDED = new Set([
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-interface Upload { filename: string; size: number; instanceIds?: string[] }
+interface Upload { filename: string; size: number; instanceIds?: string[]; scope?: string }
 interface AuditCtx { target?: string | null; upload?: { filename: string; mimetype: string; stream: { bytesRead?: number }; fields: Record<string, unknown> }; error?: string }
 
 declare module 'fastify' {
@@ -63,10 +63,10 @@ async function instanceNames(list: string[]): Promise<string | null> {
   return names.length > 10 ? `${names.slice(0, 10).join(', ')} 等 ${names.length} 台` : names.join(', ');
 }
 
-async function assetNames(list: string[]): Promise<string | null> {
+async function mediaNames(list: string[]): Promise<string | null> {
   const valid = list.filter((id) => UUID.test(id)).slice(0, 100);
   if (!valid.length) return null;
-  const rows = await db.select({ name: schema.assets.name }).from(schema.assets).where(inArray(schema.assets.id, valid));
+  const rows = await db.select({ name: schema.mediaAssets.name }).from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, valid));
   const names = rows.map((r) => r.name);
   if (!names.length) return null;
   return names.length > 5 ? `${names.slice(0, 5).join(', ')} 等 ${names.length} 个` : names.join(', ');
@@ -145,13 +145,31 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'library.install', detail: ({ body }) => ({ instanceIds: ids(body.instanceIds), count: ids(body.instanceIds).length }),
   },
   'DELETE /api/library/:id': { action: 'library.delete' },
-  // assets (素材库)
-  'POST /api/assets': { action: 'asset.upload', target: ({ upload }) => upload?.filename, detail: fileDetail },
-  'PATCH /api/assets/:id': { action: 'asset.update', detail: ({ body }) => ({ name: body.name, tags: body.tags }) },
-  'DELETE /api/assets/:id': { action: 'asset.delete' },
-  'POST /api/assets/push': {
-    action: 'asset.push',
-    target: ({ body }) => assetNames(ids(body.assetIds)),
+  // media library (素材库)
+  'POST /api/media/upload': {
+    action: 'media.upload', target: ({ upload }) => upload?.filename,
+    detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size, scope: upload.scope } : undefined),
+  },
+  'PUT /api/media/:id': {
+    action: ({ body }) => (body.status === 'disabled' ? 'media.disable' : body.status === 'ready' ? 'media.enable' : 'media.update'),
+    detail: ({ body }) => ({ name: body.name, categoryId: body.categoryId, tags: body.tags, status: body.status }),
+  },
+  'DELETE /api/media/:id': { action: 'media.delete' },
+  'POST /api/media/batch-delete': {
+    action: 'media.batch_delete',
+    target: ({ body }) => mediaNames(ids(body.ids)),
+    detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }),
+  },
+  'POST /api/media/:id/favorite': { action: 'media.favorite' },
+  'DELETE /api/media/:id/favorite': { action: 'media.unfavorite' },
+  'POST /api/media/categories': {
+    action: 'media.category_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, sort: body.sort }),
+  },
+  'PUT /api/media/categories/:id': { action: 'media.category_update', detail: ({ body }) => ({ name: body.name, sort: body.sort }) },
+  'DELETE /api/media/categories/:id': { action: 'media.category_delete' },
+  'POST /api/media/push': {
+    action: 'media.push',
+    target: ({ body }) => mediaNames(ids(body.assetIds)),
     detail: ({ body }) => ({
       assetIds: ids(body.assetIds), instanceIds: ids(body.instanceIds),
       assets: ids(body.assetIds).length, devices: ids(body.instanceIds).length,
@@ -179,8 +197,12 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
     const [r] = await db.select({ name: schema.users.username }).from(schema.users).where(eq(schema.users.id, id));
     return r?.name ?? null;
   }
-  if (pattern.startsWith('/api/assets/:id')) {
-    const [r] = await db.select({ name: schema.assets.name }).from(schema.assets).where(eq(schema.assets.id, id));
+  if (pattern.startsWith('/api/media/categories/:id')) {
+    const [r] = await db.select({ name: schema.mediaCategories.name }).from(schema.mediaCategories).where(eq(schema.mediaCategories.id, id));
+    return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/media/:id')) {
+    const [r] = await db.select({ name: schema.mediaAssets.name }).from(schema.mediaAssets).where(eq(schema.mediaAssets.id, id));
     return r?.name ?? null;
   }
   if (pattern.startsWith('/api/library/:id')) {
@@ -198,6 +220,11 @@ function audited(req: FastifyRequest): string | null {
   return AUDIT_EXCLUDED.has(key) ? null : key;
 }
 
+function fieldText(raw: unknown): string | undefined {
+  const value = (raw as { value?: unknown } | undefined)?.value;
+  return typeof value === 'string' ? value.slice(0, 20) : undefined;
+}
+
 function parseIds(raw: unknown): string[] | undefined {
   const value = (raw as { value?: unknown } | undefined)?.value;
   if (typeof value !== 'string') return undefined;
@@ -213,7 +240,7 @@ async function buildEntry(req: FastifyRequest, key: string, status: number) {
   const params = (req.params ?? {}) as Body;
   const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Body;
   const upload: Upload | undefined = ctx.upload
-    ? { filename: ctx.upload.filename, size: ctx.upload.stream.bytesRead ?? 0, instanceIds: parseIds(ctx.upload.fields.instanceIds) }
+    ? { filename: ctx.upload.filename, size: ctx.upload.stream.bytesRead ?? 0, instanceIds: parseIds(ctx.upload.fields.instanceIds), scope: fieldText(ctx.upload.fields.scope) }
     : undefined;
   const c: Ctx = { req, body, params, upload };
   const spec = ACTIONS[key];
