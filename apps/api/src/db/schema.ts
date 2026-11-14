@@ -413,6 +413,133 @@ export const socialAccountLogs = pgTable('social_account_logs', {
   message: text('message'),
 }, (t) => [index('social_account_logs_account_at_idx').on(t.accountId, t.at)]);
 
+/**
+ * Content management (内容管理, P3). A content is private to its owner (`user_id`; admins see all). Media are
+ * references to media_assets (never copies), ordered by `position`. `stage` is what the editor sets
+ * (draft / ready / archived); `status` is derived from the stage and the content's publish tasks
+ * (modules/publish/content.ts refreshContentStatus) and stored for filtering.
+ */
+export const CONTENT_STATUSES = ['draft', 'ready', 'scheduled', 'partially_published', 'published', 'failed', 'archived'] as const;
+export type ContentStatus = (typeof CONTENT_STATUSES)[number];
+
+export const contents = pgTable('contents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  title: text('title').notNull(),
+  /** Base caption / description; publish tasks copy it unless they override it. */
+  body: text('body').notNull().default(''),
+  category: text('category'),
+  stage: text('stage', { enum: ['draft', 'ready', 'archived'] }).notNull().default('draft'),
+  status: text('status', { enum: CONTENT_STATUSES }).notNull().default('draft'),
+  /** Per-platform defaults, e.g. { youtube: { title, description, privacy }, instagram: { caption }, tiktok: { caption } }. */
+  platformHints: jsonb('platform_hints').$type<ContentPlatformHints>().notNull().default({}),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  index('contents_user_created_idx').on(t.userId, t.createdAt),
+  index('contents_user_status_idx').on(t.userId, t.status),
+  index('contents_user_category_idx').on(t.userId, t.category),
+  index('contents_created_at_idx').on(t.createdAt),
+]);
+
+export const contentMedia = pgTable('content_media', {
+  contentId: uuid('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  /** Deleting an asset drops it from drafts; assets used by unfinished publish tasks can't be deleted (assertMediaNotInUse). */
+  assetId: uuid('asset_id').notNull().references(() => mediaAssets.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull(),
+}, (t) => [primaryKey({ columns: [t.contentId, t.assetId] }), index('content_media_asset_idx').on(t.assetId)]);
+
+/** Tag names are unique case-insensitively; the first spelling wins (same rule as media/social tags). */
+export const contentTags = pgTable('content_tags', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('content_tags_name_lower_idx').on(sql`lower(${t.name})`)]);
+
+export const contentTagLinks = pgTable('content_tag_links', {
+  contentId: uuid('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  tagId: uuid('tag_id').notNull().references(() => contentTags.id, { onDelete: 'cascade' }),
+}, (t) => [primaryKey({ columns: [t.contentId, t.tagId] }), index('content_tag_links_tag_idx').on(t.tagId)]);
+
+/**
+ * Publish scheduler (定时发布, P4): one row per (content, target social account) distribution.
+ * Business state lives here; scheduling state lives in `tasks` (type 'publish', ref_type 'publish',
+ * ref_id = this id, idempotency key publish:<id>:<attempt_no>). `task_id` is the current scheduler task;
+ * every reschedule/retry bumps `attempt_no` and creates a new tasks row (older ones stay as history).
+ * Status: pending | scheduled → running → published | awaiting_operator (manual method: handed to an
+ * operator, who records the outcome) | failed | cancelled. `user_id` = the account's owner.
+ * Media and texts are snapshots taken at distribution (what was scheduled is what gets published).
+ * At most one unfinished row per (content, account) (partial unique index); a second publish of an
+ * already published pair needs `republish`.
+ */
+export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled'] as const;
+export type PublishStatus = (typeof PUBLISH_STATUSES)[number];
+export const PUBLISH_UNFINISHED: readonly PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator'];
+
+export const publishTasks = pgTable('publish_tasks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  contentId: uuid('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  title: text('title'),
+  caption: text('caption').notNull().default(''),
+  hashtags: text('hashtags').array().notNull().default(sql`'{}'::text[]`),
+  /** Platform options, e.g. { privacy: 'public' | 'unlisted' | 'private' }. */
+  options: jsonb('options').$type<Record<string, unknown>>().notNull().default({}),
+  /** Snapshot of the content's ordered media at distribution. */
+  mediaIds: uuid('media_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  /** When it is (or was) due; distributions "now" get the creation time. */
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull().defaultNow(),
+  status: text('status', { enum: PUBLISH_STATUSES }).notNull().default('pending'),
+  /** Method chosen by the last run ('api' | 'manual'). */
+  method: text('method'),
+  attemptNo: integer('attempt_no').notNull().default(1),
+  maxAttempts: integer('max_attempts').notNull().default(3),
+  taskId: uuid('task_id'),
+  republish: boolean('republish').notNull().default(false),
+  externalId: text('external_id'),
+  url: text('url'),
+  error: text('error'),
+  errorCode: text('error_code'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('publish_tasks_one_unfinished_idx').on(t.contentId, t.accountId)
+    .where(sql`status in ('pending', 'scheduled', 'running', 'awaiting_operator')`),
+  index('publish_tasks_user_scheduled_idx').on(t.userId, t.scheduledAt),
+  index('publish_tasks_status_scheduled_idx').on(t.status, t.scheduledAt),
+  index('publish_tasks_scheduled_idx').on(t.scheduledAt),
+  index('publish_tasks_content_idx').on(t.contentId),
+  index('publish_tasks_account_idx').on(t.accountId, t.scheduledAt),
+  index('publish_tasks_media_idx').using('gin', t.mediaIds),
+]);
+
+/** Business log of a publish task: distribution, every pre-run check, method hand-over, operator actions. */
+export const publishLogs = pgTable('publish_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  publishTaskId: uuid('publish_task_id').notNull().references(() => publishTasks.id, { onDelete: 'cascade' }),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  level: text('level', { enum: ['debug', 'info', 'warn', 'error'] }).notNull(),
+  message: text('message').notNull(),
+  data: jsonb('data').$type<Record<string, unknown>>(),
+  attemptNo: integer('attempt_no'),
+  taskId: uuid('task_id'),
+  /** null = scheduler. Name denormalized so entries survive user deletion. */
+  actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  actorName: text('actor_name'),
+}, (t) => [index('publish_logs_task_at_idx').on(t.publishTaskId, t.at)]);
+
+export interface ContentPlatformHints {
+  youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' };
+  instagram?: { caption?: string };
+  tiktok?: { caption?: string };
+  [platform: string]: Record<string, unknown> | undefined;
+}
+
 export interface InstanceSpec {
   width: number;
   height: number;
@@ -479,4 +606,7 @@ export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
 export type TrackedAccount = typeof trackedAccounts.$inferSelect;
 export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
+export type Content = typeof contents.$inferSelect;
+export type PublishTask = typeof publishTasks.$inferSelect;
+export type PublishLog = typeof publishLogs.$inferSelect;
 export type Role = User['role'];

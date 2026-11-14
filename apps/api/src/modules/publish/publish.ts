@@ -1,0 +1,387 @@
+import { UnrecoverableError } from 'bullmq';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { config } from '../../config.js';
+import { db, schema } from '../../db/index.js';
+import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
+import { badRequest, conflict } from '../../lib/errors.js';
+import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
+import { visibleAccount } from '../social/social.js';
+import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
+import { methodsFor, type PublishInput, type PublishLogLevel, type PublishMethod } from './methods.js';
+import { capabilityOf, composeText, validateForPlatform } from './platforms.js';
+
+/**
+ * Publish scheduler (定时发布). One publish_tasks row per (content, account); each scheduling round
+ * (attempt_no) is one task-centre task of type 'publish' (idempotency key publish:<id>:<attempt_no>,
+ * run_at = scheduled time, max_attempts / timeout from config or the distribution).
+ *
+ * A run: claim the publish task (only the task-centre task it currently points at may run it), then the
+ * checks — account owner, account status, platform method available, device linked + online and account
+ * logged in when the method needs the device, media still ready and valid for the platform, no earlier
+ * successful publish of the same content on the same account (unless re-publish) — each written to
+ * publish_logs and the task log. Then the method: `api` → published; `manual` → awaiting_operator (the
+ * task-centre task ends success, the operator records the outcome). Checks that can't change by waiting
+ * fail at once (PublishCheckError, no retry); device offline is retried with backoff.
+ */
+
+const pt = schema.publishTasks;
+export const REF_TYPE = 'publish';
+export const TASK_TYPE = 'publish';
+
+/** Check failure that retrying won't fix: fails the run at once (no further attempts). */
+export class PublishCheckError extends UnrecoverableError {
+  constructor(readonly code: string, message: string, readonly params: Record<string, unknown> = {}) { super(message); }
+}
+
+// ---------------------------------------------------------------- logs
+
+export async function publishLog(p: Pick<PublishTask, 'id' | 'attemptNo' | 'taskId'>, level: PublishLogLevel, message: string, data?: Record<string, unknown>,
+  actor?: AuthUser | null, exec: typeof db | Tx = db): Promise<void> {
+  await exec.insert(schema.publishLogs).values({
+    publishTaskId: p.id, level, message: message.slice(0, 2000), data: data ?? null, attemptNo: p.attemptNo, taskId: p.taskId,
+    actorId: actor?.id ?? null, actorName: actor?.username ?? null,
+  });
+}
+
+// ---------------------------------------------------------------- distribution
+
+export interface DistributeTarget {
+  accountId: string;
+  title?: string | null;
+  caption?: string | null;
+  hashtags?: string[];
+  options?: Record<string, unknown>;
+  /** null/absent = now */
+  scheduledAt?: Date | null;
+}
+
+export interface DistributeResult { created: PublishTask[]; existing: PublishTask[] }
+
+const lockPair = (tx: Tx, contentId: string, accountId: string) =>
+  tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`publish:${contentId}:${accountId}`}, 0))`);
+
+function postFor(content: Content, platform: string, t: DistributeTarget) {
+  const hints = (content.platformHints ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  const h = hints[platform] ?? {};
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
+  const cap = capabilityOf(platform);
+  const title = cap.title ? (t.title?.trim() || str(h.title) || content.title) : (t.title?.trim() || null);
+  const caption = t.caption ?? str(h.description) ?? str(h.caption) ?? content.body;
+  const options: Record<string, unknown> = { ...(t.options ?? {}) };
+  if (cap.privacy && options.privacy === undefined) options.privacy = str(h.privacy) ?? 'private';
+  if (options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(options.privacy)))) {
+    throw badRequest(`${platform} 不支持该可见性：${String(options.privacy)}`, 'publish.bad_privacy', { platform, privacy: String(options.privacy) });
+  }
+  return { title: title ?? null, caption, hashtags: uniqueTags(t.hashtags ?? []), options };
+}
+
+/**
+ * Creates one publish task per target (all validated first; all or nothing). A target whose
+ * (content, account) already has an unfinished publish task returns that task (idempotent);
+ * one that was already published needs `republish`.
+ */
+export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[], opts: { maxAttempts?: number; republish?: boolean } = {}): Promise<DistributeResult> {
+  if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
+  if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
+  const media = await contentMediaOf(db, content.id);
+  const notReady = media.find((m) => m.status !== 'ready');
+  if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
+  const maxAttempts = opts.maxAttempts ?? config.PUBLISH_MAX_ATTEMPTS;
+  const now = new Date();
+
+  const result = await db.transaction(async (tx) => {
+    const out: DistributeResult = { created: [], existing: [] };
+    for (const t of targets) {
+      const acc = await visibleAccount(user, t.accountId, tx);
+      if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
+      const post = postFor(content, acc.platform, t);
+      const bad = validateForPlatform(acc.platform, media, post);
+      if (bad) throw badRequest(`@${acc.handle}: ${bad.message}`, bad.code, { ...bad.params, account: acc.handle });
+      if (t.scheduledAt && t.scheduledAt.getTime() > now.getTime() + 366 * 86400_000) throw badRequest('发布时间不能超过一年', 'publish.too_far');
+      await lockPair(tx, content.id, acc.id);
+      const prior = await tx.select().from(pt).where(and(eq(pt.contentId, content.id), eq(pt.accountId, acc.id), inArray(pt.status, [...PUBLISH_UNFINISHED, 'published'])));
+      const unfinished = prior.find((p) => p.status !== 'published');
+      if (unfinished) { out.existing.push(unfinished); continue; }
+      if (prior.length && !opts.republish) {
+        throw conflict(`内容已发布到 @${acc.handle}，如需再次发布请选择“重新发布”`, 'publish.already_published', { account: acc.handle });
+      }
+      const scheduledAt = t.scheduledAt && t.scheduledAt > now ? t.scheduledAt : now;
+      const [row] = await tx.insert(pt).values({
+        userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
+        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id),
+        scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts, republish: prior.length > 0, createdBy: user.id,
+      }).returning();
+      await publishLog(row!, 'info', prior.length ? 'distributed (re-publish)' : 'distributed', {
+        account: acc.handle, platform: acc.platform, scheduledAt: scheduledAt.toISOString(), media: media.length, maxAttempts,
+      }, user, tx);
+      out.created.push(row!);
+    }
+    if (out.created.length && content.stage === 'draft') await tx.update(schema.contents).set({ stage: 'ready' }).where(eq(schema.contents.id, content.id));
+    return out;
+  });
+  const created: PublishTask[] = [];
+  for (const row of result.created) created.push(await scheduleRun(row, null));
+  await refreshContentStatus(content.id);
+  return { created, existing: result.existing };
+}
+
+/** Creates the task-centre task for the publish task's current round and points the row at it. */
+async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<PublishTask> {
+  const [acc] = await db.select({ handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
+  const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
+  try {
+    const { task } = await createTask({
+      type: TASK_TYPE, userId: row.userId, label: `${row.platform} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
+      refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
+      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, retryOf,
+    });
+    const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
+    return updated ?? row;
+  } catch (err) {
+    const [failed] = await db.update(pt).set({ status: 'failed', error: (err as Error).message.slice(0, 500), errorCode: 'publish.enqueue_failed' })
+      .where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo), inArray(pt.status, ['pending', 'scheduled']))).returning();
+    if (failed) await publishLog(failed, 'error', `could not schedule: ${(err as Error).message}`);
+    await refreshContentStatus(row.contentId);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------- operator / user actions
+
+async function currentTask(row: PublishTask): Promise<Task | undefined> {
+  if (!row.taskId) return undefined;
+  const [t] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, row.taskId));
+  return t;
+}
+
+/**
+ * Starts a new round (reschedule, manual retry): bumps attempt_no, detaches the old task-centre task
+ * (cancelled if still waiting; its runner no longer matches task_id) and schedules a new one.
+ */
+async function newRound(user: AuthUser, id: string, from: PublishStatus[], scheduledAt: Date | null, action: 'rescheduled' | 'retried'): Promise<PublishTask> {
+  const now = new Date();
+  const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
+  const { prev, next } = await db.transaction(async (tx) => {
+    const [cur] = await tx.select().from(pt).where(eq(pt.id, id)).for('update');
+    if (!cur) throw conflict('发布任务不存在', 'publish.not_found');
+    if (!from.includes(cur.status)) throw conflict(`当前状态（${cur.status}）不能执行该操作`, 'publish.bad_status', { status: cur.status });
+    if (action === 'retried' && !cur.republish) {
+      const [done] = await tx.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, cur.contentId), eq(pt.accountId, cur.accountId), eq(pt.status, 'published'), ne(pt.id, cur.id)));
+      if (done) throw conflict('该内容已发布到这个账号', 'publish.already_published', { account: cur.accountId });
+    }
+    const [n] = await tx.update(pt).set({
+      status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null,
+      error: action === 'retried' ? null : cur.error, errorCode: action === 'retried' ? null : cur.errorCode, method: action === 'retried' ? null : cur.method,
+    }).where(eq(pt.id, id)).returning().catch((err) => {
+      const e = err as { code?: string; cause?: { code?: string } };
+      if (e.code === '23505' || e.cause?.code === '23505') throw conflict('该内容在这个账号上已有未完成的发布任务', 'publish.duplicate_unfinished');
+      throw err;
+    });
+    await publishLog(n!, 'info', action, { scheduledAt: when.toISOString(), previousTaskId: cur.taskId, attemptNo: n!.attemptNo }, user, tx);
+    return { prev: cur, next: n! };
+  });
+  const old = await currentTask(prev);
+  if (old && !isFinal(old.status)) await cancelTask(old, user.username).catch(() => undefined);
+  const row = await scheduleRun(next, action === 'retried' ? prev.taskId : null);
+  await refreshContentStatus(row.contentId);
+  return row;
+}
+
+export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled'], at, 'rescheduled');
+export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled'], at, 'retried');
+
+/** Cancel while waiting (pending/scheduled) or while handed to an operator. */
+export async function cancelPublish(user: AuthUser, row: PublishTask): Promise<PublishTask> {
+  if (row.status === 'pending' || row.status === 'scheduled') {
+    const t = await currentTask(row);
+    if (t && !isFinal(t.status)) {
+      if (t.status === 'running') throw conflict('任务正在执行，无法取消', 'publish.bad_status', { status: 'running' });
+      await cancelTask(t, user.username); // onFailure marks the publish task cancelled
+    }
+  } else if (row.status !== 'awaiting_operator') {
+    throw conflict(`当前状态（${row.status}）不能取消`, 'publish.bad_status', { status: row.status });
+  }
+  const [done] = await db.update(pt).set({ status: 'cancelled', errorCode: 'publish.cancelled', error: null })
+    .where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo), inArray(pt.status, ['pending', 'scheduled', 'awaiting_operator']))).returning();
+  if (done) await publishLog(done, 'warn', 'cancelled', { from: row.status }, user);
+  await refreshContentStatus(row.contentId);
+  const [cur] = await db.select().from(pt).where(eq(pt.id, row.id));
+  if (cur?.status !== 'cancelled') throw conflict(`当前状态（${cur?.status}）不能取消`, 'publish.bad_status', { status: cur?.status ?? 'unknown' });
+  return cur;
+}
+
+/** Operator records the outcome of a manual publish. */
+export async function recordOutcome(user: AuthUser, row: PublishTask, o: { result: 'published' | 'failed'; url?: string | null; externalId?: string | null; reason?: string | null }): Promise<PublishTask> {
+  if (o.result === 'published' && !o.url && !o.externalId) throw badRequest('请填写帖子链接或平台 ID', 'publish.outcome_needs_link');
+  if (o.result === 'failed' && !o.reason?.trim()) throw badRequest('请填写失败原因', 'publish.outcome_needs_reason');
+  const set = o.result === 'published'
+    ? { status: 'published' as const, url: o.url ?? null, externalId: o.externalId ?? null, publishedAt: new Date(), error: null, errorCode: null }
+    : { status: 'failed' as const, error: o.reason!.trim().slice(0, 1000), errorCode: 'publish.operator_failed' };
+  const [done] = await db.update(pt).set(set).where(and(eq(pt.id, row.id), eq(pt.status, 'awaiting_operator'))).returning();
+  if (!done) throw conflict('只有等待人工处理的任务可以记录结果', 'publish.bad_status', { status: row.status });
+  await publishLog(done, o.result === 'published' ? 'info' : 'error', o.result === 'published' ? 'operator recorded: published' : 'operator recorded: failed',
+    o.result === 'published' ? { url: o.url ?? null, externalId: o.externalId ?? null } : { reason: set.error }, user);
+  await refreshContentStatus(done.contentId);
+  return done;
+}
+
+/** Edit texts/options while the task waits. */
+export async function editPublish(user: AuthUser, row: PublishTask, b: { title?: string | null; caption?: string; hashtags?: string[]; options?: Record<string, unknown> }): Promise<PublishTask> {
+  if (row.status !== 'pending' && row.status !== 'scheduled') throw conflict(`当前状态（${row.status}）不能修改`, 'publish.bad_status', { status: row.status });
+  const next = {
+    title: b.title !== undefined ? (b.title?.trim() || null) : row.title,
+    caption: b.caption ?? row.caption,
+    hashtags: b.hashtags ? uniqueTags(b.hashtags) : row.hashtags,
+    options: b.options ? { ...row.options, ...b.options } : row.options,
+  };
+  const cap = capabilityOf(row.platform);
+  if (next.options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(next.options.privacy)))) {
+    throw badRequest(`${row.platform} 不支持该可见性`, 'publish.bad_privacy', { platform: row.platform, privacy: String(next.options.privacy) });
+  }
+  const media = await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, row.mediaIds.length ? row.mediaIds : ['00000000-0000-0000-0000-000000000000']));
+  const bad = validateForPlatform(row.platform, row.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m): m is MediaAsset => !!m), next);
+  if (bad) throw badRequest(bad.message, bad.code, bad.params);
+  const [done] = await db.update(pt).set(next).where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
+  if (!done) throw conflict('任务状态已变化', 'publish.bad_status', { status: 'changed' });
+  await publishLog(done, 'info', 'edited', { fields: Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined) }, user);
+  return done;
+}
+
+// ---------------------------------------------------------------- the scheduler task
+
+type Payload = { publishTaskId: string; attemptNo?: number };
+
+async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
+  const id = ctx.payload.publishTaskId ?? ctx.task.refId;
+  // Claim: only the task-centre task this publish task currently points at may run it (a rescheduled /
+  // retried round detaches older tasks). `running` is accepted for the next attempt of the same task.
+  const [row] = await db.update(pt).set({ status: 'running', error: null, errorCode: null })
+    .where(and(eq(pt.id, id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+  if (!row) {
+    const [cur] = await db.select().from(pt).where(eq(pt.id, id));
+    if (!cur) throw new PublishCheckError('publish.target_gone', 'the publish task no longer exists');
+    await ctx.log('warn', 'not executed: the publish task is no longer driven by this task', { status: cur.status, currentTaskId: cur.taskId, attemptNo: cur.attemptNo });
+    return { skipped: true, status: cur.status };
+  }
+  const log = async (level: PublishLogLevel, message: string, data?: Record<string, unknown>) => {
+    await publishLog(row, level, message, data);
+    await ctx.log(level, message, data);
+  };
+  await refreshContentStatus(row.contentId);
+  await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`);
+  try {
+    const { method, input } = await preflight(row, log);
+    if (ctx.signal.aborted) throw ctx.signal.reason;
+    await log('info', `publishing via ${method.id}`);
+    const res = await method.publish(input, { log, signal: ctx.signal });
+    const set = res.state === 'published'
+      ? { status: 'published' as const, method: method.id, externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: new Date() }
+      : { status: 'awaiting_operator' as const, method: method.id };
+    const [done] = await db.update(pt).set(set).where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+    await log('info', res.state === 'published' ? 'published' : 'awaiting operator', { method: method.id, externalId: res.externalId ?? null, url: res.url ?? null, recorded: !!done });
+    return { state: res.state, method: method.id, externalId: res.externalId ?? null, url: res.url ?? null };
+  } catch (err) {
+    const e = err as { code?: string; message?: string; params?: Record<string, unknown> };
+    const code = typeof e.code === 'string' ? e.code : 'publish.failed';
+    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over.
+    if (!ctx.signal.aborted) {
+      const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
+      await db.update(pt).set({ status: final ? 'failed' : 'pending', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
+        .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
+      await log(final ? 'error' : 'warn', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, { code, ...(e.params ?? {}) });
+    }
+    throw err;
+  } finally {
+    await refreshContentStatus(row.contentId);
+  }
+}
+
+type Log = (level: PublishLogLevel, message: string, data?: Record<string, unknown>) => Promise<void>;
+
+async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishMethod; input: PublishInput }> {
+  // 1. account + owner
+  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
+  if (!acc) throw new PublishCheckError('publish.account_gone', 'the social account no longer exists');
+  if (acc.userId !== row.userId) throw new PublishCheckError('publish.account_owner_changed', 'the account now belongs to another user');
+  await log('info', 'check: account owner ok', { account: acc.handle });
+  // 2. account status
+  if (acc.accountStatus !== 'active') {
+    throw new PublishCheckError('publish.account_inactive', `account status is ${acc.accountStatus}`, { status: acc.accountStatus });
+  }
+  await log('info', 'check: account active');
+  // 3. media (still present, ready, valid for the platform)
+  const rows = row.mediaIds.length ? await db.select().from(schema.mediaAssets).where(and(inArray(schema.mediaAssets.id, row.mediaIds), isNull(schema.mediaAssets.deletedAt))) : [];
+  const media = row.mediaIds.map((mid) => rows.find((r) => r.id === mid));
+  const missing = media.findIndex((m) => !m || m.status !== 'ready');
+  if (missing >= 0) {
+    throw new PublishCheckError('publish.media_unavailable', `media ${media[missing]?.name ?? row.mediaIds[missing]} is not available (${media[missing]?.status ?? 'deleted'})`,
+      { name: media[missing]?.name ?? row.mediaIds[missing]! });
+  }
+  const ready = media as MediaAsset[];
+  const bad = validateForPlatform(row.platform, ready, row);
+  if (bad) throw new PublishCheckError(bad.code, bad.message, bad.params);
+  await log('info', 'check: media ready and valid for the platform', { count: ready.length });
+  // 4. duplicates
+  if (!row.republish) {
+    const [dup] = await db.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, row.contentId), eq(pt.accountId, row.accountId), eq(pt.status, 'published'), ne(pt.id, row.id)));
+    if (dup) throw new PublishCheckError('publish.duplicate', 'this content was already published on this account', { publishTaskId: dup.id });
+  }
+  await log('info', 'check: not published before on this account');
+  // 5. method
+  const input: PublishInput = {
+    publishTaskId: row.id, attemptNo: row.attemptNo, platform: row.platform, account: acc,
+    title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags, tags: row.hashtags,
+    privacy: typeof row.options.privacy === 'string' && ['public', 'unlisted', 'private'].includes(row.options.privacy) ? row.options.privacy as PublishInput['privacy'] : undefined,
+    text: composeText(row.caption, row.hashtags), options: row.options, media: ready,
+  };
+  const reasons: Record<string, string> = {};
+  let method: PublishMethod | undefined;
+  for (const m of methodsFor(row.platform)) {
+    const why = await m.unavailableReason(acc, input);
+    if (!why) { method = m; break; }
+    reasons[m.id] = why.code;
+    await log('info', `method ${m.id} unavailable: ${why.message}`, { code: why.code });
+  }
+  if (!method) throw new PublishCheckError('publish.no_method', `no publish method available for ${row.platform}`, { platform: row.platform, reasons: JSON.stringify(reasons) });
+  await log('info', `check: method ${method.id} available`);
+  // 6. device + login (methods acting through the phone)
+  if (method.needsDevice) {
+    if (!acc.instanceId) throw new PublishCheckError('publish.no_device', 'the account is not linked to a device');
+    const [inst] = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
+      .from(schema.instances).where(eq(schema.instances.id, acc.instanceId));
+    if (!inst) throw new PublishCheckError('publish.no_device', 'the linked device no longer exists');
+    if (inst.status !== 'running' || inst.adbState !== 'device') {
+      // May recover (device starting / reconnecting): retried with backoff.
+      throw new TaskError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
+    }
+    await log('info', 'check: device online', { device: inst.name });
+    if (acc.loginStatus !== 'logged_in') throw new PublishCheckError('publish.not_logged_in', `account login status is ${acc.loginStatus}`, { status: acc.loginStatus });
+    await log('info', 'check: account logged in on the device');
+  }
+  return { method, input };
+}
+
+registerTaskHandler<Payload>(TASK_TYPE, {
+  queue: 'publish',
+  concurrency: 4,
+  timeoutMs: config.PUBLISH_TIMEOUT_MS,
+  maxAttempts: config.PUBLISH_MAX_ATTEMPTS,
+  backoffMs: config.PUBLISH_RETRY_BACKOFF_MS,
+  // Retry from the publish scheduler (POST /api/publish/tasks/:id/retry): it keeps the publish task's round history.
+  retryable: false,
+  run: runPublish,
+  /** Task ended failed/cancelled (also timeouts, interruptions, cancel before start): mirror it on the publish task. */
+  async onFailure(task) {
+    const id = (task.payload as Payload | null)?.publishTaskId ?? task.refId;
+    if (!id) return;
+    const status = task.status === 'cancelled' ? 'cancelled' as const : 'failed' as const;
+    const [row] = await db.update(pt).set({ status, error: task.error, errorCode: task.errorCode ?? (status === 'cancelled' ? 'publish.cancelled' : 'publish.failed') })
+      .where(and(eq(pt.id, id), eq(pt.taskId, task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+    if (row) {
+      await publishLog(row, status === 'cancelled' ? 'warn' : 'error', `${status} (scheduler task ${task.status})`, { code: row.errorCode, error: task.error });
+      await refreshContentStatus(row.contentId);
+    }
+  },
+});
+

@@ -7,7 +7,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
-import type { MediaAsset } from '../../db/schema.js';
+import { PUBLISH_UNFINISHED, type MediaAsset } from '../../db/schema.js';
 import { describeError } from '../../adapters/storage/types.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -90,14 +90,19 @@ export async function assertCategoryFor(owner: Owner, categoryId: string): Promi
 
 /**
  * Single extension point for "is this asset still referenced by unfinished work?".
- * Today: pending/scheduled/running push-asset tasks. The publish module adds its own check here.
+ * Pending/scheduled/running push-asset tasks, and unfinished publish tasks (incl. awaiting_operator)
+ * whose media snapshot contains the asset.
  */
 export async function assertMediaNotInUse(assetId: string): Promise<void> {
   const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.tasks).where(and(
     eq(schema.tasks.refType, 'media'), eq(schema.tasks.refId, assetId),
     eq(schema.tasks.type, 'push-asset'), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']),
   ));
-  if (row && row.n > 0) throw conflict(`素材正被 ${row.n} 个未完成的任务使用`, 'media.in_use', { tasks: row.n });
+  const [pub] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.publishTasks).where(and(
+    sql`${schema.publishTasks.mediaIds} @> array[${assetId}]::uuid[]`, inArray(schema.publishTasks.status, [...PUBLISH_UNFINISHED]),
+  ));
+  const n = (row?.n ?? 0) + (pub?.n ?? 0);
+  if (n > 0) throw conflict(`素材正被 ${n} 个未完成的任务使用`, 'media.in_use', { tasks: n });
 }
 
 // ---------------------------------------------------------------- upload + processing

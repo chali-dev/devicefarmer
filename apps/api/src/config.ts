@@ -56,6 +56,10 @@ const Env = z.object({
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
   /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
   YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
+  /** Publish scheduler: default attempts per scheduled run (a distribution may lower/raise it, 1–10), attempt timeout and retry backoff base. */
+  PUBLISH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10 * 60_000),
+  PUBLISH_RETRY_BACKOFF_MS: z.coerce.number().int().min(100).default(30_000),
   /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
   TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });

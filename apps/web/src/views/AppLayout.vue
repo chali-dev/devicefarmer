@@ -6,7 +6,7 @@ import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, BulbOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
-  SafetyOutlined, TeamOutlined, UserOutlined,
+  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -29,7 +29,7 @@ const THEMES = computed(() => [
 ])
 
 const collapsed = ref(false)
-const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'media', 'proxies', 'social', 'tracked', 'tasks'] as const
+const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'media', 'proxies', 'social', 'tracked', 'content', 'publish', 'tasks'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
@@ -146,6 +146,14 @@ async function savePassword() {
         <a-menu-item key="tracked" @click="router.push('/tracked')">
           <EyeOutlined />
           <span>{{ t('nav.tracked') }}</span>
+        </a-menu-item>
+        <a-menu-item key="content" @click="router.push('/content')">
+          <FileTextOutlined />
+          <span>{{ t('nav.content') }}</span>
+        </a-menu-item>
+        <a-menu-item key="publish" @click="router.push('/publish')">
+          <CalendarOutlined />
+          <span>{{ t('nav.publish') }}</span>
         </a-menu-item>
         <a-menu-item key="tasks" @click="router.push('/tasks')">
           <ScheduleOutlined />

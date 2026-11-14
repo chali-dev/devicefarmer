@@ -290,3 +290,56 @@ export function compactNumber(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
+
+// ---------------------------------------------------------------- content (内容管理) + publish scheduler (定时发布)
+export type ContentStatus = 'draft' | 'ready' | 'scheduled' | 'partially_published' | 'published' | 'failed' | 'archived'
+export const CONTENT_STATUSES: ContentStatus[] = ['draft', 'ready', 'scheduled', 'partially_published', 'published', 'failed', 'archived']
+export const CONTENT_STATUS_COLOR: Record<ContentStatus, string> = {
+  draft: 'default', ready: 'blue', scheduled: 'purple', partially_published: 'gold', published: 'success', failed: 'error', archived: 'default',
+}
+export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled'
+export const PUBLISH_STATUSES: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled']
+export const PUBLISH_UNFINISHED: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
+export const PUBLISH_STATUS_COLOR: Record<PublishStatus, string> = {
+  pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default',
+}
+export interface ContentMedia {
+  id: string; name: string; fileType: 'image' | 'video'; status: MediaStatus; ownerType: 'public' | 'user'
+  width: number | null; height: number | null; duration: number | null; thumbnailUrl: string | null
+}
+export interface ContentHints {
+  youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' }
+  instagram?: { caption?: string }
+  tiktok?: { caption?: string }
+}
+export interface Content {
+  id: string; userId: string; ownerName: string | null; title: string; body: string; category: string | null
+  stage: 'draft' | 'ready' | 'archived'; status: ContentStatus; platformHints: ContentHints
+  tags: string[]; media: ContentMedia[]; publishCounts: Partial<Record<PublishStatus, number>>
+  createdAt: string; updatedAt: string
+}
+export interface PublishTaskItem {
+  id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
+  title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
+  scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | null; attemptNo: number; maxAttempts: number; taskId: string | null
+  republish: boolean; externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
+  createdAt: string; updatedAt: string
+  content: { id: string; title: string; userId: string } | null
+  account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null
+  instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
+  media: ContentMedia[]
+}
+export interface PublishLog {
+  id: string; publishTaskId: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; data: Record<string, unknown> | null
+  attemptNo: number | null; taskId: string | null; actorName: string | null
+}
+export interface PublishRun {
+  id: string; status: TaskStatus; attempts: number; maxAttempts: number; runAt: string | null; idempotencyKey: string | null; retryOf: string | null
+  error: string | null; errorCode: string | null; result: unknown; createdAt: string; startedAt: string | null; finishedAt: string | null
+}
+export interface PublishCapability {
+  media: { min: number; max: number; kinds: ('image' | 'video')[]; mixed: boolean }
+  title: { required: boolean; max: number } | null
+  captionMax: number; hashtagsMax: number; privacy?: string[]
+}
+export interface PublishPlatform { id: string; name: string; capability: PublishCapability; methods: ('api' | 'manual')[]; known: boolean }
