@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
-import { computed, ref } from 'vue'
+import { message, Modal } from 'ant-design-vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { api, getToken } from '../api/client'
+import type { InstalledApp } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -43,8 +45,8 @@ async function copyGsf() {
 async function upload(opt: { file: File; onSuccess?: (r: unknown) => void; onError?: (e: Error) => void }) {
   uploading.value = true
   try {
-    const r = await store.installApk(props.id, opt.file)
-    message.success(`已上传 ${opt.file.name}，正在安装`)
+    const r = await store.installApp([props.id], opt.file)
+    message.success(`已上传 ${opt.file.name}（${r.apks} 个 APK），正在安装`)
     opt.onSuccess?.(r)
   } catch (e) {
     message.error((e as Error).message)
@@ -52,6 +54,73 @@ async function upload(opt: { file: File; onSuccess?: (r: unknown) => void; onErr
   } finally {
     uploading.value = false
   }
+}
+
+// ---- installed apps
+const appsList = ref<InstalledApp[]>([])
+const appsLoading = ref(false)
+async function loadApps() {
+  if (inst.value?.status !== 'running') return
+  appsLoading.value = true
+  try { appsList.value = (await api<{ apps: InstalledApp[] }>('GET', `/api/instances/${props.id}/apps`)).apps }
+  catch (e) { message.error((e as Error).message) }
+  finally { appsLoading.value = false }
+}
+function uninstall(pkg: string) {
+  Modal.confirm({
+    title: `卸载 ${pkg}？`, content: '应用及其数据将从该设备删除。', okType: 'danger', okText: '卸载',
+    onOk: async () => {
+      try { await store.uninstallApp([props.id], pkg); message.success('已提交卸载任务') }
+      catch (e) { message.error((e as Error).message) }
+    },
+  })
+}
+// refresh the list when an install/uninstall task for this instance finishes
+watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'uninstall-app') && t.status === 'succeeded').length, () => void loadApps())
+watch(() => inst.value?.status, (s) => { if (s === 'running') void loadApps() }, { immediate: true })
+
+// ---- device settings (system settings only; hardware identity is not configurable)
+const settingsForm = reactive({ locale: '', timezone: '', deviceName: '' })
+const actual = ref<Record<string, string> | null>(null)
+const savingSettings = ref(false)
+const TIMEZONES = Intl.supportedValuesOf('timeZone')
+const LOCALES = ['zh-CN', 'zh-TW', 'zh-HK', 'en-US', 'en-GB', 'ja-JP', 'ko-KR', 'de-DE', 'fr-FR', 'es-ES', 'pt-BR', 'ru-RU', 'ar-SA', 'th-TH', 'vi-VN', 'id-ID']
+async function loadSettings() {
+  try {
+    const r = await api<{ configured: Record<string, string | undefined>; actual: Record<string, string> | null }>('GET', `/api/instances/${props.id}/settings`)
+    actual.value = r.actual
+    settingsForm.locale = r.configured.locale ?? r.actual?.locale ?? ''
+    settingsForm.timezone = r.configured.timezone ?? r.actual?.timezone ?? ''
+    settingsForm.deviceName = r.configured.deviceName ?? ''
+  } catch { /* shown as empty */ }
+}
+async function saveSettings() {
+  savingSettings.value = true
+  try {
+    const body = Object.fromEntries(Object.entries(settingsForm).filter(([, v]) => v)) as Record<string, string>
+    const r = await store.updateSettings(props.id, body)
+    message.success(r.taskId ? '已提交，正在应用（修改语言会重启 Android 界面，约 30 秒）' : '已保存，下次启动时生效')
+  } catch (e) { message.error((e as Error).message) }
+  finally { savingSettings.value = false }
+}
+watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'succeeded') void loadSettings() })
+onMounted(loadSettings)
+
+// ---- screenshot (full resolution PNG from the device)
+const shooting = ref(false)
+async function screenshot() {
+  shooting.value = true
+  try {
+    const res = await fetch(`/api/instances/${props.id}/screenshot`, { headers: { authorization: `Bearer ${getToken()}` } })
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `截图失败 (${res.status})`)
+    const url = URL.createObjectURL(await res.blob())
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${inst.value?.name}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) { message.error((e as Error).message) }
+  finally { shooting.value = false }
 }
 
 async function act(a: 'start' | 'stop' | 'restart') {
@@ -63,7 +132,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
   }
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装 APK' }
+const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数' }
 const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'processing', succeeded: 'success', failed: 'error' }
 </script>
 
@@ -94,10 +163,13 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
             <a-space><a @click="router.push('/instances')">实例</a><span>/</span><span>{{ inst.name }}</span></a-space>
           </template>
           <template #extra>
-            <a-space v-if="auth.canOperate">
+            <a-space>
+              <a-button size="small" :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">截图</a-button>
+              <template v-if="auth.canOperate">
               <a-button size="small" :disabled="inst.status === 'running'" @click="act('start')">启动</a-button>
               <a-button size="small" :disabled="inst.status !== 'running'" @click="act('stop')">停止</a-button>
               <a-button size="small" @click="act('restart')">重启</a-button>
+              </template>
             </a-space>
           </template>
           <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
@@ -170,15 +242,58 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
           <div class="hint">{{ secure ? '安全输入：逐字符发送（较慢，仅支持键盘可输入的字符）。' : '也可以点击画面后直接用键盘输入；右键画面 = 返回键。注意：普通发送会经过设备剪贴板，不要用它输入密码。' }}</div>
         </a-card>
 
-        <a-card v-if="auth.canOperate" size="small" title="安装 APK（YouTube / Instagram / Chrome 等）">
+        <a-card size="small" title="应用管理">
+          <template #extra>
+            <a-button size="small" :loading="appsLoading" :disabled="inst.status !== 'running'" @click="loadApps">刷新</a-button>
+          </template>
           <a-upload-dragger
-            accept=".apk"
+            v-if="auth.canOperate"
+            accept=".apk,.apks,.xapk,.apkm,.zip"
             :show-upload-list="false"
             :custom-request="upload as any"
             :disabled="inst.status !== 'running' || uploading"
+            style="margin-bottom: 12px"
           >
-            <p style="margin: 8px 0">{{ uploading ? '上传中…' : '点击或拖拽 .apk 文件到此处（请使用官方来源的 APK）' }}</p>
+            <p style="margin: 8px 0">{{ uploading ? '上传中…' : '安装 / 更新：拖拽 .apk 或拆分包（.apks / .xapk / .apkm）到此处' }}</p>
+            <p class="hint" style="margin: 0 0 8px">YouTube、Instagram、Facebook、Chrome 等请使用官方来源的安装包；同包名再次上传即为更新</p>
           </a-upload-dragger>
+          <a-table :data-source="appsList" row-key="package" size="small" :pagination="false" :loading="appsLoading"
+            :locale="{ emptyText: inst.status === 'running' ? '没有用户安装的应用' : '实例未运行' }"
+            :columns="[{ title: '包名', dataIndex: 'package', key: 'package' }, { title: '版本', key: 'version', width: 160 }, { title: '', key: 'ops', width: 90 }]">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>
+              <template v-else-if="column.key === 'ops'">
+                <a-tag v-if="record.protected">平台组件</a-tag>
+                <a-button v-else-if="auth.canOperate" type="link" size="small" danger @click="uninstall(record.package)">卸载</a-button>
+              </template>
+            </template>
+          </a-table>
+        </a-card>
+
+        <a-card size="small" title="设备参数">
+          <a-form layout="vertical" :disabled="!auth.canOperate || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
+            <a-row :gutter="12">
+              <a-col :xs="24" :sm="8">
+                <a-form-item label="系统语言">
+                  <a-select v-model:value="settingsForm.locale" show-search allow-clear placeholder="默认" :options="LOCALES.map((l) => ({ value: l, label: l }))" />
+                </a-form-item>
+              </a-col>
+              <a-col :xs="24" :sm="8">
+                <a-form-item label="时区">
+                  <a-select v-model:value="settingsForm.timezone" show-search allow-clear placeholder="默认" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" />
+                </a-form-item>
+              </a-col>
+              <a-col :xs="24" :sm="8">
+                <a-form-item label="设备名称">
+                  <a-input v-model:value="settingsForm.deviceName" placeholder="如 Phone-01" :maxlength="40" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-space wrap>
+              <a-button v-if="auth.canOperate" type="primary" size="small" :loading="savingSettings" @click="saveSettings">保存并应用</a-button>
+              <span v-if="actual" class="hint">当前：{{ actual.locale || '默认语言' }} · {{ actual.timezone }} · Android {{ actual.release }} · 型号 {{ actual.model }}（型号/IMEI 等硬件标识不可修改）</span>
+            </a-space>
+          </a-form>
         </a-card>
 
         <a-card size="small" title="任务记录">

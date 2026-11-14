@@ -214,11 +214,8 @@ export class StfAdapter {
     await this.transaction('clipboard.paste', channel, { text });
   }
 
-  /** Reads the device clipboard (text). */
-  async copy(channel: string): Promise<string> {
-    const body = await this.transaction('clipboard.copy', channel, {});
-    return typeof body === 'string' ? body : '';
-  }
+  // Note: reading the device clipboard via STF ('clipboard.copy') does not work on Android 10+:
+  // ClipboardService denies background apps (STFService). Planned via scrcpy-server (P1).
 
   /** STF transaction: emit with a response channel, resolve on tx.done, reject on failure/timeout. */
   private async transaction(event: string, channel: string, data: unknown, timeoutMs = 10_000): Promise<unknown> {

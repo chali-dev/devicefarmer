@@ -21,7 +21,6 @@ const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('paste'), text: z.string().max(10_000) }),
   // Secure input (passwords): per-character key events, never via the device clipboard.
   z.object({ type: z.literal('typeSecure'), text: z.string().min(1).max(256) }),
-  z.object({ type: z.literal('clipboardGet') }),
 ]);
 
 const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
@@ -103,7 +102,6 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         if (msg.type === 'touch') await stf.touch(channel!, msg.ev);
         else if (msg.type === 'key') await stf.key(channel!, msg.action, msg.key);
         else if (msg.type === 'paste') { await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
-        else if (msg.type === 'clipboardGet') send({ type: 'clipboard', text: await stf.copy(channel!) });
         else if (msg.type === 'typeSecure') {
           // Content is never logged or persisted; only forwarded to the device.
           for (const ch of msg.text) {

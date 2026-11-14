@@ -64,6 +64,27 @@ async function run(action: Action, ids: string[]) {
   }
 }
 
+// ---- batch app install / uninstall
+const appOpen = ref(false)
+const appMode = ref<'install' | 'uninstall'>('install')
+const appFile = ref<File | null>(null)
+const appPkg = ref('')
+const appBusy = ref(false)
+function openApp(mode: 'install' | 'uninstall') { appMode.value = mode; appFile.value = null; appPkg.value = ''; appOpen.value = true }
+function pickFile(f: File) { appFile.value = f; return false }
+async function submitApp() {
+  appBusy.value = true
+  try {
+    const r = appMode.value === 'install'
+      ? await (appFile.value ? store.installApp(selectedKeys.value, appFile.value) : Promise.reject(new Error('请选择安装包')))
+      : await (appPkg.value ? store.uninstallApp(selectedKeys.value, appPkg.value.trim()) : Promise.reject(new Error('请输入包名')))
+    message.success(`已提交 ${r.accepted.length} 个任务`)
+    if (r.skipped.length) message.warning(`跳过 ${r.skipped.length} 个：${[...new Set(r.skipped.map((x) => x.reason))].join('，')}`)
+    appOpen.value = false
+  } catch (e) { message.error((e as Error).message) }
+  finally { appBusy.value = false }
+}
+
 // ---- create
 const createOpen = ref(false)
 const creating = ref(false)
@@ -73,12 +94,16 @@ const profileName = (id: string) => profiles.value.find((p) => p.id === id)?.lab
 onMounted(async () => {
   try { profiles.value = (await api<{ profiles: Profile[] }>('GET', '/api/profiles')).profiles } catch { /* shown on create */ }
 })
-const form = reactive({ profile: 'redroid-13-gapps', count: 1, namePrefix: 'phone', preset: '720x1280@320' as keyof typeof PRESETS, memoryMb: undefined as number | undefined })
+const TIMEZONES = Intl.supportedValuesOf('timeZone')
+const LOCALES = ['zh-CN', 'zh-TW', 'zh-HK', 'en-US', 'en-GB', 'ja-JP', 'ko-KR', 'de-DE', 'fr-FR', 'es-ES', 'pt-BR', 'ru-RU', 'ar-SA', 'th-TH', 'vi-VN', 'id-ID']
+const form = reactive({ locale: undefined as string | undefined, timezone: undefined as string | undefined, deviceName: '', profile: 'redroid-13-gapps', count: 1, namePrefix: 'phone', preset: '720x1280@320' as keyof typeof PRESETS, memoryMb: undefined as number | undefined })
 async function submitCreate() {
   creating.value = true
   try {
     const [width, height, dpi] = PRESETS[form.preset]
-    const r = await store.create({ profile: form.profile, count: form.count, namePrefix: form.namePrefix, width, height, dpi, ...(form.memoryMb ? { memoryMb: form.memoryMb } : {}) })
+    const r = await store.create({
+      ...(form.locale ? { locale: form.locale } : {}), ...(form.timezone ? { timezone: form.timezone } : {}), ...(form.deviceName ? { deviceName: form.deviceName } : {}),
+      profile: form.profile, count: form.count, namePrefix: form.namePrefix, width, height, dpi, ...(form.memoryMb ? { memoryMb: form.memoryMb } : {}) })
     message.success(`已提交创建：${r.instances.map((i) => i.name).join('、')}`)
     createOpen.value = false
   } catch (e) {
@@ -97,7 +122,7 @@ function deviceText(i: Instance) {
   ]
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装 APK' }
+const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数' }
 const TASK_STATUS: Record<string, { color: string; text: string }> = {
   queued: { color: 'default', text: '排队' }, running: { color: 'processing', text: '执行中' },
   succeeded: { color: 'success', text: '成功' }, failed: { color: 'error', text: '失败' },
@@ -120,6 +145,8 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
             <a-button :disabled="!selectedKeys.length" @click="run('start', selectedKeys)">启动</a-button>
             <a-button :disabled="!selectedKeys.length" @click="run('stop', selectedKeys)">停止</a-button>
             <a-button :disabled="!selectedKeys.length" @click="run('restart', selectedKeys)">重启</a-button>
+            <a-button :disabled="!selectedKeys.length" @click="openApp('install')">安装应用</a-button>
+            <a-button :disabled="!selectedKeys.length" @click="openApp('uninstall')">卸载应用</a-button>
             <a-button danger :disabled="!selectedKeys.length" @click="run('delete', selectedKeys)">删除</a-button>
             <a-button type="primary" @click="createOpen = true">创建实例</a-button>
           </template>
@@ -207,9 +234,23 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
           <a-select-option v-for="(_, k) in PRESETS" :key="k" :value="k">{{ k }}</a-select-option>
         </a-select>
       </a-form-item>
+      <a-row :gutter="12">
+        <a-col :span="8"><a-form-item label="系统语言"><a-select v-model:value="form.locale" allow-clear show-search placeholder="默认" :options="LOCALES.map((l) => ({ value: l, label: l }))" /></a-form-item></a-col>
+        <a-col :span="8"><a-form-item label="时区"><a-select v-model:value="form.timezone" allow-clear show-search placeholder="默认" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" /></a-form-item></a-col>
+        <a-col :span="8"><a-form-item label="设备名称"><a-input v-model:value="form.deviceName" placeholder="可选" :maxlength="40" /></a-form-item></a-col>
+      </a-row>
       <a-form-item label="内存上限（MiB，可选）">
         <a-input-number v-model:value="form.memoryMb" :min="1024" :max="16384" :step="512" placeholder="不限制" style="width: 100%" />
       </a-form-item>
     </a-form>
+  </a-modal>
+  <a-modal v-model:open="appOpen" :title="`${appMode === 'install' ? '批量安装/更新应用' : '批量卸载应用'}（${selectedKeys.length} 台）`" :confirm-loading="appBusy" :ok-text="appMode === 'install' ? '安装' : '卸载'" :ok-button-props="{ danger: appMode === 'uninstall' }" @ok="submitApp">
+    <template v-if="appMode === 'install'">
+      <a-upload-dragger accept=".apk,.apks,.xapk,.apkm,.zip" :multiple="false" :show-upload-list="false" :before-upload="pickFile as any">
+        <p style="margin: 12px 0">{{ appFile ? `${appFile.name}（${(appFile.size / 1048576).toFixed(1)} MB）` : '选择 .apk 或拆分包 .apks / .xapk / .apkm' }}</p>
+      </a-upload-dragger>
+      <div style="color: #8c8c8c; font-size: 12px; margin-top: 8px">仅安装到已运行的实例；同包名再次安装即为更新，应用数据保留。</div>
+    </template>
+    <a-input v-else v-model:value="appPkg" placeholder="包名，如 com.instagram.android" />
   </a-modal>
 </template>

@@ -1,7 +1,7 @@
 /**
  * P0 feature test through the public API, against the running g13-1 / g13-2 instances (real devices, no mocks).
  * Covers: capacity check, batch install (APK + bundle), app list, batch uninstall, device settings
- * (apply + persist across restart), screenshot, clipboard read, Android ID / GSF ID stability.
+ * (apply + persist across restart), screenshot, Android ID / GSF ID stability.
  * Usage: npx tsx --env-file=../../.env scripts/p0-check.ts <test.apk>
  */
 import { zipSync } from 'fflate';
@@ -80,7 +80,7 @@ await waitTasks((await http('POST', '/api/apps/uninstall', T, { instanceIds: [id
 // 5. device settings: apply on running instance, then verify after restart
 const b = g[1];
 const before = (await http('GET', `/api/instances/${b.id}/settings`, T)).body.actual;
-const want = { locale: 'en-US', timezone: 'Asia/Shanghai', deviceName: 'CloudPhone-g13-2' };
+const want = { locale: 'zh-CN', timezone: 'Europe/Berlin', deviceName: 'CloudPhone-B' };
 r = await http('PATCH', `/api/instances/${b.id}/settings`, T, want);
 check('settings update accepted', r.status === 202 && !!r.body.taskId);
 tasks = await waitTasks([r.body.taskId]);
@@ -102,21 +102,6 @@ check('Android ID stable across restart', !!androidIdBefore && actual.androidId 
 const shot = await http('GET', `/api/instances/${g[0].id}/screenshot`, T);
 const w = shot.raw.readUInt32BE(16), h = shot.raw.readUInt32BE(20);
 check('screenshot returns full-resolution PNG', shot.status === 200 && shot.type === 'image/png' && shot.raw.subarray(1, 4).toString() === 'PNG', `${w}x${h}, ${shot.raw.length} bytes`);
-
-// 7. clipboard read (device -> browser)
-const ws = new WebSocket(`${API.replace('http', 'ws')}/api/instances/${g[0].id}/session`);
-const msgs: any[] = [];
-ws.on('message', (d, bin) => { if (!bin) msgs.push(JSON.parse(d.toString())); });
-await new Promise((res) => ws.on('open', res));
-ws.send(JSON.stringify({ type: 'auth', token: T }));
-await waitFor('session', async () => msgs.find((m) => m.type === 'ready'), 20_000);
-const marker = `clip-${Date.now()}`;
-ws.send(JSON.stringify({ type: 'paste', text: marker }));
-await waitFor('pasted', async () => msgs.find((m) => m.type === 'pasted'), 15_000);
-ws.send(JSON.stringify({ type: 'clipboardGet' }));
-const clip = await waitFor('clipboard', async () => msgs.find((m) => m.type === 'clipboard'), 15_000);
-check('clipboard read returns device clipboard', clip.text === marker, JSON.stringify(clip.text));
-ws.close();
 
 const failed = results.filter((x) => !x[1]).length;
 console.log(`\n${results.length - failed}/${results.length} checks passed`);

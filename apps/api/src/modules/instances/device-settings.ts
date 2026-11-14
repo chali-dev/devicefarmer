@@ -34,19 +34,21 @@ async function waitFrameworkUp(adbPort: number, timeoutMs = 120_000): Promise<vo
  * Only a locale change restarts the Android framework (zygote), not the container or adbd.
  */
 export async function applyDeviceSettings(adbPort: number, spec: InstanceSpec): Promise<void> {
-  if (spec.timezone) {
-    const cur = (await adb.shell(adbPort, 'getprop persist.sys.timezone')).trim();
-    if (cur !== spec.timezone) await adb.shell(adbPort, `cmd alarm set-timezone ${spec.timezone}`);
-  }
-  if (spec.deviceName) {
-    await adb.shell(adbPort, `settings put global device_name '${spec.deviceName.replace(/'/g, '')}'`);
-  }
+  // Locale first: it restarts the framework, and SettingsProvider persists writes asynchronously,
+  // so settings written just before a zygote restart can be lost.
   if (spec.locale) {
     const cur = (await adb.shell(adbPort, 'getprop persist.sys.locale')).trim();
     if (cur !== spec.locale) {
       await adb.shell(adbPort, `su 0 setprop persist.sys.locale ${spec.locale} && su 0 setprop ctl.restart zygote`);
       await waitFrameworkUp(adbPort);
     }
+  }
+  if (spec.timezone) {
+    const cur = (await adb.shell(adbPort, 'getprop persist.sys.timezone')).trim();
+    if (cur !== spec.timezone) await adb.shell(adbPort, `cmd alarm set-timezone ${spec.timezone}`);
+  }
+  if (spec.deviceName) {
+    await adb.shell(adbPort, `settings put global device_name '${spec.deviceName.replace(/'/g, '')}'`);
   }
 }
 

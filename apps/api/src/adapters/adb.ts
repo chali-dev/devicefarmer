@@ -5,6 +5,12 @@ import { config } from '../config.js';
  * Talks to the adb server shared with STF. Attaching a device here
  * (`adb connect`) is what makes STF's provider pick it up.
  */
+/** Installed by STF on every device; removing them breaks screen/input. */
+const PROTECTED_PREFIXES = ['jp.co.cyberagent.stf'];
+export function isProtectedPackage(pkg: string): boolean {
+  return PROTECTED_PREFIXES.some((p) => pkg === p || pkg.startsWith(`${p}.`));
+}
+
 export class AdbAdapter {
   private readonly client: Client;
 
@@ -96,18 +102,19 @@ export class AdbAdapter {
     }
   }
 
-  /** User-installed apps with versions (one round trip). */
-  async listApps(adbPort: number): Promise<{ package: string; versionName: string | null; versionCode: string | null }[]> {
+  /** User-installed apps with versions (one round trip). Platform components are flagged as protected. */
+  async listApps(adbPort: number): Promise<{ package: string; versionName: string | null; versionCode: string | null; protected: boolean }[]> {
     const out = await this.shell(adbPort,
       `for p in $(pm list packages -3 | sed 's/^package://'); do echo "$p|$(dumpsys package $p | grep -m1 versionName= | sed 's/.*versionName=//')|$(dumpsys package $p | grep -m1 versionCode= | sed 's/.*versionCode=\\([0-9]*\\).*/\\1/')"; done`, 60_000);
     return out.split(/\r?\n/).filter((l) => l.includes('|')).map((l) => {
       const [pkg, vn, vc] = l.split('|');
-      return { package: pkg!.trim(), versionName: vn?.trim() || null, versionCode: vc?.trim() || null };
+      return { package: pkg!.trim(), versionName: vn?.trim() || null, versionCode: vc?.trim() || null, protected: isProtectedPackage(pkg!.trim()) };
     }).sort((a, b) => a.package.localeCompare(b.package));
   }
 
   async uninstall(adbPort: number, pkg: string): Promise<void> {
     if (!/^[a-zA-Z0-9_.]{3,150}$/.test(pkg)) throw new Error('invalid package name');
+    if (isProtectedPackage(pkg)) throw new Error(`${pkg} is a platform component (remote control) and cannot be uninstalled`);
     const r = await this.shell(adbPort, `pm uninstall ${pkg}`, 60_000);
     if (!/Success/.test(r)) throw new Error(`uninstall failed: ${r.trim()}`);
   }

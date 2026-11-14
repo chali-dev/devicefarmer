@@ -3,6 +3,7 @@ import { inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { isProtectedPackage } from '../../adapters/adb.js';
 import { adb } from '../../services.js';
 import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
@@ -51,6 +52,7 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
   }, async (req, reply) => {
     if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot uninstall apps');
+    if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`);
     for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
     const accepted: { instanceId: string; taskId: string }[] = [];

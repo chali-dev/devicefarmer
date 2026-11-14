@@ -18,7 +18,7 @@ export interface Instance {
   stfReady: boolean
   lastError: string | null
   google: GoogleHealth | null
-  spec: { width: number; height: number; dpi: number; memoryMb?: number }
+  spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
   createdAt: string
   updatedAt: string
 }
@@ -31,6 +31,8 @@ export interface GoogleHealth {
   youtube: { installed: boolean; version: string | null; playing: boolean }
   googleAccounts: number
 }
+
+export interface InstalledApp { package: string; versionName: string | null; versionCode: string | null; protected: boolean }
 
 export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
 

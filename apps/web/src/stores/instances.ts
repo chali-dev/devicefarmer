@@ -73,7 +73,7 @@ export const useInstancesStore = defineStore('instances', () => {
     tasks.value = []
   }
 
-  async function create(body: { profile: string; count: number; namePrefix: string; width: number; height: number; dpi: number; memoryMb?: number }) {
+  async function create(body: { profile: string; count: number; namePrefix: string; width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }) {
     const r = await api<{ instances: Instance[]; taskIds: string[] }>('POST', '/api/instances', body)
     r.instances.forEach((i) => byId.value.set(i.id, i))
     return r
@@ -84,10 +84,22 @@ export const useInstancesStore = defineStore('instances', () => {
       'POST', '/api/instances/actions', { action, ids })
   }
 
-  async function installApk(id: string, file: File) {
+  type BatchResult = { accepted: { instanceId: string; taskId: string }[]; skipped: { instanceId: string; reason: string }[] }
+
+  /** APK or split bundle (.apks/.xapk/.apkm/.zip) to one or more instances; -r = update. */
+  async function installApp(ids: string[], file: File) {
     const fd = new FormData()
+    fd.append('instanceIds', JSON.stringify(ids)) // must precede the file part
     fd.append('file', file, file.name)
-    return api<{ taskId: string }>('POST', `/api/instances/${id}/apk`, fd)
+    return api<BatchResult & { apks: number }>('POST', '/api/apps/install', fd)
+  }
+
+  async function uninstallApp(ids: string[], pkg: string) {
+    return api<BatchResult>('POST', '/api/apps/uninstall', { instanceIds: ids, package: pkg })
+  }
+
+  async function updateSettings(id: string, body: { locale?: string; timezone?: string; deviceName?: string }) {
+    return api<{ taskId: string | null }>('PATCH', `/api/instances/${id}/settings`, body)
   }
 
   async function googleCheck(id: string) {
@@ -97,5 +109,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return r.google
   }
 
-  return { googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApk }
+  return { googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings }
 })
