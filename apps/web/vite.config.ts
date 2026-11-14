@@ -10,10 +10,11 @@ export default defineConfig({
     __INTLIFY_PROD_DEVTOOLS__: false,
   },
   server: {
-    port: 5173,
+    // Overridable so parallel worktrees can run their own web + API pair.
+    port: Number(process.env.WEB_PORT ?? 5173),
     // The browser only ever talks to our API (RBAC gateway); STF is never exposed.
     proxy: {
-      '/api': { target: 'http://127.0.0.1:3000', ws: true },
+      '/api': { target: process.env.VITE_API_TARGET ?? 'http://127.0.0.1:3000', ws: true },
     },
   },
 })
