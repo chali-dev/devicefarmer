@@ -31,6 +31,7 @@ const columns = [
   { title: '镜像', key: 'profile', width: 190 },
   { title: '状态', key: 'status', width: 110 },
   { title: '设备', key: 'device', width: 220 },
+  { title: '网络', key: 'net', width: 170 },
   { title: 'ADB 端口', dataIndex: 'adbPort', key: 'adbPort', width: 100 },
   { title: '分辨率', key: 'spec', width: 140 },
   { title: '', key: 'ops', width: 90, align: 'right' as const },
@@ -113,6 +114,12 @@ async function submitCreate() {
   }
 }
 
+function netTitle(i: Instance) {
+  if (!i.proxy) return ''
+  const egress = i.proxyStatus?.egressIp ? ` · 出口 ${i.proxyStatus.egressIp}` : ''
+  return `${i.proxy.type}://${i.proxy.host}:${i.proxy.port}${egress}`
+}
+
 function deviceText(i: Instance) {
   if (i.status !== 'running') return null
   return [
@@ -122,7 +129,7 @@ function deviceText(i: Instance) {
   ]
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数' }
+const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库' }
 const TASK_STATUS: Record<string, { color: string; text: string }> = {
   queued: { color: 'default', text: '排队' }, running: { color: 'processing', text: '执行中' },
   succeeded: { color: 'success', text: '成功' }, failed: { color: 'error', text: '失败' },
@@ -185,6 +192,12 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
               <a-tag v-for="d in deviceText(record)" :key="d.text" :color="d.ok ? 'green' : 'orange'">{{ d.text }}</a-tag>
             </a-space>
             <span v-else style="color: #bfbfbf">—</span>
+          </template>
+          <template v-else-if="column.key === 'net'">
+            <a-tooltip v-if="record.proxy" :title="netTitle(record)">
+              <a-tag :color="record.proxyStatus ? (record.proxyStatus.ok ? 'green' : 'red') : 'default'">{{ record.proxy.type.toUpperCase() }} {{ record.proxy.host }}</a-tag>
+            </a-tooltip>
+            <span v-else style="color: #8c8c8c">直连</span>
           </template>
           <template v-else-if="column.key === 'spec'">
             {{ record.spec.width }}×{{ record.spec.height }}

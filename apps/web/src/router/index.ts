@@ -12,6 +12,7 @@ const router = createRouter({
         { path: '', redirect: '/instances' },
         { path: 'instances', name: 'instances', component: () => import('../views/InstancesView.vue') },
         { path: 'instances/:id', name: 'instance', component: () => import('../views/InstanceDetailView.vue'), props: true },
+        { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
       ],
     },

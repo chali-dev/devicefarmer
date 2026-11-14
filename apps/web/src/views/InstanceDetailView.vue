@@ -2,7 +2,7 @@
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, getToken } from '../api/client'
-import type { InstalledApp } from '../api/types'
+import type { InstalledApp, ProxyInput } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -106,6 +106,46 @@ async function saveSettings() {
 watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'succeeded') void loadSettings() })
 onMounted(loadSettings)
 
+// ---- app library import
+async function importToLibrary(pkg: string) {
+  try { await api('POST', '/api/library/import', { instanceId: props.id, package: pkg }); message.success(`正在导入 ${pkg} 到应用库（大型应用需要一些时间）`) }
+  catch (e) { message.error((e as Error).message) }
+}
+
+// ---- network proxy (per instance; password is write-only)
+const proxyForm = reactive({ enabled: false, type: 'socks5' as 'socks5' | 'http', host: '', port: 1080 as number | undefined, username: '', password: '' })
+const proxySaving = ref(false)
+const proxyChecking = ref(false)
+function fillProxyForm() {
+  const p = inst.value?.proxy
+  Object.assign(proxyForm, p
+    ? { enabled: true, type: p.type, host: p.host, port: p.port, username: p.username ?? '', password: '' }
+    : { enabled: false, type: 'socks5', host: '', port: 1080, username: '', password: '' })
+}
+watch(() => inst.value?.proxy, fillProxyForm, { immediate: true })
+async function saveProxy() {
+  proxySaving.value = true
+  try {
+    let proxy: ProxyInput | null = null
+    if (proxyForm.enabled) {
+      if (!proxyForm.host || !proxyForm.port) throw new Error('请填写代理地址和端口')
+      proxy = { type: proxyForm.type, host: proxyForm.host.trim(), port: proxyForm.port,
+        ...(proxyForm.username ? { username: proxyForm.username } : {}),
+        ...(proxyForm.password ? { password: proxyForm.password } : {}) }
+    }
+    await api('PUT', `/api/instances/${props.id}/proxy`, { proxy })
+    message.success(inst.value?.netContainerId ? '已提交，正在热切换代理（不重启手机）' : '已提交：旧实例将重建网络（会重启一次，数据保留）')
+    proxyForm.password = ''
+  } catch (e) { message.error((e as Error).message) }
+  finally { proxySaving.value = false }
+}
+async function checkProxy() {
+  proxyChecking.value = true
+  try { await api('POST', `/api/instances/${props.id}/proxy/check`) }
+  catch (e) { message.error((e as Error).message) }
+  finally { proxyChecking.value = false }
+}
+
 // ---- screenshot (full resolution PNG from the device)
 const shooting = ref(false)
 async function screenshot() {
@@ -132,7 +172,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
   }
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数' }
+const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库' }
 const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'processing', succeeded: 'success', failed: 'error' }
 </script>
 
@@ -259,15 +299,52 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
           </a-upload-dragger>
           <a-table :data-source="appsList" row-key="package" size="small" :pagination="false" :loading="appsLoading"
             :locale="{ emptyText: inst.status === 'running' ? '没有用户安装的应用' : '实例未运行' }"
-            :columns="[{ title: '包名', dataIndex: 'package', key: 'package' }, { title: '版本', key: 'version', width: 160 }, { title: '', key: 'ops', width: 90 }]">
+            :columns="[{ title: '包名', dataIndex: 'package', key: 'package' }, { title: '版本', key: 'version', width: 160 }, { title: '', key: 'ops', width: 170 }]">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>
               <template v-else-if="column.key === 'ops'">
                 <a-tag v-if="record.protected">平台组件</a-tag>
-                <a-button v-else-if="auth.canOperate" type="link" size="small" danger @click="uninstall(record.package)">卸载</a-button>
+                <a-space v-else-if="auth.canOperate" :size="0">
+                  <a-button type="link" size="small" @click="importToLibrary(record.package)">加入应用库</a-button>
+                  <a-button type="link" size="small" danger @click="uninstall(record.package)">卸载</a-button>
+                </a-space>
               </template>
             </template>
           </a-table>
+        </a-card>
+
+        <a-card size="small" title="网络代理">
+          <template #extra>
+            <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">出口检测</a-button>
+          </template>
+          <a-form layout="vertical" :disabled="!auth.canOperate || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
+            <a-form-item style="margin-bottom: 8px">
+              <a-switch v-model:checked="proxyForm.enabled" size="small" /> <span style="margin-left: 6px">{{ proxyForm.enabled ? '使用代理（断线阻断：代理不可用时禁止直连）' : '直连' }}</span>
+            </a-form-item>
+            <a-row v-if="proxyForm.enabled" :gutter="12">
+              <a-col :xs="24" :sm="5"><a-form-item label="类型"><a-select v-model:value="proxyForm.type" :options="[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]" /></a-form-item></a-col>
+              <a-col :xs="24" :sm="11"><a-form-item label="地址"><a-input v-model:value="proxyForm.host" placeholder="proxy.example.com 或 IP" /></a-form-item></a-col>
+              <a-col :xs="24" :sm="8"><a-form-item label="端口"><a-input-number v-model:value="proxyForm.port" :min="1" :max="65535" style="width: 100%" /></a-form-item></a-col>
+              <a-col :xs="24" :sm="12"><a-form-item label="用户名"><a-input v-model:value="proxyForm.username" autocomplete="off" /></a-form-item></a-col>
+              <a-col :xs="24" :sm="12">
+                <a-form-item label="密码" :extra="inst.proxy?.hasPassword ? '已保存密码；留空表示不修改' : undefined">
+                  <a-input-password v-model:value="proxyForm.password" autocomplete="new-password" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-button v-if="auth.canOperate" type="primary" size="small" :loading="proxySaving" @click="saveProxy">保存并应用</a-button>
+          </a-form>
+          <a-descriptions v-if="inst.proxyStatus" :column="{ xs: 1, sm: 2 }" size="small" style="margin-top: 12px">
+            <a-descriptions-item label="出口">
+              <a-tag :color="inst.proxyStatus.ok ? 'green' : 'red'">{{ inst.proxyStatus.ok ? '正常' : '不可用（已阻断）' }}</a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label="出口 IP">{{ inst.proxyStatus.egressIp ?? '—' }}</a-descriptions-item>
+            <a-descriptions-item label="延迟">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
+            <a-descriptions-item label="DNS（经代理）">{{ inst.proxyStatus.dnsOk ? '正常' : '失败' }}</a-descriptions-item>
+            <a-descriptions-item label="检测时间">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString() }}</a-descriptions-item>
+            <a-descriptions-item v-if="inst.proxyStatus.error" label="错误">{{ inst.proxyStatus.error }}</a-descriptions-item>
+          </a-descriptions>
+          <div class="hint" style="margin-top: 8px">所有 TCP 与 DNS 经代理转发；IPv6 与其他 UDP（如 QUIC）被阻断，应用会自动回落到 TCP。</div>
         </a-card>
 
         <a-card size="small" title="设备参数">

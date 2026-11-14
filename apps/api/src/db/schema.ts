@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { boolean, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', ['admin', 'operator', 'viewer']);
 
@@ -65,6 +65,22 @@ export const tasks = pgTable('tasks', {
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 });
 
+/**
+ * App library: official packages imported from a device where they were installed
+ * (e.g. from Google Play), reinstalled on other instances without Play.
+ */
+export const libraryApps = pgTable('library_apps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  package: text('package').notNull(),
+  versionName: text('version_name'),
+  versionCode: text('version_code').notNull(),
+  files: jsonb('files').$type<{ name: string; size: number; sha256: string }[]>().notNull(),
+  /** Install automatically on newly created instances */
+  preinstall: boolean('preinstall').notNull().default(false),
+  sourceInstance: text('source_instance'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [unique('library_pkg_version').on(t.package, t.versionCode)]);
+
 export interface InstanceSpec {
   width: number;
   height: number;
@@ -107,4 +123,5 @@ export interface GoogleHealth {
 export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type LibraryApp = typeof libraryApps.$inferSelect;
 export type Role = User['role'];

@@ -10,7 +10,7 @@ const route = useRoute()
 const router = useRouter()
 
 const ROLE_TEXT = { admin: '管理员', operator: '运维', viewer: '只读/控制' } as const
-const selected = computed(() => [route.path.startsWith('/users') ? 'users' : 'instances'])
+const selected = computed(() => [route.path.startsWith('/users') ? 'users' : route.path.startsWith('/library') ? 'library' : 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
 onBeforeUnmount(() => store.disconnect())
@@ -28,6 +28,7 @@ function logout() {
       <div class="brand">云手机管理平台</div>
       <a-menu theme="dark" mode="horizontal" :selected-keys="selected" class="menu">
         <a-menu-item key="instances" @click="router.push('/instances')">实例</a-menu-item>
+        <a-menu-item key="library" @click="router.push('/library')">应用库</a-menu-item>
         <a-menu-item v-if="auth.isAdmin" key="users" @click="router.push('/users')">用户与权限</a-menu-item>
       </a-menu>
       <div class="right">

@@ -18,6 +18,9 @@ export interface Instance {
   stfReady: boolean
   lastError: string | null
   google: GoogleHealth | null
+  netContainerId: string | null
+  proxy: { type: 'socks5' | 'http'; host: string; port: number; username?: string; hasPassword: boolean } | null
+  proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null } | null
   spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
   createdAt: string
   updatedAt: string
@@ -33,6 +36,13 @@ export interface GoogleHealth {
 }
 
 export interface InstalledApp { package: string; versionName: string | null; versionCode: string | null; protected: boolean }
+
+export interface LibraryApp {
+  id: string; package: string; versionName: string | null; versionCode: string
+  files: { name: string; size: number; sha256: string }[]; preinstall: boolean; sourceInstance: string | null; createdAt: string
+}
+
+export interface ProxyInput { type: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string }
 
 export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
 

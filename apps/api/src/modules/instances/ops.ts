@@ -1,6 +1,8 @@
 import type { Instance } from '../../db/schema.js';
 import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
+import { importFromDevice, libraryApks, preinstallApps } from '../library/library.js';
+import { enqueue } from './queue.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
 
 const BOOT_TIMEOUT_MS = 180_000;
@@ -88,6 +90,10 @@ export async function opCreate(id: string): Promise<void> {
   await startContainers(inst);
   await attachDevice(await mustGet(id));
   await refreshProxyStatus(await mustGet(id));
+  // Preinstall library apps as separate, visible tasks (a failed install doesn't fail the create).
+  for (const app of await preinstallApps()) {
+    await enqueue('install-apk', inst, inst.createdBy, libraryApks(app), `预装 ${app.package} ${app.versionName ?? app.versionCode}`);
+  }
 }
 
 export async function opStart(id: string): Promise<void> {
@@ -177,6 +183,12 @@ async function mustBeRunning(id: string): Promise<Instance> {
 export async function opInstallApk(id: string, apkPaths: string[], sizes: number[]): Promise<void> {
   const inst = await mustBeRunning(id);
   await adb.installApks(inst.adbPort, apkPaths, sizes);
+}
+
+/** Copies an installed app (e.g. from Google Play) from this instance into the app library. */
+export async function opImportApp(id: string, pkg: string): Promise<void> {
+  const inst = await mustBeRunning(id);
+  await importFromDevice(inst.adbPort, pkg, inst.name);
 }
 
 export async function opUninstallApp(id: string, pkg: string): Promise<void> {

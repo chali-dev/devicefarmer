@@ -119,6 +119,48 @@ export class AdbAdapter {
     if (!/Success/.test(r)) throw new Error(`uninstall failed: ${r.trim()}`);
   }
 
+  /** Version of an installed package. */
+  async packageVersion(adbPort: number, pkg: string): Promise<{ versionName: string | null; versionCode: string } | null> {
+    const out = await this.shell(adbPort, `dumpsys package ${pkg} | grep -m2 -E "versionCode=|versionName="`);
+    const code = /versionCode=(\d+)/.exec(out)?.[1];
+    if (!code) return null;
+    return { versionCode: code, versionName: /versionName=(\S+)/.exec(out)?.[1] ?? null };
+  }
+
+  /**
+   * Copies an installed app's APKs (base + all splits, exactly as installed) to destDir.
+   * Returns file names in install order (base first) with sizes and SHA-256.
+   */
+  async pullApks(adbPort: number, pkg: string, destDir: string): Promise<{ name: string; size: number; sha256: string }[]> {
+    if (!/^[a-zA-Z0-9_.]{3,150}$/.test(pkg)) throw new Error('invalid package name');
+    const paths = (await this.shell(adbPort, `pm path ${pkg}`)).split(/\r?\n/)
+      .map((l) => l.trim()).filter((l) => l.startsWith('package:')).map((l) => l.slice('package:'.length));
+    if (!paths.length) throw new Error(`${pkg} is not installed`);
+    paths.sort((a, b) => (a.endsWith('/base.apk') ? -1 : b.endsWith('/base.apk') ? 1 : a.localeCompare(b)));
+    const { createHash } = await import('node:crypto');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    await fs.promises.mkdir(destDir, { recursive: true });
+    const device = this.client.getDevice(this.serialFor(adbPort));
+    const files: { name: string; size: number; sha256: string }[] = [];
+    for (const [i, remote] of paths.entries()) {
+      const name = `${i}-${path.basename(remote)}`;
+      const transfer = await device.pull(remote);
+      const hash = createHash('sha256');
+      let size = 0;
+      const out = fs.createWriteStream(path.join(destDir, name));
+      await new Promise<void>((resolve, reject) => {
+        transfer.on('data', (c: Buffer) => { hash.update(c); size += c.length; });
+        transfer.on('error', reject);
+        out.on('error', reject);
+        out.on('finish', resolve);
+        transfer.pipe(out);
+      });
+      files.push({ name, size, sha256: hash.digest('hex') });
+    }
+    return files;
+  }
+
   /** Full-resolution PNG screenshot. */
   async screenshot(adbPort: number): Promise<Buffer> {
     const stream = await this.client.getDevice(this.serialFor(adbPort)).screencap();

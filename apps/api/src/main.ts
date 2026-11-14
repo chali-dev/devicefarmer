@@ -16,6 +16,7 @@ import { opsQueue, startWorker } from './modules/instances/queue.js';
 import { startMonitor } from './modules/monitor/monitor.js';
 import { userRoutes } from './modules/users/routes.js';
 import { appRoutes } from './modules/apps/routes.js';
+import { libraryRoutes } from './modules/library/routes.js';
 import { cleanupUploads } from './modules/apps/package.js';
 import { adb, dockerHost, stf } from './services.js';
 
@@ -44,6 +45,7 @@ await app.register(instanceRoutes);
 await app.register(controlRoutes);
 await app.register(eventsRoutes);
 await app.register(appRoutes);
+await app.register(libraryRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed. */
 app.get('/api/health', async (_req, reply) => {

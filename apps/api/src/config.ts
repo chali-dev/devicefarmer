@@ -37,6 +37,8 @@ const Env = z.object({
   WEB_ORIGIN: z.string().default('http://localhost:5173'),
   MAX_APK_MB: z.coerce.number().int().default(500),
   UPLOAD_DIR: z.string().default('var/uploads'),
+  /** App library storage (imported official APKs). Not cleaned up automatically. */
+  LIBRARY_DIR: z.string().default('var/library'),
 });
 
 export const config = Env.parse(process.env);
