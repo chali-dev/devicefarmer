@@ -35,7 +35,7 @@ const Proxy = z.object({
 async function assertProxyNotShared(proxy: ProxyConfig, exceptId?: string) {
   const rows = await db.select({ id: schema.instances.id, name: schema.instances.name, proxy: schema.instances.proxy }).from(schema.instances);
   const other = rows.find((r) => r.id !== exceptId && r.proxy && proxyKey(r.proxy) === proxyKey(proxy));
-  if (other) throw conflict(`该代理已被实例 ${other.name} 使用（如确需共享请勾选 allowShared）`);
+  if (other) throw conflict(`该代理已被设备 ${other.name} 使用（如确需共享请勾选 allowShared）`);
 }
 
 const CreateBody = z.object({
@@ -109,7 +109,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const avail = (await profileAvailability()).find((p) => p.id === b.profile);
     if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`);
     if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`);
-    if (b.proxy && b.count > 1) throw badRequest('多台实例请使用 proxies（每台一个代理），避免共享同一代理');
+    if (b.proxy && b.count > 1) throw badRequest('多台设备请使用 proxies（每台一个代理），避免共享同一代理');
     if (b.proxies && b.proxies.length !== b.count) throw badRequest(`proxies 数量（${b.proxies.length}）必须等于创建数量（${b.count}）`);
     const proxies: (ProxyConfig | null)[] = Array.from({ length: b.count }, (_, i) => b.proxies?.[i] ?? b.proxy ?? null);
     if (!b.allowShared) {
@@ -262,7 +262,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found');
-    if (!inst.netContainerId) throw conflict('该实例没有网络边车（旧实例），设置代理后自动创建');
+    if (!inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建');
     if (inst.status !== 'running') throw conflict('instance is not running');
     const proxyStatus = await network.check(inst.netContainerId);
     await updateInstance(inst.id, { proxyStatus });

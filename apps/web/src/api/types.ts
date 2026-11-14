@@ -1,7 +1,7 @@
 export type Role = 'admin' | 'operator' | 'viewer'
 export type InstanceStatus = 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'restarting' | 'deleting' | 'error'
 
-export interface User { id: string; username: string; role: Role }
+export interface User { id: string; username: string; role: Role; displayName?: string | null; email?: string | null }
 export interface ManagedUser extends User { disabled: boolean; createdAt: string; instanceIds: string[] }
 
 export interface Instance {

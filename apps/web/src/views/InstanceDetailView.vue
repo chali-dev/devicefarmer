@@ -150,7 +150,7 @@ async function saveProxy() {
         ...(proxyForm.password ? { password: proxyForm.password } : {}) }
     }
     await api('PUT', `/api/instances/${props.id}/proxy`, { proxy })
-    message.success(inst.value?.netContainerId ? '已提交，正在热切换代理（不重启手机）' : '已提交：旧实例将重建网络（会重启一次，数据保留）')
+    message.success(inst.value?.netContainerId ? '已提交，正在热切换代理（不重启手机）' : '已提交：旧设备将重建网络（会重启一次，数据保留）')
     proxyForm.password = ''
   } catch (e) { message.error((e as Error).message) }
   finally { proxySaving.value = false }
@@ -193,7 +193,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
 </script>
 
 <template>
-  <a-result v-if="!inst && !store.loading" status="404" title="实例不存在或无权访问">
+  <a-result v-if="!inst && !store.loading" status="404" title="设备不存在或无权访问">
     <template #extra><a-button @click="router.push('/instances')">返回列表</a-button></template>
   </a-result>
 
@@ -208,7 +208,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
           :width="inst.spec.width"
           :height="inst.spec.height"
         />
-        <a-empty v-else :description="`实例当前状态：${inst.status}，运行后才能远程控制`" />
+        <a-empty v-else :description="`设备当前状态：${inst.status}，运行后才能远程控制`" />
       </a-card>
     </a-col>
 
@@ -216,7 +216,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
       <a-space direction="vertical" size="middle" style="width: 100%">
         <a-card size="small">
           <template #title>
-            <a-space><a @click="router.push('/instances')">实例</a><span>/</span><span>{{ inst.name }}</span></a-space>
+            <a-space><a @click="router.push('/instances')">设备管理</a><span>/</span><span>{{ inst.name }}</span></a-space>
           </template>
           <template #extra>
             <a-space>
@@ -322,7 +322,7 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
             <p class="hint" style="margin: 0 0 8px">YouTube、Instagram、Facebook、Chrome 等请使用官方来源的安装包；同包名再次上传即为更新</p>
           </a-upload-dragger>
           <a-table :data-source="appsList" row-key="package" size="small" :pagination="false" :loading="appsLoading"
-            :locale="{ emptyText: inst.status === 'running' ? '没有用户安装的应用' : '实例未运行' }"
+            :locale="{ emptyText: inst.status === 'running' ? '没有用户安装的应用' : '设备未运行' }"
             :columns="[{ title: '包名', dataIndex: 'package', key: 'package' }, { title: '版本', key: 'version', width: 160 }, { title: '', key: 'ops', width: 170 }]">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>

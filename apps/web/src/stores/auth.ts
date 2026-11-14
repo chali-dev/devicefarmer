@@ -28,11 +28,21 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function updateProfile(body: { displayName?: string; email?: string }): Promise<User> {
+    const r = await api<{ user: User }>('PATCH', '/api/auth/me', body)
+    user.value = r.user
+    return r.user
+  }
+
+  async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await api<void>('POST', '/api/auth/password', { currentPassword, newPassword })
+  }
+
   function logout() {
     token.value = null
     user.value = null
     setToken(null)
   }
 
-  return { token, user, isAdmin, canOperate, login, loadMe, logout }
+  return { token, user, isAdmin, canOperate, login, loadMe, updateProfile, changePassword, logout }
 })

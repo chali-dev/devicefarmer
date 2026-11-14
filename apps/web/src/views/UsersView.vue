@@ -13,9 +13,9 @@ const loading = ref(false)
 
 const ROLE_TEXT: Record<Role, string> = { admin: '管理员', operator: '运维', viewer: '只读/控制' }
 const ROLE_HELP: Record<Role, string> = {
-  admin: '全部实例与用户管理',
-  operator: '创建实例；对授权实例启停、安装 APK、远程控制',
-  viewer: '对授权实例查看与远程控制',
+  admin: '全部设备与用户管理',
+  operator: '创建设备；对授权设备启停、安装 APK、远程控制',
+  viewer: '对授权设备查看与远程控制',
 }
 
 async function load() {
@@ -29,7 +29,7 @@ onMounted(load)
 const columns = [
   { title: '用户名', dataIndex: 'username', key: 'username' },
   { title: '角色', key: 'role', width: 160 },
-  { title: '可访问实例', key: 'grants' },
+  { title: '可访问设备', key: 'grants' },
   { title: '启用', key: 'enabled', width: 80 },
   { title: '', key: 'ops', width: 170, align: 'right' as const },
 ]
@@ -139,8 +139,8 @@ const nameOf = (id: string) => store.byId.get(id)?.name ?? id.slice(0, 8)
     </a-form>
   </a-modal>
 
-  <a-modal :open="!!grantUser" :title="`授权实例 · ${grantUser?.username}`" ok-text="保存" @ok="saveGrants" @cancel="grantUser = null">
-    <a-select v-model:value="grantIds" mode="multiple" style="width: 100%" placeholder="选择可访问的实例" :options="store.list.map((i) => ({ value: i.id, label: i.name }))" />
+  <a-modal :open="!!grantUser" :title="`授权设备 · ${grantUser?.username}`" ok-text="保存" @ok="saveGrants" @cancel="grantUser = null">
+    <a-select v-model:value="grantIds" mode="multiple" style="width: 100%" placeholder="选择可访问的设备" :options="store.list.map((i) => ({ value: i.id, label: i.name }))" />
   </a-modal>
 
   <a-modal :open="!!pwUser" :title="`重置密码 · ${pwUser?.username}`" ok-text="保存" @ok="savePw" @cancel="pwUser = null">

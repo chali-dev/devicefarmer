@@ -28,7 +28,7 @@ async function setPreinstall(a: LibraryApp, v: boolean) {
 
 function remove(a: LibraryApp) {
   Modal.confirm({
-    title: `从应用库删除 ${a.package} ${a.versionName ?? ''}？`, content: '不影响已安装到实例上的应用。', okType: 'danger', okText: '删除',
+    title: `从应用库删除 ${a.package} ${a.versionName ?? ''}？`, content: '不影响已安装到设备上的应用。', okType: 'danger', okText: '删除',
     onOk: async () => { try { await api('DELETE', `/api/library/${a.id}`); await load() } catch (e) { message.error((e as Error).message) } },
   })
 }
@@ -50,7 +50,7 @@ const columns = [
   { title: '版本', key: 'version', width: 200 },
   { title: '文件', key: 'files', width: 140 },
   { title: '来源', dataIndex: 'sourceInstance', key: 'source', width: 120 },
-  { title: '新实例预装', key: 'preinstall', width: 110 },
+  { title: '新设备预装', key: 'preinstall', width: 110 },
   { title: '', key: 'ops', width: 160, align: 'right' as const },
 ]
 </script>
@@ -61,9 +61,9 @@ const columns = [
     <a-alert type="info" show-icon style="margin-bottom: 12px">
       <template #message>如何添加 YouTube / Instagram / Chrome</template>
       <template #description>
-        在任一实例登录 Google 账号，从 Play 商店安装应用；然后在该实例详情页「应用管理」中点击「加入应用库」。
-        之后可一键安装到其他实例，或开启「新实例预装」让新建实例自动安装（不需要再登录 Play 商店）。
-        更新：在来源实例更新后再次「加入应用库」，新版本会自动接管预装。
+        在任一设备登录 Google 账号，从 Play 商店安装应用；然后在该设备详情页「应用管理」中点击「加入应用库」。
+        之后可一键安装到其他设备，或开启「新设备预装」让新建设备自动安装（不需要再登录 Play 商店）。
+        更新：在来源设备更新后再次「加入应用库」，新版本会自动接管预装。
       </template>
     </a-alert>
     <a-table :data-source="apps" :columns="columns" row-key="id" size="middle" :loading="loading" :pagination="false" :scroll="{ x: 820 }"
@@ -75,15 +75,15 @@ const columns = [
           <a-switch :checked="record.preinstall" size="small" :disabled="!auth.canOperate" @change="(v: any) => setPreinstall(record, v)" />
         </template>
         <template v-else-if="column.key === 'ops'">
-          <a-button v-if="auth.canOperate" type="link" size="small" @click="target = record; targetIds = []">安装到实例</a-button>
+          <a-button v-if="auth.canOperate" type="link" size="small" @click="target = record; targetIds = []">安装到设备</a-button>
           <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">删除</a-button>
         </template>
       </template>
     </a-table>
   </a-card>
 
-  <a-modal :open="!!target" :title="`安装 ${target?.package} 到实例`" ok-text="安装" @ok="install" @cancel="target = null">
-    <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" placeholder="选择运行中的实例"
+  <a-modal :open="!!target" :title="`安装 ${target?.package} 到设备`" ok-text="安装" @ok="install" @cancel="target = null">
+    <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" placeholder="选择运行中的设备"
       :options="store.list.filter((i) => i.status === 'running').map((i) => ({ value: i.id, label: i.name }))" />
   </a-modal>
 </template>

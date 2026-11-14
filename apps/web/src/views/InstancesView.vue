@@ -52,7 +52,7 @@ async function run(action: Action, ids: string[]) {
   if (action === 'delete' || action === 'restart' || action === 'stop') {
     const names = ids.map((id) => store.byId.get(id)?.name).filter(Boolean)
     Modal.confirm({
-      title: `确认${ACTION_TEXT[action]} ${ids.length} 个实例？`,
+      title: `确认${ACTION_TEXT[action]} ${ids.length} 个设备？`,
       content: action === 'delete'
         ? `将删除容器和数据目录，无法恢复：${names.join('、')}`
         : names.join('、'),
@@ -139,13 +139,13 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
 <template>
   <a-space direction="vertical" size="middle" style="width: 100%">
     <a-row :gutter="[16, 16]">
-      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="实例总数" :value="counts.total" /></a-card></a-col>
+      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="设备总数" :value="counts.total" /></a-card></a-col>
       <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="运行中" :value="counts.running" /></a-card></a-col>
       <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="处理中" :value="counts.busy" /></a-card></a-col>
       <a-col :xs="12" :md="6"><a-card size="small"><a-statistic title="异常" :value="counts.error" /></a-card></a-col>
     </a-row>
 
-    <a-card title="实例" size="small">
+    <a-card title="设备列表" size="small">
       <template #extra>
         <a-space wrap>
           <template v-if="auth.canOperate">
@@ -155,7 +155,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
             <a-button :disabled="!selectedKeys.length" @click="openApp('install')">安装应用</a-button>
             <a-button :disabled="!selectedKeys.length" @click="openApp('uninstall')">卸载应用</a-button>
             <a-button danger :disabled="!selectedKeys.length" @click="run('delete', selectedKeys)">删除</a-button>
-            <a-button type="primary" @click="createOpen = true">创建实例</a-button>
+            <a-button type="primary" @click="createOpen = true">创建设备</a-button>
           </template>
           <a-button :loading="store.loading" @click="store.refresh()">刷新</a-button>
         </a-space>
@@ -169,7 +169,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
         :pagination="false"
         :scroll="{ x: 760 }"
         :row-selection="auth.canOperate ? { selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) } : undefined"
-        :locale="{ emptyText: auth.canOperate ? '还没有实例，点击右上角「创建实例」' : '暂无可访问的实例，请联系管理员授权' }"
+        :locale="{ emptyText: auth.canOperate ? '还没有设备，点击右上角「创建设备」' : '暂无可访问的设备，请联系管理员授权' }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
@@ -227,7 +227,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
     </a-card>
   </a-space>
 
-  <a-modal v-model:open="createOpen" title="创建实例" :confirm-loading="creating" ok-text="创建" @ok="submitCreate">
+  <a-modal v-model:open="createOpen" title="创建设备" :confirm-loading="creating" ok-text="创建" @ok="submitCreate">
     <a-form layout="vertical">
       <a-form-item label="镜像">
         <a-select v-model:value="form.profile">
@@ -239,7 +239,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
       <a-form-item label="数量" extra="一次最多 20 台；当前宿主机（4 GiB）建议总数不超过 2–3 台，Google 服务镜像每台约 1 GiB 内存">
         <a-input-number v-model:value="form.count" :min="1" :max="20" style="width: 100%" />
       </a-form-item>
-      <a-form-item label="名称前缀" extra="实例名为「前缀-序号」，仅小写字母、数字、短横线">
+      <a-form-item label="名称前缀" extra="设备名为「前缀-序号」，仅小写字母、数字、短横线">
         <a-input v-model:value="form.namePrefix" />
       </a-form-item>
       <a-form-item label="分辨率">
@@ -262,7 +262,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
       <a-upload-dragger accept=".apk,.apks,.xapk,.apkm,.zip" :multiple="false" :show-upload-list="false" :before-upload="pickFile as any">
         <p style="margin: 12px 0">{{ appFile ? `${appFile.name}（${(appFile.size / 1048576).toFixed(1)} MB）` : '选择 .apk 或拆分包 .apks / .xapk / .apkm' }}</p>
       </a-upload-dragger>
-      <div style="color: #8c8c8c; font-size: 12px; margin-top: 8px">仅安装到已运行的实例；同包名再次安装即为更新，应用数据保留。</div>
+      <div style="color: #8c8c8c; font-size: 12px; margin-top: 8px">仅安装到已运行的设备；同包名再次安装即为更新，应用数据保留。</div>
     </template>
     <a-input v-else v-model:value="appPkg" placeholder="包名，如 com.instagram.android" />
   </a-modal>
