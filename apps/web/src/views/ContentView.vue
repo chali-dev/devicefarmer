@@ -3,7 +3,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
   CONTENT_STATUS_COLOR, CONTENT_STATUSES, PUBLISH_STATUS_COLOR, PUBLISH_UNFINISHED,
@@ -24,7 +25,7 @@ const items = ref<Content[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = reactive({ current: 1, pageSize: 20 })
-const filters = reactive({ q: '', status: undefined as ContentStatus | undefined, category: undefined as string | undefined, tag: undefined as string | undefined, ownerId: undefined as string | undefined })
+const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), category: undefined as string | undefined, tag: undefined as string | undefined, ownerId: undefined as string | undefined })
 const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
 const users = ref<ManagedUser[]>([])
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')

@@ -4,7 +4,8 @@ import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
   PROXY_STATUS_COLOR, proxyLabel, type PoolProxy, type ProxyImportResult, type ProxyStatus, type ProxyType,
@@ -21,8 +22,8 @@ const batchChecking = ref(false)
 
 const filters = reactive({
   q: '',
-  status: undefined as ProxyStatus | undefined,
-  bound: undefined as 'bound' | 'free' | undefined,
+  status: queryParam<ProxyStatus>(useRoute().query, 'status', ['unchecked', 'ok', 'failed']),
+  bound: queryParam(useRoute().query, 'bound', ['bound', 'free'] as const),
   country: '',
 })
 

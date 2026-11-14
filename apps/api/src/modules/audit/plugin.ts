@@ -288,6 +288,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
   // settings
   // The key itself is never stored in the log.
+  'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
+  'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   'PUT /api/settings/storage': {
     action: 'storage.update',

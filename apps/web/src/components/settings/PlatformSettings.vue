@@ -3,11 +3,11 @@ import { CheckOutlined, MinusOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorText } from '../api/client'
-import type { PlatformAppSettings, PlatformCapabilities, PlatformInfo } from '../api/types'
-import PlatformTag from '../components/social/PlatformTag.vue'
+import { api, errorText } from '../../api/client'
+import type { PlatformAppSettings, PlatformCapabilities, PlatformInfo } from '../../api/types'
+import PlatformTag from '../social/PlatformTag.vue'
 
-/** 平台接入 (admin): official API app credentials per platform. The client secret is write-only. */
+/** Settings → 平台接入 (admin): official API app credentials per platform. The client secret is write-only. */
 const { t } = useI18n()
 const apps = ref<PlatformAppSettings[]>([])
 const infos = ref<PlatformInfo[]>([])
@@ -77,7 +77,7 @@ async function copy(text: string) {
 </script>
 
 <template>
-  <a-card :title="t('platforms.title')" size="small" :loading="loading">
+  <a-spin :spinning="loading">
     <a-alert type="info" show-icon style="margin-bottom: 16px" :message="t('platforms.intro')" :description="t('platforms.introDetail')" />
     <a-row :gutter="[16, 16]">
       <a-col v-for="a in apps" :key="a.platform" :xs="24" :lg="12" :xxl="8">
@@ -132,7 +132,7 @@ async function copy(text: string) {
         </a-card>
       </a-col>
     </a-row>
-  </a-card>
+  </a-spin>
 </template>
 
 <style scoped>

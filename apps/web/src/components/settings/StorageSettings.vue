@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { StorageSettings, StorageTestResult } from '../../api/types'
 
-/** Storage backend for the media library (admin): local disk or S3-compatible. */
-const open = defineModel<boolean>('open', { required: true })
+/** Settings → Storage (admin): backend of the media library, local disk or S3-compatible. */
 const { t } = useI18n()
 const errMsg = errorText
-watch(open, (v) => { if (v) void load() })
+onMounted(() => void load())
 
 const storageLoading = ref(false)
 const storageSaving = ref(false)
@@ -72,14 +71,14 @@ async function saveStorage() {
   try {
     await api('PUT', '/api/settings/storage', storageBody())
     message.success(storageForm.type === 's3' ? t('media.storage.savedS3') : t('media.storage.savedLocal'))
-    open.value = false
+    void load()
   } catch (e) { testResult.value = { ok: false, latencyMs: 0, error: errMsg(e) } }
   finally { storageSaving.value = false }
 }
 </script>
 
 <template>
-  <a-modal v-model:open="open" :title="t('media.storageSettings')" :footer="null" width="560px">
+  <div class="settings-pane">
     <a-spin :spinning="storageLoading">
       <a-form layout="vertical">
         <a-form-item :label="t('media.storage.location')" :extra="t('media.storage.locationHint')">
@@ -121,12 +120,15 @@ async function saveStorage() {
           v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon style="margin-bottom: 12px"
           :message="testResult.ok ? t('media.storage.testOk', { ms: testResult.latencyMs }) : t('media.storage.testFailed', { error: testResult.error ?? '' })"
         />
-        <div style="display: flex; justify-content: flex-end; gap: 8px">
-          <a-button @click="open = false">{{ t('common.cancel') }}</a-button>
+        <div style="display: flex; gap: 8px">
           <a-button :loading="storageTesting" @click="testStorage">{{ t('media.storage.test') }}</a-button>
           <a-button type="primary" :loading="storageSaving" @click="saveStorage">{{ t('common.save') }}</a-button>
         </div>
       </a-form>
     </a-spin>
-  </a-modal>
+  </div>
 </template>
+
+<style scoped>
+.settings-pane { max-width: 640px; }
+</style>

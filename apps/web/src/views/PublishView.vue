@@ -5,6 +5,7 @@ import { LeftOutlined, RightOutlined } from '@ant-design/icons-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import { PUBLISH_STATUS_COLOR, type ManagedUser, type PublishPlatform, type PublishStatus, type PublishTaskItem } from '../api/types'
 import PublishTaskDrawer from '../components/publish/PublishTaskDrawer.vue'
@@ -30,7 +31,7 @@ const HISTORY: PublishStatus[] = ['published', 'failed', 'cancelled']
 
 const platforms = ref<PublishPlatform[]>([])
 const users = ref<ManagedUser[]>([])
-const filters = reactive({ q: '', platform: undefined as string | undefined, ownerId: undefined as string | undefined, status: undefined as PublishStatus | undefined })
+const filters = reactive({ q: '', platform: undefined as string | undefined, ownerId: undefined as string | undefined, status: queryParam<PublishStatus>(route.query, 'status') })
 const contentId = computed(() => (typeof route.query.contentId === 'string' ? route.query.contentId : undefined))
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
 const statusText = (s: string) => t(`publish.status.${s}`)
