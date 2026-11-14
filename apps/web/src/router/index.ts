@@ -15,6 +15,7 @@ const router = createRouter({
         { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
         { path: 'media', name: 'media', component: () => import('../views/MediaView.vue') },
         { path: 'social', name: 'social', component: () => import('../views/SocialAccountsView.vue') },
+        { path: 'tracked', name: 'tracked', component: () => import('../views/TrackedAccountsView.vue') },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },

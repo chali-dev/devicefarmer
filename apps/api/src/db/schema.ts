@@ -207,6 +207,75 @@ export const mediaFavorites = pgTable('media_favorites', {
 }, (t) => [unique('media_favorites_user_asset').on(t.userId, t.assetId), index('media_favorites_asset_idx').on(t.assetId)]);
 
 /**
+ * Tracked accounts (追踪账号): external public profiles a user observes. Private per user (admins see all);
+ * entirely separate from the user's own managed social accounts. `platform` is a code registry id
+ * (modules/tracked/platforms.ts), `handle` its normalised identity (lowercase handle, or a YouTube channel id).
+ * Data comes from official APIs (YouTube Data API) or manual entry only, never scraping.
+ */
+export const trackedAccounts = pgTable('tracked_accounts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  handle: text('handle').notNull(),
+  profileUrl: text('profile_url').notNull(),
+  externalId: text('external_id'),
+  displayName: text('display_name'),
+  avatarUrl: text('avatar_url'),
+  bio: text('bio'),
+  category: text('category'),
+  /** Lowercase, deduplicated. */
+  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+  /** The account is private to its owner, so a favorite is just a flag (no per-user table needed). */
+  favorite: boolean('favorite').notNull().default(false),
+  status: text('status', { enum: ['active', 'paused', 'error'] }).notNull().default('active'),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  lastErrorCode: text('last_error_code'),
+  lastSource: text('last_source', { enum: ['api', 'manual'] }),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  unique('tracked_accounts_user_platform_handle').on(t.userId, t.platform, t.handle),
+  index('tracked_accounts_user_status_idx').on(t.userId, t.status),
+  index('tracked_accounts_user_category_idx').on(t.userId, t.category),
+  index('tracked_accounts_user_favorite_idx').on(t.userId, t.favorite),
+  index('tracked_accounts_tags_idx').using('gin', t.tags),
+]);
+
+/** Public counters over time. NULL = not available on that platform / not entered. */
+export const trackedAccountSnapshots = pgTable('tracked_account_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  trackedAccountId: uuid('tracked_account_id').notNull().references(() => trackedAccounts.id, { onDelete: 'cascade' }),
+  capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  followers: bigint('followers', { mode: 'number' }),
+  following: bigint('following', { mode: 'number' }),
+  posts: bigint('posts', { mode: 'number' }),
+  views: bigint('views', { mode: 'number' }),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+}, (t) => [index('tracked_snapshots_account_at_idx').on(t.trackedAccountId, t.capturedAt)]);
+
+/** Public posts/videos seen on a tracked account (content update history). */
+export const trackedPosts = pgTable('tracked_posts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  trackedAccountId: uuid('tracked_account_id').notNull().references(() => trackedAccounts.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(),
+  url: text('url'),
+  title: text('title'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  views: bigint('views', { mode: 'number' }),
+  likes: bigint('likes', { mode: 'number' }),
+  comments: bigint('comments', { mode: 'number' }),
+  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('tracked_posts_account_external').on(t.trackedAccountId, t.externalId),
+  index('tracked_posts_account_published_idx').on(t.trackedAccountId, t.publishedAt),
+]);
+
+/**
  * Platform audit log (操作日志). `username` is denormalized so entries survive user deletion;
  * `detail` holds an allowlisted, redacted summary (never raw request bodies). See modules/audit.
  */
@@ -357,4 +426,7 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type SocialAccountGroup = typeof socialAccountGroups.$inferSelect;
 export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
+export type TrackedAccount = typeof trackedAccounts.$inferSelect;
+export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
+export type TrackedPost = typeof trackedPosts.$inferSelect;
 export type Role = User['role'];

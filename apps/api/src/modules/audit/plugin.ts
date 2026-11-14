@@ -17,7 +17,8 @@ import { recordAudit } from './audit.js';
  * Not recorded by the hook (method + route pattern):
  * - POST /api/auth/login: recorded explicitly by the login route (auth.login / auth.login_failed).
  * - read-like POSTs that only query/probe and change nothing the user configured:
- *   proxy egress checks (device and pool), Google health check, storage connection test.
+ *   proxy egress checks (device and pool), Google health check, storage connection test,
+ *   tracked-account URL parsing (preview).
  * Also skipped: non-mutating methods (GET/HEAD/OPTIONS), WebSocket upgrades, requests outside
  * /api/ and requests that matched no route (404 without a route pattern).
  */
@@ -28,6 +29,7 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/proxies/check',
   'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
+  'POST /api/tracked-accounts/parse',
 ]);
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -213,7 +215,27 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/social/groups/:id': { action: 'social.group_update', detail: ({ body }) => ({ name: body.name }) },
   'DELETE /api/social/groups/:id': { action: 'social.group_delete' },
   'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
+  // tracked accounts (追踪账号)
+  'POST /api/tracked-accounts': {
+    action: 'tracked.create', detail: ({ body }) => ({ platform: body.platform, category: body.category, tags: body.tags, favorite: body.favorite }),
+  },
+  'PATCH /api/tracked-accounts/:id': {
+    action: 'tracked.update',
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, category: body.category, tags: body.tags }),
+  },
+  'DELETE /api/tracked-accounts/:id': { action: 'tracked.delete' },
+  'POST /api/tracked-accounts/:id/snapshots': {
+    action: 'tracked.snapshot_add',
+    detail: ({ body }) => ({ capturedAt: body.capturedAt, followers: body.followers, following: body.following, posts: body.posts, views: body.views }),
+  },
+  'DELETE /api/tracked-accounts/:id/snapshots/:snapshotId': { action: 'tracked.snapshot_delete', detail: ({ params }) => ({ snapshotId: params.snapshotId }) },
+  'POST /api/tracked-accounts/:id/posts': { action: 'tracked.post_add', detail: ({ body }) => ({ url: body.url, publishedAt: body.publishedAt }) },
+  'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
+  'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
+  'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
   // settings
+  // The key itself is never stored in the log.
+  'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   'PUT /api/settings/storage': {
     action: 'storage.update',
     detail: ({ body }) => {
@@ -255,6 +277,11 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   if (pattern.startsWith('/api/social/groups/:id')) {
     const [r] = await db.select({ name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups).where(eq(schema.socialAccountGroups.id, id));
     return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/tracked-accounts/:id')) {
+    const [r] = await db.select({ platform: schema.trackedAccounts.platform, handle: schema.trackedAccounts.handle })
+      .from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, id));
+    return r ? `${r.platform} ${r.handle}` : null;
   }
   if (pattern.startsWith('/api/library/:id')) {
     const [r] = await db.select({ pkg: schema.libraryApps.package, v: schema.libraryApps.versionName, c: schema.libraryApps.versionCode })

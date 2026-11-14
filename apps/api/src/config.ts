@@ -54,6 +54,8 @@ const Env = z.object({
   FFPROBE_PATH: z.string().default('ffprobe'),
   /** Audit log (操作日志) entries older than this are deleted at startup and daily. */
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
+  /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
+  YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
 });
 
 export const config = Env.parse(process.env);

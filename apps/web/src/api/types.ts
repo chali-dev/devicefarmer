@@ -228,3 +228,39 @@ export interface SocialAccountLog {
   toValue: string | null
   message: string | null
 }
+
+// ---- tracked accounts (追踪账号)
+export type TrackedStatus = 'active' | 'paused' | 'error'
+export const TRACKED_STATUS_COLOR: Record<TrackedStatus, string> = { active: 'success', paused: 'default', error: 'error' }
+export type TrackedMetric = 'followers' | 'following' | 'posts' | 'views'
+/** api = official API configured; api_unconfigured = API exists but no credentials; manual_only = manual entry only. */
+export type TrackedDataMode = 'api' | 'api_unconfigured' | 'manual_only'
+export interface TrackedPlatform {
+  id: string; label: string; metrics: TrackedMetric[]
+  api: { profile: boolean; recentPosts: boolean; metrics: TrackedMetric[]; configured: boolean } | null
+}
+export interface TrackedAccount {
+  id: string; userId: string; ownerName: string | null; platform: string; handle: string; profileUrl: string
+  externalId: string | null; displayName: string | null; avatarUrl: string | null; bio: string | null
+  category: string | null; tags: string[]; favorite: boolean; status: TrackedStatus; notes: string | null
+  lastCheckedAt: string | null; lastError: string | null; lastErrorCode: string | null; lastSource: 'api' | 'manual' | null
+  createdAt: string; updatedAt: string; dataMode: TrackedDataMode
+  latest: { capturedAt: string; source: 'api' | 'manual'; followers: number | null; following: number | null; posts: number | null; views: number | null } | null
+  followers: number | null; followersDelta: number | null; followersPrevAt: string | null
+  lastRefresh: { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed'; error: string | null; createdAt: string; finishedAt: string | null } | null
+}
+export interface TrackedSnapshot {
+  id: string; capturedAt: string; source: 'api' | 'manual'
+  followers: number | null; following: number | null; posts: number | null; views: number | null
+}
+export interface TrackedPost {
+  id: string; externalId: string; url: string | null; title: string | null; publishedAt: string | null
+  views: number | null; likes: number | null; comments: number | null; source: 'api' | 'manual'; firstSeenAt: string; lastSeenAt: string
+}
+/** "@handle", or the bare YouTube channel id. */
+export const trackedHandle = (a: Pick<TrackedAccount, 'handle'>) => (/^UC[A-Za-z0-9_-]{22}$/.test(a.handle) ? a.handle : `@${a.handle}`)
+/** Compact count (1.2K / 3.4M), full number in a tooltip elsewhere. */
+export function compactNumber(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—'
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
+}
