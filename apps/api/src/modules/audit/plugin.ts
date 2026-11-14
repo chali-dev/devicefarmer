@@ -255,6 +255,34 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'DELETE /api/platforms/accounts/:id/connection': { action: 'platform.disconnect' },
   'POST /api/platforms/accounts/:id/check': { action: 'platform.account_check' },
+  // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
+  'POST /api/contents': {
+    action: 'content.create', target: ({ body }) => body.title as string,
+    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), stage: body.stage }),
+  },
+  'PUT /api/contents/:id': {
+    action: ({ body }) => (body.stage === 'archived' ? 'content.archive' : 'content.update'),
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined }),
+  },
+  'DELETE /api/contents/:id': { action: 'content.delete' },
+  'POST /api/contents/:id/distribute': {
+    action: 'content.distribute',
+    detail: ({ body }) => {
+      const targets = Array.isArray(body.targets) ? (body.targets as Body[]) : [];
+      return {
+        accountIds: targets.map((t) => t.accountId), count: targets.length, republish: body.republish, maxAttempts: body.maxAttempts,
+        scheduledAt: targets.map((t) => t.scheduledAt ?? null),
+      };
+    },
+  },
+  'POST /api/publish/tasks/:id/cancel': { action: 'publish.cancel' },
+  'POST /api/publish/tasks/:id/reschedule': { action: 'publish.reschedule', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
+  'POST /api/publish/tasks/:id/retry': { action: 'publish.retry', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
+  'PATCH /api/publish/tasks/:id': { action: 'publish.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
+  'POST /api/publish/tasks/:id/outcome': {
+    action: ({ body }) => (body.result === 'published' ? 'publish.outcome_published' : 'publish.outcome_failed'),
+    detail: ({ body }) => ({ result: body.result, url: body.url, externalId: body.externalId }),
+  },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
@@ -307,6 +335,18 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
     const [r] = await db.select({ platform: schema.trackedAccounts.platform, handle: schema.trackedAccounts.handle })
       .from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, id));
     return r ? `${r.platform} ${r.handle}` : null;
+  }
+  if (pattern.startsWith('/api/contents/:id')) {
+    const [r] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, id));
+    return r?.title ?? null;
+  }
+  if (pattern.startsWith('/api/publish/tasks/:id')) {
+    const [r] = await db.select({ platform: schema.publishTasks.platform, handle: schema.socialAccounts.handle, title: schema.contents.title })
+      .from(schema.publishTasks)
+      .leftJoin(schema.socialAccounts, eq(schema.socialAccounts.id, schema.publishTasks.accountId))
+      .leftJoin(schema.contents, eq(schema.contents.id, schema.publishTasks.contentId))
+      .where(eq(schema.publishTasks.id, id));
+    return r ? `${r.platform} @${r.handle ?? '?'} · ${r.title ?? ''}` : null;
   }
   if (pattern.startsWith('/api/tasks/:id')) {
     const [r] = await db.select({ type: schema.tasks.type, label: schema.tasks.instanceName }).from(schema.tasks).where(eq(schema.tasks.id, id));

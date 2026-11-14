@@ -29,6 +29,10 @@ import { proxyRoutes } from './modules/proxies/routes.js';
 import { socialRoutes } from './modules/social/routes.js';
 import { trackedRoutes } from './modules/tracked/routes.js';
 import { platformRoutes } from './modules/platforms/routes.js';
+import { contentRoutes } from './modules/content/routes.js';
+import { publishRoutes } from './modules/publish/routes.js';
+import './modules/publish/publish.js'; // registers the publish task handler + manual methods
+import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
 import { cleanupUploads } from './modules/apps/package.js';
 import { adb, dockerHost, stf } from './services.js';
 
@@ -68,6 +72,8 @@ await app.register(proxyRoutes);
 await app.register(socialRoutes);
 await app.register(trackedRoutes);
 await app.register(platformRoutes);
+await app.register(contentRoutes);
+await app.register(publishRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 
