@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Cloud-phone management platform: a Node.js/TypeScript control plane that manages Android containers (redroid) on a Linux host and reuses DeviceFarmer STF for device management and remote control. npm workspaces monorepo: `apps/api` (Fastify), `apps/web` (Vite + Vue 3 Composition API + Ant Design Vue + Pinia). UI text and docs are in Chinese.
+Cloud-phone management platform: a Node.js/TypeScript control plane that manages Android containers (redroid) on a Linux host and reuses DeviceFarmer STF for device management and remote control. npm workspaces monorepo: `apps/api` (Fastify), `apps/web` (Vite + Vue 3 Composition API + Ant Design Vue + Pinia + vue-i18n). The UI is bilingual (zh-CN/en); docs and many code comments are Chinese. Devices are called 设备 in the UI and `instances` in code.
 
 ## Commands
 
@@ -15,55 +15,73 @@ limactl start redroid                                          # Linux VM that r
 npm run dev:api          # tsx watch, reads ../../.env; http://127.0.0.1:3000, /api/health checks every dependency
 npm run dev:web          # Vite on :5173, proxies /api (incl. WebSockets) to the API
 npm run typecheck        # tsc (api) + vue-tsc (web); there is no linter
-npm run db:migrate && npm run db:seed    # seed creates/updates the admin from ADMIN_USERNAME/ADMIN_PASSWORD in .env
-cd apps/api && npx drizzle-kit generate --name <name>   # after editing src/db/schema.ts
+npm run db:migrate && npm run db:seed    # seed ensures the built-in admin (ADMIN_USERNAME); sets its password only on creation
+ADMIN_RESET_PASSWORD=1 npm run db:seed   # deliberately reset the built-in admin password to ADMIN_PASSWORD
+cd apps/api && npx drizzle-kit generate --name <name>   # after editing src/db/schema.ts; never edit old migrations
 ```
 
-There are no unit tests. All tests are integration scripts against the real infrastructure, which the project forbids replacing with mocks. Run them from `apps/api`, with the API running except for the smoke test:
+If the API was started without `watch` (plain `npx tsx --env-file=../../.env src/main.ts`), backend changes need a restart.
+
+There are no unit tests. All tests are integration scripts against the real infrastructure; the owner forbids replacing them with mocks. Run them from `apps/api`, with the API running (except the smoke test):
 
 ```bash
 npx tsx --env-file=../../.env scripts/smoke-adapters.ts        # adapters only: container→adb→STF→claim→key/tap/paste→teardown
 REDROID_IMAGE=cloudphone/redroid:13-mtg-20231025 npx tsx --env-file=../../.env scripts/smoke-adapters.ts
-npx tsx --env-file=../../.env scripts/e2e.ts <any.apk>         # 32 checks: lifecycle, remote control, APK, RBAC, isolation
-npx tsx --env-file=../../.env scripts/p0-check.ts <any.apk>    # app mgmt, device settings, screenshot, capacity (uses running g13-* instances)
-npx tsx --env-file=../../.env scripts/google-check.ts [--restart]   # creates/reuses 2 g13-* GApps instances
+npx tsx --env-file=../../.env scripts/e2e.ts <any.apk>         # lifecycle, remote control, APK, RBAC, isolation (creates 2 devices)
+npx tsx --env-file=../../.env scripts/p0-check.ts <any.apk>    # app mgmt, device settings, screenshot, capacity (needs running g13-* devices)
+npx tsx --env-file=../../.env scripts/google-check.ts [--restart]   # creates/reuses 2 g13-* GApps devices
+npx tsx --env-file=../../.env scripts/proxy-check.ts           # per-device proxy + kill switch (needs the cp-testproxy container in the VM)
+npx tsx --env-file=../../.env scripts/library-check.ts <any.apk>    # app library import/preinstall
+S3_TEST_ENDPOINT=... S3_TEST_BUCKET=... S3_TEST_ACCESS_KEY=... S3_TEST_SECRET=... npx tsx --env-file=../../.env scripts/assets-check.ts
 ```
 
-`e2e.ts` and `google-check.ts` create instances and are refused by the capacity check when the 4 GiB VM is full. `phone-*` instances belong to the user; tests must only touch instances they created.
+Scripts that create devices are refused by the capacity check when the 4 GiB VM is full. `phone-*` devices belong to the owner: never start/stop/restart/delete/install on them; tests only touch devices they created (read-only calls are fine). For S3 tests, MinIO no longer publishes images; use SeaweedFS (`chrislusf/seaweedfs`, tested 4.52) on Docker Desktop (prefix commands with `DOCKER_HOST=`).
 
 ## Environment facts that are not obvious
 
-- **redroid cannot run in Docker Desktop**: its kernel has no binder. Android runs in the Lima VM `redroid` (`infra/lima/redroid-host.yaml`, Ubuntu arm64, `binder_linux`). The API talks to the VM's Docker through the forwarded socket `~/.lima/redroid/sock/docker.sock` (`DOCKER_HOST` in `.env`). Sourcing `.env` in a shell therefore redirects the `docker` CLI to the VM, not to Docker Desktop.
-- Instance adb ports (5555–5604) are published in the VM and forwarded by Lima to the Mac's 127.0.0.1. STF's adb container reaches them as `host.docker.internal:<port>`, which is the device serial (`ADB_DEVICE_HOST`).
+- **redroid cannot run in Docker Desktop**: its kernel has no binder. Android runs in the Lima VM `redroid` (`infra/lima/redroid-host.yaml`, Ubuntu arm64, `binder_linux`, nftables modules). The API talks to the VM's Docker through the forwarded socket `~/.lima/redroid/sock/docker.sock` (`DOCKER_HOST` in `.env`). Sourcing `.env` in a shell therefore redirects the `docker` CLI to the VM, not to Docker Desktop.
+- Device adb ports (5555–5604) are published in the VM (on the network sidecar) and forwarded by Lima to the Mac's 127.0.0.1. STF's adb container reaches them as `host.docker.internal:<port>`, which is the device serial (`ADB_DEVICE_HOST`).
 - Google's emulator has **no Linux arm64 build**, so the `emulator` engine (`adapters/runtime/emulator.ts`) is code-only and untested. It needs an x86_64 host with `/dev/kvm`.
-- The GApps image is built locally from official, signature-verified MindTheGapps: `infra/redroid-gapps/build.sh` (`verify_jar.py`, then `stage.py`, then a Dockerfile). Never use third-party GApps rebuilds.
+- **Android 16 does not boot on this host**: redroid 16's gralloc needs ashmem, which Linux ≥5.18 (here Ubuntu 6.8) lacks. The `redroid-16-gapps` profile carries a `blockedReason`. Details and options: `docs/06-android-upgrade-plan.md`.
+- GApps images are built locally from official, signature-verified MindTheGapps: `infra/redroid-gapps/build.sh` (`ANDROID=13|16`; `verify_jar.py` for JAR-signed 13 packages, `verify_ota.py` for OTA whole-file-signed 16 packages, then `stage.py` and the Dockerfile template). Never use third-party GApps rebuilds.
+- The secure-capture helper (`infra/device-tools/capture/`) is built into `out/cpcapture.dex` by `build.sh` in a throwaway JDK container from official SDK packages (`SDK_DL` dir with `platform-33-ext3_r03.zip` and `build-tools_r34-linux.zip`). `out/` is gitignored, so rebuild it on a fresh checkout.
 
 ## Architecture
 
 The API is the only thing browsers talk to. It enforces RBAC and relays STF; STF is never exposed to end users.
 
-- **Two layers per instance, deliberately separate.** Container lifecycle is `AndroidRuntime` (`adapters/runtime/`: a `DockerRuntime` base, `RedroidRuntime`/`EmulatorRuntime` that only define their container spec, and `runtimeFor(engine)` in `index.ts`). Device control is `AdbAdapter` plus `StfAdapter`. `modules/instances/ops.ts` orchestrates both: create container, start, adb connect, boot check *via adb* (engine-agnostic), `applyDeviceSettings`, wait for STF ready, then claim.
-- **Profiles** (`src/profiles.ts`) map a profile id to engine, image, `gapps`, `requiresKvm` and `memEstimateMb`. Instances store `profile` and `engine`. `GET /api/profiles` reports availability (image configured, KVM present).
-- **All mutations of instances go through BullMQ** (`modules/instances/queue.ts`, one `tasks` row per job): create, start, stop, restart, delete, install-apk, uninstall-app, apply-settings. A failure of a device-only op (`DEVICE_OPS`) must not mark the instance `error`. Routes reject actions on busy statuses.
-- **Every instance/task write goes through `modules/instances/repo.ts`**, which publishes on a Redis pub/sub bus (`lib/events.ts`). `/api/events` WebSocket forwards it to browsers, filtered by RBAC. This keeps API and worker splittable later.
-- **Monitor** (`modules/monitor/monitor.ts`, every 5 s) reconciles Docker, adb and STF state into the DB and re-attaches dropped adb connections. STF's `ready` flag lags reality, so health is decided by adb and Docker, with STF as advisory. Google health (`modules/google/health.ts`) runs at most every 60 s for GApps profiles.
-- **Remote control**: `/api/instances/:id/session` WebSocket. It authenticates with the first message `{type:"auth",token}`, then RBAC, then claims the device in STF. It relays JPEG frames from STF's screen WebSocket (`display.url`, whose **port changes whenever STF recreates the worker**, so resolve it per session) and forwards input via `StfAdapter` using socket.io as the STF service account (which is STF's admin, set via `STF_ADMIN_EMAIL`).
-- RBAC (`modules/auth/rbac.ts`): two roles. `admin` sees everything; `user` sees only instances in `instance_grants` and may `view`/`control`/`operate` them. Creating/deleting devices, users/grants, storage settings and library/asset deletion are admin-only (`isAdmin`). The `builtin` user (ADMIN_USERNAME, flagged by the seed) cannot be deleted, disabled, demoted or have its password reset by others; the last enabled admin cannot be removed.
+- **Two layers per device, deliberately separate.** Container lifecycle is `AndroidRuntime` (`adapters/runtime/`: `DockerHost` holds shared Docker plumbing and helper containers; `DockerRuntime` base; `RedroidRuntime`/`EmulatorRuntime` only define their container spec; `runtimeFor(engine)`). Device control is `AdbAdapter` plus `StfAdapter`. `modules/instances/ops.ts` orchestrates both: create sidecar + container, start, adb connect, boot check *via adb* (engine-agnostic), `applyDeviceSettings`, wait for STF ready, claim, then enqueue preinstall apps.
+- **Network sidecar per device** (`adapters/runtime/network.ts`, `modules/network/singbox.ts`): a sing-box container owns the device's netns and adb port; the Android container joins it (`NetworkMode: container:`). With a proxy, nftables redirects TCP and DNS to sing-box and the filter chain's `policy drop` is the kill switch (no direct fallback, no IPv6, no non-DNS UDP). Proxy changes rewrite config + rules and SIGHUP (no Android restart). Legacy devices without a sidecar are converted when a proxy is first set. Proxy passwords are write-only (`publicInstance()` masks them in REST and events).
+- **Profiles** (`src/profiles.ts`) map a profile id to engine, image, `gapps`, `requiresKvm`, `memEstimateMb` and optional `blockedReason`. `GET /api/profiles` reports availability. Device creation runs a host memory capacity check.
+- **All device mutations go through BullMQ** (`modules/instances/queue.ts`, one `tasks` row per job): create, start, stop, restart, delete, install-apk, uninstall-app, apply-settings, set-proxy, import-app, push-asset. A failure of a device-only op (`DEVICE_OPS`) must not mark the device `error`. Routes reject actions on busy statuses.
+- **Every device/task write goes through `modules/instances/repo.ts`**, which publishes on a Redis pub/sub bus (`lib/events.ts`). `/api/events` WebSocket forwards it to browsers, filtered by RBAC.
+- **Monitor** (`modules/monitor/monitor.ts`, every 5 s) reconciles Docker, sidecar, adb and STF state and re-attaches dropped adb connections. STF's `ready` flag lags reality, so health is decided by adb and Docker. Google health (`modules/google/health.ts`) runs at most every 60 s for GApps profiles; proxy egress checks every 5 min.
+- **Remote control**: `/api/instances/:id/session` WebSocket. First message `{type:"auth",token}`, then RBAC, then claims the device in STF. It relays JPEG frames from STF's screen WebSocket (`display.url`, whose **port changes whenever STF recreates the worker**, so resolve it per session) and forwards input via `StfAdapter` (socket.io as STF's admin service account, `STF_ADMIN_EMAIL`). `screenSource: 'secure'` switches frames to the CpCapture helper, which also shows FLAG_SECURE windows (e.g. Google sign-in).
+- **Apps**: APK/split-bundle upload and batch install (`modules/apps`), app library (`modules/library`: import an installed app's APKs from a device, install elsewhere, preinstall on new devices), file upload to the phone's shared storage (`adb.pushMedia`).
+- **Asset library** (`modules/assets`) on pluggable storage (`adapters/storage`: local disk or S3-compatible). Storage settings live in the `settings` table. The S3 secret is AES-256-GCM encrypted (`lib/secret-box.ts`, key derived from `JWT_SECRET`, so rotating it requires re-entering the secret) and write-only. Each asset remembers the backend it was stored on.
+- **RBAC** (`modules/auth/rbac.ts`): two roles. `admin` sees everything; `user` sees only devices in `instance_grants` and may `view`/`control`/`operate` them. Creating/deleting devices, users/grants, storage settings, audit log and library/asset deletion are admin-only (`isAdmin`). The `builtin` user (ADMIN_USERNAME, flagged by the seed) cannot be deleted, disabled, demoted or have its password reset by others; the last enabled admin cannot be removed.
+- **Audit log** (`modules/audit`): an `onResponse` hook records every mutating `/api/` request (action table, target looked up before deletes, explicit exclusion list for read-like POSTs). Login is recorded explicitly. Details are allowlisted per action plus recursive redaction of `pass|secret|token|key|credential|authorization` keys; never log bodies verbatim. Writes are fire-and-forget; retention `AUDIT_RETENTION_DAYS`.
+- **Errors and i18n**: throw via `lib/errors.ts` helpers with a stable `code` (+ `params`). Responses are `{ error, code, params }`; the web client (`errorText`) shows `t('errors.<code>')` with the raw message as fallback. All UI strings live in `apps/web/src/i18n/{zh-CN,en}.ts`; `en` is typed from `zh-CN`, so keys must match. Theme (system/light/dark) comes from Ant Design tokens exported as `--cp-*` CSS variables (`components/ThemeVars.vue`); don't hard-code colours.
 
-## STF / Android protocol gotchas (all verified; see `docs/01-stf-redroid-compat.md`)
+## STF / Android protocol gotchas (all verified)
 
 - Touch events are consumed through a `SeqQueue`. They must be wrapped in `gestureStart` … `gestureStop` with consecutive `seq` numbers (mod 100), or they are silently dropped. `StfAdapter` owns the per-channel seq: assign it synchronously before any `await`, and share one in-flight socket connection.
 - Per-key injection (`input.type`, fast typing) drops or reorders characters on redroid. Text goes through the `clipboard.paste` transaction. Passwords go through `typeSecure` (one char per 120 ms, never touches the device clipboard).
 - Reading the device clipboard via STF fails on Android 10+ (background app denied).
 - `adb shell` runs as uid 2000. Reads of app-private data use `su 0` (redroid is userdebug). `sqlite3` crashes on redroid, so the GSF ID is read from GMS `shared_prefs/Checkin.xml`.
+- **Screen capture of FLAG_SECURE windows** needs `captureSecureLayers` as the system uid: CpCapture runs via `su 1000 … app_process`. Processes backgrounded over adbkit's `shell:` connection get killed when it closes (nohup/setsid don't help), so the API keeps the helper in the foreground of a held adb shell stream per device.
+- **MediaStore**: files written via adb sync get indexed with `is_pending=1` (invisible to other apps). Clear it per row by `_id`; selection on `_data` is ignored for shell callers, so look rows up by `_display_name` + `relative_path`. `pushMedia` verifies `is_pending=0`.
+- **Android's netd flushes `ip rule`s**, so sing-box `tun`/`auto_route` can't capture app traffic, and sing-box's `auto_redirect` fails in this environment. Use plain nftables in the netns. sing-box's own sockets need `default_mark` and `default_interface: eth0` (netd's `oif eth0` rules). In the filter chain, match redirected traffic by `ip daddr 127.0.0.0/8` (its `oif` is still the old one at that hook).
 - Android 13 `dumpsys activity` uses `ResumedActivity:` (12 used `mResumedActivity`). Launcher icon positions differ between versions (see the `LAYOUT` map in the smoke test).
 - Changing system locale restarts zygote (not the container or adbd). Apply the locale **before** other settings, because SettingsProvider writes just before a zygote restart get lost.
+- `logcat -t N` applies per buffer; trim server-side.
 - `jp.co.cyberagent.stf*` packages are STF's on-device agents and must never be uninstalled (`isProtectedPackage`).
+- Google Workspace accounts may require a screen lock and device management (`DeviceManagementScreenlockRequired`); that is the organisation's policy, not a platform bug, and must not be bypassed.
 
 ## Project constraints (from the owner)
 
-- Real tests only; never present mocked results as success.
+- Real tests only; never present mocked results as success. Say plainly what was not verified (e.g. UI not seen in a browser).
 - Do not implement device-identity spoofing (model/IMEI/fingerprint), Play Integrity bypass, or Google/platform risk-control evasion. Device settings are limited to Android system settings (locale, timezone, device name). Never store Google passwords.
-- Downloading system images or GApps, and production/environment changes, need explicit confirmation first.
+- Downloading system images or GApps, and production/environment changes (VM resources, kernel modules, stopping the owner's devices), need explicit confirmation first.
 - Keep the existing stack (KISS/DRY, no extra microservices). STF is used as an independent service through its REST and websocket APIs; don't modify STF source.
-- Open work (see `docs/04-architecture-review.md`): per-instance sing-box proxy, groups/tags, templates, CPU limits, scrcpy-based clipboard read, multi-host scheduling for 20–50 devices, compose packaging, STF production auth.
+- Open work (see `docs/04-architecture-review.md`, `docs/06-android-upgrade-plan.md`): scrcpy-based clipboard read, device groups/templates, CPU limits, multi-host scheduling for 20–50 devices, compose packaging, STF production auth, JWT revocation on password change, `trustProxy` for real client IPs in the audit log, Android 16 (needs an ashmem-capable kernel), emulator engine on an x86_64 KVM host.
