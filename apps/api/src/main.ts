@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import { hasZodFastifySchemaValidationErrors, serializerCompiler, validatorCompiler } from 'fastify-type-provider-zod';
 import { config } from './config.js';
 import { sqlClient } from './db/index.js';
+import { checkHealth } from './health.js';
 import { events } from './lib/events.js';
 import { HttpError } from './lib/errors.js';
 import { authPlugin } from './modules/auth/plugin.js';
@@ -18,6 +19,8 @@ import { instanceRoutes } from './modules/instances/routes.js';
 import './modules/instances/queue.js'; // registers the device-op task handlers
 import { reconcileTasks, startTaskWorkers } from './modules/tasks/core.js';
 import { taskRoutes } from './modules/tasks/routes.js';
+import { scheduleTaskCleanup } from './modules/tasks/retention.js'; // registers the tasks-cleanup handler
+import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { startMonitor } from './modules/monitor/monitor.js';
 import { userRoutes } from './modules/users/routes.js';
 import { appRoutes } from './modules/apps/routes.js';
@@ -34,7 +37,7 @@ import { publishRoutes } from './modules/publish/routes.js';
 import './modules/publish/publish.js'; // registers the publish task handler + manual methods
 import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
 import { cleanupUploads } from './modules/apps/package.js';
-import { adb, dockerHost, stf } from './services.js';
+import { stf } from './services.js';
 
 const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
 app.setValidatorCompiler(validatorCompiler);
@@ -76,25 +79,13 @@ await app.register(contentRoutes);
 await app.register(publishRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
+await app.register(dashboardRoutes);
 
-/** Dependency health: each check is a real call, nothing is assumed. */
+/** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
-  const checks = await Promise.all([
-    ['postgres', () => sqlClient`select 1`],
-    ['redis', () => events.ping()],
-    ['docker', () => dockerHost.listStates()],
-    ['adb', () => adb.states()],
-    ['stf', () => stf.listDevices()],
-  ].map(async ([name, fn]) => {
-    try { await (fn as () => Promise<unknown>)(); return [name, 'ok'] as const; }
-    catch (err) { return [name, (err as Error).message] as const; }
-  }));
-  const result = Object.fromEntries(checks);
-  const ok = Object.values(result).every((v) => v === 'ok');
-  // Capability, not a failure: only the Google emulator engine needs it.
-  const kvm = await dockerHost.hasKvm().catch(() => false);
-  reply.code(ok ? 200 : 503);
-  return { ok, checks: result, capabilities: { kvm } };
+  const h = await checkHealth();
+  reply.code(h.ok ? 200 : 503);
+  return h;
 });
 
 await events.start();
@@ -106,8 +97,12 @@ const stopAuditRetention = startAuditRetention(app.log);
 const hourly = () => {
   void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
+  void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
 };
-setTimeout(() => void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed')), 10_000).unref();
+setTimeout(() => {
+  void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
+  void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+}, 10_000).unref();
 const cleanupTimer = setInterval(hourly, 3600_000);
 
 const shutdown = async () => {

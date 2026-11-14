@@ -9,7 +9,8 @@ const router = createRouter({
       path: '/',
       component: () => import('../views/AppLayout.vue'),
       children: [
-        { path: '', redirect: '/instances' },
+        { path: '', redirect: '/dashboard' },
+        { path: 'dashboard', name: 'dashboard', component: () => import('../views/DashboardView.vue') },
         { path: 'instances', name: 'instances', component: () => import('../views/InstancesView.vue') },
         { path: 'instances/:id', name: 'instance', component: () => import('../views/InstanceDetailView.vue'), props: true },
         { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
@@ -19,14 +20,16 @@ const router = createRouter({
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
-        { path: 'platforms', name: 'platforms', component: () => import('../views/PlatformsView.vue'), meta: { admin: true } },
+        { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { admin: true } },
+        // Platform integrations moved into Settings; old links keep working.
+        { path: 'platforms', redirect: { path: '/settings', query: { tab: 'platforms' } } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
       ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/instances' },
+    { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
   ],
 })
 
@@ -34,7 +37,7 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.meta.public) return true
   if (!auth.user && !(await auth.loadMe())) return { name: 'login', query: { redirect: to.fullPath } }
-  if (to.meta.admin && !auth.isAdmin) return { name: 'instances' }
+  if (to.meta.admin && !auth.isAdmin) return { name: 'dashboard' }
   return true
 })
 

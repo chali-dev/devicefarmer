@@ -4,7 +4,8 @@ import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type Instance, type InstanceOwner, type PoolProxy, type Profile, type Task } from '../api/types'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -42,11 +43,15 @@ const columns = computed(() => [
   { title: '', key: 'ops', width: 170, align: 'right' as const },
 ])
 
-// ---- owner filter (admin only)
+// ---- status group filter (?status= from dashboard links) and owner filter (admin only)
+type StatusGroup = 'running' | 'stopped' | 'busy' | 'error'
+const statusFilter = ref<StatusGroup | undefined>(queryParam<StatusGroup>(useRoute().query, 'status', ['running', 'stopped', 'busy', 'error']))
+const inGroup = (i: Instance, g: StatusGroup) => (g === 'busy' ? BUSY_STATUSES.includes(i.status) : i.status === g)
 const ownerFilter = ref<InstanceOwner | null>(null)
 const rows = computed(() => {
   const f = ownerFilter.value
-  return f ? store.list.filter((i) => i.owners?.some((o) => o.id === f.id)) : store.list
+  const s = statusFilter.value
+  return store.list.filter((i) => (!f || i.owners?.some((o) => o.id === f.id)) && (!s || inGroup(i, s)))
 })
 function filterByOwner(o: InstanceOwner) {
   ownerFilter.value = o
@@ -265,9 +270,10 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
           </a-space>
         </template>
       </a-alert>
-      <div v-if="ownerFilter" style="margin-bottom: 12px">
+      <div v-if="ownerFilter || statusFilter" style="margin-bottom: 12px">
         <span class="muted" style="margin-right: 8px">{{ t('devices.filter') }}</span>
-        <a-tag closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
+        <a-tag v-if="ownerFilter" closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
+        <a-tag v-if="statusFilter" closable color="blue" @close="statusFilter = undefined">{{ t('devices.statusTag', { status: t(`devices.${statusFilter}`) }) }}</a-tag>
       </div>
       <a-table
         :data-source="rows"

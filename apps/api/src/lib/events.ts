@@ -49,6 +49,11 @@ class EventBus extends EventEmitter {
     return this.pub.ping();
   }
 
+  /** redis_version from INFO server (system info page). */
+  async serverVersion(): Promise<string | null> {
+    return /redis_version:(\S+)/.exec(await this.pub.info('server'))?.[1] ?? null;
+  }
+
   async close(): Promise<void> {
     await Promise.allSettled([this.pub.quit(), this.sub.quit()]);
   }

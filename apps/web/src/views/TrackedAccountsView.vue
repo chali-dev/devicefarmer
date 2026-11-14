@@ -3,6 +3,8 @@ import { message, Modal } from 'ant-design-vue'
 import { StarFilled, StarOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
   compactNumber, TRACKED_STATUS_COLOR, trackedHandle,
@@ -16,6 +18,8 @@ const { t } = useI18n()
 const URL_HINT = 'https://'
 const ADD_HINT = 'https://www.youtube.com/@handle'
 const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 
 const platforms = ref<TrackedPlatform[]>([])
 const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
@@ -29,8 +33,9 @@ const selectedKeys = ref<string[]>([])
 
 const filters = reactive({
   q: '', platform: undefined as string | undefined, category: undefined as string | undefined, tag: undefined as string | undefined,
-  favorite: false, status: undefined as TrackedStatus | undefined, ownerId: undefined as string | undefined,
+  favorite: false, status: queryParam<TrackedStatus>(route.query, 'status', ['active', 'paused', 'error']), ownerId: undefined as string | undefined,
 })
+if (queryParam(route.query, 'platform')) filters.platform = queryParam(route.query, 'platform')
 const platformLabel = (id: string) => platforms.value.find((p) => p.id === id)?.label ?? id
 
 function query(): string {
@@ -201,26 +206,6 @@ const detailOpen = ref(false)
 const detail = ref<TrackedAccount | null>(null)
 function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = true }
 
-// ---- YouTube API key (admin, write-only)
-const keyOpen = ref(false)
-const keySaving = ref(false)
-const keyState = ref<{ apiKeySet: boolean; updatedAt: string | null } | null>(null)
-const keyInput = ref('')
-async function openKey() {
-  keyInput.value = ''; keyState.value = null; keyOpen.value = true
-  try { keyState.value = (await api<{ youtube: { apiKeySet: boolean; updatedAt: string | null } }>('GET', '/api/settings/youtube')).youtube } catch (e) { message.error(errorText(e)) }
-}
-async function saveKey(clear = false) {
-  if (!clear && !keyInput.value.trim()) return
-  keySaving.value = true
-  try {
-    keyState.value = (await api<{ youtube: { apiKeySet: boolean; updatedAt: string | null } }>('PUT', '/api/settings/youtube', { apiKey: clear ? null : keyInput.value.trim() })).youtube
-    keyInput.value = ''
-    message.success(t('common.saved'))
-    void loadPlatforms(); void load(true)
-  } catch (e) { message.error(errorText(e)) }
-  finally { keySaving.value = false }
-}
 const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
 const categoryOptions = computed(() => facets.value.categories.map((v) => ({ value: v })))
 </script>
@@ -229,7 +214,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
   <a-card :title="t('tracked.title')" size="small">
     <template #extra>
       <a-space wrap>
-        <a-button v-if="auth.isAdmin" @click="openKey">{{ t('tracked.youtubeKey') }}</a-button>
+        <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
         <a-button :disabled="!items.length" @click="refreshBatch">
           {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
         </a-button>
@@ -375,20 +360,6 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="keyOpen" :title="t('tracked.youtubeKey')" :footer="null" :width="560">
-    <a-spin :spinning="!keyState">
-      <p class="muted">{{ t('tracked.youtubeKeyHint') }}</p>
-      <p>
-        {{ t('tracked.youtubeKeyState') }}:
-        <a-tag :color="keyState?.apiKeySet ? 'success' : 'default'">{{ keyState?.apiKeySet ? t('tracked.keySet') : t('tracked.keyNotSet') }}</a-tag>
-      </p>
-      <a-input-password v-model:value="keyInput" :placeholder="keyState?.apiKeySet ? t('tracked.keyReplace') : 'AIza…'" autocomplete="off" :maxlength="200" />
-      <a-space style="margin-top: 12px">
-        <a-button type="primary" :loading="keySaving" :disabled="!keyInput.trim()" @click="saveKey(false)">{{ t('common.save') }}</a-button>
-        <a-button v-if="keyState?.apiKeySet" danger :loading="keySaving" @click="saveKey(true)">{{ t('tracked.keyClear') }}</a-button>
-      </a-space>
-    </a-spin>
-  </a-modal>
 </template>
 
 <style scoped>

@@ -385,3 +385,60 @@ export interface PublishCapability {
   captionMax: number; hashtagsMax: number; privacy?: string[]
 }
 export interface PublishPlatform { id: string; name: string; capability: PublishCapability; methods: ('api' | 'manual')[]; known: boolean }
+
+// ---------------------------------------------------------------- dashboard (概览) + settings (设置)
+export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
+export interface DashboardWidgets {
+  devices?: { total: number; running: number; stopped: number; error: number; busy: number; online: number; byStatus: Record<string, number>; capacity: DashboardCapacity | null }
+  proxies?: { total: number; bound: number; free: number; freeUsable: number; ok: number; failed: number; unchecked: number }
+  social?: {
+    total: number; exceptions: number; linked: number; byPlatform: Record<string, number>; byLogin: Record<string, number>
+    connections: { connected: number; expired: number; revoked: number; error: number }
+  }
+  tracked?: { total: number; byStatus: Record<string, number>; topGainers: { id: string; platform: string; handle: string; displayName: string | null; followers: number; gain: number }[] }
+  publishing?: {
+    contents: { total: number; byStatus: Record<string, number> }
+    upcoming7d: number; published7d: number; failed7d: number; awaitingOperator: number; running: number
+    next: { id: string; scheduledAt: string; platform: string; status: string; title: string | null; handle: string | null }[]
+    trend: { day: string; published: number; failed: number }[]
+  }
+  tasks?: {
+    last24h: Record<'total' | 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled', number>
+    recentFailures: { id: string; type: string; label: string | null; error: string | null; errorCode: string | null; finishedAt: string | null; createdAt: string }[]
+  }
+  media?: { public: DashboardMediaPart; private: DashboardMediaPart; processing: number; failed: number }
+  perUser?: { users: DashboardUserRow[] }
+}
+export interface DashboardMediaPart { count: number; bytes: number; images: number; videos: number }
+export interface DashboardUserRow {
+  id: string; username: string; role: Role; disabled: boolean; devices: number; socialAccounts: number; exceptions: number
+  trackedAccounts: number; contents: number; published7d: number; failed7d: number; awaitingOperator: number
+}
+export interface DashboardResponse {
+  generatedAt: string
+  scope: { userId: string; username: string; admin: boolean }
+  /** Widget keys in display order; widgets registered by other modules (e.g. comments) arrive under their own key. */
+  order: string[]
+  widgets: DashboardWidgets & Record<string, unknown>
+  errors: Record<string, string>
+}
+export interface SettingsConfig {
+  publish: { maxAttempts: number; timeoutMs: number; retryBackoffMs: number }
+  auditRetentionDays: number
+  media: { imageMaxMb: number; videoMaxMb: number; allowedTypes: string[] }
+  adbPorts: { min: number; max: number }
+}
+export interface SystemInfo {
+  health: { ok: boolean; checks: Record<string, string>; capabilities: { kvm: boolean } }
+  capacity: DashboardCapacity
+  versions: { node: string; postgres: string | null; redis: string | null; docker: { version: string; os: string; arch: string; kernel: string | null } | null }
+  env: string
+  uptimeSec: number
+  stf: { reachable: boolean; devices: number; present: number; ready: number }
+}
+export interface TaskRetentionSettings {
+  retention: { days: number | null; updatedAt: string | null }
+  defaultDays: number
+  maxDays: number
+  lastCleanup: { id: string; status: TaskStatus; result: { tasks: number; logs: number; cutoff: string | null } | null; finishedAt: string | null; createdAt: string } | null
+}

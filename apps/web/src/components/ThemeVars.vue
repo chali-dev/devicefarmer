@@ -26,6 +26,7 @@ watchEffect(() => {
     '--cp-primary-bg': t.colorPrimaryBg,
     '--cp-error': t.colorError,
     '--cp-warning': t.colorWarning,
+    '--cp-success': t.colorSuccess,
     '--cp-mask': t.colorBgMask,
   }
   const root = document.documentElement

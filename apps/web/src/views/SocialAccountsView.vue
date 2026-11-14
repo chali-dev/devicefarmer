@@ -6,6 +6,7 @@ import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
+import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
   proxyLabel, SOCIAL_ACCOUNT_COLOR, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_COLOR, SOCIAL_LOGIN_STATUSES,
@@ -36,11 +37,11 @@ const page = reactive({ current: 1, pageSize: 20 })
 
 const filters = reactive({
   q: '',
-  platform: undefined as string | undefined,
+  platform: queryParam(route.query, 'platform'),
   groupId: undefined as string | undefined,
-  loginStatus: undefined as SocialLoginStatus | undefined,
-  accountStatus: undefined as SocialAccountStatus | undefined,
-  exception: false,
+  loginStatus: queryParam<SocialLoginStatus>(route.query, 'loginStatus', ['unknown', 'logged_in', 'logged_out', 'needs_verification']),
+  accountStatus: queryParam<SocialAccountStatus>(route.query, 'accountStatus', ['active', 'limited', 'suspended', 'disabled']),
+  exception: queryParam(route.query, 'exception') === '1',
   tags: [] as string[],
   ownerId: undefined as string | undefined,
   instanceId: (typeof route.query.instanceId === 'string' ? route.query.instanceId : undefined) as string | undefined,
@@ -298,29 +299,13 @@ const groupColumns = computed(() => [
   { title: '', key: 'ops', width: 140, align: 'right' as const },
 ])
 
-// ---------------------------------------------------------------- limits (admin)
-const limitsOpen = ref(false)
-const limits = reactive<Record<string, number>>({})
-function openLimits() {
-  for (const p of platforms.value) limits[p.id] = p.limit
-  limitsOpen.value = true
-}
-async function saveLimits() {
-  saving.value = true
-  try {
-    platforms.value = (await api<{ platforms: SocialPlatform[] }>('PUT', '/api/social/settings', { limits: { ...limits } })).platforms
-    message.success(t('common.saved'))
-    limitsOpen.value = false
-  } catch (e) { message.error(errorText(e)) }
-  finally { saving.value = false }
-}
 </script>
 
 <template>
   <a-card :title="t('social.title')" size="small">
     <template #extra>
       <a-space wrap>
-        <a-button v-if="auth.isAdmin" @click="openLimits">{{ t('social.limits') }}</a-button>
+        <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'social' } })">{{ t('social.limits') }}</a-button>
         <a-button @click="groupsOpen = true">{{ t('social.groups') }}</a-button>
         <a-button type="primary" @click="openAdd">{{ t('social.add') }}</a-button>
       </a-space>
@@ -576,16 +561,6 @@ async function saveLimits() {
     </a-table>
   </a-modal>
 
-  <!-- per-device limits (admin) -->
-  <a-modal v-model:open="limitsOpen" :title="t('social.limits')" :confirm-loading="saving" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="saveLimits">
-    <p class="muted">{{ t('social.limitsHint') }}</p>
-    <a-form layout="horizontal" :label-col="{ span: 8 }">
-      <a-form-item v-for="p in platforms" :key="p.id" :label="p.name">
-        <a-input-number v-model:value="limits[p.id]" :min="1" :max="100" :precision="0" />
-        <span class="muted small" style="margin-left: 8px">{{ t('social.limitDefault', { n: p.defaultLimit }) }}</span>
-      </a-form-item>
-    </a-form>
-  </a-modal>
 </template>
 
 <style scoped>

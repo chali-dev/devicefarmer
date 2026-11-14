@@ -18,7 +18,7 @@ async function submit() {
   error.value = ''
   try {
     await auth.login(form.username, form.password)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/instances'
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     await router.replace(redirect)
   } catch (e) {
     error.value = errorText(e)
