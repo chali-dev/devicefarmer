@@ -79,29 +79,55 @@ export const proxyLabel = (p: { label: string | null; host: string; port: number
 
 export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
 
+export type TaskStatus = 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled'
+export const TASK_STATUSES: TaskStatus[] = ['pending', 'scheduled', 'running', 'success', 'failed', 'cancelled']
+export const TASK_FINAL: TaskStatus[] = ['success', 'failed', 'cancelled']
+
+/** Task-centre row (lists and events carry no payload/result; GET /api/tasks/:id adds them). */
 export interface Task {
   id: string
   type: string
   instanceId: string | null
+  /** Display label (device name · detail, or e.g. the media name). */
   instanceName: string | null
-  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  refType: string | null
+  refId: string | null
+  status: TaskStatus
+  attempts: number
+  maxAttempts: number
+  timeoutMs: number | null
+  priority: number
+  idempotencyKey: string | null
+  retryOf: string | null
+  runAt: string | null
+  cancelRequested: boolean
+  /** Last error and its code (translated as errors.<code>). */
   error: string | null
+  errorCode: string | null
   createdBy?: string | null
   /** Username of createdBy (GET /api/tasks only; null = system task). */
   createdByName?: string | null
   createdAt: string
+  startedAt: string | null
   finishedAt: string | null
+  updatedAt: string
 }
+export interface TaskDetail extends Task { payload: Record<string, unknown> | null; result: unknown; canCancel: boolean; canRetry: boolean }
+export interface TaskLog { id: string; taskId: string; ts: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; data: Record<string, unknown> | null }
+export interface TaskStats { byStatus: Record<TaskStatus, number>; byType: Record<string, number>; types: string[] }
 
 /** Localized task type (unknown types are shown raw). */
 export const taskText = (type: string) => (te(`tasks.types.${type}`) ? t(`tasks.types.${type}`) : type)
-export const TASK_STATUS_COLOR: Record<Task['status'], string> = { queued: 'default', running: 'processing', succeeded: 'success', failed: 'error' }
+export const TASK_STATUS_COLOR: Record<TaskStatus, string> = { pending: 'default', scheduled: 'purple', running: 'processing', success: 'success', failed: 'error', cancelled: 'warning' }
+/** Badge status for a-badge (no colour names). */
+export const TASK_STATUS_BADGE: Record<TaskStatus, 'default' | 'processing' | 'success' | 'error' | 'warning'> = { pending: 'default', scheduled: 'default', running: 'processing', success: 'success', failed: 'error', cancelled: 'warning' }
 export const taskStatusText = (s: string) => (te(`tasks.status.${s}`) ? t(`tasks.status.${s}`) : s)
 
 export type PlatformEvent =
   | { type: 'instance.updated'; instance: Instance }
   | { type: 'instance.deleted'; instanceId: string }
   | { type: 'task.updated'; task: Task }
+  | { type: 'task.log'; taskId: string; instanceId: string | null; createdBy: string | null; log: TaskLog }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
 

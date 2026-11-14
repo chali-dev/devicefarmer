@@ -3,7 +3,7 @@ import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText, getToken, responseError } from '../api/client'
-import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_COLOR, taskText, type InstalledApp, type PoolProxy } from '../api/types'
+import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type InstalledApp, type PoolProxy } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -79,7 +79,7 @@ function uninstall(pkg: string) {
   })
 }
 // refresh the list when an install/uninstall task for this instance finishes
-watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'uninstall-app') && t.status === 'succeeded').length, () => void loadApps())
+watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'uninstall-app') && t.status === 'success').length, () => void loadApps())
 watch(() => inst.value?.status, (s) => { if (s === 'running') void loadApps() }, { immediate: true })
 
 // ---- device settings (system settings only; hardware identity is not configurable)
@@ -106,7 +106,7 @@ async function saveSettings() {
   } catch (e) { message.error(errorText(e)) }
   finally { savingSettings.value = false }
 }
-watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'succeeded') void loadSettings() })
+watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'success') void loadSettings() })
 onMounted(loadSettings)
 
 // ---- upload files (photos/videos) into the phone's shared storage
@@ -414,7 +414,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
             <template #renderItem="{ item }">
               <a-list-item>
                 <a-space wrap>
-                  <a-badge :status="TASK_STATUS_COLOR[item.status as keyof typeof TASK_STATUS_COLOR] as any" :text="taskText(item.type)" />
+                  <a-badge :status="TASK_STATUS_BADGE[item.status as keyof typeof TASK_STATUS_BADGE]" :text="taskText(item.type)" />
                   <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
                 </a-space>
                 <template #extra><span class="time">{{ new Date(item.createdAt).toLocaleString() }}</span></template>

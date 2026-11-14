@@ -23,7 +23,7 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
 const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }) })).json()).token;
 const task = (id: string) => waitFor('task', async () => {
   const t = (await http('GET', '/api/tasks?limit=200', T)).body.tasks.find((x: any) => x.id === id);
-  return t && ['succeeded', 'failed'].includes(t.status) ? t : null;
+  return t && ['success', 'failed'].includes(t.status) ? t : null;
 });
 const create = async (prefix: string) => {
   const c = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: prefix });
@@ -43,12 +43,12 @@ try {
   a = await create('liba');
   const fd = new FormData(); fd.append('instanceIds', JSON.stringify([a])); fd.append('file', new Blob([fs.readFileSync(apk)]), 'test.apk');
   const inst = await http('POST', '/api/apps/install', T, fd);
-  check('install test app on A', (await task(inst.body.accepted[0].taskId)).status === 'succeeded');
+  check('install test app on A', (await task(inst.body.accepted[0].taskId)).status === 'success');
   const verA = (await apps(a)).find((x) => x.package === PKG);
 
   let r = await http('POST', '/api/library/import', T, { instanceId: a, package: PKG });
   const t1 = await task(r.body.taskId);
-  check('import installed app from A into library', t1.status === 'succeeded', t1.error ?? '');
+  check('import installed app from A into library', t1.status === 'success', t1.error ?? '');
   let lib = (await http('GET', '/api/library', T)).body.apps.filter((x: any) => x.package === PKG);
   check('library entry has version, files and sha256', lib.length === 1 && lib[0].versionCode === verA.versionCode && lib[0].files.every((f: any) => /^[0-9a-f]{64}$/.test(f.sha256)),
     `${lib[0]?.versionName} (${lib[0]?.versionCode}), ${lib[0]?.files.length} file(s), ${(lib[0]?.files.reduce((s: number, f: any) => s + f.size, 0) / 1048576).toFixed(1)} MB`);
@@ -71,14 +71,14 @@ try {
   b = await create('libb');
   const pre = await waitFor('preinstall task', async () => {
     const t = (await http('GET', '/api/tasks?limit=50', T)).body.tasks.find((x: any) => x.instanceId === b && x.type === 'install-apk');
-    return t && ['succeeded', 'failed'].includes(t.status) ? t : null;
+    return t && ['success', 'failed'].includes(t.status) ? t : null;
   }, 120_000);
-  check('new instance got a preinstall task', pre.status === 'succeeded', pre.instanceName);
+  check('new instance got a preinstall task', pre.status === 'success', pre.instanceName);
   const onB = (await apps(b)).find((x) => x.package === PKG);
   check('preinstalled app present on B with the same version', !!onB && onB.versionCode === verA.versionCode, onB?.versionName ?? 'missing');
 
   r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: [b] });
-  check('install from library onto existing instance (update path)', (await task(r.body.accepted[0].taskId)).status === 'succeeded');
+  check('install from library onto existing instance (update path)', (await task(r.body.accepted[0].taskId)).status === 'success');
 } catch (err) {
   check(`unexpected error: ${(err as Error).message}`, false);
 } finally {

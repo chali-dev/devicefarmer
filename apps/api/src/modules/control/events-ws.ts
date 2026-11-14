@@ -20,8 +20,11 @@ export const eventsRoutes: FastifyPluginAsync = async (app) => {
     const onEvent = async (ev: PlatformEvent) => {
       if (!user || client.readyState !== WebSocket.OPEN) return;
       await refresh();
-      const id = ev.type === 'instance.updated' ? ev.instance.id : ev.type === 'instance.deleted' ? ev.instanceId : ev.task.instanceId;
-      if (allowed === 'all' || (id && allowed.has(id))) client.send(JSON.stringify(ev));
+      if (ev.type === 'task.cancel') return; // internal
+      // Tasks: visible on a granted device or to their owner (same rule as GET /api/tasks).
+      const id = ev.type === 'instance.updated' ? ev.instance.id : ev.type === 'instance.deleted' ? ev.instanceId : ev.type === 'task.log' ? ev.instanceId : ev.task.instanceId;
+      const owner = ev.type === 'task.updated' ? ev.task.createdBy : ev.type === 'task.log' ? ev.createdBy : null;
+      if (allowed === 'all' || (id && allowed.has(id)) || (owner && owner === user.id)) client.send(JSON.stringify(ev));
     };
 
     client.on('message', async (raw) => {

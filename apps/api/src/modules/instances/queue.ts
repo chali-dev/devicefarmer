@@ -1,21 +1,19 @@
-import { Queue, Worker, type Job } from 'bullmq';
-import { config } from '../../config.js';
-import { db, schema } from '../../db/index.js';
-import { updateInstance, updateTask } from './repo.js';
-import { processMedia } from '../media/media.js';
+import type { Task } from '../../db/schema.js';
+import { conflict, forbidden } from '../../lib/errors.js';
+import { isAdmin } from '../auth/rbac.js';
+import { createTask, registerTaskHandler } from '../tasks/core.js';
+import { getInstance, updateInstance } from './repo.js';
 import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opPushAsset, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
 
 export type DeviceOpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy' | 'import-app' | 'push-asset';
-/** Ops that need no device (instanceId absent): background jobs of other modules. */
+/** Ops that need no device (instanceId absent): background jobs of other modules (each registers its handler). */
 export type TaskOpName = 'media-process';
 export type OpName = DeviceOpName | TaskOpName;
+/** Task payload of the device ops (stored in tasks.payload; ids and paths only, no secrets). */
 export interface OpJob {
-  taskId: string; op: OpName;
-  /** Set for device ops; absent for TaskOpName jobs. */
-  instanceId?: string;
   /** install-apk: one app = base + splits */
   apkPaths?: string[]; sizes?: number[];
-  /** uninstall-app */
+  /** uninstall-app, import-app */
   package?: string;
   /** push-asset, media-process: media_assets.id */
   assetId?: string;
@@ -23,88 +21,65 @@ export interface OpJob {
 /** Optional task metadata: what the task works on (e.g. refType 'media' + asset id). */
 export interface TaskRef { refType?: string; refId?: string }
 /** Ops that act on the device only; their failure must not mark the instance as broken. */
-const DEVICE_OPS: OpName[] = ['install-apk', 'uninstall-app', 'apply-settings', 'import-app', 'push-asset'];
+const DEVICE_OPS: DeviceOpName[] = ['install-apk', 'uninstall-app', 'apply-settings', 'import-app', 'push-asset'];
+/** Queued lifecycle ops whose route already changed state: cancelling them would leave it inconsistent. */
+const NOT_CANCELLABLE: DeviceOpName[] = ['create', 'delete', 'set-proxy'];
+const BUSY = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 
-const QUEUE = 'instance-ops';
-/** Device-less jobs (media processing) get their own queue + worker so they never wait behind device boots. */
-const TASK_QUEUE = 'task-ops';
-const connection = { url: config.REDIS_URL };
-
-export const opsQueue = new Queue<OpJob>(QUEUE, { connection });
-export const tasksQueue = new Queue<OpJob>(TASK_QUEUE, { connection });
-
-/** Records a task row for a device op and enqueues it. Returns the task id. */
-export async function enqueue(op: DeviceOpName, instance: { id: string; name: string }, userId: string | null, extra: Partial<OpJob> = {}, detail?: string, ref: TaskRef = {}): Promise<string> {
-  const [task] = await db.insert(schema.tasks)
-    .values({ type: op, instanceId: instance.id, instanceName: detail ? `${instance.name} · ${detail}` : instance.name, createdBy: userId, ...ref })
-    .returning();
-  await opsQueue.add(op, { taskId: task!.id, op, ...extra, instanceId: instance.id }, {
-    removeOnComplete: 1000, removeOnFail: 1000, attempts: 1,
+/** Records a device-op task and enqueues it (thin wrapper over the task centre). Returns the task id. */
+export async function enqueue(op: DeviceOpName, instance: { id: string; name: string }, userId: string | null, extra: OpJob = {}, detail?: string, ref: TaskRef = {}): Promise<string> {
+  const { task } = await createTask({
+    type: op, userId, instance, label: detail ? `${instance.name} · ${detail}` : instance.name,
+    payload: extra as Record<string, unknown>, refType: ref.refType, refId: ref.refId,
   });
-  return task!.id;
+  return task.id;
 }
 
-/** Records a task row for a job that needs no device (instance_id NULL; `label` is shown as its name). */
-export async function enqueueTask(op: TaskOpName, extra: Partial<OpJob>, userId: string | null, opts: TaskRef & { label: string }): Promise<string> {
-  const [task] = await db.insert(schema.tasks)
-    .values({ type: op, instanceId: null, instanceName: opts.label, createdBy: userId, refType: opts.refType, refId: opts.refId })
-    .returning();
-  await tasksQueue.add(op, { taskId: task!.id, op, ...extra, instanceId: undefined }, {
-    removeOnComplete: 1000, removeOnFail: 1000, attempts: 1,
-  });
-  return task!.id;
+/** Records a task for a job that needs no device (instance_id NULL; `label` is shown as its name). */
+export async function enqueueTask(op: TaskOpName, extra: OpJob & Record<string, unknown>, userId: string | null, opts: TaskRef & { label: string }): Promise<string> {
+  const { task } = await createTask({ type: op, userId, label: opts.label, refType: opts.refType, refId: opts.refId, payload: extra });
+  return task.id;
 }
 
-async function run(job: Job<OpJob>): Promise<void> {
-  const { op } = job.data;
-  if (op === 'media-process') return processMedia(job.data.assetId!);
-  const instanceId = job.data.instanceId;
-  if (!instanceId) throw new Error(`${op}: missing instanceId`);
-  switch (op) {
-    case 'create': return opCreate(instanceId);
-    case 'start': return opStart(instanceId);
-    case 'stop': return opStop(instanceId);
-    case 'restart': return opRestart(instanceId);
-    case 'delete': return opDelete(instanceId);
-    case 'install-apk': return opInstallApk(instanceId, job.data.apkPaths!, job.data.sizes!);
-    case 'uninstall-app': return opUninstallApp(instanceId, job.data.package!);
-    case 'apply-settings': return opApplySettings(instanceId);
-    case 'set-proxy': return opSetProxy(instanceId);
-    case 'import-app': return opImportApp(instanceId, job.data.package!);
-    case 'push-asset': return opPushAsset(instanceId, job.data.assetId!);
-  }
-}
+const RUN: Record<DeviceOpName, (id: string, p: OpJob) => Promise<void>> = {
+  create: (id) => opCreate(id),
+  start: (id) => opStart(id),
+  stop: (id) => opStop(id),
+  restart: (id) => opRestart(id),
+  delete: (id) => opDelete(id),
+  'install-apk': (id, p) => opInstallApk(id, p.apkPaths!, p.sizes!),
+  'uninstall-app': (id, p) => opUninstallApp(id, p.package!),
+  'apply-settings': (id) => opApplySettings(id),
+  'set-proxy': (id) => opSetProxy(id),
+  'import-app': (id, p) => opImportApp(id, p.package!),
+  'push-asset': (id, p) => opPushAsset(id, p.assetId!),
+};
 
 /**
- * Lifecycle worker. Concurrency is bounded because booting Android is
- * CPU/memory heavy on the host; raise it per host capacity when scaling out.
+ * Device ops share the 'instance-ops' queue. Concurrency is bounded because booting Android is
+ * CPU/memory heavy on the host; raise it per host capacity when scaling out. They are not
+ * interruptible: a cancel while running is recorded, the op finishes.
  */
-function makeWorker(queue: string, concurrency: number): Worker<OpJob> {
-  const worker = new Worker<OpJob>(queue, async (job) => {
-    await updateTask(job.data.taskId, { status: 'running' });
-    await run(job);
-  }, { connection, concurrency });
-
-  worker.on('completed', (job) => {
-    void updateTask(job.data.taskId, { status: 'succeeded', finishedAt: new Date() });
-  });
-  worker.on('failed', (job, err) => {
-    if (!job) return;
-    void updateTask(job.data.taskId, { status: 'failed', error: err.message, finishedAt: new Date() });
-    if (job.data.instanceId && !DEVICE_OPS.includes(job.data.op)) {
-      void updateInstance(job.data.instanceId, { status: 'error', lastError: `${job.data.op}: ${err.message}` });
-    }
-  });
-  return worker;
-}
-
-/** Starts the device-op worker and the device-less task worker; close() stops both and their queues. */
-export function startWorkers(deviceConcurrency = 2, taskConcurrency = 2): { close(): Promise<void> } {
-  const workers = [makeWorker(QUEUE, deviceConcurrency), makeWorker(TASK_QUEUE, taskConcurrency)];
-  return {
-    async close() {
-      await Promise.all(workers.map((w) => w.close()));
-      await Promise.all([opsQueue.close(), tasksQueue.close()]);
+for (const op of Object.keys(RUN) as DeviceOpName[]) {
+  registerTaskHandler<OpJob>(op, {
+    queue: 'instance-ops',
+    concurrency: 2,
+    cancellable: !NOT_CANCELLABLE.includes(op),
+    // Retrying a failed create would rebuild containers over a half-created device: delete and create again instead.
+    retryable: op !== 'create',
+    async run(ctx) {
+      if (!ctx.task.instanceId) throw new Error(`${op}: missing instanceId`);
+      await RUN[op](ctx.task.instanceId, ctx.payload);
     },
-  };
+    async beforeRetry(task: Task, user) {
+      if (op === 'delete' && !isAdmin(user)) throw forbidden('仅管理员可以删除设备', 'instances.delete_admin_only');
+      const inst = task.instanceId ? await getInstance(task.instanceId) : undefined;
+      if (!inst) throw conflict('任务的目标已不存在', 'tasks.target_gone');
+      if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
+    },
+    async onFailure(task) {
+      if (task.status !== 'failed' || !task.instanceId || DEVICE_OPS.includes(op)) return;
+      await updateInstance(task.instanceId, { status: 'error', lastError: `${op}: ${task.error ?? ''}` });
+    },
+  });
 }

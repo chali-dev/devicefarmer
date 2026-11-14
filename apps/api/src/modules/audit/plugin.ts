@@ -189,6 +189,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'proxy.import',
     detail: ({ body }) => ({ defaultType: body.defaultType, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
   },
+  // task centre (任务中心)
+  'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
+  'POST /api/tasks/:id/retry': { action: 'task.retry' },
   // settings
   'PUT /api/settings/storage': {
     action: 'storage.update',
@@ -223,6 +226,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
     const [r] = await db.select({ label: schema.proxies.label, type: schema.proxies.type, host: schema.proxies.host, port: schema.proxies.port })
       .from(schema.proxies).where(eq(schema.proxies.id, id));
     return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
+  }
+  if (pattern.startsWith('/api/tasks/:id')) {
+    const [r] = await db.select({ type: schema.tasks.type, label: schema.tasks.instanceName }).from(schema.tasks).where(eq(schema.tasks.id, id));
+    return r ? (r.label ? `${r.type} · ${r.label}` : r.type) : null;
   }
   if (pattern.startsWith('/api/library/:id')) {
     const [r] = await db.select({ pkg: schema.libraryApps.package, v: schema.libraryApps.versionName, c: schema.libraryApps.versionCode })

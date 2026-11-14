@@ -44,7 +44,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const waitTask = (taskId: string) => waitFor('task', async () => {
   const t = (await http('GET', '/api/tasks?limit=100', T)).body.tasks.find((x: any) => x.id === taskId);
-  return t && (t.status === 'succeeded' || t.status === 'failed') ? t : null;
+  return t && (t.status === 'success' || t.status === 'failed') ? t : null;
 });
 
 const created: string[] = [];
@@ -149,7 +149,7 @@ try {
   r = await http('PUT', `/api/instances/${F1.id}/proxy`, T, { proxyId: goodId });
   check('bind pool proxy to device (202 + set-proxy task)', r.status === 202 && !!r.body.taskId, r.text.slice(0, 100));
   const t1 = await waitTask(r.body.taskId);
-  check('set-proxy task succeeded', t1.status === 'succeeded', t1.error ?? '');
+  check('set-proxy task succeeded', t1.status === 'success', t1.error ?? '');
   const inst = (await http('GET', `/api/instances/${F1.id}`, T)).body.instance;
   check('device shows pool proxy without username/password', inst.proxy?.id === goodId && inst.proxy.hasAuth === true && !('username' in inst.proxy) && !JSON.stringify(inst).includes(PW) && !JSON.stringify(inst).includes('cpuser'));
   const cfgPath = `${process.env.INSTANCE_DATA_ROOT ?? '/srv/cloudphone/instances'}/${F1.name}/net/config.json`;
@@ -173,7 +173,7 @@ try {
 
   r = await http('PUT', `/api/proxies/${goodId}`, T, { password: PW });
   check('changing credentials of a bound proxy re-applies to its device', r.status === 200 && !!r.body.taskId && r.body.proxy.status === 'unchecked');
-  check('re-apply task succeeded', (await waitTask(r.body.taskId)).status === 'succeeded');
+  check('re-apply task succeeded', (await waitTask(r.body.taskId)).status === 'success');
   await http('POST', `/api/proxies/${goodId}/check`, T);
 
   r = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: 'ppx', proxyMode: 'pick', proxyIds: [goodId] });

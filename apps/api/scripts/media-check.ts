@@ -141,7 +141,7 @@ try {
   const j = await waitDone(upJpg.body.item.id, admin);
   check('jpeg processed (300x500)', j.status === 'ready' && j.width === 300 && j.height === 500, `${j.status} ${j.width}x${j.height}`);
   const tasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.refType, 'media'), eq(schema.tasks.refId, pubImg.id)));
-  check('media-process task row (no device) succeeded', tasks.some((t) => t.type === 'media-process' && t.status === 'succeeded' && t.instanceId === null), JSON.stringify(tasks.map((t) => [t.type, t.status])));
+  check('media-process task row (no device) succeeded', tasks.some((t) => t.type === 'media-process' && t.status === 'success' && t.instanceId === null), JSON.stringify(tasks.map((t) => [t.type, t.status])));
 
   // ---------- validation
   const exe = Buffer.concat([Buffer.from('MZ\x90\x00\x03\x00\x00\x00', 'latin1'), randomBytes(2000)]);
@@ -291,7 +291,7 @@ try {
   check('push with empty assetIds → 400', p4.status === 400, `${p4.status}`);
 
   // ---------- in-use guard: a real unfinished push-asset task row referencing the asset
-  const [busy] = await db.insert(schema.tasks).values({ type: 'push-asset', status: 'queued', instanceName: `media-check-${tag}`, refType: 'media', refId: aId }).returning();
+  const [busy] = await db.insert(schema.tasks).values({ type: 'push-asset', status: 'pending', instanceName: `media-check-${tag}`, refType: 'media', refId: aId }).returning();
   const inUse = await http('DELETE', `/api/media/${aId}`, A.token);
   check('delete while an unfinished push task references it → 409 in_use', inUse.status === 409 && inUse.body.code === 'media.in_use', `${inUse.status} ${inUse.body?.code}`);
   await db.delete(schema.tasks).where(eq(schema.tasks.id, busy!.id));

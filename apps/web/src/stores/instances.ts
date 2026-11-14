@@ -12,6 +12,12 @@ export const useInstancesStore = defineStore('instances', () => {
   let ws: WebSocket | null = null
   let retry: ReturnType<typeof setTimeout> | null = null
   let stopped = true
+  /** Task-centre views subscribe to task events (task.updated / task.log) instead of keeping their own socket. */
+  const taskListeners = new Set<(ev: Extract<PlatformEvent, { type: 'task.updated' | 'task.log' }>) => void>()
+  function onTaskEvent(fn: (ev: Extract<PlatformEvent, { type: 'task.updated' | 'task.log' }>) => void) {
+    taskListeners.add(fn)
+    return () => { taskListeners.delete(fn) }
+  }
 
   const list = computed(() => [...byId.value.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })))
 
@@ -42,6 +48,7 @@ export const useInstancesStore = defineStore('instances', () => {
       if (idx >= 0) tasks.value[idx] = { ...ev.task, createdByName: ev.task.createdByName ?? tasks.value[idx]!.createdByName }
       else tasks.value = [ev.task, ...tasks.value].slice(0, 100)
     }
+    if (ev.type === 'task.updated' || ev.type === 'task.log') taskListeners.forEach((fn) => fn(ev))
   }
 
   function connect() {
@@ -118,5 +125,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return r.google
   }
 
-  return { googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
+  return { onTaskEvent, googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
 })

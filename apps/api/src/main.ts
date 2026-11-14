@@ -15,7 +15,9 @@ import { auditRoutes } from './modules/audit/routes.js';
 import { controlRoutes } from './modules/control/session.js';
 import { eventsRoutes } from './modules/control/events-ws.js';
 import { instanceRoutes } from './modules/instances/routes.js';
-import { startWorkers } from './modules/instances/queue.js';
+import './modules/instances/queue.js'; // registers the device-op task handlers
+import { reconcileTasks, startTaskWorkers } from './modules/tasks/core.js';
+import { taskRoutes } from './modules/tasks/routes.js';
 import { startMonitor } from './modules/monitor/monitor.js';
 import { userRoutes } from './modules/users/routes.js';
 import { appRoutes } from './modules/apps/routes.js';
@@ -61,6 +63,7 @@ await app.register(mediaRoutes);
 await app.register(settingsRoutes);
 await app.register(proxyRoutes);
 await app.register(auditRoutes);
+await app.register(taskRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed. */
 app.get('/api/health', async (_req, reply) => {
@@ -83,7 +86,9 @@ app.get('/api/health', async (_req, reply) => {
 });
 
 await events.start();
-const workers = startWorkers();
+if (config.TASKS_TEST_HANDLERS) await import('./modules/tasks/test-handlers.js');
+await reconcileTasks(app.log);
+const workers = startTaskWorkers();
 const stopMonitor = startMonitor(app.log);
 const stopAuditRetention = startAuditRetention(app.log);
 const hourly = () => {

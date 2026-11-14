@@ -54,6 +54,8 @@ const Env = z.object({
   FFPROBE_PATH: z.string().default('ffprobe'),
   /** Audit log (操作日志) entries older than this are deleted at startup and daily. */
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
+  /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
+  TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });
 
 export const config = Env.parse(process.env);

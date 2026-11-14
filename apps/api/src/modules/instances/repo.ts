@@ -1,7 +1,8 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, type SQL } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { db, schema } from '../../db/index.js';
 import type { Instance, Task } from '../../db/schema.js';
-import { events } from '../../lib/events.js';
+import { events, type PublicTask } from '../../lib/events.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
 
 /**
@@ -41,8 +42,14 @@ export async function deleteInstanceRow(id: string): Promise<void> {
   events.publish({ type: 'instance.deleted', instanceId: id });
 }
 
-export async function updateTask(id: string, set: Partial<typeof schema.tasks.$inferInsert>): Promise<Task | undefined> {
-  const [row] = await db.update(schema.tasks).set(set).where(eq(schema.tasks.id, id)).returning();
-  if (row) events.publish({ type: 'task.updated', task: row });
+export function publicTask(row: Task): PublicTask {
+  const { payload: _p, result: _r, ...rest } = row;
+  return rest;
+}
+
+/** Task writes (modules/tasks/core.ts); `onlyIf` guards status transitions. Undefined = no row matched. */
+export async function updateTask(id: string, set: PgUpdateSetSource<typeof schema.tasks>, onlyIf?: SQL): Promise<Task | undefined> {
+  const [row] = await db.update(schema.tasks).set(set).where(onlyIf ? and(eq(schema.tasks.id, id), onlyIf) : eq(schema.tasks.id, id)).returning();
+  if (row) events.publish({ type: 'task.updated', task: publicTask(row) });
   return row;
 }
