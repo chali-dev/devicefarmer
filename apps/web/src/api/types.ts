@@ -385,3 +385,49 @@ export interface PublishCapability {
   captionMax: number; hashtagsMax: number; privacy?: string[]
 }
 export interface PublishPlatform { id: string; name: string; capability: PublishCapability; methods: ('api' | 'manual')[]; known: boolean }
+
+// ---------------------------------------------------------------- comments & engagement (评论互动)
+export type CommentStatus = 'new' | 'read' | 'replied' | 'hidden' | 'ignored'
+export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'rejected' | 'cancelled'
+export const COMMENT_STATUS_COLOR: Record<CommentStatus, string> = { new: 'blue', read: 'default', replied: 'success', hidden: 'default', ignored: 'default' }
+export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
+  draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
+  sent: 'success', failed: 'error', rejected: 'red', cancelled: 'default',
+}
+export interface CommentRules { requireApproval: boolean; duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
+export interface CommentAccount {
+  id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
+  commentsRead: boolean; commentsReply: boolean; readMode: 'api' | 'manual'; readReason: string | null; replyMode: 'api' | 'manual'; replyReason: string | null
+  newCount: number
+  sync: { lastSyncedAt: string | null; lastFetched: number | null; lastNew: number | null; lastError: string | null; lastErrorCode: string | null
+    task: { id: string; status: TaskStatus; errorCode: string | null; finishedAt: string | null } | null } | null
+}
+export interface CommentReplySummary {
+  id: string; status: CommentReplyStatus; text: string; method: string | null; errorCode: string | null; error: string | null; authorName: string | null; sentAt: string | null; updatedAt: string
+}
+export interface CommentItem {
+  id: string; userId: string; accountId: string; platform: string; source: 'api' | 'manual'; externalId: string; parentExternalId: string | null
+  externalPostId: string | null; postUrl: string | null; publishTaskId: string | null; authorName: string | null; authorHandle: string | null; text: string
+  likeCount: number | null; replyCount: number | null; publishedAt: string | null; fetchedAt: string; status: CommentStatus; createdAt: string
+  account: { id: string; handle: string; platform: string } | null
+  publishTask: { id: string; url: string | null; title: string | null } | null
+  reply: CommentReplySummary | null
+  children?: CommentItem[]
+}
+export interface CommentReplyItem {
+  id: string; userId: string; accountId: string; commentId: string; platform: string; text: string; templateId: string | null; status: CommentReplyStatus
+  method: 'api' | 'manual' | null; scheduledAt: string | null; round: number; maxAttempts: number; taskId: string | null; externalReplyId: string | null
+  error: string | null; errorCode: string | null; authorId: string | null; authorName: string | null; submittedAt: string | null
+  reviewerId: string | null; reviewerName: string | null; reviewedAt: string | null; reviewNote: string | null
+  senderId: string | null; senderName: string | null; handedAt: string | null; sentAt: string | null; createdAt: string; updatedAt: string
+  ownerName: string | null
+  comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null
+  account: { id: string; handle: string; platform: string } | null
+  instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
+  canReview: boolean; canEdit: boolean
+}
+export interface CommentLog {
+  id: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; action: string; code: string | null; message: string | null
+  data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
+}
+export interface CommentTemplate { id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string }

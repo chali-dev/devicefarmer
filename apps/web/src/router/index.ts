@@ -18,6 +18,7 @@ const router = createRouter({
         { path: 'tracked', name: 'tracked', component: () => import('../views/TrackedAccountsView.vue') },
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
+        { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
         { path: 'platforms', name: 'platforms', component: () => import('../views/PlatformsView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
