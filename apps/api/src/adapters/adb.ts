@@ -119,6 +119,16 @@ export class AdbAdapter {
     if (!/Success/.test(r)) throw new Error(`uninstall failed: ${r.trim()}`);
   }
 
+  /**
+   * Copies a file to shared storage and registers it with MediaStore so Gallery and
+   * app pickers (e.g. Instagram) see it immediately.
+   */
+  async pushMedia(adbPort: number, localPath: string, remotePath: string): Promise<void> {
+    if (!/^\/sdcard\/(Pictures|Movies|Download)\/[\p{L}\p{N}._\- ]{1,120}$/u.test(remotePath)) throw new Error('invalid target path');
+    await this.push(adbPort, localPath, remotePath);
+    await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}'`);
+  }
+
   /** Version of an installed package. */
   async packageVersion(adbPort: number, pkg: string): Promise<{ versionName: string | null; versionCode: string } | null> {
     const out = await this.shell(adbPort, `dumpsys package ${pkg} | grep -m2 -E "versionCode=|versionName="`);

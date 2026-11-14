@@ -106,6 +106,22 @@ async function saveSettings() {
 watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'succeeded') void loadSettings() })
 onMounted(loadSettings)
 
+// ---- upload files (photos/videos) into the phone's shared storage
+const fileUploading = ref(false)
+const lastUploads = ref<string[]>([])
+async function uploadFile(opt: { file: File; onSuccess?: (r: unknown) => void; onError?: (e: Error) => void }) {
+  fileUploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', opt.file, opt.file.name)
+    const r = await api<{ path: string; folder: string }>('POST', `/api/instances/${props.id}/files`, fd)
+    lastUploads.value = [r.path, ...lastUploads.value].slice(0, 5)
+    message.success(`已上传到手机 ${r.folder}，相册与应用选择图片时可见`)
+    opt.onSuccess?.(r)
+  } catch (e) { message.error((e as Error).message); opt.onError?.(e as Error) }
+  finally { fileUploading.value = false }
+}
+
 // ---- app library import
 async function importToLibrary(pkg: string) {
   try { await api('POST', '/api/library/import', { instanceId: props.id, package: pkg }); message.success(`正在导入 ${pkg} 到应用库（大型应用需要一些时间）`) }
@@ -280,6 +296,14 @@ const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'proces
             @search="sendText"
           />
           <div class="hint">{{ secure ? '安全输入：逐字符发送（较慢，仅支持键盘可输入的字符）。' : '也可以点击画面后直接用键盘输入；右键画面 = 返回键。注意：普通发送会经过设备剪贴板，不要用它输入密码。' }}</div>
+        </a-card>
+
+        <a-card size="small" title="上传文件到手机">
+          <a-upload-dragger :multiple="true" :show-upload-list="false" :custom-request="uploadFile as any" :disabled="inst.status !== 'running' || fileUploading">
+            <p style="margin: 8px 0">{{ fileUploading ? '上传中…' : '拖拽照片 / 视频 / 文件到此处' }}</p>
+            <p class="hint" style="margin: 0 0 8px">照片 → Pictures，视频 → Movies，其他 → Download；上传后立即出现在相册和应用的选择器中（如 Instagram 头像）</p>
+          </a-upload-dragger>
+          <div v-for="p in lastUploads" :key="p" class="hint">✓ {{ p }}</div>
         </a-card>
 
         <a-card size="small" title="应用管理">

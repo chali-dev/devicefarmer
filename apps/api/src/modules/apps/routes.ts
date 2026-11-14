@@ -9,6 +9,11 @@ import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from './package.js';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { config } from '../../config.js';
 
 const Ids = z.array(z.string().uuid()).min(1).max(100);
 
@@ -46,6 +51,35 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     reply.code(202);
     return { filename: prepared.name, apks: prepared.apkPaths.length, accepted, skipped };
+  });
+
+  /**
+   * Upload a file to the phone's shared storage (images -> Pictures, videos -> Movies,
+   * others -> Download) and index it so it shows up in Gallery / app pickers.
+   */
+  app.post('/api/instances/:id/files', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
+    await assertInstanceAccess(req.user, req.params.id, 'control');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found');
+    if (inst.status !== 'running') throw conflict('instance is not running');
+    const file = await req.file();
+    if (!file) throw badRequest('missing file');
+    // Keep letters/digits of any script (e.g. Chinese); no quotes or shell metacharacters.
+    const safe = file.filename.normalize('NFC').replace(/[^\p{L}\p{N}._\- ]/gu, '_').slice(-100) || 'upload';
+    const folder = file.mimetype.startsWith('image/') ? 'Pictures' : file.mimetype.startsWith('video/') ? 'Movies' : 'Download';
+    const tmpDir = path.resolve(config.UPLOAD_DIR, randomUUID());
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+    try {
+      const local = path.join(tmpDir, safe);
+      await pipeline(file.file, fs.createWriteStream(local));
+      if (file.file.truncated) throw badRequest('file too large');
+      const remote = `/sdcard/${folder}/${Date.now()}-${safe}`;
+      await adb.pushMedia(inst.adbPort, local, remote);
+      reply.code(201);
+      return { path: remote, folder, size: (await fs.promises.stat(local)).size };
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   app.post('/api/apps/uninstall', {
