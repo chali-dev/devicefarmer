@@ -7,6 +7,7 @@ import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_COLOR, taskText, type Insta
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
+import DeviceSocialCard from '../components/social/DeviceSocialCard.vue'
 import { useInstancesStore } from '../stores/instances'
 import { useAuthStore } from '../stores/auth'
 
@@ -382,6 +383,8 @@ async function act(a: 'start' | 'stop' | 'restart') {
           <div class="hint" style="margin-top: 8px">{{ t('detail.proxy.killSwitch') }}</div>
           <div class="hint">{{ t('detail.proxy.hint') }}</div>
         </a-card>
+
+        <DeviceSocialCard :instance-id="id" />
 
         <a-card size="small" :title="t('detail.settings.title')">
           <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">

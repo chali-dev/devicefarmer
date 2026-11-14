@@ -178,3 +178,53 @@ export function auditActionText(action: string): string {
 export function profileLabel(id: string, fallback: string): string {
   return te(`profiles.${id}`) ? t(`profiles.${id}`) : fallback
 }
+
+// ---------------------------------------------------------------- social accounts (社交账号)
+export type SocialLoginStatus = 'unknown' | 'logged_in' | 'logged_out' | 'needs_verification'
+export type SocialAccountStatus = 'active' | 'limited' | 'suspended' | 'disabled'
+export const SOCIAL_LOGIN_STATUSES: SocialLoginStatus[] = ['unknown', 'logged_in', 'logged_out', 'needs_verification']
+export const SOCIAL_ACCOUNT_STATUSES: SocialAccountStatus[] = ['active', 'limited', 'suspended', 'disabled']
+export const SOCIAL_LOGIN_COLOR: Record<SocialLoginStatus, string> = { unknown: 'default', logged_in: 'success', logged_out: 'warning', needs_verification: 'error' }
+export const SOCIAL_ACCOUNT_COLOR: Record<SocialAccountStatus, string> = { active: 'success', limited: 'warning', suspended: 'error', disabled: 'default' }
+
+export interface SocialPlatform { id: string; name: string; defaultLimit: number; limit: number }
+
+export interface SocialAccount {
+  id: string
+  userId: string
+  ownerName: string | null
+  platform: string
+  handle: string
+  displayName: string | null
+  profileUrl: string | null
+  externalId: string | null
+  groupId: string | null
+  groupName: string | null
+  tags: string[]
+  instanceId: string | null
+  instance: { id: string; name: string; status: string; accessible: boolean } | null
+  /** Derived from the device's pool proxy (non-secret fields). */
+  proxy: InstanceProxy | null
+  loginStatus: SocialLoginStatus
+  accountStatus: SocialAccountStatus
+  notes: string | null
+  lastCheckedAt: string | null
+  lastError: string | null
+  exception: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SocialGroup { id: string; userId: string; ownerName: string; name: string; count: number }
+
+export interface SocialAccountLog {
+  id: string
+  at: string
+  actorId: string | null
+  actorName: string | null
+  action: 'create' | 'update' | 'status' | 'checked' | 'link' | 'unlink'
+  field: string | null
+  fromValue: string | null
+  toValue: string | null
+  message: string | null
+}

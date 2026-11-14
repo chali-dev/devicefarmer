@@ -24,6 +24,7 @@ import { mediaRoutes } from './modules/media/routes.js';
 import { purgeDeletedMedia } from './modules/media/media.js';
 import { settingsRoutes } from './modules/settings/routes.js';
 import { proxyRoutes } from './modules/proxies/routes.js';
+import { socialRoutes } from './modules/social/routes.js';
 import { cleanupUploads } from './modules/apps/package.js';
 import { adb, dockerHost, stf } from './services.js';
 
@@ -60,6 +61,7 @@ await app.register(libraryRoutes);
 await app.register(mediaRoutes);
 await app.register(settingsRoutes);
 await app.register(proxyRoutes);
+await app.register(socialRoutes);
 await app.register(auditRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed. */

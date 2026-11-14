@@ -189,6 +189,30 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'proxy.import',
     detail: ({ body }) => ({ defaultType: body.defaultType, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
   },
+  // social accounts (社交账号). Notes and error texts are not copied into the audit log.
+  'POST /api/social/accounts': {
+    action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, groupId: body.groupId, instanceId: body.instanceId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
+  },
+  'PUT /api/social/accounts/:id': {
+    action: 'social.account_update',
+    detail: ({ body }) => ({
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, groupId: body.groupId,
+      loginStatus: body.loginStatus, accountStatus: body.accountStatus,
+    }),
+  },
+  'POST /api/social/accounts/:id/checked': {
+    action: 'social.account_checked', detail: ({ body }) => ({ loginStatus: body.loginStatus, accountStatus: body.accountStatus, error: body.lastError ? true : undefined }),
+  },
+  'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
+  'POST /api/social/accounts/batch': {
+    action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
+    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, groupId: body.groupId, tags: body.tags }),
+  },
+  'POST /api/social/groups': { action: 'social.group_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ name: body.name, ownerId: body.ownerId }) },
+  'PUT /api/social/groups/:id': { action: 'social.group_update', detail: ({ body }) => ({ name: body.name }) },
+  'DELETE /api/social/groups/:id': { action: 'social.group_delete' },
+  'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
   // settings
   'PUT /api/settings/storage': {
     action: 'storage.update',
@@ -223,6 +247,14 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
     const [r] = await db.select({ label: schema.proxies.label, type: schema.proxies.type, host: schema.proxies.host, port: schema.proxies.port })
       .from(schema.proxies).where(eq(schema.proxies.id, id));
     return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
+  }
+  if (pattern.startsWith('/api/social/accounts/:id')) {
+    const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
+    return r ? `${r.platform} @${r.handle}` : null;
+  }
+  if (pattern.startsWith('/api/social/groups/:id')) {
+    const [r] = await db.select({ name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups).where(eq(schema.socialAccountGroups.id, id));
+    return r?.name ?? null;
   }
   if (pattern.startsWith('/api/library/:id')) {
     const [r] = await db.select({ pkg: schema.libraryApps.package, v: schema.libraryApps.versionName, c: schema.libraryApps.versionCode })

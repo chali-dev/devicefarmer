@@ -6,7 +6,7 @@ import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, BulbOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined,
-  SafetyOutlined, UserOutlined,
+  SafetyOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -29,7 +29,7 @@ const THEMES = computed(() => [
 ])
 
 const collapsed = ref(false)
-const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'media', 'proxies'] as const
+const MENU_KEYS = ['users', 'permissions', 'audit', 'library', 'media', 'proxies', 'social'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'instances'])
 
 onMounted(() => { store.connect(); void store.refresh() })
@@ -138,6 +138,10 @@ async function savePassword() {
         <a-menu-item key="media" @click="router.push('/media')">
           <PictureOutlined />
           <span>{{ t('nav.media') }}</span>
+        </a-menu-item>
+        <a-menu-item key="social" @click="router.push('/social')">
+          <TeamOutlined />
+          <span>{{ t('nav.social') }}</span>
         </a-menu-item>
         <template v-if="auth.isAdmin">
           <a-menu-item key="proxies" @click="router.push('/proxies')">
