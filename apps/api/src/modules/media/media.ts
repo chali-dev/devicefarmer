@@ -12,6 +12,7 @@ import { describeError } from '../../adapters/storage/types.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
+import { registerTaskHandler } from '../tasks/core.js';
 import { activeStorage, storageFor } from '../settings/storage.js';
 import { formatByExt, MAGIC_BYTES, maxBytes, maxMb, mediaLimits, mimeMatches, type MediaFormat } from './formats.js';
 import { analyzeMedia } from './process.js';
@@ -89,12 +90,12 @@ export async function assertCategoryFor(owner: Owner, categoryId: string): Promi
 
 /**
  * Single extension point for "is this asset still referenced by unfinished work?".
- * Today: queued/running push-asset tasks. The publish module adds its own check here.
+ * Today: pending/scheduled/running push-asset tasks. The publish module adds its own check here.
  */
 export async function assertMediaNotInUse(assetId: string): Promise<void> {
   const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.tasks).where(and(
     eq(schema.tasks.refType, 'media'), eq(schema.tasks.refId, assetId),
-    eq(schema.tasks.type, 'push-asset'), inArray(schema.tasks.status, ['queued', 'running']),
+    eq(schema.tasks.type, 'push-asset'), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']),
   ));
   if (row && row.n > 0) throw conflict(`素材正被 ${row.n} 个未完成的任务使用`, 'media.in_use', { tasks: row.n });
 }
@@ -239,6 +240,31 @@ export async function processMedia(assetId: string): Promise<void> {
     throw new Error(msg);
   }
 }
+
+/**
+ * media-process in the task centre (task-ops queue, device-less). If the task ends without
+ * processMedia deciding (timeout, interrupted by a restart, cancelled), the asset is marked
+ * failed here so it never stays 'processing'. A manual retry puts a failed asset back to processing.
+ */
+registerTaskHandler<{ assetId: string }>('media-process', {
+  queue: 'task-ops',
+  concurrency: 2,
+  timeoutMs: 15 * 60_000,
+  run: (ctx) => processMedia(ctx.payload.assetId ?? ctx.task.refId!),
+  async onFailure(task) {
+    const assetId = (task.payload as { assetId?: string } | null)?.assetId ?? task.refId;
+    if (!assetId) return;
+    await db.update(schema.mediaAssets).set({ status: 'failed', error: (task.error ?? task.errorCode ?? task.status).slice(0, 500) })
+      .where(and(eq(schema.mediaAssets.id, assetId), isNull(schema.mediaAssets.deletedAt), eq(schema.mediaAssets.status, 'processing')));
+  },
+  async beforeRetry(task) {
+    const assetId = (task.payload as { assetId?: string } | null)?.assetId ?? task.refId;
+    const a = assetId ? await getMedia(assetId) : undefined;
+    if (!a) throw conflict('任务的目标已不存在', 'tasks.target_gone');
+    if (a.status !== 'failed') throw conflict('只有处理失败的素材可以重新处理', 'media.not_failed');
+    await db.update(schema.mediaAssets).set({ status: 'processing', error: null }).where(eq(schema.mediaAssets.id, a.id));
+  },
+});
 
 // ---------------------------------------------------------------- read / delete
 

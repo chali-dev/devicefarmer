@@ -233,6 +233,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
+  // task centre (任务中心)
+  'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
+  'POST /api/tasks/:id/retry': { action: 'task.retry' },
   // settings
   // The key itself is never stored in the log.
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
@@ -282,6 +285,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
     const [r] = await db.select({ platform: schema.trackedAccounts.platform, handle: schema.trackedAccounts.handle })
       .from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, id));
     return r ? `${r.platform} ${r.handle}` : null;
+  }
+  if (pattern.startsWith('/api/tasks/:id')) {
+    const [r] = await db.select({ type: schema.tasks.type, label: schema.tasks.instanceName }).from(schema.tasks).where(eq(schema.tasks.id, id));
+    return r ? (r.label ? `${r.type} · ${r.label}` : r.type) : null;
   }
   if (pattern.startsWith('/api/library/:id')) {
     const [r] = await db.select({ pkg: schema.libraryApps.package, v: schema.libraryApps.versionName, c: schema.libraryApps.versionCode })

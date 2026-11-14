@@ -157,9 +157,9 @@ try {
     check('APK upload accepted', up.status === 202, up.body?.taskId);
     const task = await waitFor('install task', async () => {
       const t = (await http('GET', `/api/tasks?instanceId=${a.id}`, adminToken)).body.tasks.find((x: any) => x.id === up.body.taskId);
-      return t && (t.status === 'succeeded' || t.status === 'failed') ? t : null;
+      return t && (t.status === 'success' || t.status === 'failed') ? t : null;
     }, 120_000);
-    check('install task succeeded', task.status === 'succeeded', task.error ?? '');
+    check('install task succeeded', task.status === 'success', task.error ?? '');
     const pkgs = await shIn(a.containerId, 'pm list packages org.fdroid.fdroid');
     check('package present on device', pkgs.includes('org.fdroid.fdroid'), pkgs);
   } else {

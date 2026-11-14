@@ -5,6 +5,7 @@ import { HttpError, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { PLATFORMS, platformDef, registerSource, type PostData } from './platforms.js';
 import { youtubeSource } from './youtube.js';
+import { registerTaskHandler } from '../tasks/core.js';
 
 /**
  * Tracked accounts (追踪账号): service layer. Rows are private to their owner (`user_id`);
@@ -168,7 +169,16 @@ export async function refreshTrackedAccount(id: string): Promise<RefreshOutcome>
 export async function pendingRefreshes(ids: string[]): Promise<Set<string>> {
   if (!ids.length) return new Set();
   const rows = await db.select({ refId: schema.tasks.refId }).from(schema.tasks).where(and(
-    eq(schema.tasks.refType, REF_TYPE), inArray(schema.tasks.refId, ids), inArray(schema.tasks.status, ['queued', 'running']), isNotNull(schema.tasks.refId),
+    eq(schema.tasks.refType, REF_TYPE), inArray(schema.tasks.refId, ids), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']), isNotNull(schema.tasks.refId),
   ));
   return new Set(rows.map((r) => r.refId!));
 }
+
+// Device-less job on the unified task core. One attempt: a failed official-API call (quota, bad key)
+// is not helped by an automatic retry; the user can retry from the task centre.
+registerTaskHandler<{ trackedAccountId: string }>('tracked-refresh', {
+  queue: 'task-ops',
+  timeoutMs: 5 * 60_000,
+  maxAttempts: 1,
+  run: (ctx) => refreshTrackedAccount(ctx.payload.trackedAccountId ?? ctx.task.refId!),
+});

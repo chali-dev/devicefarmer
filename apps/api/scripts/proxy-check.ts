@@ -67,7 +67,7 @@ let skipped = false;
 const inst = async () => (await http('GET', `/api/instances/${id}`, T)).body.instance;
 const waitTask = async (taskId: string) => waitFor('task', async () => {
   const t = (await http('GET', '/api/tasks?limit=100', T)).body.tasks.find((x: any) => x.id === taskId);
-  return t && (t.status === 'succeeded' || t.status === 'failed') ? t : null;
+  return t && (t.status === 'success' || t.status === 'failed') ? t : null;
 });
 const pcheck = async () => (await http('POST', `/api/instances/${id}/proxy/check`, T)).body.proxyStatus;
 const androidBrowse = async (url: string) => {
@@ -113,7 +113,7 @@ try {
   // 4. switch to HTTP proxy (hot reload)
   const task = await bind(httpId);
   const st2 = await pcheck();
-  check('switch to HTTP pool proxy via hot reload', task.status === 'succeeded' && st2.ok, `egress=${mask(st2.egressIp)}`);
+  check('switch to HTTP pool proxy via hot reload', task.status === 'success' && st2.ok, `egress=${mask(st2.egressIp)}`);
   // editing the pool entry without a password keeps the stored one (write-only) and needs no re-apply
   let r = await http('PUT', `/api/proxies/${httpId}`, T, { notes: 'edited' });
   const stE = await pcheck();
@@ -184,7 +184,7 @@ try {
   const conv = await bind(goodId);
   const i9 = await waitFor('converted', async () => { const i = await inst(); return i.status === 'running' && i.stfReady && i.netContainerId ? i : null; });
   const st5 = await pcheck();
-  check('legacy instance converted to sidecar + proxy, data kept', conv.status === 'succeeded' && st5.ok && i9.containerId !== legacy.id, conv.error ?? `egress=${mask(st5.egressIp)}`);
+  check('legacy instance converted to sidecar + proxy, data kept', conv.status === 'success' && st5.ok && i9.containerId !== legacy.id, conv.error ?? `egress=${mask(st5.egressIp)}`);
 } catch (err) {
   if (!skipped) check(`unexpected error: ${(err as Error).message}`, false);
 } finally {

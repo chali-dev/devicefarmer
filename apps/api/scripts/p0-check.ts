@@ -33,7 +33,7 @@ if (g.length !== 2 || g.some((i: any) => i.status !== 'running')) throw new Erro
 const ids = g.map((i: any) => i.id);
 const waitTasks = async (taskIds: string[]) => waitFor('tasks', async () => {
   const tasks = (await http('GET', '/api/tasks?limit=100', T)).body.tasks.filter((t: any) => taskIds.includes(t.id));
-  return tasks.length === taskIds.length && tasks.every((t: any) => t.status === 'succeeded' || t.status === 'failed') ? tasks : null;
+  return tasks.length === taskIds.length && tasks.every((t: any) => t.status === 'success' || t.status === 'failed') ? tasks : null;
 });
 const apps = async (id: string) => (await http('GET', `/api/instances/${id}/apps`, T)).body.apps as any[];
 
@@ -48,7 +48,7 @@ fd.append('file', new Blob([fs.readFileSync(apk)]), 'fdroid.apk');
 let r = await http('POST', '/api/apps/install', T, fd);
 check('batch install accepted for 2 instances', r.status === 202 && r.body.accepted.length === 2, `apks=${r.body?.apks}`);
 let tasks = await waitTasks(r.body.accepted.map((a: any) => a.taskId));
-check('batch install tasks succeeded', tasks.every((t: any) => t.status === 'succeeded'), tasks.map((t: any) => t.error).filter(Boolean).join('; '));
+check('batch install tasks succeeded', tasks.every((t: any) => t.status === 'success'), tasks.map((t: any) => t.error).filter(Boolean).join('; '));
 for (const i of g) {
   const a = await apps(i.id);
   check(`app list on ${i.name} shows org.fdroid.fdroid`, a.some((x) => x.package === 'org.fdroid.fdroid'), a.find((x) => x.package === 'org.fdroid.fdroid')?.versionName ?? '');
@@ -57,7 +57,7 @@ for (const i of g) {
 // 3. batch uninstall
 r = await http('POST', '/api/apps/uninstall', T, { instanceIds: ids, package: 'org.fdroid.fdroid' });
 tasks = await waitTasks(r.body.accepted.map((a: any) => a.taskId));
-check('batch uninstall succeeded', tasks.every((t: any) => t.status === 'succeeded'));
+check('batch uninstall succeeded', tasks.every((t: any) => t.status === 'success'));
 for (const i of g) check(`package removed on ${i.name}`, !(await apps(i.id)).some((x) => x.package === 'org.fdroid.fdroid'));
 
 // 4. bundle path (zip of APKs installed in one PackageInstaller session) + update (-r) on g13-1
@@ -67,11 +67,11 @@ fd2.append('instanceIds', JSON.stringify([ids[0]]));
 fd2.append('file', new Blob([bundle]), 'fdroid.apks');
 r = await http('POST', '/api/apps/install', T, fd2);
 tasks = await waitTasks(r.body.accepted.map((a: any) => a.taskId));
-check('bundle (.apks) install via session succeeded', tasks[0].status === 'succeeded', tasks[0].error ?? '');
+check('bundle (.apks) install via session succeeded', tasks[0].status === 'success', tasks[0].error ?? '');
 const fd3 = new FormData(); fd3.append('instanceIds', JSON.stringify([ids[0]])); fd3.append('file', new Blob([fs.readFileSync(apk)]), 'fdroid.apk');
 r = await http('POST', '/api/apps/install', T, fd3);
 tasks = await waitTasks(r.body.accepted.map((a: any) => a.taskId));
-check('reinstall over existing app (update path) succeeded', tasks[0].status === 'succeeded', tasks[0].error ?? '');
+check('reinstall over existing app (update path) succeeded', tasks[0].status === 'success', tasks[0].error ?? '');
 const bad = new FormData(); bad.append('instanceIds', JSON.stringify([ids[0]])); bad.append('file', new Blob([Buffer.from('not a zip')]), 'broken.apks');
 r = await http('POST', '/api/apps/install', T, bad);
 check('corrupt bundle rejected with 400', r.status === 400, r.body?.error);
@@ -84,7 +84,7 @@ const want = { locale: 'zh-CN', timezone: 'Europe/Berlin', deviceName: 'CloudPho
 r = await http('PATCH', `/api/instances/${b.id}/settings`, T, want);
 check('settings update accepted', r.status === 202 && !!r.body.taskId);
 tasks = await waitTasks([r.body.taskId]);
-check('apply-settings task succeeded', tasks[0].status === 'succeeded', tasks[0].error ?? '');
+check('apply-settings task succeeded', tasks[0].status === 'success', tasks[0].error ?? '');
 let actual = (await http('GET', `/api/instances/${b.id}/settings`, T)).body.actual;
 check('settings applied on device', actual.locale === want.locale && actual.timezone === want.timezone && actual.deviceName === want.deviceName, JSON.stringify({ locale: actual.locale, timezone: actual.timezone, deviceName: actual.deviceName }));
 check('device model unchanged (not configurable)', actual.model === before.model, actual.model);

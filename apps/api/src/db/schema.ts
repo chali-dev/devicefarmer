@@ -87,20 +87,69 @@ export const instanceGrants = pgTable('instance_grants', {
   instanceId: uuid('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
 }, (t) => [primaryKey({ columns: [t.userId, t.instanceId] })]);
 
+/**
+ * Task centre (任务中心): the single scheduling table for every background job (device ops, media
+ * processing, and later publish/comment/account-check/tracking jobs). Business tables keep business
+ * data; this table keeps scheduling state. Rows are written only through modules/tasks/core.ts.
+ * Lifecycle: pending | scheduled (run_at in the future) → running → success | failed | cancelled.
+ * A failed attempt with attempts left goes back to pending (BullMQ backoff). `error` / `error_code`
+ * hold the last error. `created_by` is the owner (null = system).
+ */
+export const TASK_STATUSES = ['pending', 'scheduled', 'running', 'success', 'failed', 'cancelled'] as const;
+export const TASK_FINAL: readonly TaskStatus[] = ['success', 'failed', 'cancelled'];
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
 export const tasks = pgTable('tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
   type: text('type').notNull(),
   instanceId: uuid('instance_id'),
+  /** Display label (device name · detail, or e.g. the media name for device-less tasks). */
   instanceName: text('instance_name'),
   /** What the task works on besides a device, e.g. ref_type 'media' + the media asset id (push-asset, media-process). */
   refType: text('ref_type'),
   refId: uuid('ref_id'),
-  status: text('status', { enum: ['queued', 'running', 'succeeded', 'failed'] }).notNull().default('queued'),
+  status: text('status', { enum: TASK_STATUSES }).notNull().default('pending'),
+  /** Handler input. Never put secrets here (it is shown in the task centre); pass ids and resolve secrets in the handler. */
+  payload: jsonb('payload').$type<Record<string, unknown>>(),
+  result: jsonb('result').$type<unknown>(),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(1),
+  timeoutMs: integer('timeout_ms'),
+  priority: integer('priority').notNull().default(0),
+  /** Unique per type (see tasks_idem_idx): creating again with the same key returns the existing task. */
+  idempotencyKey: text('idempotency_key'),
+  /** Manual retry of a failed/cancelled task creates a new task pointing at the original. */
+  retryOf: uuid('retry_of'),
+  runAt: timestamp('run_at', { withTimezone: true }),
+  cancelRequested: boolean('cancel_requested').notNull().default(false),
+  /** Last error (message) and its stable code (e.g. task.timeout, task.interrupted). */
   error: text('error'),
+  errorCode: text('error_code'),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
-}, (t) => [index('tasks_ref_idx').on(t.refType, t.refId)]);
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  index('tasks_ref_idx').on(t.refType, t.refId),
+  index('tasks_status_idx').on(t.status, t.createdAt),
+  index('tasks_type_idx').on(t.type, t.createdAt),
+  index('tasks_created_by_idx').on(t.createdBy, t.createdAt),
+  index('tasks_instance_idx').on(t.instanceId, t.createdAt),
+  index('tasks_created_at_idx').on(t.createdAt),
+  index('tasks_run_at_idx').on(t.runAt),
+  uniqueIndex('tasks_idem_idx').on(t.type, t.idempotencyKey).where(sql`idempotency_key is not null`),
+]);
+
+/** Execution log of a task: every status transition and attempt, plus handler messages (ctx.log). */
+export const taskLogs = pgTable('task_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
+  ts: timestamp('ts', { withTimezone: true }).notNull().defaultNow(),
+  level: text('level', { enum: ['debug', 'info', 'warn', 'error'] }).notNull(),
+  message: text('message').notNull(),
+  data: jsonb('data').$type<Record<string, unknown>>(),
+}, (t) => [index('task_logs_task_idx').on(t.taskId, t.ts)]);
 
 /**
  * App library: official packages imported from a device where they were installed
@@ -418,6 +467,7 @@ export interface GoogleHealth {
 export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type TaskLog = typeof taskLogs.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type MediaCategory = typeof mediaCategories.$inferSelect;

@@ -51,7 +51,7 @@ watch(() => [open.value, acc.value?.id], ([o], prev) => {
   if (o && acc.value && (prev?.[1] !== acc.value.id || !prev?.[0])) { postsPage.value = 1; tab.value = 'history'; void loadAll() }
 })
 // A finished refresh brings new data.
-watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s && s !== old && (s === 'succeeded' || s === 'failed')) void loadAll() })
+watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s && s !== old && (s === 'success' || s === 'failed')) void loadAll() })
 
 // ---- chart
 const metric = ref<TrackedMetric>('followers')
@@ -173,7 +173,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
           <a-space>
             <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
             <a-button type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
-              :loading="acc.lastRefresh?.status === 'queued' || acc.lastRefresh?.status === 'running'" @click="emit('refresh', acc)">
+              :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
               {{ t('tracked.refreshNow') }}
             </a-button>
           </a-space>

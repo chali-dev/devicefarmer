@@ -31,7 +31,7 @@ async function waitTask(taskId: string, ms = 30_000) {
   const t0 = Date.now();
   for (;;) {
     const [t] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId));
-    if (t && (t.status === 'succeeded' || t.status === 'failed')) return t;
+    if (t && (t.status === 'success' || t.status === 'failed')) return t;
     if (Date.now() - t0 > ms) throw new Error(`timeout waiting for task ${taskId} (${t?.status})`);
     await sleep(300);
   }
@@ -237,10 +237,10 @@ try {
   check('refresh manual-only account → 202 task (manualOnly)', r.status === 202 && !!r.body.taskId && r.body.manualOnly === true, r.text.slice(0, 120));
   const t1 = await waitTask(r.body.taskId);
   const [taskRow] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.body.taskId));
-  check('task row reaches succeeded (type tracked-refresh, ref tracked_account)', t1.status === 'succeeded' && taskRow!.type === 'tracked-refresh'
+  check('task row reaches succeeded (type tracked-refresh, ref tracked_account)', t1.status === 'success' && taskRow!.type === 'tracked-refresh'
     && taskRow!.refType === 'tracked_account' && taskRow!.refId === ig.id && taskRow!.instanceId === null, `${t1.status} ${t1.error ?? ''}`);
   a = (await http('GET', `/api/tracked-accounts/${ig.id}`, A.token)).body.account;
-  check('manual-only refresh leaves the account active without error; lastRefresh exposed', a.status === 'active' && !a.lastError && a.lastRefresh?.status === 'succeeded');
+  check('manual-only refresh leaves the account active without error; lastRefresh exposed', a.status === 'active' && !a.lastError && a.lastRefresh?.status === 'success');
   // Refresh dedupe: an unfinished refresh task blocks another.
   const [fake] = await db.insert(schema.tasks).values({ type: 'tracked-refresh', refType: 'tracked_account', refId: ig.id, status: 'running', instanceName: 'test' }).returning();
   r = await http('POST', `/api/tracked-accounts/${ig.id}/refresh`, A.token);
@@ -254,7 +254,7 @@ try {
   const sk = Object.fromEntries((r.body.skipped ?? []).map((s: any) => [s.id, s.code]));
   check('batch refresh: queued manual-only, skipped no-key / paused / foreign (not_found)', r.status === 202 && r.body.queued.length === 1 && r.body.queued[0].id === ig.id
     && sk[yt.id] === 'tracked.youtube_no_api_key' && sk[tt.id] === 'tracked.paused' && sk[igB.id] === 'tracked.not_found', JSON.stringify(sk));
-  if (r.body.queued[0]) check('batch task succeeds', (await waitTask(r.body.queued[0].taskId)).status === 'succeeded');
+  if (r.body.queued[0]) check('batch task succeeds', (await waitTask(r.body.queued[0].taskId)).status === 'success');
   // The job function itself (what a scheduler would call) with no key: coded error, account marked error.
   const err = await refreshTrackedAccount(yt.id).then(() => null, (e) => e as { code?: string });
   a = (await http('GET', `/api/tracked-accounts/${yt.id}`, A.token)).body.account;
@@ -306,7 +306,7 @@ try {
     const lt = await waitTask(r.body.taskId, 60_000);
     a = (await http('GET', `/api/tracked-accounts/${live.id}`, A.token)).body.account;
     const posts = (await http('GET', `/api/tracked-accounts/${live.id}/posts`, A.token)).body;
-    check('LIVE YouTube refresh: task succeeded, channel id, subscriber snapshot, recent videos', lt.status === 'succeeded' && /^UC/.test(a.externalId ?? '')
+    check('LIVE YouTube refresh: task succeeded, channel id, subscriber snapshot, recent videos', lt.status === 'success' && /^UC/.test(a.externalId ?? '')
       && a.latest?.source === 'api' && a.latest.followers > 0 && posts.total > 0, `${lt.status} ${lt.error ?? ''} posts=${posts.total}`);
     await http('PUT', '/api/settings/youtube', T, { apiKey: null });
   }

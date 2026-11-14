@@ -1,4 +1,4 @@
-import { desc, eq, getTableColumns, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -311,16 +311,5 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const proxyStatus = await network.check(inst.netContainerId);
     await updateInstance(inst.id, { proxyStatus });
     return { proxyStatus };
-  });
-
-  app.get('/api/tasks', {
-    schema: { querystring: z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), instanceId: z.string().uuid().optional() }) },
-  }, async (req) => {
-    const allowed = await accessibleInstanceIds(req.user);
-    const where = req.query.instanceId ? eq(schema.tasks.instanceId, req.query.instanceId) : undefined;
-    const rows = await db.select({ ...getTableColumns(schema.tasks), createdByName: schema.users.username })
-      .from(schema.tasks).leftJoin(schema.users, eq(schema.users.id, schema.tasks.createdBy))
-      .where(where).orderBy(desc(schema.tasks.createdAt)).limit(req.query.limit);
-    return { tasks: allowed === 'all' ? rows : rows.filter((t) => t.instanceId && allowed.has(t.instanceId)) };
   });
 };

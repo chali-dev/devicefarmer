@@ -74,7 +74,7 @@ onMounted(async () => {
 
 // Poll while refresh tasks are queued/running.
 let pollTimer: ReturnType<typeof setTimeout> | null = null
-const busy = (a: TrackedAccount) => a.lastRefresh?.status === 'queued' || a.lastRefresh?.status === 'running'
+const busy = (a: TrackedAccount) => ['pending', 'scheduled', 'running'].includes(a.lastRefresh?.status ?? '')
 function schedulePoll() {
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = items.value.some(busy) ? setTimeout(() => void load(true), 2000) : null
