@@ -2,9 +2,9 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { updateInstance, updateTask } from './repo.js';
-import { opApplySettings, opCreate, opDelete, opInstallApk, opRestart, opStart, opStop, opUninstallApp } from './ops.js';
+import { opApplySettings, opCreate, opDelete, opInstallApk, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
 
-export type OpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings';
+export type OpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy';
 export interface OpJob {
   taskId: string; op: OpName; instanceId: string;
   /** install-apk: one app = base + splits */
@@ -42,6 +42,7 @@ async function run(job: Job<OpJob>): Promise<void> {
     case 'install-apk': return opInstallApk(instanceId, job.data.apkPaths!, job.data.sizes!);
     case 'uninstall-app': return opUninstallApp(instanceId, job.data.package!);
     case 'apply-settings': return opApplySettings(instanceId);
+    case 'set-proxy': return opSetProxy(instanceId);
   }
 }
 

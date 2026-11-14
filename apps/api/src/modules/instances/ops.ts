@@ -1,5 +1,5 @@
 import type { Instance } from '../../db/schema.js';
-import { adb, runtimeFor, stf } from '../../services.js';
+import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
 
@@ -53,38 +53,65 @@ async function detachDevice(inst: Instance): Promise<void> {
   await updateInstance(inst.id, { adbState: null, stfReady: false, bootCompleted: false });
 }
 
-export async function opCreate(id: string): Promise<void> {
-  const inst = await mustGet(id);
-  await updateInstance(id, { status: 'creating', lastError: null });
-  const runtime = runtimeFor(inst.engine);
-  const { containerId } = await runtime.create({
-    instanceId: inst.id, name: inst.name, image: inst.image, adbPort: inst.adbPort, spec: inst.spec,
+/** Creates the network sidecar (owns netns + adb port) and the engine container joined to it. */
+async function createContainers(inst: Instance): Promise<Instance> {
+  const netContainerId = await network.create({ instanceId: inst.id, name: inst.name, adbPort: inst.adbPort }, inst.proxy ?? null);
+  await updateInstance(inst.id, { netContainerId });
+  const { containerId } = await runtimeFor(inst.engine).create({
+    instanceId: inst.id, name: inst.name, image: inst.image, adbPort: inst.adbPort, spec: inst.spec, netContainerId,
   });
-  await updateInstance(id, { containerId, status: 'starting' });
-  await runtime.start(containerId);
+  return (await updateInstance(inst.id, { containerId }))!;
+}
+
+/** Sidecar first (it owns the namespace), then the engine. */
+async function startContainers(inst: Instance): Promise<void> {
+  if (inst.netContainerId) await network.start(inst.netContainerId);
+  await runtimeFor(inst.engine).start(inst.containerId!);
+}
+
+/** Engine first, then the sidecar. */
+async function stopContainers(inst: Instance): Promise<void> {
+  if (inst.containerId) await runtimeFor(inst.engine).stop(inst.containerId);
+  if (inst.netContainerId) await network.stop(inst.netContainerId);
+}
+
+async function refreshProxyStatus(inst: Instance): Promise<void> {
+  if (!inst.proxy || !inst.netContainerId) { await updateInstance(inst.id, { proxyStatus: null }); return; }
+  await updateInstance(inst.id, { proxyStatus: await network.check(inst.netContainerId) });
+}
+
+export async function opCreate(id: string): Promise<void> {
+  let inst = await mustGet(id);
+  await updateInstance(id, { status: 'creating', lastError: null });
+  inst = await createContainers(inst);
+  await updateInstance(id, { status: 'starting' });
+  await startContainers(inst);
   await attachDevice(await mustGet(id));
+  await refreshProxyStatus(await mustGet(id));
 }
 
 export async function opStart(id: string): Promise<void> {
   let inst = await mustGet(id);
   const runtime = runtimeFor(inst.engine);
-  if (!inst.containerId || (await runtime.state(inst.containerId)) === 'missing') {
-    // Container was lost (e.g. host wiped): recreate it on the same data dir.
-    const { containerId } = await runtime.create({
-      instanceId: inst.id, name: inst.name, image: inst.image, adbPort: inst.adbPort, spec: inst.spec,
-    });
-    inst = (await updateInstance(id, { containerId }))!;
+  const engineMissing = !inst.containerId || (await runtime.state(inst.containerId)) === 'missing';
+  const netMissing = inst.netContainerId ? (await network.state(inst.netContainerId)) === 'missing' : false;
+  if (engineMissing || netMissing) {
+    // Containers were lost (e.g. host wiped): recreate them on the same data dir.
+    if (inst.containerId) await runtime.remove(inst.containerId);
+    if (inst.netContainerId) await network.remove(inst.netContainerId);
+    inst = await createContainers(inst);
   }
   await updateInstance(id, { status: 'starting', lastError: null });
-  await runtime.start(inst.containerId!);
+  await startContainers(inst);
   await attachDevice(await mustGet(id));
+  await refreshProxyStatus(await mustGet(id));
 }
 
 export async function opStop(id: string): Promise<void> {
   const inst = await mustGet(id);
   await updateInstance(id, { status: 'stopping', lastError: null });
   await detachDevice(inst);
-  if (inst.containerId) await runtimeFor(inst.engine).stop(inst.containerId);
+  await stopContainers(inst);
   await updateInstance(id, { status: 'stopped' });
 }
 
@@ -92,7 +119,7 @@ export async function opRestart(id: string): Promise<void> {
   await updateInstance(id, { status: 'restarting', lastError: null });
   const inst = await mustGet(id);
   await detachDevice(inst);
-  if (inst.containerId) await runtimeFor(inst.engine).stop(inst.containerId);
+  await stopContainers(inst);
   await updateInstance(id, { status: 'restarting' });
   await opStart(id);
 }
@@ -104,8 +131,40 @@ export async function opDelete(id: string): Promise<void> {
   await detachDevice(inst);
   const runtime = runtimeFor(inst.engine);
   if (inst.containerId) await runtime.remove(inst.containerId);
+  if (inst.netContainerId) await network.remove(inst.netContainerId);
   await runtime.removeData(inst.name);
   await deleteInstanceRow(id);
+}
+
+/**
+ * Applies the instance's proxy setting (already saved on the row).
+ * With a sidecar: rewrite config + nft rules, hot reload; Android keeps running.
+ * Legacy instance (no sidecar): recreate the engine container joined to a new sidecar
+ * on the same /data, restarting it if it was running.
+ */
+export async function opSetProxy(id: string): Promise<void> {
+  let inst = await mustGet(id);
+  if (inst.netContainerId) {
+    await network.apply(inst.name, inst.netContainerId, inst.proxy ?? null);
+  } else {
+    const wasRunning = inst.status === 'running';
+    await updateInstance(id, { status: 'restarting', lastError: null });
+    await detachDevice(inst);
+    if (inst.containerId) {
+      await runtimeFor(inst.engine).stop(inst.containerId);
+      await runtimeFor(inst.engine).remove(inst.containerId);
+    }
+    inst = await createContainers(inst);
+    if (wasRunning) {
+      await startContainers(inst);
+      await attachDevice(await mustGet(id));
+    } else {
+      await updateInstance(id, { status: 'stopped' });
+    }
+  }
+  inst = await mustGet(id);
+  if (inst.status === 'running') await refreshProxyStatus(inst);
+  else await updateInstance(id, { proxyStatus: null });
 }
 
 async function mustBeRunning(id: string): Promise<Instance> {

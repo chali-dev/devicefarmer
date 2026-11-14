@@ -38,18 +38,84 @@ export class DockerHost {
       this.docker.modem.followProgress(stream, (err: Error | null) => (err ? reject(err) : resolve())));
   }
 
-  /** Runs a short-lived alpine helper on the Android host and returns its exit code + output. */
-  async helper(cmd: string[], binds: string[]): Promise<{ code: number; out: string }> {
+  /**
+   * Runs a short-lived alpine helper on the Android host and returns its exit code + output.
+   * `netContainerId` joins an instance's network namespace (used for proxy/egress probes).
+   */
+  async helper(cmd: string[], binds: string[], opts: { netContainerId?: string; env?: string[]; timeoutMs?: number } = {}): Promise<{ code: number; out: string }> {
     await this.ensureImage(HELPER_IMAGE);
-    const c = await this.docker.createContainer({ Image: HELPER_IMAGE, Cmd: cmd, HostConfig: { Binds: binds }, Labels: { 'cloudphone.helper': '1' } });
+    const c = await this.docker.createContainer({
+      // Tty: logs come back raw (non-TTY logs are multiplexed with 8-byte frame headers).
+      Image: HELPER_IMAGE, Cmd: cmd, Env: opts.env, Tty: true,
+      HostConfig: { Binds: binds, ...(opts.netContainerId ? { NetworkMode: `container:${opts.netContainerId}` } : {}) },
+      Labels: { 'cloudphone.helper': '1' },
+    });
+    let timer: NodeJS.Timeout | undefined;
     try {
       await c.start();
-      const res = (await c.wait()) as { StatusCode: number };
-      const logs = await c.logs({ stdout: true, stderr: true });
-      return { code: res.StatusCode, out: logs.toString('utf8').replace(/[\x00-\x08]/g, '').trim() };
+      const res = (await Promise.race([
+        c.wait(),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('helper timeout')), opts.timeoutMs ?? 60_000); }),
+      ])) as { StatusCode: number };
+      // docker-modem may hand back a Buffer, a string, or (if the raw output looks like JSON) a parsed value.
+      const logs: unknown = await c.logs({ stdout: true, stderr: true });
+      const text = Buffer.isBuffer(logs) ? logs.toString('utf8') : typeof logs === 'string' ? logs : JSON.stringify(logs);
+      return { code: res.StatusCode, out: text.replace(/\r/g, '').trim() };
     } finally {
+      clearTimeout(timer);
       await c.remove({ force: true }).catch(() => undefined);
     }
+  }
+
+  /** Writes files into a directory on the Android host (contents passed base64 via env, no shell quoting). */
+  async writeFiles(hostDir: string, files: Record<string, { content: string; mode: string }>): Promise<void> {
+    const names = Object.keys(files);
+    if (!names.every((n) => /^[a-z0-9._-]+$/.test(n))) throw new Error('invalid file name');
+    const env = names.map((n, i) => `F${i}=${Buffer.from(files[n]!.content).toString('base64')}`);
+    const script = ['set -e', 'mkdir -p /target', ...names.map((n, i) =>
+      `printf '%s' "$F${i}" | base64 -d > /target/${n}.tmp && chmod ${files[n]!.mode} /target/${n}.tmp && mv /target/${n}.tmp /target/${n}`)].join('; ');
+    const r = await this.helper(['sh', '-c', script], [`${hostDir}:/target`], { env });
+    if (r.code !== 0) throw new Error(`writing files to ${hostDir} failed: ${r.out}`);
+  }
+
+  private bridgeCache: string | null = null;
+  /** Subnet of Docker's default bridge (adb/platform traffic that must bypass the proxy). */
+  async bridgeSubnet(): Promise<string> {
+    if (this.bridgeCache) return this.bridgeCache;
+    const info = await this.docker.getNetwork('bridge').inspect() as { IPAM?: { Config?: { Subnet?: string }[] } };
+    const subnet = info.IPAM?.Config?.find((c) => c.Subnet && c.Subnet.includes('.'))?.Subnet;
+    if (!subnet) throw new Error('cannot determine docker bridge subnet');
+    this.bridgeCache = subnet;
+    return subnet;
+  }
+
+  // ---- generic container ops shared by engine containers and network sidecars
+  async startContainer(id: string): Promise<void> {
+    try { await this.docker.getContainer(id).start(); } catch (err) { if (statusCode(err) !== 304) throw err; }
+  }
+  async stopContainer(id: string): Promise<void> {
+    try { await this.docker.getContainer(id).stop({ t: 10 }); } catch (err) { const c = statusCode(err); if (c !== 304 && c !== 404) throw err; }
+  }
+  async removeContainer(id: string): Promise<void> {
+    try { await this.docker.getContainer(id).remove({ force: true, v: true }); } catch (err) { if (statusCode(err) !== 404) throw err; }
+  }
+  async containerState(id: string): Promise<ContainerState> {
+    try { return (await this.docker.getContainer(id).inspect()).State.Status as ContainerState; }
+    catch (err) { if (statusCode(err) === 404) return 'missing'; throw err; }
+  }
+  /** docker exec, returns combined output; throws on non-zero exit. */
+  async exec(id: string, cmd: string[]): Promise<string> {
+    const e = await this.docker.getContainer(id).exec({ Cmd: cmd, AttachStdout: true, AttachStderr: true, Tty: true });
+    const stream = await e.start({ hijack: true, stdin: false, Tty: true });
+    const out = await new Promise<string>((resolve, reject) => {
+      let b = ''; stream.on('data', (d: Buffer) => (b += d)); stream.on('end', () => resolve(b)); stream.on('error', reject);
+    });
+    const { ExitCode } = await e.inspect();
+    if (ExitCode !== 0) throw new Error(`exec ${cmd.join(' ')} failed (${ExitCode}): ${out.trim()}`);
+    return out;
+  }
+  async signal(id: string, sig: string): Promise<void> {
+    await this.docker.getContainer(id).kill({ signal: sig });
   }
 
   /** Whether the Android host exposes /dev/kvm (required by the Google emulator). Cached 60 s. */
@@ -90,6 +156,12 @@ export abstract class DockerRuntime implements AndroidRuntime {
   async create(input: CreateContainerInput): Promise<{ containerId: string }> {
     await this.host.ensureImage(input.image);
     const spec = this.containerSpec(input, path.posix.join(this.host.instanceDir(input.name), 'data'));
+    if (input.netContainerId) {
+      // Join the network sidecar's namespace: it owns the adb port mapping and the proxy policy.
+      delete spec.ExposedPorts;
+      spec.HostConfig = { ...spec.HostConfig, NetworkMode: `container:${input.netContainerId}` };
+      delete spec.HostConfig.PortBindings;
+    }
     const container = await this.host.docker.createContainer({
       ...spec,
       name: `cloudphone-${input.name}`,
@@ -99,44 +171,14 @@ export abstract class DockerRuntime implements AndroidRuntime {
     return { containerId: container.id };
   }
 
-  async start(containerId: string): Promise<void> {
-    try {
-      await this.host.docker.getContainer(containerId).start();
-    } catch (err) {
-      if (statusCode(err) !== 304) throw err; // already started
-    }
-  }
-
-  async stop(containerId: string): Promise<void> {
-    try {
-      await this.host.docker.getContainer(containerId).stop({ t: 10 });
-    } catch (err) {
-      const code = statusCode(err);
-      if (code !== 304 && code !== 404) throw err;
-    }
-  }
-
-  async remove(containerId: string): Promise<void> {
-    try {
-      await this.host.docker.getContainer(containerId).remove({ force: true, v: true });
-    } catch (err) {
-      if (statusCode(err) !== 404) throw err;
-    }
-  }
+  start(containerId: string): Promise<void> { return this.host.startContainer(containerId); }
+  stop(containerId: string): Promise<void> { return this.host.stopContainer(containerId); }
+  remove(containerId: string): Promise<void> { return this.host.removeContainer(containerId); }
+  state(containerId: string): Promise<ContainerState> { return this.host.containerState(containerId); }
 
   async removeData(name: string): Promise<void> {
     this.host.instanceDir(name); // validates the name
     const r = await this.host.helper(['rm', '-rf', `/target/${name}`], [`${this.host.dataRoot}:/target`]);
     if (r.code !== 0) throw new Error(`failed to remove data for ${name} (exit ${r.code})`);
-  }
-
-  async state(containerId: string): Promise<ContainerState> {
-    try {
-      const info = await this.host.docker.getContainer(containerId).inspect();
-      return info.State.Status as ContainerState;
-    } catch (err) {
-      if (statusCode(err) === 404) return 'missing';
-      throw err;
-    }
   }
 }

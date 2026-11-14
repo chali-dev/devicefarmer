@@ -30,6 +30,11 @@ export const instances = pgTable('instances', {
   image: text('image').notNull(),
   adbPort: integer('adb_port').notNull().unique(),
   containerId: text('container_id'),
+  /** Network sidecar (sing-box) owning the instance's network namespace; null = legacy direct networking */
+  netContainerId: text('net_container_id'),
+  /** Per-instance upstream proxy. Password never leaves the API (see publicInstance). */
+  proxy: jsonb('proxy').$type<ProxyConfig>(),
+  proxyStatus: jsonb('proxy_status').$type<ProxyStatus>(),
   status: instanceStatusEnum('status').notNull().default('creating'),
   adbState: text('adb_state'),
   bootCompleted: boolean('boot_completed').notNull().default(false),
@@ -70,6 +75,23 @@ export interface InstanceSpec {
   locale?: string;
   timezone?: string;
   deviceName?: string;
+}
+
+export interface ProxyConfig {
+  type: 'socks5' | 'http';
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
+export interface ProxyStatus {
+  checkedAt: string;
+  ok: boolean;
+  egressIp: string | null;
+  latencyMs: number | null;
+  dnsOk: boolean;
+  error: string | null;
 }
 
 export interface GoogleHealth {

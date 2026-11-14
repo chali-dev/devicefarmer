@@ -11,9 +11,11 @@ import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, canCreateInstances, roleAllows } from '../auth/rbac.js';
 import { enqueue, type OpName } from './queue.js';
-import { getInstance, updateInstance } from './repo.js';
+import { getInstance, publicInstance, updateInstance } from './repo.js';
+import { proxyKey } from '../network/singbox.js';
+import type { ProxyConfig } from '../../db/schema.js';
 import { getProfile, PROFILES } from '../../profiles.js';
-import { adb, dockerHost } from '../../services.js';
+import { adb, dockerHost, network } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
 import { DeviceSettings, readDeviceSettings } from './device-settings.js';
 import { prepareUpload } from '../apps/package.js';
@@ -21,7 +23,26 @@ import { prepareUpload } from '../apps/package.js';
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 const MAX_BATCH = 20;
 
+const Proxy = z.object({
+  type: z.enum(['socks5', 'http']),
+  host: z.string().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/, 'hostname or IPv4'),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().max(200).optional(),
+  password: z.string().max(200).optional(),
+});
+
+/** Prevents accidentally giving two instances the same proxy endpoint+user. */
+async function assertProxyNotShared(proxy: ProxyConfig, exceptId?: string) {
+  const rows = await db.select({ id: schema.instances.id, name: schema.instances.name, proxy: schema.instances.proxy }).from(schema.instances);
+  const other = rows.find((r) => r.id !== exceptId && r.proxy && proxyKey(r.proxy) === proxyKey(proxy));
+  if (other) throw conflict(`该代理已被实例 ${other.name} 使用（如确需共享请勾选 allowShared）`);
+}
+
 const CreateBody = z.object({
+  /** One proxy per instance: when creating several, pass `proxies` (one per instance) instead. */
+  proxy: Proxy.optional(),
+  proxies: z.array(Proxy).max(20).optional(),
+  allowShared: z.boolean().optional(),
   profile: z.string().default('redroid-12'),
   count: z.number().int().min(1).max(MAX_BATCH).default(1),
   namePrefix: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/, 'lowercase letters, digits and dashes').default('phone'),
@@ -70,14 +91,14 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances', async (req) => {
     const allowed = await accessibleInstanceIds(req.user);
     const rows = await db.select().from(schema.instances).orderBy(schema.instances.name);
-    return { instances: allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id)) };
+    return { instances: (allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id))).map(publicInstance) };
   });
 
   app.get('/api/instances/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found');
-    return { instance: inst };
+    return { instance: publicInstance(inst) };
   });
 
   /** Batch create. Instances are created by the queue; the creator is granted access. */
@@ -88,6 +109,14 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const avail = (await profileAvailability()).find((p) => p.id === b.profile);
     if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`);
     if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`);
+    if (b.proxy && b.count > 1) throw badRequest('多台实例请使用 proxies（每台一个代理），避免共享同一代理');
+    if (b.proxies && b.proxies.length !== b.count) throw badRequest(`proxies 数量（${b.proxies.length}）必须等于创建数量（${b.count}）`);
+    const proxies: (ProxyConfig | null)[] = Array.from({ length: b.count }, (_, i) => b.proxies?.[i] ?? b.proxy ?? null);
+    if (!b.allowShared) {
+      const keys = proxies.filter((p): p is ProxyConfig => !!p).map(proxyKey);
+      if (new Set(keys).size !== keys.length) throw conflict('同一批次中存在重复代理');
+      for (const p of proxies) if (p) await assertProxyNotShared(p);
+    }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
     if (!(b.force && req.user.role === 'admin')) {
       const freeMb = await dockerHost.memAvailableMb();
@@ -98,7 +127,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     const slots = await allocate(b.namePrefix, b.count);
     const rows = await db.transaction(async (tx) => {
-      const inserted = await tx.insert(schema.instances).values(slots.map((s) => ({
+      const inserted = await tx.insert(schema.instances).values(slots.map((s, i) => ({
+        proxy: proxies[i],
         name: s.name, adbPort: s.adbPort, image: profile.image!, engine: profile.engine, profile: profile.id,
         status: 'creating' as const, createdBy: req.user.id,
         spec: {
@@ -117,7 +147,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const taskIds = [];
     for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id));
     reply.code(202);
-    return { instances: rows, taskIds };
+    return { instances: rows.map(publicInstance), taskIds };
   });
 
   /** Batch lifecycle actions. Each instance becomes one task; busy instances are skipped. */
@@ -205,6 +235,38 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const google = await checkGoogleHealth(inst.adbPort);
     await updateInstance(inst.id, { google });
     return { google };
+  });
+
+  /** Set or clear (null) the instance's proxy. Applied by a task (hot reload; legacy instances get a sidecar). */
+  app.put('/api/instances/:id/proxy', {
+    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ proxy: Proxy.nullable(), allowShared: z.boolean().optional() }) },
+  }, async (req, reply) => {
+    await assertInstanceAccess(req.user, req.params.id, 'operate');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found');
+    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`);
+    let proxy: ProxyConfig | null = req.body.proxy;
+    // Keep the stored password when the client re-submits the form without it (passwords are write-only).
+    if (proxy && proxy.password === undefined && inst.proxy?.password && proxyKey(inst.proxy) === proxyKey(proxy)) {
+      proxy = { ...proxy, password: inst.proxy.password };
+    }
+    if (proxy && !req.body.allowShared) await assertProxyNotShared(proxy, inst.id);
+    const updated = await updateInstance(inst.id, { proxy, proxyStatus: null });
+    const taskId = await enqueue('set-proxy', inst, req.user.id, {}, proxy ? `${proxy.type}://${proxy.host}:${proxy.port}` : '直连');
+    reply.code(202);
+    return { instance: publicInstance(updated!), taskId };
+  });
+
+  /** Egress check from inside the instance's network namespace (same path as Android traffic). */
+  app.post('/api/instances/:id/proxy/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
+    await assertInstanceAccess(req.user, req.params.id, 'view');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found');
+    if (!inst.netContainerId) throw conflict('该实例没有网络边车（旧实例），设置代理后自动创建');
+    if (inst.status !== 'running') throw conflict('instance is not running');
+    const proxyStatus = await network.check(inst.netContainerId);
+    await updateInstance(inst.id, { proxyStatus });
+    return { proxyStatus };
   });
 
   app.get('/api/tasks', {

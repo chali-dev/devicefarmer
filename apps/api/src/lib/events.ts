@@ -1,10 +1,11 @@
 import { Redis } from 'ioredis';
 import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
-import type { Instance, Task } from '../db/schema.js';
+import type { Task } from '../db/schema.js';
+import type { PublicInstance } from '../modules/instances/repo.js';
 
 export type PlatformEvent =
-  | { type: 'instance.updated'; instance: Instance }
+  | { type: 'instance.updated'; instance: PublicInstance }
   | { type: 'instance.deleted'; instanceId: string }
   | { type: 'task.updated'; task: Task };
 

@@ -15,6 +15,8 @@ const Env = z.object({
   REDROID_GAPPS_IMAGE: z.string().default('cloudphone/redroid:13-mtg-20231025'),
   /** Image produced by google/android-emulator-container-scripts (google_apis_playstore). Unset = profile unavailable. */
   EMULATOR_IMAGE: z.string().optional(),
+  /** Network sidecar image (per-instance proxy, kill switch). Pinned. */
+  SINGBOX_IMAGE: z.string().default('ghcr.io/sagernet/sing-box:v1.14.4'),
   /** Where the emulator image keeps its AVD (persisted per instance). */
   EMULATOR_DATA_PATH: z.string().default('/android-home'),
   /** Private key of the STF adb server, handed to Play Store emulator images (ADBKEY). */

@@ -6,6 +6,8 @@ export interface CreateContainerInput {
   image: string;
   adbPort: number;
   spec: InstanceSpec;
+  /** Join this network sidecar's namespace instead of publishing ports directly. */
+  netContainerId?: string;
 }
 
 export type ContainerState = 'running' | 'exited' | 'created' | 'restarting' | 'paused' | 'dead' | 'missing';
