@@ -63,7 +63,10 @@ function connect() {
     if (m.data instanceof Blob) { void draw(m.data); return }
     const msg = JSON.parse(m.data)
     if (msg.type === 'ready') { setState('live'); if (secureView.value) send({ type: 'screenSource', source: 'secure' }) }
-    else if (msg.type === 'screenSource') secureView.value = msg.source === 'secure'
+    else if (msg.type === 'screenSource') {
+      secureView.value = msg.source === 'secure'
+      if (msg.reason) void import('ant-design-vue').then(({ message: m }) => m.warning(msg.reason))
+    }
     else if (msg.type === 'error') message.value = msg.message
   }
   ws.onclose = (e) => {

@@ -129,23 +129,33 @@ export class AdbAdapter {
     await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}'`);
   }
 
+  /** Running capture helpers: one foreground adb shell stream per device keeps the helper alive. */
+  private captureHelpers = new Map<number, import('node:stream').Duplex>();
+
   /**
-   * Starts the secure capture helper (CpCapture via app_process as the system user) if it
-   * isn't listening yet, and returns a stream of [int32 len][JPEG] frames.
-   * Requires a userdebug build with `su` (redroid).
+   * Ensures the secure capture helper (CpCapture via app_process as the system user) is running
+   * and returns a stream of [int32 len][JPEG] frames. The helper runs in the foreground of an adb
+   * shell stream held here: backgrounded processes get killed when adbkit's shell connection
+   * closes, so the stream's lifetime is the helper's lifetime. Requires userdebug `su` (redroid).
    */
   async openSecureCapture(adbPort: number, dexPath: string, fps = 10, quality = 70): Promise<import('node:stream').Duplex> {
     const SOCK = 'cloudphone-capture';
     const listening = async () => (await this.shell(adbPort, `grep -c '@${SOCK}$' /proc/net/unix`)).trim() !== '0';
-    if (!(await listening())) {
+    if (!this.captureHelpers.has(adbPort) || !(await listening())) {
+      this.captureHelpers.get(adbPort)?.destroy();
+      await this.shell(adbPort, `su 0 sh -c 'pkill -f "CpCapture ${SOCK}"' || true`).catch(() => undefined);
       await this.push(adbPort, dexPath, '/data/local/tmp/cpcapture.dex');
       await this.shell(adbPort, 'chmod 644 /data/local/tmp/cpcapture.dex');
-      // Detached (all fds redirected, or `adb shell` waits for it); runs as uid 1000 so
-      // SurfaceFlinger honours captureSecureLayers.
-      await this.shell(adbPort, `su 1000 sh -c 'CLASSPATH=/data/local/tmp/cpcapture.dex nohup app_process / CpCapture ${SOCK} ${fps} ${quality} </dev/null >/dev/null 2>&1 &'`);
+      // uid 1000 so SurfaceFlinger honours captureSecureLayers.
+      const proc = await this.client.getDevice(this.serialFor(adbPort))
+        .shell(`su 1000 sh -c 'CLASSPATH=/data/local/tmp/cpcapture.dex exec app_process / CpCapture ${SOCK} ${fps} ${quality}'`);
+      proc.on('data', () => undefined); // drain stdout
+      proc.on('close', () => { if (this.captureHelpers.get(adbPort) === proc) this.captureHelpers.delete(adbPort); });
+      proc.on('error', () => undefined);
+      this.captureHelpers.set(adbPort, proc);
       const deadline = Date.now() + 10_000;
       while (!(await listening())) {
-        if (Date.now() > deadline) throw new Error('secure capture helper did not start');
+        if (Date.now() > deadline) { proc.destroy(); throw new Error('secure capture helper did not start'); }
         await new Promise((r) => setTimeout(r, 300));
       }
     }

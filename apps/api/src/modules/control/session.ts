@@ -112,7 +112,13 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         else if (msg.type === 'screenSource') {
           if (msg.source === source) return;
           if (msg.source === 'secure') {
-            secureStream = await adb.openSecureCapture(adbPort, path.resolve(config.CAPTURE_DEX_PATH));
+            try {
+              secureStream = await adb.openSecureCapture(adbPort, path.resolve(config.CAPTURE_DEX_PATH));
+            } catch (err) {
+              req.log.warn({ err, instanceId }, 'secure capture failed');
+              send({ type: 'screenSource', source: 'stf', reason: `受保护画面不可用：${(err as Error).message}` });
+              return;
+            }
             let buf: Buffer = Buffer.alloc(0);
             secureStream.on('data', (chunk: Buffer) => {
               buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
