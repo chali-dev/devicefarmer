@@ -40,7 +40,10 @@ async function apiKey(): Promise<string> {
   return openSecret(s.apiKeyEnc);
 }
 
-interface ApiErrorBody { error?: { code?: number; message?: string; errors?: { reason?: string }[] } }
+/** Google API error body (shared with the OAuth YouTube adapter in modules/platforms). */
+export interface GoogleApiErrorBody { error?: { code?: number; message?: string; status?: string; errors?: { reason?: string }[] } }
+export const googleErrorReasons = (body: unknown): string[] => ((body as GoogleApiErrorBody | null)?.error?.errors ?? []).map((e) => e.reason ?? '');
+export const GOOGLE_QUOTA_REASONS = new Set(['quotaExceeded', 'dailyLimitExceeded', 'rateLimitExceeded', 'userRateLimitExceeded']);
 
 /** GET {base}/{resource}?…&key=… with coded errors. The key never appears in thrown messages. */
 async function call<T>(resource: string, params: Record<string, string>): Promise<T> {
@@ -52,11 +55,11 @@ async function call<T>(resource: string, params: Record<string, string>): Promis
   } catch (err) {
     throw new HttpError(502, `YouTube API 无法访问：${(err as Error).name}`, 'tracked.youtube_unreachable', { error: (err as Error).name });
   }
-  const body = await res.json().catch(() => ({})) as T & ApiErrorBody;
+  const body = await res.json().catch(() => ({})) as T & GoogleApiErrorBody;
   if (res.ok) return body;
-  const reasons = (body.error?.errors ?? []).map((e) => e.reason ?? '');
+  const reasons = googleErrorReasons(body);
   const msg = (body.error?.message ?? res.statusText).replace(key, '***').slice(0, 200);
-  if (reasons.some((r) => r === 'quotaExceeded' || r === 'dailyLimitExceeded' || r === 'rateLimitExceeded')) {
+  if (reasons.some((r) => GOOGLE_QUOTA_REASONS.has(r))) {
     throw new HttpError(429, 'YouTube API 配额已用尽，请稍后再试', 'tracked.youtube_quota');
   }
   if (reasons.includes('keyInvalid') || /API key not valid/i.test(msg)) throw new HttpError(400, 'YouTube API 密钥无效', 'tracked.youtube_key_invalid');

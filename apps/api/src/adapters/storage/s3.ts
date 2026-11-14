@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { assertKey, probeStorage, type ObjectStorage, type StorageTestResult } from './types.js';
 
 export interface S3Options {
@@ -55,6 +56,18 @@ export class S3Storage implements ObjectStorage {
   }
 
   test(): Promise<StorageTestResult> { return probeStorage(this); }
+
+  /**
+   * Time-limited GET URL for the object (SigV4 presigned, signed locally, no request is made).
+   * Used to hand media to platforms that fetch it by URL (Instagram Graph API). Whether the URL is
+   * reachable from the internet depends on the endpoint (a LAN-only S3 is not).
+   */
+  presignGet(key: string, expiresInSec: number): Promise<string> {
+    return getSignedUrl(this.client, new GetObjectCommand({ Bucket: this.opts.bucket, Key: this.keyFor(key) }), { expiresIn: expiresInSec });
+  }
+
+  /** The configured endpoint (empty = AWS). */
+  get endpoint(): string { return this.opts.endpoint ?? ''; }
 
   close(): void { this.client.destroy(); }
 }

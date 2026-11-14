@@ -11,6 +11,8 @@ import {
   proxyLabel, SOCIAL_ACCOUNT_COLOR, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_COLOR, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialGroup, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
+import ConnectionCell from '../components/social/ConnectionCell.vue'
+import { usePlatformConnections } from '../components/social/connections'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -20,6 +22,7 @@ const auth = useAuthStore()
 const store = useInstancesStore()
 const route = useRoute()
 const router = useRouter()
+const conns = usePlatformConnections()
 
 const platforms = ref<SocialPlatform[]>([])
 const groups = ref<SocialGroup[]>([])
@@ -73,6 +76,7 @@ async function load() {
     const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
     items.value = r.items
     total.value = r.total
+    void conns.load(r.items.map((x) => x.id))
     const ids = new Set(r.items.map((x) => x.id))
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) }
@@ -84,7 +88,7 @@ function reset() {
   if (route.query.instanceId) void router.replace({ query: {} })
   search()
 }
-onMounted(() => { void loadMeta(); void load() })
+onMounted(() => { void loadMeta(); void load(); void conns.loadPlatforms().then(conns.handleCallback) })
 watch(() => route.query.instanceId, (v) => { filters.instanceId = typeof v === 'string' ? v : undefined; search() })
 
 function onTableChange(p: { current?: number; pageSize?: number }) {
@@ -104,6 +108,7 @@ const columns = computed(() => [
   { title: t('social.colLogin'), key: 'login', width: 120 },
   { title: t('social.colAccount'), key: 'account', width: 120 },
   { title: t('social.colChecked'), key: 'checked', width: 160 },
+  { title: t('platforms.colConnection'), key: 'connection', width: 190 },
   { title: '', key: 'ops', width: 210, align: 'right' as const, fixed: 'right' as const },
 ])
 
@@ -224,7 +229,7 @@ function logValue(l: SocialAccountLog, v: string | null) {
   if (l.field === 'accountStatus') return accountText(v as SocialAccountStatus)
   return v
 }
-const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue' }
+const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue', connect: 'cyan', disconnect: 'gray' }
 const fieldText = (f: string | null) => (f ? t(`social.field.${f}`) : '')
 
 // ---------------------------------------------------------------- batch
@@ -368,7 +373,7 @@ async function saveLimits() {
     </a-space>
 
     <a-table
-      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1600 }"
+      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1790 }"
       :pagination="{ current: page.current, pageSize: page.pageSize, total, size: 'small', showSizeChanger: true, showTotal: (n: number) => t('social.total', { n }) }"
       :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
       @change="onTableChange"
@@ -410,6 +415,12 @@ async function saveLimits() {
           <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
         </template>
         <template v-else-if="column.key === 'checked'">{{ fmt(record.lastCheckedAt) }}</template>
+        <template v-else-if="column.key === 'connection'">
+          <ConnectionCell
+            :account-id="record.id" :label="`${platformName(record.platform)} @${record.handle}`" :platform="conns.platforms.value.find((p) => p.id === record.platform)"
+            :connection="conns.byAccount.value.get(record.id)" @changed="load"
+          />
+        </template>
         <template v-else-if="column.key === 'ops'">
           <a-space :size="0">
             <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">

@@ -406,12 +406,44 @@ export const socialAccountLogs = pgTable('social_account_logs', {
   /** null = system (e.g. device deleted). `actorName` is denormalized so entries survive user deletion. */
   actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
   actorName: text('actor_name'),
-  action: text('action', { enum: ['create', 'update', 'status', 'checked', 'link', 'unlink'] }).notNull(),
+  action: text('action', { enum: ['create', 'update', 'status', 'checked', 'link', 'unlink', 'connect', 'disconnect'] }).notNull(),
   field: text('field'),
   fromValue: text('from_value'),
   toValue: text('to_value'),
   message: text('message'),
 }, (t) => [index('social_account_logs_account_at_idx').on(t.accountId, t.at)]);
+
+/**
+ * Official-API authorisation of a social account (OAuth), 1:1 with the account. Tokens are sealed with
+ * secret-box (AES-256-GCM) and never leave the API: not in responses, events, logs or task payloads.
+ * Instagram (Instagram Login) has no separate refresh token: its long-lived access token is refreshed
+ * itself, so `refresh_token_enc` stays null there.
+ */
+export const platformConnections = pgTable('platform_connections', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  socialAccountId: uuid('social_account_id').notNull().unique().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  /** Platform-side account (YouTube channel id, Instagram user id, TikTok open_id) and its display name. */
+  externalAccountId: text('external_account_id'),
+  externalAccountName: text('external_account_name'),
+  scopes: text('scopes').array().notNull().default(sql`'{}'::text[]`),
+  accessTokenEnc: text('access_token_enc').notNull(),
+  refreshTokenEnc: text('refresh_token_enc'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  refreshExpiresAt: timestamp('refresh_expires_at', { withTimezone: true }),
+  status: text('status', { enum: ['connected', 'expired', 'revoked', 'error'] }).notNull().default('connected'),
+  lastError: text('last_error'),
+  lastErrorCode: text('last_error_code'),
+  connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
+  connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
+  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  index('platform_connections_user_idx').on(t.userId),
+  index('platform_connections_platform_status_idx').on(t.platform, t.status),
+]);
 
 export interface InstanceSpec {
   width: number;
@@ -476,6 +508,7 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type SocialAccountGroup = typeof socialAccountGroups.$inferSelect;
 export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
+export type PlatformConnection = typeof platformConnections.$inferSelect;
 export type TrackedAccount = typeof trackedAccounts.$inferSelect;
 export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
