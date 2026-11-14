@@ -3,7 +3,7 @@ import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText, getToken, responseError } from '../api/client'
-import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type InstalledApp, type PoolProxy } from '../api/types'
+import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -19,7 +19,18 @@ const { t } = useI18n()
 const player = ref<InstanceType<typeof DevicePlayer> | null>(null)
 
 const inst = computed(() => store.byId.get(props.id))
-const tasks = computed(() => store.tasks.filter((t) => t.instanceId === props.id).slice(0, 10))
+// The store only holds the latest tasks of all devices; load this device's own history too,
+// and let live store entries (newer) win over the loaded copy.
+const ownTasks = ref<Task[]>([])
+async function loadOwnTasks() {
+  try { ownTasks.value = (await api<{ tasks: Task[] }>('GET', `/api/tasks?instanceId=${props.id}&limit=10`)).tasks } catch { /* list stays live-only */ }
+}
+onMounted(loadOwnTasks)
+const tasks = computed(() => {
+  const merged = new Map(ownTasks.value.map((t) => [t.id, t]))
+  for (const t of store.tasks) if (t.instanceId === props.id) merged.set(t.id, t)
+  return [...merged.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 10)
+})
 const text = ref('')
 const secure = ref(false)
 const uploading = ref(false)
