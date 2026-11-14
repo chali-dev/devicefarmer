@@ -9,7 +9,11 @@ export type PlatformEvent =
   | { type: 'instance.deleted'; instanceId: string }
   | { type: 'task.updated'; task: Task };
 
-const CHANNEL = 'cloudphone:events';
+/**
+ * Redis pub/sub ignores the DB number, so the channel carries it: environments that share
+ * one Redis on different DBs (parallel worktrees) don't receive each other's events.
+ */
+const CHANNEL = `cloudphone:events:${new URL(config.REDIS_URL).pathname.replace(/^\//, '') || '0'}`;
 
 /**
  * Event bus over Redis pub/sub so that API and worker processes can be split
