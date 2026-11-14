@@ -4,7 +4,8 @@ import os, shutil, sys, zipfile
 zpath, out = sys.argv[1], sys.argv[2]
 REMOVE = ("system/product/priv-app/Velvet/", "system/product/priv-app/VelvetTitan/",
           "system/system_ext/priv-app/SetupWizard/", "system/product/app/talkback/",
-          "system/product/app/MarkupGoogle/", "system/addon.d/")
+          "system/product/app/MarkupGoogle/", "system/product/app/MarkupGoogle_v2/",
+          "system/product/priv-app/Wellbeing/", "system/addon.d/")
 shutil.rmtree(os.path.join(out, "system"), ignore_errors=True)
 z = zipfile.ZipFile(zpath)
 kept = 0

@@ -37,3 +37,26 @@
 4. 兼容测试：启动/adb/STF 冒烟、Google 健康、P0（应用/设置/截图）、代理、受保护画面采集。
 5. 通过后把默认 profile 切到 16；13 实例继续可用。
 6. 输出兼容性报告。
+
+## 实测结果（2026-11-14）
+
+| 步骤 | 结果 |
+|---|---|
+| 下载 redroid 16.0.0_64only-latest | ✅（BP2A.250605.031.A3，userdebug） |
+| 下载 MindTheGapps 16.0.0-arm64-20261023 | ✅ sha256 与官方一致 |
+| 签名校验 | ✅ 16 版改为 OTA 整包签名（`verify_ota.py`），签名证书与 13 版为**同一证书** |
+| 构建 `cloudphone/redroid:16-mtg-20261023` | ✅ 2.97 GB |
+| 在当前宿主启动 | ❌ **无法开机** |
+
+**根因**：redroid 16 的 gralloc 依赖 **ashmem**（`gralloc: couldn't create ashmem (-2)`），分配出的缓冲区不可被 GPU 写入，surfaceflinger 在 RenderEngine 启动时反复崩溃（`output buffer not gpu writeable`），系统无法完成启动。与 GApps 无关。
+
+- 宿主内核 Ubuntu 6.8.0：**不含 ashmem**（主线 5.18 起移除 ashmem；Ubuntu 无 `ashmem_linux` 模块）。Android 13 镜像在此内核上自动改用 memfd，因此正常。
+- `androidboot.use_memfd=true` 对该 16 镜像无效（实测）。
+- `remote-android/redroid-modules`（ashmem DKMS）官方说明仅到 4.14+，≥5.7 需自定义内核，6.8 上能否编译未知。
+
+**当前处置**：`redroid-16-gapps` profile 标记为不可用（附原因），默认继续使用 Android 13；16 镜像保留。
+
+**后续可选路径**（需确认，均涉及宿主内核）：
+1. 在 Linux 宿主上编译加载 ashmem 模块（redroid-modules 或 Android Common Kernel 的 ashmem 驱动移植）；生产服务器同样需要。
+2. 使用自带 ashmem 的内核（如 Android GKI / 部分云厂商 Android 专用内核）的 ARM64 服务器。
+3. 测试 Android 14 / 15 镜像是否同样依赖 ashmem（需另行下载）。

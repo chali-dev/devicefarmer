@@ -58,7 +58,7 @@ const CreateBody = z.object({
 async function profileAvailability() {
   const kvm = await dockerHost.hasKvm().catch(() => false);
   return PROFILES.map((p) => {
-    const reasons = [!p.image && '未配置镜像', p.requiresKvm && !kvm && '宿主机没有 /dev/kvm（需要 x86_64 Linux + KVM）'].filter(Boolean);
+    const reasons = [p.blockedReason, !p.image && '未配置镜像', p.requiresKvm && !kvm && '宿主机没有 /dev/kvm（需要 x86_64 Linux + KVM）'].filter(Boolean);
     const reason = reasons.length ? reasons.join('；') : null;
     return { id: p.id, label: p.label, engine: p.engine, gapps: p.gapps, available: !reason, reason };
   });

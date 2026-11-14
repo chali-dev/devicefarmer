@@ -13,6 +13,8 @@ const Env = z.object({
   REDROID_IMAGE: z.string().default('redroid/redroid:12.0.0_64only-latest'),
   /** Redroid 13 + official MindTheGapps, built locally (see infra/redroid-gapps). */
   REDROID_GAPPS_IMAGE: z.string().default('cloudphone/redroid:13-mtg-20231025'),
+  /** Android 16 + official MindTheGapps 16 (infra/redroid-gapps/build.sh ANDROID=16) */
+  REDROID16_GAPPS_IMAGE: z.string().default('cloudphone/redroid:16-mtg-20261023'),
   /** Image produced by google/android-emulator-container-scripts (google_apis_playstore). Unset = profile unavailable. */
   EMULATOR_IMAGE: z.string().optional(),
   /** Network sidecar image (per-instance proxy, kill switch). Pinned. */
