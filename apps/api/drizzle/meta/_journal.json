@@ -64,6 +64,20 @@
       "when": 1794665057959,
       "tag": "0008_media",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794666148028,
+      "tag": "0009_proxy_pool",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794666148548,
+      "tag": "0010_drop_inline_proxy",
+      "breakpoints": true
     }
   ]
 }

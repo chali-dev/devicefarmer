@@ -79,8 +79,3 @@ set -e
 nft -f /etc/cloudphone/rules.nft
 exec sing-box run -c /etc/cloudphone/config.json
 `;
-
-/** Identity of a proxy endpoint, for the "no accidental sharing" check. */
-export function proxyKey(p: ProxyConfig): string {
-  return `${p.type}://${p.username ?? ''}@${p.host.toLowerCase()}:${p.port}`;
-}

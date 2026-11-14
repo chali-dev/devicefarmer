@@ -3,14 +3,16 @@ import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText, getToken, responseError } from '../api/client'
-import { TASK_STATUS_COLOR, taskText, type InstalledApp, type ProxyInput } from '../api/types'
+import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_COLOR, taskText, type InstalledApp, type PoolProxy } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useInstancesStore } from '../stores/instances'
+import { useAuthStore } from '../stores/auth'
 
 const props = defineProps<{ id: string }>()
 const store = useInstancesStore()
+const auth = useAuthStore()
 const router = useRouter()
 const { t } = useI18n()
 const player = ref<InstanceType<typeof DevicePlayer> | null>(null)
@@ -129,32 +131,37 @@ async function importToLibrary(pkg: string) {
   catch (e) { message.error(errorText(e)) }
 }
 
-// ---- network proxy (per instance; password is write-only)
-const proxyForm = reactive({ enabled: false, type: 'socks5' as 'socks5' | 'http', host: '', port: 1080 as number | undefined, username: '', password: '' })
+// ---- network proxy: a pool proxy bound exclusively to this device (admins bind; credentials never reach the browser)
+const proxyChoice = ref<string | undefined>(undefined)
+const freeProxies = ref<PoolProxy[]>([])
 const proxySaving = ref(false)
 const proxyChecking = ref(false)
-function fillProxyForm() {
-  const p = inst.value?.proxy
-  Object.assign(proxyForm, p
-    ? { enabled: true, type: p.type, host: p.host, port: p.port, username: p.username ?? '', password: '' }
-    : { enabled: false, type: 'socks5', host: '', port: 1080, username: '', password: '' })
+watch(() => inst.value?.proxy?.id, (id) => { proxyChoice.value = id }, { immediate: true })
+async function loadFreeProxies() {
+  if (!auth.isAdmin) return
+  try { freeProxies.value = (await api<{ proxies: PoolProxy[] }>('GET', '/api/proxies?bound=free')).proxies } catch { freeProxies.value = [] }
 }
-watch(() => inst.value?.proxy, fillProxyForm, { immediate: true })
-async function saveProxy() {
+onMounted(loadFreeProxies)
+const proxyOptions = computed(() => {
+  const cur = inst.value?.proxy
+  const list = freeProxies.value.map((p) => ({
+    value: p.id,
+    label: `${proxyLabel(p)} · ${p.type.toUpperCase()} ${p.host}:${p.port}${p.country ? ` · ${p.country}` : ''} · ${t(`proxies.statusText.${p.status}`)}`,
+  }))
+  if (cur && !list.some((o) => o.value === cur.id)) list.unshift({ value: cur.id, label: `${proxyLabel(cur)} · ${cur.type.toUpperCase()} ${cur.host}:${cur.port}` })
+  return list
+})
+async function bindProxy(proxyId: string | null) {
   proxySaving.value = true
   try {
-    let proxy: ProxyInput | null = null
-    if (proxyForm.enabled) {
-      if (!proxyForm.host || !proxyForm.port) throw new Error(t('detail.proxy.required'))
-      proxy = { type: proxyForm.type, host: proxyForm.host.trim(), port: proxyForm.port,
-        ...(proxyForm.username ? { username: proxyForm.username } : {}),
-        ...(proxyForm.password ? { password: proxyForm.password } : {}) }
-    }
-    await api('PUT', `/api/instances/${props.id}/proxy`, { proxy })
-    message.success(inst.value?.netContainerId ? t('detail.proxy.hotSwitch') : t('detail.proxy.rebuild'))
-    proxyForm.password = ''
+    await api('PUT', `/api/instances/${props.id}/proxy`, { proxyId })
+    message.success(proxyId ? (inst.value?.netContainerId ? t('detail.proxy.hotSwitch') : t('detail.proxy.rebuild')) : t('detail.proxy.unbound'))
+    void loadFreeProxies()
   } catch (e) { message.error(errorText(e)) }
   finally { proxySaving.value = false }
+}
+function unbindProxy() {
+  Modal.confirm({ title: t('detail.proxy.confirmUnbind'), okText: t('common.ok'), cancelText: t('common.cancel'), onOk: () => bindProxy(null) })
 }
 async function checkProxy() {
   proxyChecking.value = true
@@ -337,23 +344,31 @@ async function act(a: 'start' | 'stop' | 'restart') {
           <template #extra>
             <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
           </template>
-          <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
-            <a-form-item style="margin-bottom: 8px">
-              <a-switch v-model:checked="proxyForm.enabled" size="small" /> <span style="margin-left: 6px">{{ proxyForm.enabled ? t('detail.proxy.enabled') : t('devices.direct') }}</span>
-            </a-form-item>
-            <a-row v-if="proxyForm.enabled" :gutter="12">
-              <a-col :xs="24" :sm="5"><a-form-item :label="t('detail.proxy.type')"><a-select v-model:value="proxyForm.type" :options="[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]" /></a-form-item></a-col>
-              <a-col :xs="24" :sm="11"><a-form-item :label="t('detail.proxy.host')"><a-input v-model:value="proxyForm.host" :placeholder="t('detail.proxy.hostPlaceholder')" /></a-form-item></a-col>
-              <a-col :xs="24" :sm="8"><a-form-item :label="t('detail.proxy.port')"><a-input-number v-model:value="proxyForm.port" :min="1" :max="65535" style="width: 100%" /></a-form-item></a-col>
-              <a-col :xs="24" :sm="12"><a-form-item :label="t('common.username')"><a-input v-model:value="proxyForm.username" autocomplete="off" /></a-form-item></a-col>
-              <a-col :xs="24" :sm="12">
-                <a-form-item :label="t('common.password')" :extra="inst.proxy?.hasPassword ? t('detail.proxy.passwordSaved') : undefined">
-                  <a-input-password v-model:value="proxyForm.password" autocomplete="new-password" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-button type="primary" size="small" :loading="proxySaving" @click="saveProxy">{{ t('detail.proxy.saveApply') }}</a-button>
-          </a-form>
+          <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
+            <a-descriptions-item :label="t('detail.proxy.current')" :span="2">
+              <template v-if="inst.proxy">
+                <a-tag>{{ inst.proxy.type.toUpperCase() }}</a-tag>
+                <span>{{ proxyLabel(inst.proxy) }}</span>
+                <span class="hint"> · {{ inst.proxy.host }}:{{ inst.proxy.port }}</span>
+                <a-tag :color="PROXY_STATUS_COLOR[inst.proxy.status]" style="margin-left: 6px">{{ t(`proxies.statusText.${inst.proxy.status}`) }}</a-tag>
+              </template>
+              <span v-else class="hint">{{ t('detail.proxy.none') }}</span>
+            </a-descriptions-item>
+            <a-descriptions-item v-if="inst.proxy && (inst.proxy.country || inst.proxy.city)" :label="t('detail.proxy.location')">
+              {{ [inst.proxy.country, inst.proxy.city].filter(Boolean).join(' · ') }}
+            </a-descriptions-item>
+          </a-descriptions>
+          <a-space v-if="auth.isAdmin" wrap style="margin-top: 8px">
+            <a-select
+              v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
+              :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" style="min-width: 320px; max-width: 100%"
+              @dropdown-visible-change="(o: boolean) => o && loadFreeProxies()"
+            />
+            <a-button type="primary" size="small" :loading="proxySaving" :disabled="!proxyChoice || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" @click="bindProxy(proxyChoice!)">{{ t('detail.proxy.bindApply') }}</a-button>
+            <a-button v-if="inst.proxy" size="small" danger :loading="proxySaving" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" @click="unbindProxy">{{ t('detail.proxy.unbind') }}</a-button>
+            <a-button size="small" type="link" @click="router.push('/proxies')">{{ t('detail.proxy.manage') }}</a-button>
+          </a-space>
+          <div v-else class="hint" style="margin-top: 4px">{{ t('detail.proxy.adminOnly') }}</div>
           <a-descriptions v-if="inst.proxyStatus" :column="{ xs: 1, sm: 2 }" size="small" style="margin-top: 12px">
             <a-descriptions-item :label="t('detail.proxy.egress')">
               <a-tag :color="inst.proxyStatus.ok ? 'green' : 'red'">{{ inst.proxyStatus.ok ? t('detail.proxy.ok') : t('detail.proxy.blocked') }}</a-tag>
@@ -364,7 +379,8 @@ async function act(a: 'start' | 'stop' | 'restart') {
             <a-descriptions-item :label="t('detail.proxy.checkedAt')">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString() }}</a-descriptions-item>
             <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
           </a-descriptions>
-          <div class="hint" style="margin-top: 8px">{{ t('detail.proxy.hint') }}</div>
+          <div class="hint" style="margin-top: 8px">{{ t('detail.proxy.killSwitch') }}</div>
+          <div class="hint">{{ t('detail.proxy.hint') }}</div>
         </a-card>
 
         <a-card size="small" :title="t('detail.settings.title')">

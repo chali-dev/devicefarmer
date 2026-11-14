@@ -5,7 +5,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { useRouter } from 'vue-router'
-import { BUSY_STATUSES, profileLabel, taskText, type Instance, type InstanceOwner, type Profile, type Task } from '../api/types'
+import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type Instance, type InstanceOwner, type PoolProxy, type Profile, type Task } from '../api/types'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
@@ -139,12 +139,30 @@ onMounted(async () => {
 })
 const TIMEZONES = Intl.supportedValuesOf('timeZone')
 const LOCALES = ['zh-CN', 'zh-TW', 'zh-HK', 'en-US', 'en-GB', 'ja-JP', 'ko-KR', 'de-DE', 'fr-FR', 'es-ES', 'pt-BR', 'ru-RU', 'ar-SA', 'th-TH', 'vi-VN', 'id-ID']
-const form = reactive({ locale: undefined as string | undefined, timezone: undefined as string | undefined, deviceName: '', profile: 'redroid-13-gapps', count: 1, namePrefix: 'phone', preset: '720x1280@320' as keyof typeof PRESETS, memoryMb: undefined as number | undefined })
+const form = reactive({ proxyMode: 'auto' as 'auto' | 'none' | 'pick', proxyIds: [] as string[], locale: undefined as string | undefined, timezone: undefined as string | undefined, deviceName: '', profile: 'redroid-13-gapps', count: 1, namePrefix: 'phone', preset: '720x1280@320' as keyof typeof PRESETS, memoryMb: undefined as number | undefined })
+// Free pool proxies for the create form (each device gets its own proxy).
+const freeProxies = ref<PoolProxy[]>([])
+const freeUsable = computed(() => freeProxies.value.filter((p) => p.status !== 'failed').length)
+async function openCreate() {
+  createOpen.value = true
+  form.proxyIds = []
+  try {
+    freeProxies.value = (await api<{ proxies: PoolProxy[] }>('GET', '/api/proxies?bound=free')).proxies
+    if (form.proxyMode === 'auto' && !freeUsable.value) form.proxyMode = 'none'
+  } catch (e) { freeProxies.value = []; message.error(errorText(e)) }
+}
+const proxyOption = (p: PoolProxy) => ({
+  value: p.id,
+  label: `${proxyLabel(p)} · ${p.type.toUpperCase()} ${p.host}:${p.port}${p.country ? ` · ${p.country}` : ''} · ${t(`proxies.statusText.${p.status}`)}`,
+})
 async function submitCreate() {
+  if (form.proxyMode === 'pick' && form.proxyIds.length !== form.count) { message.error(t('devices.form.proxyPickCount', { count: form.count })); return }
+  if (form.proxyMode === 'auto' && freeUsable.value < form.count) { message.error(t('devices.form.proxyNotEnough', { need: form.count, free: freeUsable.value })); return }
   creating.value = true
   try {
     const [width, height, dpi] = PRESETS[form.preset]
     const r = await store.create({
+      proxyMode: form.proxyMode, ...(form.proxyMode === 'pick' ? { proxyIds: form.proxyIds } : {}),
       ...(form.locale ? { locale: form.locale } : {}), ...(form.timezone ? { timezone: form.timezone } : {}), ...(form.deviceName ? { deviceName: form.deviceName } : {}),
       profile: form.profile, count: form.count, namePrefix: form.namePrefix, width, height, dpi, ...(form.memoryMb ? { memoryMb: form.memoryMb } : {}) })
     message.success(t('devices.submittedCreate', { names: r.instances.map((i) => i.name).join(t('common.listSep')) }))
@@ -159,7 +177,8 @@ async function submitCreate() {
 function netTitle(i: Instance) {
   if (!i.proxy) return ''
   const egress = i.proxyStatus?.egressIp ? t('devices.egress', { ip: i.proxyStatus.egressIp }) : ''
-  return `${i.proxy.type}://${i.proxy.host}:${i.proxy.port}${egress}`
+  const where = [i.proxy.country, i.proxy.city].filter(Boolean).join(' ')
+  return `${i.proxy.type}://${i.proxy.host}:${i.proxy.port}${where ? ` · ${where}` : ''}${egress}`
 }
 
 function deviceText(i: Instance) {
@@ -231,7 +250,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
               </a-menu>
             </template>
           </a-dropdown>
-          <a-button v-if="auth.isAdmin" type="primary" @click="createOpen = true">{{ t('devices.createDevice') }}</a-button>
+          <a-button v-if="auth.isAdmin" type="primary" @click="openCreate">{{ t('devices.createDevice') }}</a-button>
           <a-button :loading="store.loading" @click="store.refresh()">{{ t('common.refresh') }}</a-button>
         </a-space>
       </template>
@@ -293,7 +312,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
           </template>
           <template v-else-if="column.key === 'net'">
             <a-tooltip v-if="record.proxy" :title="netTitle(record)">
-              <a-tag :color="record.proxyStatus ? (record.proxyStatus.ok ? 'green' : 'red') : 'default'">{{ record.proxy.type.toUpperCase() }} {{ record.proxy.host }}</a-tag>
+              <a-tag :color="record.proxyStatus ? (record.proxyStatus.ok ? 'green' : 'red') : 'default'">{{ record.proxy.type.toUpperCase() }} {{ proxyLabel(record.proxy) }}</a-tag>
             </a-tooltip>
             <span v-else class="muted">{{ t('devices.direct') }}</span>
           </template>
@@ -339,6 +358,19 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       </a-form-item>
       <a-form-item :label="t('devices.form.count')" :extra="t('devices.form.countHint')">
         <a-input-number v-model:value="form.count" :min="1" :max="20" style="width: 100%" />
+      </a-form-item>
+      <a-form-item :label="t('devices.form.proxy')"
+        :extra="form.proxyMode === 'auto' ? t('devices.form.proxyAutoHint', { n: freeUsable }) : form.proxyMode === 'pick' ? t('devices.form.proxyPickHint', { count: form.count }) : t('devices.form.proxyNoneHint')">
+        <a-radio-group v-model:value="form.proxyMode">
+          <a-radio-button value="auto">{{ t('devices.form.proxyAuto') }}</a-radio-button>
+          <a-radio-button value="pick">{{ t('devices.form.proxyPick') }}</a-radio-button>
+          <a-radio-button value="none">{{ t('devices.form.proxyNone') }}</a-radio-button>
+        </a-radio-group>
+        <a-select
+          v-if="form.proxyMode === 'pick'" v-model:value="form.proxyIds" mode="multiple" show-search option-filter-prop="label"
+          :options="freeProxies.map(proxyOption)" :placeholder="t('devices.form.proxyPickPlaceholder')" style="margin-top: 8px; width: 100%"
+          :status="form.proxyIds.length && form.proxyIds.length !== form.count ? 'warning' : undefined"
+        />
       </a-form-item>
       <a-form-item :label="t('devices.form.prefix')" :extra="t('devices.form.prefixHint')">
         <a-input v-model:value="form.namePrefix" />

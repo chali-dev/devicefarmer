@@ -1,7 +1,9 @@
 /**
  * Per-instance proxy test through the public API against real infrastructure (no mocks).
  * Uses a sing-box test proxy container `cp-testproxy` (mixed SOCKS5/HTTP, user cpuser / cp-test-pass)
- * on the Android host; creates one redroid-12 instance `px-1` and deletes it at the end.
+ * on the Android host; puts it into the proxy pool (good SOCKS5, good HTTP, wrong-credential SOCKS5),
+ * creates one redroid-12 instance `px-1` bound to a pool entry and deletes instance + pool entries at the end.
+ * If the host capacity check refuses the device, the run stops with exit code 2 (skipped, nothing created).
  * Usage: npx tsx --env-file=../../.env scripts/proxy-check.ts
  */
 import Docker from 'dockerode';
@@ -10,7 +12,8 @@ import WebSocket from 'ws';
 import { dockerFromEnv } from '../src/adapters/runtime/docker.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 
-const API = 'http://127.0.0.1:3000';
+const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
+const DATA_ROOT = process.env.INSTANCE_DATA_ROOT ?? '/srv/cloudphone/instances';
 const docker: Docker = dockerFromEnv(process.env.DOCKER_HOST!);
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
@@ -40,8 +43,27 @@ if (!tp.State.Running) await docker.getContainer('cp-testproxy').start();
 const PIP = (await docker.getContainer('cp-testproxy').inspect()).NetworkSettings.Networks.bridge!.IPAddress;
 const good = { type: 'socks5' as const, host: PIP, port: 1080, username: 'cpuser', password: 'cp-test-pass' };
 console.log(`test proxy ${PIP}:1080`);
+if ((await docker.listContainers({ all: true, filters: { name: ['cloudphone-px-1'] } })).length) throw new Error('a cloudphone-px-1 container already exists');
+
+// Pool entries (the device's sidecar is configured from these; passwords are stored encrypted).
+const pool: string[] = [];
+async function poolAdd(body: object): Promise<string> {
+  const r = await http('POST', '/api/proxies', T, body);
+  if (r.status !== 201) throw new Error(`pool create failed: ${r.status} ${r.body?.code ?? r.body?.error}`);
+  pool.push(r.body.proxy.id);
+  return r.body.proxy.id;
+}
+const goodId = await poolAdd({ ...good, label: 'px-good-socks5' });
+const httpId = await poolAdd({ ...good, type: 'http', label: 'px-good-http' });
+const badId = await poolAdd({ ...good, username: 'cpuser-wrong', password: 'wrong', label: 'px-bad-socks5' });
+const bind = async (proxyId: string | null) => {
+  const r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxyId });
+  if (r.status !== 202) throw new Error(`bind failed: ${r.status} ${r.body?.code ?? r.body?.error}`);
+  return waitTask(r.body.taskId);
+};
 
 let id = '';
+let skipped = false;
 const inst = async () => (await http('GET', `/api/instances/${id}`, T)).body.instance;
 const waitTask = async (taskId: string) => waitFor('task', async () => {
   const t = (await http('GET', '/api/tasks?limit=100', T)).body.tasks.find((x: any) => x.id === taskId);
@@ -55,11 +77,17 @@ const androidBrowse = async (url: string) => {
 };
 
 try {
-  // 1. create with proxy
-  const c = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: 'px', proxy: good });
-  check('create with SOCKS5 proxy accepted', c.status === 202, c.body?.error ?? '');
+  // 1. create with a picked pool proxy
+  const c = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: 'px', proxyMode: 'pick', proxyIds: [goodId] });
+  if (c.status === 409 && c.body?.code === 'instances.insufficient_memory') {
+    console.log(`SKIPPED device-level run: ${c.body.error}`);
+    skipped = true;
+    throw new Error('skipped');
+  }
+  check('create with SOCKS5 pool proxy accepted', c.status === 202, c.body?.error ?? '');
   id = c.body.instances[0].id;
-  check('create response hides proxy password', c.body.instances[0].proxy?.password === undefined && c.body.instances[0].proxy?.hasPassword === true);
+  check('create response: pool proxy without credentials', c.body.instances[0].proxy?.id === goodId && c.body.instances[0].proxy?.hasAuth === true
+    && !JSON.stringify(c.body).includes('cp-test-pass') && !JSON.stringify(c.body).includes('cpuser'));
   const running = await waitFor('running', async () => { const i = await inst(); if (i.status === 'error') throw new Error(i.lastError); return i.status === 'running' && i.stfReady ? i : null; });
   check('instance running with STF via sidecar (adb through sidecar port)', true, `net=${running.netContainerId?.slice(0, 12)}`);
   const st0 = await waitFor('proxy status', async () => (await inst()).proxyStatus, 30_000);
@@ -77,27 +105,35 @@ try {
   check('Android DNS resolved through the proxy', dests.some((d) => d.endsWith(':53') || d.endsWith(':853')), dests.filter((d) => /:(53|853)$/.test(d)).join(', '));
 
   // 3. wrong credentials -> kill switch (no direct fallback)
-  let r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: { ...good, password: 'wrong' } });
-  await waitTask(r.body.taskId);
+  await bind(badId);
   const st1 = await pcheck();
   check('wrong proxy password: no egress at all (kill switch)', !st1.ok && !st1.egressIp, st1.error ?? '');
   check('Android kept running during hot proxy change', (await inst()).status === 'running');
 
   // 4. switch to HTTP proxy (hot reload)
-  r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: { ...good, type: 'http' } });
-  const task = await waitTask(r.body.taskId);
+  const task = await bind(httpId);
   const st2 = await pcheck();
-  check('switch to HTTP proxy via hot reload', task.status === 'succeeded' && st2.ok, `egress=${mask(st2.egressIp)}`);
-  // resubmitting without password keeps the stored one
-  r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: { type: 'http', host: PIP, port: 1080, username: 'cpuser' } });
+  check('switch to HTTP pool proxy via hot reload', task.status === 'succeeded' && st2.ok, `egress=${mask(st2.egressIp)}`);
+  // editing the pool entry without a password keeps the stored one (write-only) and needs no re-apply
+  let r = await http('PUT', `/api/proxies/${httpId}`, T, { notes: 'edited' });
+  const stE = await pcheck();
+  check('edit pool entry without password: kept, no re-apply', r.status === 200 && r.body.taskId === null && r.body.proxy.hasPassword && stE.ok,
+    `status=${r.status} taskId=${r.body?.taskId} hasPassword=${r.body?.proxy?.hasPassword} egressOk=${stE.ok} ${stE.error ?? ''}`);
+  // changing the bound pool entry's password re-applies it to the device (hot)
+  r = await http('PUT', `/api/proxies/${httpId}`, T, { password: 'wrong' });
   await waitTask(r.body.taskId);
-  check('resubmit without password keeps stored password', (await pcheck()).ok);
+  const st2b = await pcheck();
+  r = await http('PUT', `/api/proxies/${httpId}`, T, { password: good.password });
+  await waitTask(r.body.taskId);
+  check('pool entry credential change hot-applied to the bound device', !st2b.ok && (await pcheck()).ok);
 
-  // 5. no accidental sharing
-  r = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: 'pxdup', proxy: { ...good, type: 'http' } });
-  check('same proxy on another instance rejected', r.status === 409 && /代理/.test(r.body?.error ?? ''), r.body?.error);
-  r = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 2, namePrefix: 'pxdup', proxy: good });
+  // 5. exclusivity
+  r = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 1, namePrefix: 'pxdup', proxyMode: 'pick', proxyIds: [httpId] });
+  check('bound pool proxy refused for another device', r.status === 409 && r.body?.code === 'proxy.already_bound', r.body?.error);
+  r = await http('POST', '/api/instances', T, { profile: 'redroid-12', count: 2, namePrefix: 'pxdup', proxyMode: 'pick', proxyIds: [goodId] });
   check('one proxy for a multi-instance batch rejected', r.status === 400, r.body?.error);
+  r = await http('DELETE', `/api/proxies/${httpId}`, T);
+  check('deleting the bound pool proxy refused', r.status === 409 && r.body?.code === 'proxy.bound');
 
   // 6. password never in events
   const ws = new WebSocket(`${API.replace('http', 'ws')}/api/events`);
@@ -106,8 +142,7 @@ try {
   await new Promise((res) => ws.on('open', res));
   ws.send(JSON.stringify({ type: 'auth', token: T }));
   await new Promise((res) => setTimeout(res, 500));
-  r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: good });
-  await waitTask(r.body.taskId);
+  await bind(goodId);
   await new Promise((res) => setTimeout(res, 1000));
   ws.close();
   check('WebSocket events never contain the proxy password', evs.length > 0 && !evs.some((e) => e.includes('cp-test-pass')), `${evs.length} events`);
@@ -123,8 +158,7 @@ try {
   check('Android traffic via proxy after restart', /inbound connection to [0-9.]+:443/.test(await proxyLogSince(t1)));
 
   // 8. remove proxy -> direct
-  r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: null });
-  await waitTask(r.body.taskId);
+  await bind(null);
   const i8 = await inst();
   const rules8 = await sh(i8.netContainerId, 'nft list table inet cloudphone');
   const st4 = await pcheck();
@@ -141,19 +175,18 @@ try {
     Cmd: ['androidboot.redroid_width=720', 'androidboot.redroid_height=1280', 'androidboot.redroid_dpi=320'],
     Labels: { 'cloudphone.instance': id, 'cloudphone.name': old.name, 'cloudphone.engine': 'redroid' },
     ExposedPorts: { '5555/tcp': {} },
-    HostConfig: { Privileged: true, Binds: [`/srv/cloudphone/instances/${old.name}/data:/data`], PortBindings: { '5555/tcp': [{ HostIp: '0.0.0.0', HostPort: String(old.adbPort) }] } },
+    HostConfig: { Privileged: true, Binds: [`${DATA_ROOT}/${old.name}/data:/data`], PortBindings: { '5555/tcp': [{ HostIp: '0.0.0.0', HostPort: String(old.adbPort) }] } },
   });
   await db.update(schema.instances).set({ containerId: legacy.id, netContainerId: null }).where(eq(schema.instances.id, id));
   await http('POST', '/api/instances/actions', T, { action: 'start', ids: [id] });
   await waitFor('legacy running', async () => { const i = await inst(); return i.status === 'running' && i.stfReady && !i.netContainerId ? i : null; });
   check('legacy-style instance running without sidecar', true);
-  r = await http('PUT', `/api/instances/${id}/proxy`, T, { proxy: good });
-  const conv = await waitTask(r.body.taskId);
+  const conv = await bind(goodId);
   const i9 = await waitFor('converted', async () => { const i = await inst(); return i.status === 'running' && i.stfReady && i.netContainerId ? i : null; });
   const st5 = await pcheck();
   check('legacy instance converted to sidecar + proxy, data kept', conv.status === 'succeeded' && st5.ok && i9.containerId !== legacy.id, conv.error ?? `egress=${mask(st5.egressIp)}`);
 } catch (err) {
-  check(`unexpected error: ${(err as Error).message}`, false);
+  if (!skipped) check(`unexpected error: ${(err as Error).message}`, false);
 } finally {
   if (id) {
     const d = await http('POST', '/api/instances/actions', T, { action: 'delete', ids: [id] });
@@ -161,7 +194,9 @@ try {
     const left = await docker.listContainers({ all: true, filters: { name: ['cloudphone-px-1'] } });
     check('cleanup: instance, sidecar and data removed', d.status === 202 && left.length === 0, `${left.length} containers left`);
   }
+  for (const p of pool) await http('DELETE', `/api/proxies/${p}`, T);
   await sqlClient.end();
+  if (skipped) { console.log(`\n${results.length} checks run before skip; device-level run skipped (capacity)`); process.exit(2); }
   const failed = results.filter((x) => !x[1]).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);
   process.exit(failed ? 1 : 0);

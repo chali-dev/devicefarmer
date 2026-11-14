@@ -11,9 +11,8 @@ import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue, type DeviceOpName } from './queue.js';
-import { getInstance, publicInstance, updateInstance } from './repo.js';
-import { proxyKey } from '../network/singbox.js';
-import type { ProxyConfig } from '../../db/schema.js';
+import { getInstance, publicInstance, publicInstances, publishInstance, updateInstance } from './repo.js';
+import { assignFreeProxies, countFreeUsable, isUniqueViolation, lockFreeProxies } from '../proxies/pool.js';
 import { getProfile, PROFILES } from '../../profiles.js';
 import { adb, dockerHost, network } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
@@ -23,26 +22,13 @@ import { prepareUpload } from '../apps/package.js';
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 const MAX_BATCH = 20;
 
-const Proxy = z.object({
-  type: z.enum(['socks5', 'http']),
-  host: z.string().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/, 'hostname or IPv4'),
-  port: z.number().int().min(1).max(65535),
-  username: z.string().max(200).optional(),
-  password: z.string().max(200).optional(),
-});
-
-/** Prevents accidentally giving two instances the same proxy endpoint+user. */
-async function assertProxyNotShared(proxy: ProxyConfig, exceptId?: string) {
-  const rows = await db.select({ id: schema.instances.id, name: schema.instances.name, proxy: schema.instances.proxy }).from(schema.instances);
-  const other = rows.find((r) => r.id !== exceptId && r.proxy && proxyKey(r.proxy) === proxyKey(proxy));
-  if (other) throw conflict(`该代理已被设备 ${other.name} 使用（如确需共享请勾选 allowShared）`, 'proxy.shared', { name: other.name });
-}
-
 const CreateBody = z.object({
-  /** One proxy per instance: when creating several, pass `proxies` (one per instance) instead. */
-  proxy: Proxy.optional(),
-  proxies: z.array(Proxy).max(20).optional(),
-  allowShared: z.boolean().optional(),
+  /**
+   * Pool proxy per device (exclusive): `auto` assigns distinct free usable proxies (ok, then unchecked),
+   * `pick` binds `proxyIds` (one per device, in order), `none` = direct.
+   */
+  proxyMode: z.enum(['auto', 'none', 'pick']).default('none'),
+  proxyIds: z.array(z.string().uuid()).max(MAX_BATCH).optional(),
   profile: z.string().default('redroid-12'),
   count: z.number().int().min(1).max(MAX_BATCH).default(1),
   namePrefix: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/, 'lowercase letters, digits and dashes').default('phone'),
@@ -91,7 +77,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances', async (req) => {
     const allowed = await accessibleInstanceIds(req.user);
     const rows = await db.select().from(schema.instances).orderBy(schema.instances.name);
-    const visible = (allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id))).map(publicInstance);
+    const visible = await publicInstances(allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id)));
     if (!isAdmin(req.user)) return { instances: visible };
     // Admin only: users granted each device (never exposed to non-admins).
     const grants = await db.select({
@@ -113,7 +99,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
-    return { instance: publicInstance(inst) };
+    return { instance: await publicInstance(inst) };
   });
 
   /** Batch create (admin only). Instances are created by the queue. */
@@ -124,13 +110,15 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const avail = (await profileAvailability()).find((p) => p.id === b.profile);
     if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`, 'instances.unknown_profile', { profile: b.profile });
     if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`, 'instances.profile_unavailable', { reason: avail.reason ?? '' });
-    if (b.proxy && b.count > 1) throw badRequest('多台设备请使用 proxies（每台一个代理），避免共享同一代理', 'proxy.single_for_many');
-    if (b.proxies && b.proxies.length !== b.count) throw badRequest(`proxies 数量（${b.proxies.length}）必须等于创建数量（${b.count}）`, 'proxy.count_mismatch', { proxies: b.proxies.length, count: b.count });
-    const proxies: (ProxyConfig | null)[] = Array.from({ length: b.count }, (_, i) => b.proxies?.[i] ?? b.proxy ?? null);
-    if (!b.allowShared) {
-      const keys = proxies.filter((p): p is ProxyConfig => !!p).map(proxyKey);
-      if (new Set(keys).size !== keys.length) throw conflict('同一批次中存在重复代理', 'proxy.duplicate_in_batch');
-      for (const p of proxies) if (p) await assertProxyNotShared(p);
+    // Proxies first (cheap, no side effects); the binding itself is decided under row locks below.
+    if (b.proxyMode === 'pick') {
+      const ids = b.proxyIds ?? [];
+      if (ids.length !== b.count) throw badRequest(`proxyIds 数量（${ids.length}）必须等于创建数量（${b.count}）`, 'proxy.count_mismatch', { proxies: ids.length, count: b.count });
+      if (new Set(ids).size !== ids.length) throw conflict('同一批次中存在重复代理', 'proxy.duplicate_in_batch');
+      await db.transaction((tx) => lockFreeProxies(tx, ids));
+    } else if (b.proxyMode === 'auto') {
+      const free = await countFreeUsable();
+      if (free < b.count) throw conflict(`空闲可用代理不足：需要 ${b.count} 个，当前 ${free} 个`, 'proxy.not_enough_free', { need: b.count, free });
     }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
     if (!b.force) {
@@ -143,8 +131,12 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     const slots = await allocate(b.namePrefix, b.count);
     const rows = await db.transaction(async (tx) => {
+      // Locked until commit: concurrent creations (SKIP LOCKED) and binds (FOR UPDATE) can't take the same proxy.
+      const proxyIds: (string | null)[] = b.proxyMode === 'auto' ? await assignFreeProxies(tx, b.count)
+        : b.proxyMode === 'pick' ? (await lockFreeProxies(tx, b.proxyIds!), b.proxyIds!)
+          : slots.map(() => null);
       const inserted = await tx.insert(schema.instances).values(slots.map((s, i) => ({
-        proxy: proxies[i],
+        proxyId: proxyIds[i],
         name: s.name, adbPort: s.adbPort, image: profile.image!, engine: profile.engine, profile: profile.id,
         status: 'creating' as const, createdBy: req.user.id,
         spec: {
@@ -156,11 +148,15 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
         },
       }))).returning();
       return inserted;
+    }).catch((err) => {
+      if (isUniqueViolation(err, 'instances_proxy_id_unique')) throw conflict('代理已被其他设备占用，请重试', 'proxy.bind_conflict');
+      throw err;
     });
+    if (b.proxyMode !== 'none' && req.audit) req.audit.extra = { proxyIds: rows.map((r) => r.proxyId) };
     const taskIds = [];
     for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id));
     reply.code(202);
-    return { instances: rows.map(publicInstance), taskIds };
+    return { instances: await publicInstances(rows), taskIds };
   });
 
   /** Batch lifecycle actions. Each instance becomes one task; busy instances are skipped. */
@@ -277,24 +273,32 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { google };
   });
 
-  /** Set or clear (null) the instance's proxy. Applied by a task (hot reload; legacy instances get a sidecar). */
+  /**
+   * Bind a pool proxy to the device, or unbind (null). Admin only: the pool is admin-managed and a proxy
+   * is an exclusive, paid resource; users see their devices' proxy (without credentials) but can't change it.
+   * Applied by a task (hot reload; legacy devices get a sidecar).
+   */
   app.put('/api/instances/:id/proxy', {
-    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ proxy: Proxy.nullable(), allowShared: z.boolean().optional() }) },
+    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ proxyId: z.string().uuid().nullable() }) },
   }, async (req, reply) => {
-    await assertInstanceAccess(req.user, req.params.id, 'operate');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以为设备绑定代理', 'proxy.bind_admin_only');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
     if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
-    let proxy: ProxyConfig | null = req.body.proxy;
-    // Keep the stored password when the client re-submits the form without it (passwords are write-only).
-    if (proxy && proxy.password === undefined && inst.proxy?.password && proxyKey(inst.proxy) === proxyKey(proxy)) {
-      proxy = { ...proxy, password: inst.proxy.password };
-    }
-    if (proxy && !req.body.allowShared) await assertProxyNotShared(proxy, inst.id);
-    const updated = await updateInstance(inst.id, { proxy, proxyStatus: null });
-    const taskId = await enqueue('set-proxy', inst, req.user.id, {}, proxy ? `${proxy.type}://${proxy.host}:${proxy.port}` : '直连');
+    const { proxyId } = req.body;
+    if (req.audit) req.audit.extra = { fromProxyId: inst.proxyId };
+    const updated = await db.transaction(async (tx) => {
+      const [p] = proxyId ? await lockFreeProxies(tx, [proxyId], inst.id) : [];
+      const [row] = await tx.update(schema.instances).set({ proxyId, proxyStatus: null }).where(eq(schema.instances.id, inst.id)).returning();
+      return { row: row!, label: p ? `${p.type}://${p.host}:${p.port}` : '直连' };
+    }).catch((err) => {
+      if (isUniqueViolation(err, 'instances_proxy_id_unique')) throw conflict('代理已被其他设备占用', 'proxy.bind_conflict');
+      throw err;
+    });
+    await publishInstance(updated.row);
+    const taskId = await enqueue('set-proxy', inst, req.user.id, {}, updated.label);
     reply.code(202);
-    return { instance: publicInstance(updated!), taskId };
+    return { instance: await publicInstance(updated.row), taskId };
   });
 
   /** Egress check from inside the instance's network namespace (same path as Android traffic). */
