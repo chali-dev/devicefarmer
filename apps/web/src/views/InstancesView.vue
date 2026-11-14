@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import { DownOutlined, ExclamationCircleOutlined, MoreOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api } from '../api/client'
 import { useRouter } from 'vue-router'
-import { BUSY_STATUSES, type Instance, type Profile } from '../api/types'
+import { BUSY_STATUSES, TASK_TEXT, type Instance, type InstanceOwner, type Profile, type Task } from '../api/types'
+import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -26,16 +28,46 @@ const counts = computed(() => {
   return c
 })
 
-const columns = [
+const columns = computed(() => [
   { title: '名称', dataIndex: 'name', key: 'name' },
   { title: '镜像', key: 'profile', width: 190 },
   { title: '状态', key: 'status', width: 110 },
+  ...(auth.isAdmin ? [{ title: '所属用户', key: 'owners', width: 200 }] : []),
   { title: '设备', key: 'device', width: 220 },
   { title: '网络', key: 'net', width: 170 },
   { title: 'ADB 端口', dataIndex: 'adbPort', key: 'adbPort', width: 100 },
   { title: '分辨率', key: 'spec', width: 140 },
-  { title: '', key: 'ops', width: 90, align: 'right' as const },
-]
+  { title: '', key: 'ops', width: 170, align: 'right' as const },
+])
+
+// ---- owner filter (admin only)
+const ownerFilter = ref<InstanceOwner | null>(null)
+const rows = computed(() => {
+  const f = ownerFilter.value
+  return f ? store.list.filter((i) => i.owners?.some((o) => o.id === f.id)) : store.list
+})
+function filterByOwner(o: InstanceOwner) {
+  ownerFilter.value = o
+  const visible = new Set(rows.value.map((i) => i.id))
+  selectedKeys.value = selectedKeys.value.filter((k) => visible.has(k))
+}
+const ownerName = (o: InstanceOwner) => o.displayName ? `${o.username}（${o.displayName}）` : o.username
+
+// ---- actions menu (row and batch)
+type MenuKey = Action | 'install' | 'uninstall'
+const isBusy = (i: Instance) => BUSY_STATUSES.includes(i.status)
+/** Whether an action makes sense for this device's current status. */
+function canDo(key: MenuKey, i: Instance) {
+  if (isBusy(i)) return false
+  if (key === 'start') return i.status !== 'running'
+  if (key === 'stop' || key === 'restart') return i.status !== 'stopped'
+  if (key === 'install' || key === 'uninstall') return i.status === 'running'
+  return true
+}
+function onMenu(key: MenuKey, ids: string[]) {
+  if (key === 'install' || key === 'uninstall') openApp(key, ids)
+  else void run(key, ids)
+}
 
 async function run(action: Action, ids: string[]) {
   if (!ids.length) return
@@ -44,7 +76,7 @@ async function run(action: Action, ids: string[]) {
       const r = await store.action(action, ids)
       if (r.accepted.length) message.success(`已提交 ${r.accepted.length} 个${ACTION_TEXT[action]}任务`)
       if (r.skipped.length) message.warning(`跳过 ${r.skipped.length} 个：${[...new Set(r.skipped.map((s) => s.reason))].join('，')}`)
-      if (action === 'delete') selectedKeys.value = []
+      if (action === 'delete') selectedKeys.value = selectedKeys.value.filter((k) => !ids.includes(k))
     } catch (e) {
       message.error((e as Error).message)
     }
@@ -71,14 +103,18 @@ const appMode = ref<'install' | 'uninstall'>('install')
 const appFile = ref<File | null>(null)
 const appPkg = ref('')
 const appBusy = ref(false)
-function openApp(mode: 'install' | 'uninstall') { appMode.value = mode; appFile.value = null; appPkg.value = ''; appOpen.value = true }
+const appIds = ref<string[]>([])
+function openApp(mode: 'install' | 'uninstall', ids: string[]) {
+  if (!ids.length) return
+  appMode.value = mode; appIds.value = [...ids]; appFile.value = null; appPkg.value = ''; appOpen.value = true
+}
 function pickFile(f: File) { appFile.value = f; return false }
 async function submitApp() {
   appBusy.value = true
   try {
     const r = appMode.value === 'install'
-      ? await (appFile.value ? store.installApp(selectedKeys.value, appFile.value) : Promise.reject(new Error('请选择安装包')))
-      : await (appPkg.value ? store.uninstallApp(selectedKeys.value, appPkg.value.trim()) : Promise.reject(new Error('请输入包名')))
+      ? await (appFile.value ? store.installApp(appIds.value, appFile.value) : Promise.reject(new Error('请选择安装包')))
+      : await (appPkg.value ? store.uninstallApp(appIds.value, appPkg.value.trim()) : Promise.reject(new Error('请输入包名')))
     message.success(`已提交 ${r.accepted.length} 个任务`)
     if (r.skipped.length) message.warning(`跳过 ${r.skipped.length} 个：${[...new Set(r.skipped.map((x) => x.reason))].join('，')}`)
     appOpen.value = false
@@ -129,11 +165,36 @@ function deviceText(i: Instance) {
   ]
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库', 'push-asset': '推送素材' }
-const TASK_STATUS: Record<string, { color: string; text: string }> = {
-  queued: { color: 'default', text: '排队' }, running: { color: 'processing', text: '执行中' },
-  succeeded: { color: 'success', text: '成功' }, failed: { color: 'error', text: '失败' },
+// ---- per-device log drawer
+const logOpen = ref(false)
+const logId = ref<string | null>(null)
+const logInstance = computed(() => (logId.value ? store.byId.get(logId.value) ?? null : null))
+function openLog(id: string) { logId.value = id; logOpen.value = true }
+
+// ---- failed tasks in the last 24 h (visible devices only)
+const now = ref(Date.now())
+const tick = setInterval(() => (now.value = Date.now()), 60_000)
+onUnmounted(() => clearInterval(tick))
+const failedTasks = computed(() => store.tasks.filter((t) =>
+  t.status === 'failed' && t.instanceId && store.byId.has(t.instanceId) && now.value - Date.parse(t.createdAt) < 86_400_000))
+const failedAt = (t: Task) => Date.parse(t.finishedAt ?? t.createdAt)
+const newestFailure = computed(() => Math.max(0, ...failedTasks.value.map(failedAt)))
+const SEEN_KEY = 'devicefarmer.failedTasksSeenAt'
+function readSeen() { try { return Number(localStorage.getItem(SEEN_KEY)) || 0 } catch { return 0 } }
+const seenAt = ref(readSeen())
+const showFailed = computed(() => failedTasks.value.length > 0 && newestFailure.value > seenAt.value)
+function dismissFailed() {
+  seenAt.value = newestFailure.value
+  try { localStorage.setItem(SEEN_KEY, String(seenAt.value)) } catch { /* private mode: hide for this session only */ }
 }
+const failedOpen = ref(false)
+const failedColumns = [
+  { title: '时间', key: 'time', width: 170 },
+  { title: '设备', key: 'device', width: 120 },
+  { title: '操作', key: 'type', width: 120 },
+  { title: '错误', key: 'error' },
+]
+watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 </script>
 
 <template>
@@ -148,26 +209,48 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
     <a-card title="设备列表" size="small">
       <template #extra>
         <a-space wrap>
-          <a-button :disabled="!selectedKeys.length" @click="run('start', selectedKeys)">启动</a-button>
-          <a-button :disabled="!selectedKeys.length" @click="run('stop', selectedKeys)">停止</a-button>
-          <a-button :disabled="!selectedKeys.length" @click="run('restart', selectedKeys)">重启</a-button>
-          <a-button :disabled="!selectedKeys.length" @click="openApp('install')">安装应用</a-button>
-          <a-button :disabled="!selectedKeys.length" @click="openApp('uninstall')">卸载应用</a-button>
-          <template v-if="auth.isAdmin">
-            <a-button danger :disabled="!selectedKeys.length" @click="run('delete', selectedKeys)">删除</a-button>
-            <a-button type="primary" @click="createOpen = true">创建设备</a-button>
-          </template>
+          <a-dropdown :disabled="!selectedKeys.length" :trigger="['click']">
+            <a-button :disabled="!selectedKeys.length">批量操作{{ selectedKeys.length ? `（${selectedKeys.length}）` : '' }} <DownOutlined /></a-button>
+            <template #overlay>
+              <a-menu @click="({ key }: any) => onMenu(key as MenuKey, selectedKeys)">
+                <a-menu-item key="start">启动</a-menu-item>
+                <a-menu-item key="stop">停止</a-menu-item>
+                <a-menu-item key="restart">重启</a-menu-item>
+                <a-menu-item key="install">安装应用</a-menu-item>
+                <a-menu-item key="uninstall">卸载应用</a-menu-item>
+                <template v-if="auth.isAdmin">
+                  <a-menu-divider />
+                  <a-menu-item key="delete" danger>删除</a-menu-item>
+                </template>
+              </a-menu>
+            </template>
+          </a-dropdown>
+          <a-button v-if="auth.isAdmin" type="primary" @click="createOpen = true">创建设备</a-button>
           <a-button :loading="store.loading" @click="store.refresh()">刷新</a-button>
         </a-space>
       </template>
 
+      <a-alert v-if="showFailed" type="error" show-icon style="margin-bottom: 12px">
+        <template #icon><ExclamationCircleOutlined /></template>
+        <template #message>最近 24 小时有 {{ failedTasks.length }} 个任务失败</template>
+        <template #action>
+          <a-space>
+            <a-button size="small" type="link" @click="failedOpen = true">查看</a-button>
+            <a-button size="small" type="text" @click="dismissFailed">忽略</a-button>
+          </a-space>
+        </template>
+      </a-alert>
+      <div v-if="ownerFilter" style="margin-bottom: 12px">
+        <span style="color: #8c8c8c; margin-right: 8px">筛选：</span>
+        <a-tag closable color="blue" @close="ownerFilter = null">所属用户 {{ ownerFilter.username }}</a-tag>
+      </div>
       <a-table
-        :data-source="store.list"
+        :data-source="rows"
         :columns="columns"
         row-key="id"
         size="middle"
         :pagination="false"
-        :scroll="{ x: 760 }"
+        :scroll="{ x: auth.isAdmin ? 1200 : 1000 }"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         :locale="{ emptyText: auth.isAdmin ? '还没有设备，点击右上角「创建设备」' : '暂无可访问的设备，请联系管理员授权' }"
       >
@@ -183,6 +266,15 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
           </template>
           <template v-else-if="column.key === 'status'">
             <StatusTag :status="record.status" />
+          </template>
+          <template v-else-if="column.key === 'owners'">
+            <span v-if="!record.owners?.length" style="color: #bfbfbf">—</span>
+            <a-tooltip v-else :title="record.owners.length > 3 ? record.owners.map(ownerName).join('、') : undefined">
+              <span>
+                <a-tag v-for="o in record.owners.slice(0, 3)" :key="o.id" style="cursor: pointer" @click="filterByOwner(o)">{{ o.username }}</a-tag>
+                <a-tag v-if="record.owners.length > 3">+{{ record.owners.length - 3 }}</a-tag>
+              </span>
+            </a-tooltip>
           </template>
           <template v-else-if="column.key === 'device'">
             <a-tooltip v-if="record.lastError" :title="record.lastError">
@@ -203,28 +295,31 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
             {{ record.spec.width }}×{{ record.spec.height }}
           </template>
           <template v-else-if="column.key === 'ops'">
-            <a-button size="small" type="link" :disabled="record.status !== 'running'" @click="router.push(`/instances/${record.id}`)">控制</a-button>
+            <a-space :size="0">
+              <a-button size="small" type="link" :disabled="record.status !== 'running'" @click="router.push(`/instances/${record.id}`)">控制</a-button>
+              <a-button size="small" type="link" @click="openLog(record.id)">日志</a-button>
+              <a-dropdown :trigger="['click']" placement="bottomRight">
+                <a-button size="small" type="text"><MoreOutlined /></a-button>
+                <template #overlay>
+                  <a-menu @click="({ key }: any) => onMenu(key as MenuKey, [record.id])">
+                    <a-menu-item key="start" :disabled="!canDo('start', record as Instance)">启动</a-menu-item>
+                    <a-menu-item key="stop" :disabled="!canDo('stop', record as Instance)">停止</a-menu-item>
+                    <a-menu-item key="restart" :disabled="!canDo('restart', record as Instance)">重启</a-menu-item>
+                    <a-menu-item key="install" :disabled="!canDo('install', record as Instance)">安装应用</a-menu-item>
+                    <a-menu-item key="uninstall" :disabled="!canDo('uninstall', record as Instance)">卸载应用</a-menu-item>
+                    <template v-if="auth.isAdmin">
+                      <a-menu-divider />
+                      <a-menu-item key="delete" danger :disabled="!canDo('delete', record as Instance)">删除</a-menu-item>
+                    </template>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
           </template>
         </template>
       </a-table>
     </a-card>
 
-    <a-card title="最近任务" size="small">
-      <a-list :data-source="store.tasks.slice(0, 15)" size="small" :locale="{ emptyText: '暂无任务' }">
-        <template #renderItem="{ item }">
-          <a-list-item>
-            <a-space wrap>
-              <a-tag :color="TASK_STATUS[item.status]?.color">{{ TASK_STATUS[item.status]?.text }}</a-tag>
-              <span>{{ TASK_TEXT[item.type] ?? item.type }} · {{ item.instanceName }}</span>
-              <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
-            </a-space>
-            <template #extra>
-              <span style="color: #8c8c8c; font-size: 12px">{{ new Date(item.createdAt).toLocaleTimeString() }}</span>
-            </template>
-          </a-list-item>
-        </template>
-      </a-list>
-    </a-card>
   </a-space>
 
   <a-modal v-model:open="createOpen" title="创建设备" :confirm-loading="creating" ok-text="创建" @ok="submitCreate">
@@ -257,7 +352,7 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
       </a-form-item>
     </a-form>
   </a-modal>
-  <a-modal v-model:open="appOpen" :title="`${appMode === 'install' ? '批量安装/更新应用' : '批量卸载应用'}（${selectedKeys.length} 台）`" :confirm-loading="appBusy" :ok-text="appMode === 'install' ? '安装' : '卸载'" :ok-button-props="{ danger: appMode === 'uninstall' }" @ok="submitApp">
+  <a-modal v-model:open="appOpen" :title="`${appMode === 'install' ? '安装/更新应用' : '卸载应用'}（${appIds.length === 1 ? store.byId.get(appIds[0]!)?.name : `${appIds.length} 台`}）`" :confirm-loading="appBusy" :ok-text="appMode === 'install' ? '安装' : '卸载'" :ok-button-props="{ danger: appMode === 'uninstall' }" @ok="submitApp">
     <template v-if="appMode === 'install'">
       <a-upload-dragger accept=".apk,.apks,.xapk,.apkm,.zip" :multiple="false" :show-upload-list="false" :before-upload="pickFile as any">
         <p style="margin: 12px 0">{{ appFile ? `${appFile.name}（${(appFile.size / 1048576).toFixed(1)} MB）` : '选择 .apk 或拆分包 .apks / .xapk / .apkm' }}</p>
@@ -266,4 +361,21 @@ const TASK_STATUS: Record<string, { color: string; text: string }> = {
     </template>
     <a-input v-else v-model:value="appPkg" placeholder="包名，如 com.instagram.android" />
   </a-modal>
+
+  <a-modal v-model:open="failedOpen" title="最近 24 小时失败的任务" :footer="null" :width="760">
+    <a-table :data-source="failedTasks" :columns="failedColumns" row-key="id" size="small" :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true }">
+      <template #bodyCell="{ column, record }">
+        <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString() }}</template>
+        <template v-else-if="column.key === 'device'">
+          <a @click="failedOpen = false; router.push(`/instances/${record.instanceId}`)">{{ store.byId.get(record.instanceId)?.name ?? record.instanceName }}</a>
+        </template>
+        <template v-else-if="column.key === 'type'">{{ TASK_TEXT[record.type] ?? record.type }}</template>
+        <template v-else-if="column.key === 'error'">
+          <a-typography-text type="danger" :ellipsis="{ tooltip: record.error }" :content="record.error ?? '—'" />
+        </template>
+      </template>
+    </a-table>
+  </a-modal>
+
+  <DeviceLogDrawer v-model:open="logOpen" :instance="logInstance" />
 </template>

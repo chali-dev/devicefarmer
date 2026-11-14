@@ -2,7 +2,7 @@
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, getToken } from '../api/client'
-import type { InstalledApp, ProxyInput } from '../api/types'
+import { TASK_TEXT, type InstalledApp, type ProxyInput } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import StatusTag from '../components/StatusTag.vue'
@@ -186,7 +186,6 @@ async function act(a: 'start' | 'stop' | 'restart') {
   }
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库', 'push-asset': '推送素材' }
 const TASK_COLOR: Record<string, string> = { queued: 'default', running: 'processing', succeeded: 'success', failed: 'error' }
 </script>
 

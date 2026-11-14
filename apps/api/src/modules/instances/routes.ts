@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, eq, getTableColumns, inArray } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -91,7 +91,22 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances', async (req) => {
     const allowed = await accessibleInstanceIds(req.user);
     const rows = await db.select().from(schema.instances).orderBy(schema.instances.name);
-    return { instances: (allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id))).map(publicInstance) };
+    const visible = (allowed === 'all' ? rows : rows.filter((r) => allowed.has(r.id))).map(publicInstance);
+    if (!isAdmin(req.user)) return { instances: visible };
+    // Admin only: users granted each device (never exposed to non-admins).
+    const grants = await db.select({
+      instanceId: schema.instanceGrants.instanceId, id: schema.users.id,
+      username: schema.users.username, displayName: schema.users.displayName,
+    }).from(schema.instanceGrants)
+      .innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
+      .orderBy(schema.users.username);
+    const owners = new Map<string, { id: string; username: string; displayName: string | null }[]>();
+    for (const { instanceId, ...u } of grants) {
+      const list = owners.get(instanceId) ?? [];
+      list.push(u);
+      owners.set(instanceId, list);
+    }
+    return { instances: visible.map((i) => ({ ...i, owners: owners.get(i.id) ?? [] })) };
   });
 
   app.get('/api/instances/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
@@ -223,6 +238,33 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return reply.send(png);
   });
 
+  /**
+   * Android logcat on demand (read-only `logcat -d`). Needs `control` like remote control, since logs
+   * can contain app data. The keyword is filtered here in JS and never reaches the shell.
+   */
+  app.get('/api/instances/:id/logcat', {
+    schema: {
+      params: z.object({ id: z.string().uuid() }),
+      querystring: z.object({
+        lines: z.coerce.number().int().default(500).transform((n) => Math.min(2000, Math.max(50, n))),
+        level: z.enum(['E', 'W', 'I', 'D']).default('W'),
+        q: z.string().max(200).optional(),
+      }),
+    },
+  }, async (req) => {
+    await assertInstanceAccess(req.user, req.params.id, 'control');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found');
+    if (inst.status !== 'running') throw conflict('instance is not running');
+    const { lines, level, q } = req.query;
+    const out = await adb.shell(inst.adbPort, `logcat -d -v time -t ${lines} '*:${level}'`, 20_000);
+    // `-t` counts per buffer (main/system/crash), so cap the merged output to the newest `lines` here.
+    let rows = out.split('\n').map((l) => l.replace(/\r/g, '')).filter((l) => l.length > 0).slice(-lines);
+    const kw = q?.trim().toLowerCase();
+    if (kw) rows = rows.filter((l) => l.toLowerCase().includes(kw));
+    return { lines: rows };
+  });
+
   /** Run the Google services health check now (otherwise every 60 s by the monitor). */
   app.post('/api/instances/:id/google/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
@@ -271,7 +313,9 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     const allowed = await accessibleInstanceIds(req.user);
     const where = req.query.instanceId ? eq(schema.tasks.instanceId, req.query.instanceId) : undefined;
-    const rows = await db.select().from(schema.tasks).where(where).orderBy(desc(schema.tasks.createdAt)).limit(req.query.limit);
+    const rows = await db.select({ ...getTableColumns(schema.tasks), createdByName: schema.users.username })
+      .from(schema.tasks).leftJoin(schema.users, eq(schema.users.id, schema.tasks.createdBy))
+      .where(where).orderBy(desc(schema.tasks.createdAt)).limit(req.query.limit);
     return { tasks: allowed === 'all' ? rows : rows.filter((t) => t.instanceId && allowed.has(t.instanceId)) };
   });
 };

@@ -20,7 +20,7 @@ export const useInstancesStore = defineStore('instances', () => {
     try {
       const [i, t] = await Promise.all([
         api<{ instances: Instance[] }>('GET', '/api/instances'),
-        api<{ tasks: Task[] }>('GET', '/api/tasks?limit=50'),
+        api<{ tasks: Task[] }>('GET', '/api/tasks?limit=100'),
       ])
       byId.value = new Map(i.instances.map((x) => [x.id, x]))
       tasks.value = t.tasks
@@ -31,12 +31,15 @@ export const useInstancesStore = defineStore('instances', () => {
 
   function apply(ev: PlatformEvent) {
     if (ev.type === 'instance.updated') {
-      byId.value.set(ev.instance.id, ev.instance)
+      // Events don't carry admin-only `owners`; keep what the last list load returned.
+      const prev = byId.value.get(ev.instance.id)
+      byId.value.set(ev.instance.id, prev?.owners && !ev.instance.owners ? { ...ev.instance, owners: prev.owners } : ev.instance)
     } else if (ev.type === 'instance.deleted') {
       byId.value.delete(ev.instanceId)
     } else if (ev.type === 'task.updated') {
       const idx = tasks.value.findIndex((t) => t.id === ev.task.id)
-      if (idx >= 0) tasks.value[idx] = ev.task
+      // Events carry the raw row; keep the createdByName resolved by GET /api/tasks.
+      if (idx >= 0) tasks.value[idx] = { ...ev.task, createdByName: ev.task.createdByName ?? tasks.value[idx]!.createdByName }
       else tasks.value = [ev.task, ...tasks.value].slice(0, 100)
     }
   }
@@ -98,6 +101,12 @@ export const useInstancesStore = defineStore('instances', () => {
     return api<BatchResult>('POST', '/api/apps/uninstall', { instanceIds: ids, package: pkg })
   }
 
+  /** Android logcat (read-only); keyword filtering happens server-side. */
+  async function logcat(id: string, q: { lines: number; level: 'E' | 'W' | 'I' | 'D'; q?: string }) {
+    const p = new URLSearchParams({ lines: String(q.lines), level: q.level, ...(q.q ? { q: q.q } : {}) })
+    return (await api<{ lines: string[] }>('GET', `/api/instances/${id}/logcat?${p}`)).lines
+  }
+
   async function updateSettings(id: string, body: { locale?: string; timezone?: string; deviceName?: string }) {
     return api<{ taskId: string | null }>('PATCH', `/api/instances/${id}/settings`, body)
   }
@@ -109,5 +118,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return r.google
   }
 
-  return { googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings }
+  return { googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
 })

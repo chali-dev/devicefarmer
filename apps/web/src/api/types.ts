@@ -25,7 +25,11 @@ export interface Instance {
   spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
   createdAt: string
   updatedAt: string
+  /** Users granted this device; only returned to admins. */
+  owners?: InstanceOwner[]
 }
+
+export interface InstanceOwner { id: string; username: string; displayName: string | null }
 
 export interface GoogleHealth {
   checkedAt: string
@@ -54,8 +58,17 @@ export interface Task {
   instanceName: string | null
   status: 'queued' | 'running' | 'succeeded' | 'failed'
   error: string | null
+  createdBy?: string | null
+  /** Username of createdBy (GET /api/tasks only; null = system task). */
+  createdByName?: string | null
   createdAt: string
   finishedAt: string | null
+}
+
+export const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库', 'push-asset': '推送素材' }
+export const TASK_STATUS: Record<Task['status'], { color: string; text: string }> = {
+  queued: { color: 'default', text: '排队' }, running: { color: 'processing', text: '执行中' },
+  succeeded: { color: 'success', text: '成功' }, failed: { color: 'error', text: '失败' },
 }
 
 export type PlatformEvent =
