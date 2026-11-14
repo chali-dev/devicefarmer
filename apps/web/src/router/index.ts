@@ -13,6 +13,7 @@ const router = createRouter({
         { path: 'instances', name: 'instances', component: () => import('../views/InstancesView.vue') },
         { path: 'instances/:id', name: 'instance', component: () => import('../views/InstanceDetailView.vue'), props: true },
         { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
+        { path: 'assets', name: 'assets', component: () => import('../views/AssetsView.vue') },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
       ],
     },

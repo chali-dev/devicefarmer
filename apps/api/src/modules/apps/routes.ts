@@ -3,7 +3,7 @@ import { inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { isProtectedPackage } from '../../adapters/adb.js';
+import { isProtectedPackage, mediaTarget } from '../../adapters/adb.js';
 import { adb } from '../../services.js';
 import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
@@ -64,16 +64,13 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     if (inst.status !== 'running') throw conflict('instance is not running');
     const file = await req.file();
     if (!file) throw badRequest('missing file');
-    // Keep letters/digits of any script (e.g. Chinese); no quotes or shell metacharacters.
-    const safe = file.filename.normalize('NFC').replace(/[^\p{L}\p{N}._\- ]/gu, '_').slice(-100) || 'upload';
-    const folder = file.mimetype.startsWith('image/') ? 'Pictures' : file.mimetype.startsWith('video/') ? 'Movies' : 'Download';
+    const { safe, folder, remote } = mediaTarget(file.filename, file.mimetype);
     const tmpDir = path.resolve(config.UPLOAD_DIR, randomUUID());
     await fs.promises.mkdir(tmpDir, { recursive: true });
     try {
       const local = path.join(tmpDir, safe);
       await pipeline(file.file, fs.createWriteStream(local));
       if (file.file.truncated) throw badRequest('file too large');
-      const remote = `/sdcard/${folder}/${Date.now()}-${safe}`;
       await adb.pushMedia(inst.adbPort, local, remote);
       reply.code(201);
       return { path: remote, folder, size: (await fs.promises.stat(local)).size };

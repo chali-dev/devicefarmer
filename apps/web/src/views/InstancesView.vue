@@ -129,7 +129,7 @@ function deviceText(i: Instance) {
   ]
 }
 
-const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库' }
+const TASK_TEXT: Record<string, string> = { create: '创建', start: '启动', stop: '停止', restart: '重启', delete: '删除', 'install-apk': '安装/更新应用', 'uninstall-app': '卸载应用', 'apply-settings': '应用设备参数', 'set-proxy': '设置代理', 'import-app': '导入应用库', 'push-asset': '推送素材' }
 const TASK_STATUS: Record<string, { color: string; text: string }> = {
   queued: { color: 'default', text: '排队' }, running: { color: 'processing', text: '执行中' },
   succeeded: { color: 'success', text: '成功' }, failed: { color: 'error', text: '失败' },

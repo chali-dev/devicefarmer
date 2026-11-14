@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { boolean, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', ['admin', 'operator', 'viewer']);
 
@@ -83,6 +83,31 @@ export const libraryApps = pgTable('library_apps', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [unique('library_pkg_version').on(t.package, t.versionCode)]);
 
+/** Platform settings (admin). Secrets inside values are encrypted (lib/secret-box.ts). */
+export const settings = pgTable('settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+});
+
+/**
+ * Asset library (素材库): images/videos/files pushed to devices' shared storage.
+ * `storage` is the backend the object was written to, so switching the active backend
+ * later keeps old assets readable (s3 assets are read with the current s3 config).
+ */
+export const assets = pgTable('assets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  mime: text('mime').notNull(),
+  size: bigint('size', { mode: 'number' }).notNull(),
+  sha256: text('sha256').notNull(),
+  storage: text('storage', { enum: ['local', 's3'] }).notNull(),
+  key: text('key').notNull(),
+  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('assets_created_at_idx').on(t.createdAt)]);
+
 export interface InstanceSpec {
   width: number;
   height: number;
@@ -126,4 +151,5 @@ export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
+export type Asset = typeof assets.$inferSelect;
 export type Role = User['role'];

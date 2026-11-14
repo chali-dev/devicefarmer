@@ -3,6 +3,8 @@ import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
 import { importFromDevice, libraryApks, preinstallApps } from '../library/library.js';
 import { enqueue } from './queue.js';
+import { getAsset, withAssetFile } from '../assets/assets.js';
+import { mediaTarget } from '../../adapters/adb.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
 
 const BOOT_TIMEOUT_MS = 180_000;
@@ -189,6 +191,15 @@ export async function opInstallApk(id: string, apkPaths: string[], sizes: number
 export async function opImportApp(id: string, pkg: string): Promise<void> {
   const inst = await mustBeRunning(id);
   await importFromDevice(inst.adbPort, pkg, inst.name);
+}
+
+/** Copies an asset-library file into the device's shared storage (Pictures/Movies/Download by mime). */
+export async function opPushAsset(id: string, assetId: string): Promise<void> {
+  const inst = await mustBeRunning(id);
+  const asset = await getAsset(assetId);
+  if (!asset) throw new Error('asset no longer exists');
+  const { remote } = mediaTarget(asset.name, asset.mime);
+  await withAssetFile(asset, (local) => adb.pushMedia(inst.adbPort, local, remote));
 }
 
 export async function opUninstallApp(id: string, pkg: string): Promise<void> {

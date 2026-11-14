@@ -7,6 +7,17 @@ import { config } from '../config.js';
  */
 /** Installed by STF on every device; removing them breaks screen/input. */
 const PROTECTED_PREFIXES = ['jp.co.cyberagent.stf'];
+/**
+ * Where an uploaded file lands in the phone's shared storage: images -> Pictures, videos -> Movies,
+ * others -> Download, with a unique "<timestamp>-<safe name>" accepted by pushMedia.
+ * Keeps letters/digits of any script (e.g. Chinese); no quotes or shell metacharacters.
+ */
+export function mediaTarget(filename: string, mime: string): { safe: string; folder: 'Pictures' | 'Movies' | 'Download'; remote: string } {
+  const safe = filename.normalize('NFC').replace(/[^\p{L}\p{N}._\- ]/gu, '_').slice(-100) || 'upload';
+  const folder = mime.startsWith('image/') ? 'Pictures' : mime.startsWith('video/') ? 'Movies' : 'Download';
+  return { safe, folder, remote: `/sdcard/${folder}/${Date.now()}-${safe}` };
+}
+
 export function isProtectedPackage(pkg: string): boolean {
   return PROTECTED_PREFIXES.some((p) => pkg === p || pkg.startsWith(`${p}.`));
 }

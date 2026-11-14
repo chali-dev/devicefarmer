@@ -2,18 +2,20 @@ import { Queue, Worker, type Job } from 'bullmq';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { updateInstance, updateTask } from './repo.js';
-import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
+import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opPushAsset, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
 
-export type OpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy' | 'import-app';
+export type OpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy' | 'import-app' | 'push-asset';
 export interface OpJob {
   taskId: string; op: OpName; instanceId: string;
   /** install-apk: one app = base + splits */
   apkPaths?: string[]; sizes?: number[];
   /** uninstall-app */
   package?: string;
+  /** push-asset */
+  assetId?: string;
 }
 /** Ops that act on the device only; their failure must not mark the instance as broken. */
-const DEVICE_OPS: OpName[] = ['install-apk', 'uninstall-app', 'apply-settings', 'import-app'];
+const DEVICE_OPS: OpName[] = ['install-apk', 'uninstall-app', 'apply-settings', 'import-app', 'push-asset'];
 
 const QUEUE = 'instance-ops';
 const connection = { url: config.REDIS_URL };
@@ -44,6 +46,7 @@ async function run(job: Job<OpJob>): Promise<void> {
     case 'apply-settings': return opApplySettings(instanceId);
     case 'set-proxy': return opSetProxy(instanceId);
     case 'import-app': return opImportApp(instanceId, job.data.package!);
+    case 'push-asset': return opPushAsset(instanceId, job.data.assetId!);
   }
 }
 

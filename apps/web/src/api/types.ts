@@ -63,3 +63,15 @@ export type PlatformEvent =
   | { type: 'task.updated'; task: Task }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
+
+export interface Asset {
+  id: string; name: string; mime: string; size: number; sha256: string
+  storage: 'local' | 's3'; key: string; tags: string[]; createdBy: string | null; createdAt: string
+}
+
+export interface StorageSettings {
+  type: 'local' | 's3'
+  s3: { endpoint?: string; region: string; bucket: string; accessKeyId: string; forcePathStyle: boolean; prefix?: string; hasSecret: boolean } | null
+}
+
+export interface StorageTestResult { ok: boolean; latencyMs: number; error: string | null }

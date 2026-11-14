@@ -43,6 +43,9 @@ const Env = z.object({
   CAPTURE_DEX_PATH: z.string().default('../../infra/device-tools/capture/out/cpcapture.dex'),
   /** App library storage (imported official APKs). Not cleaned up automatically. */
   LIBRARY_DIR: z.string().default('var/library'),
+  /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */
+  ASSET_DIR: z.string().default('var/assets'),
+  ASSET_MAX_MB: z.coerce.number().int().positive().default(500),
 });
 
 export const config = Env.parse(process.env);
