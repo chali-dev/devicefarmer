@@ -283,6 +283,33 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: ({ body }) => (body.result === 'published' ? 'publish.outcome_published' : 'publish.outcome_failed'),
     detail: ({ body }) => ({ result: body.result, url: body.url, externalId: body.externalId }),
   },
+  // comments & engagement (评论互动). Comment and reply texts are not copied into the audit log.
+  'PUT /api/comments/settings': {
+    action: 'comment.rules_update',
+    detail: ({ body }) => ({ requireApproval: body.requireApproval, duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour }),
+  },
+  'POST /api/comments/accounts/:id/sync': { action: 'comment.sync' },
+  'POST /api/comments': {
+    action: 'comment.manual_create', target: ({ body }) => socialAccountName(body.accountId),
+    targetId: ({ body }) => (typeof body.accountId === 'string' ? body.accountId : null),
+    detail: ({ body }) => ({ externalId: body.externalId, parentId: body.parentId, externalPostId: body.externalPostId }),
+  },
+  'PATCH /api/comments/:id': { action: 'comment.status', detail: ({ body }) => ({ status: body.status }) },
+  'DELETE /api/comments/:id': { action: 'comment.delete' },
+  'POST /api/comments/:id/replies': { action: 'comment.reply_create', detail: ({ body }) => ({ templateId: body.templateId, submit: body.submit, scheduledAt: body.scheduledAt }) },
+  'PATCH /api/comment-replies/:id': { action: 'comment.reply_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
+  'POST /api/comment-replies/:id/submit': { action: 'comment.reply_submit' },
+  'POST /api/comment-replies/:id/approve': { action: 'comment.reply_approve' },
+  'POST /api/comment-replies/approve': { action: 'comment.reply_approve_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
+  'POST /api/comment-replies/:id/reject': { action: 'comment.reply_reject', detail: ({ body }) => ({ reason: typeof body.reason === 'string' ? body.reason.slice(0, 200) : undefined }) },
+  'POST /api/comment-replies/:id/cancel': { action: 'comment.reply_cancel' },
+  'POST /api/comment-replies/:id/outcome': {
+    action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),
+    detail: ({ body }) => ({ result: body.result, externalReplyId: body.externalReplyId }),
+  },
+  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared }) },
+  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
+  'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
@@ -349,6 +376,25 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
       .leftJoin(schema.contents, eq(schema.contents.id, schema.publishTasks.contentId))
       .where(eq(schema.publishTasks.id, id));
     return r ? `${r.platform} @${r.handle ?? '?'} · ${r.title ?? ''}` : null;
+  }
+  if (pattern.startsWith('/api/comments/accounts/:id')) {
+    const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
+    return r ? `${r.platform} @${r.handle}` : null;
+  }
+  if (pattern.startsWith('/api/comments/:id')) {
+    const [r] = await db.select({ platform: schema.comments.platform, handle: schema.socialAccounts.handle, author: schema.comments.authorName })
+      .from(schema.comments).leftJoin(schema.socialAccounts, eq(schema.socialAccounts.id, schema.comments.accountId)).where(eq(schema.comments.id, id));
+    return r ? `${r.platform} @${r.handle ?? '?'} · ${r.author ?? '?'}` : null;
+  }
+  if (pattern.startsWith('/api/comment-replies/:id')) {
+    const [r] = await db.select({ platform: schema.commentTasks.platform, handle: schema.socialAccounts.handle, author: schema.comments.authorName })
+      .from(schema.commentTasks).leftJoin(schema.socialAccounts, eq(schema.socialAccounts.id, schema.commentTasks.accountId))
+      .leftJoin(schema.comments, eq(schema.comments.id, schema.commentTasks.commentId)).where(eq(schema.commentTasks.id, id));
+    return r ? `${r.platform} @${r.handle ?? '?'} → ${r.author ?? '?'}` : null;
+  }
+  if (pattern.startsWith('/api/comment-templates/:id')) {
+    const [r] = await db.select({ name: schema.commentTemplates.name }).from(schema.commentTemplates).where(eq(schema.commentTemplates.id, id));
+    return r?.name ?? null;
   }
   if (pattern.startsWith('/api/tasks/:id')) {
     const [r] = await db.select({ type: schema.tasks.type, label: schema.tasks.instanceName }).from(schema.tasks).where(eq(schema.tasks.id, id));

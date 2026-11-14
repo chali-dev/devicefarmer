@@ -80,7 +80,9 @@ const ids = (r: { body: { items: any[] } }) => (r.body?.items ?? []).map((i) => 
 
 const login = async (username: string, password: string) => (await http<{ token: string }>('POST', '/api/auth/login', undefined, { username, password })).body?.token;
 
-const startedAt = new Date();
+// Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
+// (Docker Desktop VM drift): take the start time from the database.
+const startedAt = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const tag = randomBytes(3).toString('hex');
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-check-'));
 const created: string[] = []; // media ids to clean up (admin deletes)

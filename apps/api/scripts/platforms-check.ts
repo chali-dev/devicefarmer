@@ -82,7 +82,9 @@ const userIds: string[] = [];
 const mediaIds: string[] = [];
 const [appsBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'platform.apps'));
 const redis = new Redis(config.REDIS_URL);
-const t0 = new Date();
+// Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
+// (Docker Desktop VM drift): take the start time from the database.
+const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const events: string[] = [];
 let ws: WebSocket | null = null;
 

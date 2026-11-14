@@ -37,7 +37,9 @@ const userIds: string[] = [];
 const fakeIds: string[] = [];
 let proxyId = '';
 const [limitsBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'social.limits'));
-const t0 = new Date();
+// Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
+// (Docker Desktop VM drift): take the start time from the database.
+const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 
 try {
   // ---------------------------------------------------------------- setup: users + placeholder devices

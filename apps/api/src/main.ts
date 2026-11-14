@@ -36,6 +36,8 @@ import { contentRoutes } from './modules/content/routes.js';
 import { publishRoutes } from './modules/publish/routes.js';
 import './modules/publish/publish.js'; // registers the publish task handler + manual methods
 import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
+import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-sync / comment-reply task handlers
+import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 
@@ -77,6 +79,7 @@ await app.register(trackedRoutes);
 await app.register(platformRoutes);
 await app.register(contentRoutes);
 await app.register(publishRoutes);
+await app.register(commentRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(dashboardRoutes);

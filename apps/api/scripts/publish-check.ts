@@ -60,7 +60,9 @@ const userIds: string[] = [];
 const fakeIds: string[] = [];
 const publicMedia: string[] = [];
 const ptIds = new Set<string>();
-const t0 = new Date();
+// Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
+// (Docker Desktop VM drift): take the start time from the database.
+const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;

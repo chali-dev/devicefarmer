@@ -6,7 +6,7 @@ import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, BulbOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
-  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined,
+  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -29,7 +29,7 @@ const THEMES = computed(() => [
 ])
 
 const collapsed = ref(false)
-const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'tasks', 'settings', 'users', 'permissions', 'audit'] as const
+const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
 /** Sub-menus (cloud devices, administration) start open. */
 const openKeys = ref<string[]>(['devices', 'admin'])
@@ -169,7 +169,10 @@ async function savePassword() {
           <CalendarOutlined />
           <span>{{ t('nav.publish') }}</span>
         </a-menu-item>
-        <!-- Comments & Engagement (评论互动) goes here, between Publish Scheduler and Task Center. -->
+        <a-menu-item key="comments" @click="router.push('/comments')">
+          <CommentOutlined />
+          <span>{{ t('nav.comments') }}</span>
+        </a-menu-item>
         <a-menu-item key="tasks" @click="router.push('/tasks')">
           <ScheduleOutlined />
           <span>{{ t('nav.tasks') }}</span>

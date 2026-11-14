@@ -210,6 +210,20 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
           </a-card>
         </a-col>
 
+        <!-- comments & engagement -->
+        <a-col v-if="w.comments" :xs="24" :md="12" :xl="8">
+          <a-card size="small" :title="t('dashboard.w.comments')" class="card">
+            <template #extra><router-link to="/comments">{{ t('dashboard.viewAll') }}</router-link></template>
+            <div class="grid4">
+              <StatLink :label="t('dashboard.commentsUnread')" :value="w.comments.unread" :to="{ path: '/comments', query: { status: 'new' } }" />
+              <StatLink :label="t('dashboard.commentsReview')" :value="w.comments.pendingReview" :to="{ path: '/comments', query: { tab: 'review' } }" />
+              <StatLink :label="t('dashboard.commentsOperator')" :value="w.comments.awaitingOperator" :to="{ path: '/comments', query: { tab: 'queue' } }" />
+              <StatLink :label="t('dashboard.commentsQueued')" :value="w.comments.queued" :to="{ path: '/comments', query: { tab: 'queue' } }" />
+            </div>
+            <div class="sub muted">{{ t('dashboard.commentsRecent', { total: w.comments.total, sent: w.comments.sent7d, failed: w.comments.failed7d }) }}</div>
+          </a-card>
+        </a-col>
+
         <!-- media -->
         <a-col v-if="w.media" :xs="24" :md="12" :xl="8">
           <a-card size="small" :title="t('dashboard.w.media')" class="card">

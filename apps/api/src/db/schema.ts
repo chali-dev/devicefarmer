@@ -565,6 +565,150 @@ export const publishLogs = pgTable('publish_logs', {
   actorName: text('actor_name'),
 }, (t) => [index('publish_logs_task_at_idx').on(t.publishTaskId, t.at)]);
 
+/**
+ * Comments & engagement (评论互动, P5). `comments` is the local copy of comments received on a social
+ * account: synced through the official API (`source` api) or entered by an operator who saw it on the
+ * phone (`source` manual). Unique per (account, external id). `user_id` = the account owner.
+ * `publish_task_id` links a comment to the post published by the scheduler (same external post id).
+ */
+export const COMMENT_STATUSES = ['new', 'read', 'replied', 'hidden', 'ignored'] as const;
+export type CommentStatus = (typeof COMMENT_STATUSES)[number];
+
+export const comments = pgTable('comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  externalId: text('external_id').notNull(),
+  /** Thread: external id of the top-level comment this one replies to (null = top level). */
+  parentExternalId: text('parent_external_id'),
+  externalPostId: text('external_post_id'),
+  postUrl: text('post_url'),
+  publishTaskId: uuid('publish_task_id').references(() => publishTasks.id, { onDelete: 'set null' }),
+  /** Public author name / handle as shown on the platform. */
+  authorName: text('author_name'),
+  authorHandle: text('author_handle'),
+  text: text('text').notNull(),
+  likeCount: integer('like_count'),
+  replyCount: integer('reply_count'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+  /** `hidden` only hides it in this platform (never on the social platform). `replied` is set when a reply is sent. */
+  status: text('status', { enum: COMMENT_STATUSES }).notNull().default('new'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('comments_account_external_idx').on(t.accountId, t.externalId),
+  index('comments_user_published_idx').on(t.userId, t.publishedAt),
+  index('comments_account_status_idx').on(t.accountId, t.status, t.publishedAt),
+  index('comments_account_post_idx').on(t.accountId, t.externalPostId),
+  index('comments_account_parent_idx').on(t.accountId, t.parentExternalId),
+  index('comments_status_idx').on(t.status, t.publishedAt),
+  index('comments_publish_task_idx').on(t.publishTaskId),
+]);
+
+/** Per-account sync cursor (YouTube: page token; Instagram: ISO time of the newest comment seen) and last result. */
+export const commentSyncStates = pgTable('comment_sync_states', {
+  accountId: uuid('account_id').primaryKey().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  cursor: text('cursor'),
+  lastTaskId: uuid('last_task_id'),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastFetched: integer('last_fetched'),
+  lastNew: integer('last_new'),
+  lastError: text('last_error'),
+  lastErrorCode: text('last_error_code'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+});
+
+/**
+ * Reply tasks (评论回复任务). The text is always written by a person (optionally starting from a template).
+ * draft → pending_review → approved → (scheduled) → sending → sent | awaiting_operator → sent | failed;
+ * rejected / cancelled. At most one reply per comment that is not failed / rejected / cancelled.
+ * `round` is bumped when a rate-limited send is deferred (idempotency key comment-reply:<id>:<round>).
+ */
+export const COMMENT_REPLY_STATUSES = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'rejected', 'cancelled'] as const;
+export type CommentReplyStatus = (typeof COMMENT_REPLY_STATUSES)[number];
+
+export const commentTasks = pgTable('comment_tasks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  commentId: uuid('comment_id').notNull().references(() => comments.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  text: text('text').notNull(),
+  /** sha256 of the normalized text (lower case, collapsed whitespace): duplicate-text rule. */
+  textHash: text('text_hash').notNull(),
+  templateId: uuid('template_id'),
+  status: text('status', { enum: COMMENT_REPLY_STATUSES }).notNull().default('draft'),
+  /** 'api' | 'manual', chosen when sending. */
+  method: text('method'),
+  scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+  round: integer('round').notNull().default(1),
+  maxAttempts: integer('max_attempts').notNull().default(3),
+  taskId: uuid('task_id'),
+  externalReplyId: text('external_reply_id'),
+  error: text('error'),
+  errorCode: text('error_code'),
+  authorId: uuid('author_id').references(() => users.id, { onDelete: 'set null' }),
+  authorName: text('author_name'),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  reviewerId: uuid('reviewer_id').references(() => users.id, { onDelete: 'set null' }),
+  reviewerName: text('reviewer_name'),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewNote: text('review_note'),
+  /** Who sent it: null = the API job; the operator for a manual reply. */
+  senderId: uuid('sender_id').references(() => users.id, { onDelete: 'set null' }),
+  senderName: text('sender_name'),
+  handedAt: timestamp('handed_at', { withTimezone: true }),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled')`),
+  index('comment_tasks_user_status_idx').on(t.userId, t.status, t.updatedAt),
+  index('comment_tasks_account_status_idx').on(t.accountId, t.status, t.updatedAt),
+  index('comment_tasks_account_hash_idx').on(t.accountId, t.textHash, t.submittedAt),
+  index('comment_tasks_account_sent_idx').on(t.accountId, t.sentAt),
+  index('comment_tasks_status_idx').on(t.status, t.updatedAt),
+  index('comment_tasks_comment_idx').on(t.commentId, t.createdAt),
+]);
+
+/** Business log: every state change of a comment or reply, every rule block (with its reason code) and sync result. */
+export const commentLogs = pgTable('comment_logs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  commentId: uuid('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
+  commentTaskId: uuid('comment_task_id').references(() => commentTasks.id, { onDelete: 'cascade' }),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  level: text('level', { enum: ['debug', 'info', 'warn', 'error'] }).notNull(),
+  action: text('action').notNull(),
+  /** Reason code of a block / failure (e.g. comment.duplicate_text). */
+  code: text('code'),
+  message: text('message'),
+  data: jsonb('data').$type<Record<string, unknown>>(),
+  taskId: uuid('task_id'),
+  actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  actorName: text('actor_name'),
+}, (t) => [
+  index('comment_logs_task_at_idx').on(t.commentTaskId, t.at),
+  index('comment_logs_comment_at_idx').on(t.commentId, t.at),
+  index('comment_logs_account_at_idx').on(t.accountId, t.at),
+  index('comment_logs_code_idx').on(t.code, t.at),
+]);
+
+/** Saved reply templates: private (user_id) or shared (user_id null, admin-managed). A person picks and edits one. */
+export const commentTemplates = pgTable('comment_templates', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  text: text('text').notNull(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name)]);
+
 export interface ContentPlatformHints {
   youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' };
   instagram?: { caption?: string };
@@ -642,4 +786,7 @@ export type TrackedPost = typeof trackedPosts.$inferSelect;
 export type Content = typeof contents.$inferSelect;
 export type PublishTask = typeof publishTasks.$inferSelect;
 export type PublishLog = typeof publishLogs.$inferSelect;
+export type Comment = typeof comments.$inferSelect;
+export type CommentTask = typeof commentTasks.$inferSelect;
+export type CommentTemplate = typeof commentTemplates.$inferSelect;
 export type Role = User['role'];
