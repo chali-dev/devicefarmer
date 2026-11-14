@@ -126,7 +126,20 @@ export class AdbAdapter {
   async pushMedia(adbPort: number, localPath: string, remotePath: string): Promise<void> {
     if (!/^\/sdcard\/(Pictures|Movies|Download)\/[\p{L}\p{N}._\- ]{1,120}$/u.test(remotePath)) throw new Error('invalid target path');
     await this.push(adbPort, localPath, remotePath);
-    await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}'`);
+    // Files written through adb sync get indexed as pending (hidden from other apps, no metadata).
+    // Selection on _data is not honoured for shell callers, so locate the row by name + folder
+    // (names are unique: timestamp prefix), clear is_pending by _id, then rescan for width/height/date.
+    const name = remotePath.split('/').pop()!;
+    const folder = remotePath.split('/')[2]!;
+    const where = `"_display_name='${name}' AND relative_path='${folder}/'"`;
+    await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}' >/dev/null`);
+    const found = await this.shell(adbPort, `content query --uri content://media/external/file --projection _id --where ${where}`);
+    const id = /_id=(\d+)/.exec(found)?.[1];
+    if (!id) throw new Error(`file uploaded but not indexed: ${found.trim()}`);
+    await this.shell(adbPort, `content update --uri content://media/external/file/${id} --bind is_pending:i:0`);
+    await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}' >/dev/null`);
+    const row = await this.shell(adbPort, `content query --uri content://media/external/file/${id} --projection is_pending`);
+    if (!/is_pending=0/.test(row)) throw new Error(`file uploaded but not visible to apps: ${row.trim()}`);
   }
 
   /** Running capture helpers: one foreground adb shell stream per device keeps the helper alive. */

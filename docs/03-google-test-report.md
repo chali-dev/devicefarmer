@@ -16,8 +16,8 @@
 | GSF ID 重启 / stop-start 后不变 | ✅ | run4：两台均不变 |
 | Android ID 重启后不变 | ✅ | p0-check |
 | 安全输入（密码） | ✅ | 逐字符输入 `Secure Typing 42` 正确；设备剪贴板未变化 |
-| Google 账号登录 | ⏳ 待用户 | 需用户本人登记 GSF ID 并登录；平台只统计账号数量 |
-| YouTube 安装 / 登录 / 播放 | ⏳ 待用户 | 需官方安装包（不使用 Play 商店）；播放状态检测已实现（media_session state=3） |
+| Google 账号登录 | ✅ | 用户本人在 phone-1 登录成功（受保护画面 + 安全输入）；平台只统计账号数量 |
+| YouTube 安装 / 登录 | ✅ | 从 Play 商店安装 21.45.82；登录后不再出现取 token 失败；播放检测已实现（media_session state=3），尚未在播放中采样 |
 | 登录状态重启后保留 | ⏳ 待登录后验证 | 账号数据位于 /data，与 GSF ID 同一持久化路径（已验证） |
 | Emulator 引擎 | 🟡 未运行 | 代码 + KVM 检测完成；本机无 Linux arm64 emulator，需 x86_64 KVM 主机 |
 | 批量安装（APK） | ✅ | 2 台并发任务成功，应用列表显示版本 |
@@ -59,3 +59,19 @@
 2. 在远程画面中打开 设置 → 账号 → 添加 Google 账号；输入密码时打开「安全输入」。
 3. 通过「应用管理」上传 YouTube 官方安装包（拆分包可直接上传），登录并播放视频。
 4. 页面「Google 服务」卡片应显示：已登录 1 个账号、YouTube 已安装、播放中。之后点击「重启」，确认仍显示已登录。
+
+## 5. Google Workspace（组织管理）账号说明（2026-11-14 实测）
+
+使用组织账号登录时，所有应用取 token 均失败：`DeviceManagementScreenlockRequired`，并伴随
+`No device or profile owner found for bad device management broadcast`。原因是组织的移动设备管理策略：
+设备必须设置屏幕锁，并满足组织的设备管理要求。处理过程（均由用户本人完成）：
+1. 设置 PIN（受保护画面开关可显示 PIN 页面）；
+2. 移除并重新添加账号；
+3. 按组织要求启用设备管理（「设备管理应用」）。
+之后 token 正常、YouTube 可登录。若组织要求高级管理（Android Device Policy 工作资料）或拦截未认证设备，需由组织管理员调整策略，平台不做规避。个人 @gmail.com 账号无此限制。
+
+## 6. 文件上传到手机（修复记录）
+
+通过 adb 写入共享存储的文件会被 MediaStore 标记为 `is_pending=1`（对其他应用不可见、无尺寸元数据），
+导致 Instagram 选图看不到。修复：扫描后按文件名定位记录、清除 `is_pending` 并重新扫描；
+上传接口在返回前校验 `is_pending=0`，否则报错（不再静默成功）。
