@@ -24,8 +24,8 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances/:id/apps', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     return { apps: await adb.listApps(inst.adbPort) };
   });
 
@@ -59,8 +59,8 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/instances/:id/files', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'control');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const file = await req.file();
     if (!file) throw badRequest('missing file');
     const { safe, folder, remote } = mediaTarget(file.filename, file.mimetype);
@@ -81,7 +81,7 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/apps/uninstall', {
     schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
   }, async (req, reply) => {
-    if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`);
+    if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`, 'apps.protected_package', { package: req.body.package });
     for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
     const accepted: { instanceId: string; taskId: string }[] = [];

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { api } from '../api/client'
-import { TASK_STATUS, TASK_TEXT, type Instance, type Task } from '../api/types'
+import { useI18n } from 'vue-i18n'
+import { api, errorText } from '../api/client'
+import { TASK_STATUS_COLOR, taskStatusText, taskText, type Instance, type Task } from '../api/types'
 import { useInstancesStore } from '../stores/instances'
 
 /** Per-device log: task history (live) and Android logcat on demand. */
 const props = defineProps<{ instance: Instance | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const store = useInstancesStore()
+const { t } = useI18n()
 
 const tab = ref<'tasks' | 'logcat'>('tasks')
 
@@ -21,7 +23,7 @@ async function loadTasks() {
   tasksError.value = null
   try {
     fetched.value = (await api<{ tasks: Task[] }>('GET', `/api/tasks?instanceId=${props.instance.id}&limit=200`)).tasks
-  } catch (e) { tasksError.value = (e as Error).message } finally { tasksLoading.value = false }
+  } catch (e) { tasksError.value = errorText(e) } finally { tasksLoading.value = false }
 }
 /** Fetched history merged with the store's live task events (newer status wins, resolved names kept). */
 const taskRows = computed(() => {
@@ -34,20 +36,20 @@ const taskRows = computed(() => {
   }
   return [...m.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 })
-function operator(t: Task) {
-  if (t.createdByName) return t.createdByName
-  return t.createdBy ? '—' : '系统'
+function operator(task: Task) {
+  if (task.createdByName) return task.createdByName
+  return task.createdBy ? '—' : t('common.system')
 }
-const taskColumns = [
-  { title: '时间', key: 'time', width: 160 },
-  { title: '操作', key: 'type', width: 130 },
-  { title: '状态', key: 'status', width: 80 },
-  { title: '操作人', key: 'by', width: 100 },
-  { title: '错误', key: 'error' },
-]
+const taskColumns = computed(() => [
+  { title: t('common.time'), key: 'time', width: 160 },
+  { title: t('common.action'), key: 'type', width: 130 },
+  { title: t('common.status'), key: 'status', width: 80 },
+  { title: t('common.operator'), key: 'by', width: 100 },
+  { title: t('common.error'), key: 'error' },
+])
 
 // ---- 系统日志
-const LEVELS = [{ value: 'E', label: '错误' }, { value: 'W', label: '警告' }, { value: 'I', label: '信息' }, { value: 'D', label: '调试' }] as const
+const LEVELS = computed(() => (['E', 'W', 'I', 'D'] as const).map((value) => ({ value, label: t(`logs.level${value}`) })))
 const level = ref<'E' | 'W' | 'I' | 'D'>('W')
 const keyword = ref('')
 const lines = ref<string[]>([])
@@ -56,13 +58,13 @@ const logError = ref<string | null>(null)
 const logLoaded = ref(false)
 async function loadLogcat() {
   if (!props.instance) return
-  if (props.instance.status !== 'running') { logError.value = '设备未运行，无法读取系统日志'; lines.value = []; return }
+  if (props.instance.status !== 'running') { logError.value = t('logs.notRunning'); lines.value = []; return }
   logLoading.value = true
   logError.value = null
   try {
     lines.value = await store.logcat(props.instance.id, { lines: 500, level: level.value, q: keyword.value.trim() || undefined })
     logLoaded.value = true
-  } catch (e) { logError.value = (e as Error).message } finally { logLoading.value = false }
+  } catch (e) { logError.value = errorText(e) } finally { logLoading.value = false }
 }
 function lineLevel(l: string) {
   return /^\S+ \S+ ([VDIWEF])\//.exec(l)?.[1] ?? ''
@@ -82,17 +84,17 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
 </script>
 
 <template>
-  <a-drawer v-model:open="open" :width="720" :title="`${instance?.name ?? ''} · 设备日志`" destroy-on-close>
+  <a-drawer v-model:open="open" :width="720" :title="t('logs.title', { name: instance?.name ?? '' })" destroy-on-close>
     <a-tabs v-model:active-key="tab">
-      <a-tab-pane key="tasks" tab="操作记录">
+      <a-tab-pane key="tasks" :tab="t('logs.tasks')">
         <a-alert v-if="tasksError" type="error" :message="tasksError" show-icon style="margin-bottom: 12px" />
         <a-table :data-source="taskRows" :columns="taskColumns" row-key="id" size="small" :loading="tasksLoading"
-          :pagination="{ pageSize: 20, size: 'small', hideOnSinglePage: true }" :locale="{ emptyText: '暂无操作记录' }">
+          :pagination="{ pageSize: 20, size: 'small', hideOnSinglePage: true }" :locale="{ emptyText: t('logs.noTasks') }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString() }}</template>
-            <template v-else-if="column.key === 'type'">{{ TASK_TEXT[record.type] ?? record.type }}</template>
+            <template v-else-if="column.key === 'type'">{{ taskText(record.type) }}</template>
             <template v-else-if="column.key === 'status'">
-              <a-tag :color="TASK_STATUS[record.status as Task['status']]?.color">{{ TASK_STATUS[record.status as Task['status']]?.text ?? record.status }}</a-tag>
+              <a-tag :color="TASK_STATUS_COLOR[record.status as Task['status']]">{{ taskStatusText(record.status) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'by'">{{ operator(record as Task) }}</template>
             <template v-else-if="column.key === 'error'">
@@ -101,17 +103,17 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
           </template>
         </a-table>
       </a-tab-pane>
-      <a-tab-pane key="logcat" tab="系统日志">
+      <a-tab-pane key="logcat" :tab="t('logs.logcat')">
         <a-space wrap style="margin-bottom: 12px">
-          <a-select v-model:value="level" :options="LEVELS as any" style="width: 100px" @change="loadLogcat" />
-          <a-input-search v-model:value="keyword" placeholder="关键字过滤" allow-clear style="width: 220px" @search="loadLogcat" />
-          <a-button :loading="logLoading" @click="loadLogcat">刷新</a-button>
-          <span style="color: #8c8c8c; font-size: 12px">{{ lines.length }} 行（最近 500 行，级别及以上）</span>
+          <a-select v-model:value="level" :options="LEVELS" style="width: 100px" @change="loadLogcat" />
+          <a-input-search v-model:value="keyword" :placeholder="t('logs.keyword')" allow-clear style="width: 220px" @search="loadLogcat" />
+          <a-button :loading="logLoading" @click="loadLogcat">{{ t('common.refresh') }}</a-button>
+          <span class="count">{{ t('logs.lines', { n: lines.length }) }}</span>
         </a-space>
         <a-alert v-if="logError" type="error" :message="logError" show-icon style="margin-bottom: 12px" />
         <a-spin :spinning="logLoading">
           <div class="logcat">
-            <div v-if="!lines.length" class="empty">{{ logLoaded ? '没有匹配的日志' : '' }}</div>
+            <div v-if="!lines.length" class="empty">{{ logLoaded ? t('logs.noMatch') : '' }}</div>
             <div v-for="(l, i) in lines" :key="i" :class="['line', `lv-${lineLevel(l)}`]">{{ l }}</div>
           </div>
         </a-spin>
@@ -125,8 +127,8 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
+  background: var(--cp-fill-alter);
+  border: 1px solid var(--cp-border-secondary);
   border-radius: 6px;
   padding: 8px;
   height: calc(100vh - 230px);
@@ -134,7 +136,11 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
   overflow: auto;
 }
 .line { white-space: pre-wrap; word-break: break-all; }
+/* Dark red / orange on light backgrounds; lighter tints (red-4 / orange-5) on dark ones. */
 .lv-E, .lv-F { color: #cf1322; }
 .lv-W { color: #d46b08; }
-.empty { color: #8c8c8c; padding: 16px; text-align: center; }
+:root[data-theme='dark'] .lv-E, :root[data-theme='dark'] .lv-F { color: #ff7875; }
+:root[data-theme='dark'] .lv-W { color: #ffa940; }
+.empty { color: var(--cp-text-tertiary); padding: 16px; text-align: center; }
+.count { color: var(--cp-text-tertiary); font-size: 12px; }
 </style>

@@ -1,23 +1,25 @@
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
 import { computed, onMounted, ref, watch } from 'vue'
-import { api } from '../api/client'
+import { useI18n } from 'vue-i18n'
+import { api, errorText } from '../api/client'
 import type { ManagedUser } from '../api/types'
 import { useInstancesStore } from '../stores/instances'
 
 const store = useInstancesStore()
+const { t } = useI18n()
 const users = ref<ManagedUser[]>([])
 const loading = ref(false)
 const tab = ref<'user' | 'device'>('user')
 
 /** Only role `user` needs grants; admins see every device. */
 const grantable = computed(() => users.value.filter((u) => u.role === 'user'))
-const userLabel = (u: ManagedUser) => (u.displayName ? `${u.displayName}（${u.username}）` : u.username)
+const userLabel = (u: ManagedUser) => (u.displayName ? t('permissions.userLabel', { display: u.displayName, username: u.username }) : u.username)
 
 async function load() {
   loading.value = true
   try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users }
-  catch (e) { message.error((e as Error).message) }
+  catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 onMounted(() => { void load(); void store.refresh() })
@@ -44,9 +46,9 @@ async function saveUserGrants() {
   savingUser.value = true
   try {
     await api('PUT', `/api/users/${selectedUser.value.id}/grants`, { instanceIds: targetKeys.value })
-    message.success('授权已保存')
+    message.success(t('permissions.saved'))
     await load()
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) { message.error(errorText(e)) }
   finally { savingUser.value = false }
 }
 
@@ -63,9 +65,9 @@ async function saveDeviceGrants() {
   savingDevice.value = true
   try {
     await api('PUT', `/api/instances/${selectedDeviceId.value}/grants`, { userIds: deviceUserIds.value })
-    message.success('授权已保存')
+    message.success(t('permissions.saved'))
     await load()
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) { message.error(errorText(e)) }
   finally { savingDevice.value = false }
 }
 
@@ -82,19 +84,19 @@ watch(users, () => {
 </script>
 
 <template>
-  <a-card title="权限管理" size="small">
-    <template #extra><a-button size="small" :loading="loading" @click="load(); store.refresh()">刷新</a-button></template>
+  <a-card :title="t('permissions.title')" size="small">
+    <template #extra><a-button size="small" :loading="loading" @click="load(); store.refresh()">{{ t('common.refresh') }}</a-button></template>
     <a-alert
       type="info" show-icon style="margin-bottom: 12px"
-      message="管理员可访问全部设备，无需授权；这里只列出角色为「用户」的账号。用户只能看到并操作被授权的设备。"
+      :message="t('permissions.info')"
     />
     <a-tabs v-model:active-key="tab">
-      <a-tab-pane key="user" tab="按用户">
+      <a-tab-pane key="user" :tab="t('permissions.byUser')">
         <a-row :gutter="[16, 16]">
           <a-col :xs="24" :md="8">
-            <a-input-search v-model:value="search" placeholder="搜索用户名或显示名称" allow-clear style="margin-bottom: 8px" />
+            <a-input-search v-model:value="search" :placeholder="t('permissions.searchUser')" allow-clear style="margin-bottom: 8px" />
             <a-spin :spinning="loading">
-              <a-empty v-if="!filteredUsers.length" description="没有角色为「用户」的账号" />
+              <a-empty v-if="!filteredUsers.length" :description="t('permissions.noUsers')" />
               <div class="user-list">
                 <div
                   v-for="u in filteredUsers" :key="u.id" class="user-item" :class="{ active: u.id === selectedUserId }"
@@ -102,27 +104,27 @@ watch(users, () => {
                 >
                   <div class="user-name">
                     {{ userLabel(u) }}
-                    <a-tag v-if="u.disabled" color="red" style="margin-left: 4px">已禁用</a-tag>
+                    <a-tag v-if="u.disabled" color="red" style="margin-left: 4px">{{ t('permissions.disabled') }}</a-tag>
                   </div>
-                  <div class="hint">已授权 {{ u.instanceIds.length }} 台设备</div>
+                  <div class="hint">{{ t('permissions.grantedCount', { n: u.instanceIds.length }) }}</div>
                 </div>
               </div>
             </a-spin>
           </a-col>
           <a-col :xs="24" :md="16">
-            <a-empty v-if="!selectedUser" description="请在左侧选择用户" />
+            <a-empty v-if="!selectedUser" :description="t('permissions.pickUser')" />
             <template v-else>
               <div class="editor-head">
-                <span>为 <b>{{ userLabel(selectedUser) }}</b> 授权设备</span>
-                <a-button type="primary" size="small" :loading="savingUser" :disabled="!userDirty" @click="saveUserGrants">保存</a-button>
+                <i18n-t keypath="permissions.grantFor" tag="span"><template #name><b>{{ userLabel(selectedUser) }}</b></template></i18n-t>
+                <a-button type="primary" size="small" :loading="savingUser" :disabled="!userDirty" @click="saveUserGrants">{{ t('common.save') }}</a-button>
               </div>
               <a-transfer
                 v-model:target-keys="targetKeys"
                 :data-source="deviceItems"
-                :titles="['可分配设备', '已授权设备']"
+                :titles="[t('permissions.available'), t('permissions.granted')]"
                 :render="(item: any) => item.title"
                 :list-style="{ width: '100%', height: '360px' }"
-                :locale="{ itemUnit: '台', itemsUnit: '台', searchPlaceholder: '搜索设备', notFoundContent: '无' }"
+                :locale="{ itemUnit: t('permissions.unit'), itemsUnit: t('permissions.unit'), searchPlaceholder: t('permissions.searchDevice'), notFoundContent: t('common.none') }"
                 show-search
                 class="transfer"
               />
@@ -131,21 +133,21 @@ watch(users, () => {
         </a-row>
       </a-tab-pane>
 
-      <a-tab-pane key="device" tab="按设备">
+      <a-tab-pane key="device" :tab="t('permissions.byDevice')">
         <a-form layout="vertical" style="max-width: 640px">
-          <a-form-item label="设备">
+          <a-form-item :label="t('common.device')">
             <a-select
-              v-model:value="selectedDeviceId" show-search placeholder="选择设备" option-filter-prop="label"
+              v-model:value="selectedDeviceId" show-search :placeholder="t('permissions.pickDevice')" option-filter-prop="label"
               :options="store.list.map((i) => ({ value: i.id, label: i.name }))"
             />
           </a-form-item>
-          <a-form-item v-if="selectedDeviceId" label="可访问该设备的用户">
+          <a-form-item v-if="selectedDeviceId" :label="t('permissions.usersOfDevice')">
             <a-select
-              v-model:value="deviceUserIds" mode="multiple" show-search option-filter-prop="label" placeholder="选择用户（为空表示仅管理员可访问）"
+              v-model:value="deviceUserIds" mode="multiple" show-search option-filter-prop="label" :placeholder="t('permissions.pickUsers')"
               :options="grantable.map((u) => ({ value: u.id, label: userLabel(u) }))"
             />
           </a-form-item>
-          <a-button v-if="selectedDeviceId" type="primary" :loading="savingDevice" :disabled="!deviceDirty" @click="saveDeviceGrants">保存</a-button>
+          <a-button v-if="selectedDeviceId" type="primary" :loading="savingDevice" :disabled="!deviceDirty" @click="saveDeviceGrants">{{ t('common.save') }}</a-button>
         </a-form>
       </a-tab-pane>
     </a-tabs>
@@ -153,13 +155,13 @@ watch(users, () => {
 </template>
 
 <style scoped>
-.user-list { max-height: 420px; overflow-y: auto; border: 1px solid #f0f0f0; border-radius: 6px; }
-.user-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+.user-list { max-height: 420px; overflow-y: auto; border: 1px solid var(--cp-border-secondary); border-radius: 6px; }
+.user-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--cp-border-secondary); }
 .user-item:last-child { border-bottom: none; }
-.user-item:hover { background: #fafafa; }
-.user-item.active { background: #e6f4ff; }
+.user-item:hover { background: var(--cp-bg-hover); }
+.user-item.active { background: var(--cp-primary-bg); }
 .user-name { font-weight: 500; }
-.hint { color: #8c8c8c; font-size: 12px; }
+.hint { color: var(--cp-text-tertiary); font-size: 12px; }
 .editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
 .transfer :deep(.ant-transfer-list) { flex: 1; min-width: 0; }
 </style>

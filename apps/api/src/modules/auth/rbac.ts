@@ -36,9 +36,9 @@ export async function accessibleInstanceIds(user: AuthUser): Promise<Set<string>
 }
 
 export async function assertInstanceAccess(user: AuthUser, instanceId: string, action: InstanceAction): Promise<void> {
-  if (!roleAllows(user.role, action)) throw forbidden(`role "${user.role}" cannot ${action} instances`);
+  if (!roleAllows(user.role, action)) throw forbidden(`role "${user.role}" cannot ${action} instances`, 'auth.role_forbidden', { role: user.role, action });
   if (isAdmin(user)) return;
   const [grant] = await db.select().from(schema.instanceGrants)
     .where(and(eq(schema.instanceGrants.userId, user.id), eq(schema.instanceGrants.instanceId, instanceId)));
-  if (!grant) throw forbidden('no access to this instance');
+  if (!grant) throw forbidden('no access to this instance', 'auth.no_instance_access');
 }

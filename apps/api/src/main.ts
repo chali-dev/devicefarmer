@@ -33,7 +33,9 @@ app.setErrorHandler((err, req, reply) => {
   if (hasZodFastifySchemaValidationErrors(err)) {
     return reply.code(400).send({ error: 'validation', message: 'invalid request', details: err.validation });
   }
-  if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.message });
+  if (err instanceof HttpError) {
+    return reply.code(err.statusCode).send({ error: err.message, ...(err.code ? { code: err.code } : {}), ...(err.params ? { params: err.params } : {}) });
+  }
   const status = (err as { statusCode?: number }).statusCode;
   if (status && status < 500) return reply.code(status).send({ error: (err as Error).message });
   req.log.error({ err }, 'unhandled error');

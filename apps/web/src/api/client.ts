@@ -1,3 +1,5 @@
+import { t, te } from '../i18n'
+
 const TOKEN_KEY = 'cloudphone.token'
 
 export function getToken(): string | null {
@@ -10,12 +12,36 @@ export function setToken(token: string | null): void {
   } catch { /* storage unavailable */ }
 }
 
+export type ErrorParams = Record<string, string | number>
+
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** Stable message code from the API (e.g. 'auth.wrong_password'), translated as `errors.<code>`. */
+  readonly code?: string
+  readonly params?: ErrorParams
+  constructor(status: number, message: string, code?: string, params?: ErrorParams) {
     super(message)
     this.status = status
+    this.code = code
+    this.params = params
   }
+}
+
+/** Text of a coded message in the current UI language, or `fallback` when the code is unknown. */
+export function codeText(code: string | undefined | null, params: ErrorParams | undefined, fallback: string): string {
+  return code && te(`errors.${code}`) ? t(`errors.${code}`, params ?? {}) : fallback
+}
+
+/** User-facing text for any error: the translated API code when known, else the raw message. */
+export function errorText(e: unknown): string {
+  if (e instanceof ApiError) return codeText(e.code, e.params, e.message)
+  return e instanceof Error ? e.message : String(e)
+}
+
+/** Builds an ApiError from a failed fetch response body (for callers that don't use api()). */
+export async function responseError(res: Response, fallbackKey = 'common.requestFailed'): Promise<ApiError> {
+  const data = await res.json().catch(() => ({}))
+  return new ApiError(res.status, data.error ?? data.message ?? t(fallbackKey, { status: res.status }), data.code, data.params)
 }
 
 let onUnauthorized: (() => void) | null = null
@@ -34,8 +60,8 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   })
   if (res.status === 401 && path !== '/api/auth/login') onUnauthorized?.()
   if (res.status === 204) return undefined as T
+  if (!res.ok) throw await responseError(res)
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new ApiError(res.status, data.error ?? data.message ?? `请求失败 (${res.status})`)
   return data as T
 }
 

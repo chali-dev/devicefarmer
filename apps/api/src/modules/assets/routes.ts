@@ -44,7 +44,7 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: { params: Id, querystring: z.object({ download: z.enum(['0', '1']).optional() }) },
   }, async (req, reply) => {
     const asset = await getAsset(req.params.id);
-    if (!asset) throw notFound('asset not found');
+    if (!asset) throw notFound('asset not found', 'assets.not_found');
     const stream = await openAsset(asset);
     const disposition = req.query.download === '1' ? 'attachment' : 'inline';
     const ascii = asset.name.replace(/[^\x20-\x7e]|["\\]/g, '_');
@@ -63,7 +63,7 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: { params: Id, body: z.object({ name: z.string().trim().min(1).max(200).optional(), tags: z.array(Tag).max(20).optional() }) },
   }, async (req) => {
     const asset = await getAsset(req.params.id);
-    if (!asset) throw notFound('asset not found');
+    if (!asset) throw notFound('asset not found', 'assets.not_found');
     const set: { name?: string; tags?: string[] } = {};
     if (req.body.name !== undefined) set.name = req.body.name;
     if (req.body.tags !== undefined) set.tags = [...new Set(req.body.tags)];
@@ -73,9 +73,9 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/assets/:id', { schema: { params: Id } }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以删除素材');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以删除素材', 'assets.delete_admin_only');
     const asset = await getAsset(req.params.id);
-    if (!asset) throw notFound('asset not found');
+    if (!asset) throw notFound('asset not found', 'assets.not_found');
     await removeAsset(asset);
     reply.code(204);
   });
@@ -88,7 +88,7 @@ export const assetRoutes: FastifyPluginAsyncZod = async (app) => {
     const instanceIds = [...new Set(req.body.instanceIds)];
     for (const id of instanceIds) await assertInstanceAccess(req.user, id, 'operate');
     const assets = await db.select().from(schema.assets).where(inArray(schema.assets.id, assetIds));
-    if (assets.length !== assetIds.length) throw notFound('asset not found');
+    if (assets.length !== assetIds.length) throw notFound('asset not found', 'assets.not_found');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, instanceIds));
     const accepted: { instanceId: string; assetId: string; taskId: string }[] = [];
     const skipped: { instanceId: string; reason: string }[] = [];

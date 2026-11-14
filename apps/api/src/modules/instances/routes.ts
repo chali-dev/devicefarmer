@@ -35,7 +35,7 @@ const Proxy = z.object({
 async function assertProxyNotShared(proxy: ProxyConfig, exceptId?: string) {
   const rows = await db.select({ id: schema.instances.id, name: schema.instances.name, proxy: schema.instances.proxy }).from(schema.instances);
   const other = rows.find((r) => r.id !== exceptId && r.proxy && proxyKey(r.proxy) === proxyKey(proxy));
-  if (other) throw conflict(`该代理已被设备 ${other.name} 使用（如确需共享请勾选 allowShared）`);
+  if (other) throw conflict(`该代理已被设备 ${other.name} 使用（如确需共享请勾选 allowShared）`, 'proxy.shared', { name: other.name });
 }
 
 const CreateBody = z.object({
@@ -75,7 +75,7 @@ async function allocate(prefix: string, count: number) {
   while (out.length < count) {
     while (usedNames.has(`${prefix}-${n}`)) n++;
     while (usedPorts.has(port)) port++;
-    if (port > config.ADB_PORT_MAX) throw conflict('no free adb ports left on the Android host');
+    if (port > config.ADB_PORT_MAX) throw conflict('no free adb ports left on the Android host', 'instances.no_free_ports');
     out.push({ name: `${prefix}-${n}`, adbPort: port });
     usedNames.add(`${prefix}-${n}`);
     usedPorts.add(port);
@@ -112,24 +112,24 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
     return { instance: publicInstance(inst) };
   });
 
   /** Batch create (admin only). Instances are created by the queue. */
   app.post('/api/instances', { schema: { body: CreateBody } }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以创建设备');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以创建设备', 'instances.create_admin_only');
     const b = req.body;
     const profile = getProfile(b.profile);
     const avail = (await profileAvailability()).find((p) => p.id === b.profile);
-    if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`);
-    if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`);
-    if (b.proxy && b.count > 1) throw badRequest('多台设备请使用 proxies（每台一个代理），避免共享同一代理');
-    if (b.proxies && b.proxies.length !== b.count) throw badRequest(`proxies 数量（${b.proxies.length}）必须等于创建数量（${b.count}）`);
+    if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`, 'instances.unknown_profile', { profile: b.profile });
+    if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`, 'instances.profile_unavailable', { reason: avail.reason ?? '' });
+    if (b.proxy && b.count > 1) throw badRequest('多台设备请使用 proxies（每台一个代理），避免共享同一代理', 'proxy.single_for_many');
+    if (b.proxies && b.proxies.length !== b.count) throw badRequest(`proxies 数量（${b.proxies.length}）必须等于创建数量（${b.count}）`, 'proxy.count_mismatch', { proxies: b.proxies.length, count: b.count });
     const proxies: (ProxyConfig | null)[] = Array.from({ length: b.count }, (_, i) => b.proxies?.[i] ?? b.proxy ?? null);
     if (!b.allowShared) {
       const keys = proxies.filter((p): p is ProxyConfig => !!p).map(proxyKey);
-      if (new Set(keys).size !== keys.length) throw conflict('同一批次中存在重复代理');
+      if (new Set(keys).size !== keys.length) throw conflict('同一批次中存在重复代理', 'proxy.duplicate_in_batch');
       for (const p of proxies) if (p) await assertProxyNotShared(p);
     }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
@@ -137,7 +137,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       const freeMb = await dockerHost.memAvailableMb();
       const needMb = profile.memEstimateMb * b.count + 512; // keep headroom for the host
       if (needMb > freeMb) {
-        throw conflict(`宿主机可用内存不足：需要约 ${needMb} MiB（${b.count} × ${profile.memEstimateMb} + 512 余量），当前可用 ${freeMb} MiB`);
+        throw conflict(`宿主机可用内存不足：需要约 ${needMb} MiB（${b.count} × ${profile.memEstimateMb} + 512 余量），当前可用 ${freeMb} MiB`,
+          'instances.insufficient_memory', { needMb, count: b.count, perMb: profile.memEstimateMb, freeMb });
       }
     }
     const slots = await allocate(b.namePrefix, b.count);
@@ -171,7 +172,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       }),
     },
   }, async (req, reply) => {
-    if (req.body.action === 'delete' && !isAdmin(req.user)) throw forbidden('仅管理员可以删除设备');
+    if (req.body.action === 'delete' && !isAdmin(req.user)) throw forbidden('仅管理员可以删除设备', 'instances.delete_admin_only');
     const ids = [...new Set(req.body.ids)];
     for (const id of ids) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
@@ -192,8 +193,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/instances/:id/apk', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'operate');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const file = await req.file();
     if (!file) throw badRequest('missing file');
     const prepared = await prepareUpload(file.file, file.filename);
@@ -206,7 +207,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances/:id/settings', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
     const actual = inst.status === 'running' ? await readDeviceSettings(inst.adbPort).catch(() => null) : null;
     return { configured: { locale: inst.spec.locale, timezone: inst.spec.timezone, deviceName: inst.spec.deviceName }, actual };
   });
@@ -216,8 +217,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'operate');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`);
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
     const spec = { ...inst.spec, ...Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined)) };
     await updateInstance(inst.id, { spec });
     // Running: apply now. Stopped: applied automatically on next start.
@@ -230,8 +231,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/instances/:id/screenshot', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'control');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const png = await adb.screenshot(inst.adbPort);
     reply.header('content-type', 'image/png')
       .header('content-disposition', `attachment; filename="${inst.name}-${new Date().toISOString().replace(/[:.]/g, '-')}.png"`);
@@ -254,8 +255,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'control');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const { lines, level, q } = req.query;
     const out = await adb.shell(inst.adbPort, `logcat -d -v time -t ${lines} '*:${level}'`, 20_000);
     // `-t` counts per buffer (main/system/crash), so cap the merged output to the newest `lines` here.
@@ -269,8 +270,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/instances/:id/google/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const google = await checkGoogleHealth(inst.adbPort);
     await updateInstance(inst.id, { google });
     return { google };
@@ -282,8 +283,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'operate');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`);
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
     let proxy: ProxyConfig | null = req.body.proxy;
     // Keep the stored password when the client re-submits the form without it (passwords are write-only).
     if (proxy && proxy.password === undefined && inst.proxy?.password && proxyKey(inst.proxy) === proxyKey(proxy)) {
@@ -300,9 +301,9 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/instances/:id/proxy/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found');
-    if (!inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (!inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建', 'proxy.no_net_container');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const proxyStatus = await network.check(inst.netContainerId);
     await updateInstance(inst.id, { proxyStatus });
     return { proxyStatus };

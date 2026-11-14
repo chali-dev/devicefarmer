@@ -4,23 +4,25 @@ import { message, Modal } from 'ant-design-vue'
 import {
   CloudUploadOutlined, DeleteOutlined, DownloadOutlined, FileOutlined, SendOutlined, SettingOutlined, TagsOutlined, VideoCameraOutlined,
 } from '@ant-design/icons-vue'
-import { api, getToken } from '../api/client'
+import { useI18n } from 'vue-i18n'
+import { api, errorText, getToken, responseError } from '../api/client'
 import type { Asset, StorageSettings, StorageTestResult } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
-const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const { t } = useI18n()
+const errMsg = errorText
 
 // ---- list
 const assets = ref<Asset[]>([])
 const loading = ref(false)
 const q = ref('')
 const type = ref<'' | 'image' | 'video' | 'other'>('')
-const TYPE_OPTIONS = [
-  { value: '', label: '全部类型' }, { value: 'image', label: '图片' }, { value: 'video', label: '视频' }, { value: 'other', label: '其他文件' },
-]
+const TYPE_OPTIONS = computed(() => [
+  { value: '', label: t('assets.allTypes') }, { value: 'image', label: t('assets.image') }, { value: 'video', label: t('assets.video') }, { value: 'other', label: t('assets.other') },
+])
 
 async function load() {
   loading.value = true
@@ -53,10 +55,7 @@ let disposed = false
 async function fetchBlob(a: Asset): Promise<Blob> {
   const token = getToken()
   const res = await fetch(`/api/assets/${a.id}/content`, { headers: token ? { authorization: `Bearer ${token}` } : {} })
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(data.error ?? `请求失败 (${res.status})`)
-  }
+  if (!res.ok) throw await responseError(res)
   return res.blob()
 }
 async function loadThumbs() {
@@ -99,17 +98,17 @@ async function drainUploads() {
   let ok = 0
   const failed: string[] = []
   for (let f = uploadQueue.shift(); f; f = uploadQueue.shift()) {
-    message.loading({ content: `正在上传 (${uploadDone + 1}/${uploadTotal}) ${f.name}`, key: 'asset-upload', duration: 0 })
+    message.loading({ content: t('assets.uploadingN', { i: uploadDone + 1, total: uploadTotal, name: f.name }), key: 'asset-upload', duration: 0 })
     try {
       const fd = new FormData()
       fd.append('file', f, f.name)
       await api('POST', '/api/assets', fd)
       ok++
-    } catch (e) { failed.push(`${f.name}：${errMsg(e)}`) }
+    } catch (e) { failed.push(t('assets.uploadFailedItem', { name: f.name, error: errMsg(e) })) }
     uploadDone++
   }
-  if (failed.length) message.error({ content: `上传失败 ${failed.length} 个：${failed.join('；')}`, key: 'asset-upload', duration: 6 })
-  else message.success({ content: `已上传 ${ok} 个素材`, key: 'asset-upload' })
+  if (failed.length) message.error({ content: t('assets.uploadFailed', { n: failed.length, list: failed.join(t('common.reasonSep')) }), key: 'asset-upload', duration: 6 })
+  else message.success({ content: t('assets.uploaded', { n: ok }), key: 'asset-upload' })
   uploadTotal = 0
   uploadDone = 0
   uploading.value = false
@@ -118,7 +117,7 @@ async function drainUploads() {
 
 // ---- per-asset actions
 async function download(a: Asset) {
-  const hide = message.loading(`正在下载 ${a.name}`, 0)
+  const hide = message.loading(t('assets.downloading', { name: a.name }), 0)
   try {
     const url = URL.createObjectURL(await fetchBlob(a))
     const link = document.createElement('a')
@@ -134,12 +133,12 @@ async function download(a: Asset) {
 
 function remove(a: Asset) {
   Modal.confirm({
-    title: `删除素材 ${a.name}？`, content: '将同时删除存储中的文件；已推送到设备上的文件不受影响。', okType: 'danger', okText: '删除', cancelText: '取消',
+    title: t('assets.confirmDelete', { name: a.name }), content: t('assets.deleteContent'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try {
         await api('DELETE', `/api/assets/${a.id}`)
         dropThumb(a.id)
-        message.success('已删除')
+        message.success(t('common.deleted'))
         await load()
       } catch (e) { message.error(errMsg(e)) }
     },
@@ -158,10 +157,10 @@ function openEdit(a: Asset) {
 async function saveEdit() {
   if (!editing.value) return
   const name = editForm.name.trim()
-  if (!name) { message.warning('名称不能为空'); return }
+  if (!name) { message.warning(t('assets.nameRequired')); return }
   const tags = editForm.tags.map((t) => t.trim()).filter(Boolean)
-  if (tags.some((t) => t.length > 32)) { message.warning('每个标签最多 32 个字符'); return }
-  if (tags.length > 20) { message.warning('最多 20 个标签'); return }
+  if (tags.some((t) => t.length > 32)) { message.warning(t('assets.tagTooLong')); return }
+  if (tags.length > 20) { message.warning(t('assets.tooManyTags')); return }
   editSaving.value = true
   try {
     await api('PATCH', `/api/assets/${editing.value.id}`, { name, tags })
@@ -182,19 +181,19 @@ function toggleSelect(id: string, on: boolean) {
 }
 function openPush(list: Asset[]) {
   if (!list.length) return
-  if (list.length > 20) { message.warning('一次最多推送 20 个素材'); return }
+  if (list.length > 20) { message.warning(t('assets.pushLimit')); return }
   pushAssets.value = list
   pushTargets.value = []
 }
 async function doPush() {
-  if (!pushAssets.value || !pushTargets.value.length) { message.warning('请选择设备'); return }
+  if (!pushAssets.value || !pushTargets.value.length) { message.warning(t('assets.pickDevice')); return }
   pushing.value = true
   try {
     const r = await api<{ accepted: unknown[]; skipped: { reason: string }[] }>('POST', '/api/assets/push', {
       assetIds: pushAssets.value.map((a) => a.id), instanceIds: pushTargets.value,
     })
-    message.success(`已提交 ${r.accepted.length} 个推送任务，可在设备管理的任务列表查看进度`)
-    if (r.skipped.length) message.warning(`跳过 ${r.skipped.length} 台设备：${[...new Set(r.skipped.map((s) => s.reason))].join('，')}`)
+    message.success(t('assets.pushSubmitted', { n: r.accepted.length }))
+    if (r.skipped.length) message.warning(t('assets.pushSkipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((s) => s.reason))].join(t('common.reasonSep')) }))
     pushAssets.value = null
     selected.value = []
   } catch (e) { message.error(errMsg(e)) }
@@ -213,8 +212,6 @@ const storageForm = reactive({
   endpoint: '', region: 'us-east-1', bucket: '', accessKeyId: '', secretAccessKey: '', forcePathStyle: false, prefix: '',
 })
 const isS3 = computed(() => storageForm.type === 's3')
-const ENDPOINT_HINT = 'AWS S3 留空；Cloudflare R2：https://<账号ID>.r2.cloudflarestorage.com；阿里云 OSS：https://oss-cn-hangzhou.aliyuncs.com；自建 SeaweedFS / MinIO：http://<主机>:<端口>'
-const ENDPOINT_PLACEHOLDER = '留空 = AWS；R2 / OSS / 自建存储填写服务地址'
 async function openStorage() {
   storageOpen.value = true
   storageLoading.value = true
@@ -246,9 +243,9 @@ function storageBody() {
 }
 function s3Incomplete(): string | null {
   if (storageForm.type !== 's3') return null
-  if (!storageForm.bucket.trim()) return '请填写 Bucket'
-  if (!storageForm.accessKeyId.trim()) return '请填写 Access Key ID'
-  if (!storageForm.secretAccessKey && !hasSecret.value) return '请填写 Secret Access Key'
+  if (!storageForm.bucket.trim()) return t('assets.storage.needBucket')
+  if (!storageForm.accessKeyId.trim()) return t('assets.storage.needKeyId')
+  if (!storageForm.secretAccessKey && !hasSecret.value) return t('assets.storage.needSecret')
   return null
 }
 async function testStorage() {
@@ -266,7 +263,7 @@ async function saveStorage() {
   storageSaving.value = true
   try {
     await api('PUT', '/api/settings/storage', storageBody())
-    message.success(storageForm.type === 's3' ? '连接测试通过，已保存；新上传的素材将存到 S3' : '已保存；新上传的素材将存到本地')
+    message.success(storageForm.type === 's3' ? t('assets.storage.savedS3') : t('assets.storage.savedLocal'))
     storageOpen.value = false
   } catch (e) { testResult.value = { ok: false, latencyMs: 0, error: errMsg(e) } }
   finally { storageSaving.value = false }
@@ -274,38 +271,38 @@ async function saveStorage() {
 </script>
 
 <template>
-  <a-card title="素材库" size="small">
+  <a-card :title="t('assets.title')" size="small">
     <template #extra>
       <a-space wrap>
         <a-button size="small" type="primary" :disabled="!selected.length" @click="openPush(assets.filter((a) => selected.includes(a.id)))">
-          <SendOutlined /> 推送到设备{{ selected.length ? ` (${selected.length})` : '' }}
+          <SendOutlined /> {{ selected.length ? t('assets.pushToDeviceN', { n: selected.length }) : t('assets.pushToDevice') }}
         </a-button>
-        <a-button v-if="auth.isAdmin" size="small" @click="openStorage"><SettingOutlined /> 存储设置</a-button>
-        <a-button size="small" :loading="loading" @click="load">刷新</a-button>
+        <a-button v-if="auth.isAdmin" size="small" @click="openStorage"><SettingOutlined /> {{ t('assets.storageSettings') }}</a-button>
+        <a-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</a-button>
       </a-space>
     </template>
 
     <div class="toolbar">
-      <a-input-search v-model:value="q" placeholder="搜索名称或标签" allow-clear class="search" @search="load" />
+      <a-input-search v-model:value="q" :placeholder="t('assets.searchPlaceholder')" allow-clear class="search" @search="load" />
       <a-select v-model:value="type" :options="TYPE_OPTIONS" class="type" />
       <a-checkbox
         v-if="assets.length"
         :checked="selected.length > 0 && selected.length === assets.length"
         :indeterminate="selected.length > 0 && selected.length < assets.length"
         @change="(e: any) => (selected = e.target.checked ? assets.map((a) => a.id) : [])"
-      >全选</a-checkbox>
+      >{{ t('assets.selectAll') }}</a-checkbox>
     </div>
 
     <a-upload-dragger
       :multiple="true" :show-upload-list="false" :custom-request="enqueueUpload as any" class="dragger"
     >
-      <p style="margin: 8px 0"><CloudUploadOutlined style="font-size: 24px; color: #1677ff" /></p>
-      <p style="margin: 0">{{ uploading ? '上传中…' : '拖拽图片 / 视频 / 文件到此处，或点击选择（可多选）' }}</p>
-      <p class="hint" style="margin: 4px 0 8px">推送到设备时：图片 → Pictures，视频 → Movies，其他 → Download</p>
+      <p style="margin: 8px 0"><CloudUploadOutlined class="upload-icon" /></p>
+      <p style="margin: 0">{{ uploading ? t('common.uploading') : t('assets.drop') }}</p>
+      <p class="hint" style="margin: 4px 0 8px">{{ t('assets.dropHint') }}</p>
     </a-upload-dragger>
 
     <a-spin :spinning="loading">
-      <a-empty v-if="!assets.length && !loading" description="暂无素材" style="margin: 32px 0" />
+      <a-empty v-if="!assets.length && !loading" :description="t('assets.empty')" style="margin: 32px 0" />
       <div class="grid">
         <div v-for="a in assets" :key="a.id" class="item" :class="{ checked: selected.includes(a.id) }">
           <div class="thumb">
@@ -326,82 +323,82 @@ async function saveStorage() {
             </div>
           </div>
           <div class="actions">
-            <a-tooltip title="下载"><a-button type="text" size="small" @click="download(a)"><DownloadOutlined /></a-button></a-tooltip>
-            <a-tooltip title="编辑标签"><a-button type="text" size="small" @click="openEdit(a)"><TagsOutlined /></a-button></a-tooltip>
-            <a-tooltip title="推送到设备"><a-button type="text" size="small" @click="openPush([a])"><SendOutlined /></a-button></a-tooltip>
-            <a-tooltip v-if="auth.isAdmin" title="删除"><a-button type="text" size="small" danger @click="remove(a)"><DeleteOutlined /></a-button></a-tooltip>
+            <a-tooltip :title="t('assets.download')"><a-button type="text" size="small" @click="download(a)"><DownloadOutlined /></a-button></a-tooltip>
+            <a-tooltip :title="t('assets.editTags')"><a-button type="text" size="small" @click="openEdit(a)"><TagsOutlined /></a-button></a-tooltip>
+            <a-tooltip :title="t('assets.pushToDevice')"><a-button type="text" size="small" @click="openPush([a])"><SendOutlined /></a-button></a-tooltip>
+            <a-tooltip v-if="auth.isAdmin" :title="t('common.delete')"><a-button type="text" size="small" danger @click="remove(a)"><DeleteOutlined /></a-button></a-tooltip>
           </div>
         </div>
       </div>
     </a-spin>
   </a-card>
 
-  <a-modal :open="!!editing" title="编辑素材" ok-text="保存" cancel-text="取消" :confirm-loading="editSaving" @ok="saveEdit" @cancel="editing = null">
+  <a-modal :open="!!editing" :title="t('assets.editTitle')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="editSaving" @ok="saveEdit" @cancel="editing = null">
     <a-form layout="vertical">
-      <a-form-item label="名称"><a-input v-model:value="editForm.name" :maxlength="200" /></a-form-item>
-      <a-form-item label="标签" extra="输入后回车添加，最多 20 个">
-        <a-select v-model:value="editForm.tags" mode="tags" :options="allTags" placeholder="添加标签" style="width: 100%" />
+      <a-form-item :label="t('common.name')"><a-input v-model:value="editForm.name" :maxlength="200" /></a-form-item>
+      <a-form-item :label="t('assets.tags')" :extra="t('assets.tagsHint')">
+        <a-select v-model:value="editForm.tags" mode="tags" :options="allTags" :placeholder="t('assets.addTag')" style="width: 100%" />
       </a-form-item>
     </a-form>
   </a-modal>
 
   <a-modal
-    :open="!!pushAssets" :title="pushAssets?.length === 1 ? `推送 ${pushAssets[0]!.name} 到设备` : `推送 ${pushAssets?.length ?? 0} 个素材到设备`"
-    ok-text="推送" cancel-text="取消" :confirm-loading="pushing" @ok="doPush" @cancel="pushAssets = null"
+    :open="!!pushAssets" :title="pushAssets?.length === 1 ? t('assets.pushOne', { name: pushAssets[0]!.name }) : t('assets.pushMany', { n: pushAssets?.length ?? 0 })"
+    :ok-text="t('common.push')" :cancel-text="t('common.cancel')" :confirm-loading="pushing" @ok="doPush" @cancel="pushAssets = null"
   >
     <a-select
-      v-model:value="pushTargets" mode="multiple" style="width: 100%" placeholder="选择运行中的设备" :options="runningDevices"
-      :not-found-content="'没有运行中的设备'" option-filter-prop="label"
+      v-model:value="pushTargets" mode="multiple" style="width: 100%" :placeholder="t('assets.pickRunning')" :options="runningDevices"
+      :not-found-content="t('assets.noRunning')" option-filter-prop="label"
     />
-    <p class="hint" style="margin-top: 8px">每台设备的每个素材是一个独立任务；文件会出现在相册和应用的选择器中。</p>
+    <p class="hint" style="margin-top: 8px">{{ t('assets.pushHint') }}</p>
   </a-modal>
 
-  <a-modal v-model:open="storageOpen" title="存储设置" :footer="null" width="560px">
+  <a-modal v-model:open="storageOpen" :title="t('assets.storageSettings')" :footer="null" width="560px">
     <a-spin :spinning="storageLoading">
       <a-form layout="vertical">
-        <a-form-item label="存储位置" extra="只影响之后上传的素材；已有素材仍从原存储读取">
+        <a-form-item :label="t('assets.storage.location')" :extra="t('assets.storage.locationHint')">
           <a-radio-group v-model:value="storageForm.type">
-            <a-radio-button value="local">本地存储</a-radio-button>
-            <a-radio-button value="s3">S3 对象存储</a-radio-button>
+            <a-radio-button value="local">{{ t('assets.storage.local') }}</a-radio-button>
+            <a-radio-button value="s3">{{ t('assets.storage.s3') }}</a-radio-button>
           </a-radio-group>
         </a-form-item>
         <template v-if="isS3">
-          <a-form-item label="Endpoint" :extra="ENDPOINT_HINT">
-            <a-input v-model:value="storageForm.endpoint" :placeholder="ENDPOINT_PLACEHOLDER" />
+          <a-form-item label="Endpoint" :extra="t('assets.storage.endpointHint')">
+            <a-input v-model:value="storageForm.endpoint" :placeholder="t('assets.storage.endpointPlaceholder')" />
           </a-form-item>
           <a-row :gutter="12">
             <a-col :xs="24" :sm="12">
-              <a-form-item label="Region" extra="R2 填 auto；OSS 填 oss-cn-hangzhou 等"><a-input v-model:value="storageForm.region" placeholder="us-east-1" /></a-form-item>
+              <a-form-item label="Region" :extra="t('assets.storage.regionHint')"><a-input v-model:value="storageForm.region" placeholder="us-east-1" /></a-form-item>
             </a-col>
             <a-col :xs="24" :sm="12">
               <a-form-item label="Bucket" required><a-input v-model:value="storageForm.bucket" placeholder="my-bucket" /></a-form-item>
             </a-col>
           </a-row>
           <a-form-item label="Access Key ID" required><a-input v-model:value="storageForm.accessKeyId" autocomplete="off" /></a-form-item>
-          <a-form-item label="Secret Access Key" :required="!hasSecret" :extra="hasSecret ? '已保存，留空不修改（修改 Endpoint / Bucket / Access Key 时需重新填写）' : '加密保存，保存后不会再显示'">
-            <a-input-password v-model:value="storageForm.secretAccessKey" autocomplete="new-password" :placeholder="hasSecret ? '已保存，留空不修改' : ''" />
+          <a-form-item label="Secret Access Key" :required="!hasSecret" :extra="hasSecret ? t('assets.storage.secretSaved') : t('assets.storage.secretEncrypted')">
+            <a-input-password v-model:value="storageForm.secretAccessKey" autocomplete="new-password" :placeholder="hasSecret ? t('assets.storage.secretPlaceholder') : ''" />
           </a-form-item>
           <a-row :gutter="12">
             <a-col :xs="24" :sm="12">
-              <a-form-item label="路径风格（Path-style）" extra="自建存储（如 SeaweedFS / MinIO）通常需要开启">
+              <a-form-item :label="t('assets.storage.pathStyle')" :extra="t('assets.storage.pathStyleHint')">
                 <a-switch v-model:checked="storageForm.forcePathStyle" />
               </a-form-item>
             </a-col>
             <a-col :xs="24" :sm="12">
-              <a-form-item label="前缀" extra="可选，例如 cloudphone/"><a-input v-model:value="storageForm.prefix" placeholder="cloudphone/" /></a-form-item>
+              <a-form-item :label="t('assets.storage.prefix')" :extra="t('assets.storage.prefixHint')"><a-input v-model:value="storageForm.prefix" placeholder="cloudphone/" /></a-form-item>
             </a-col>
           </a-row>
           <a-alert type="warning" show-icon style="margin-bottom: 12px"
-            message="更换 Bucket 或 Endpoint 后，之前存到 S3 的素材将无法读取（不会自动迁移）。" />
+            :message="t('assets.storage.bucketWarning')" />
         </template>
         <a-alert
           v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon style="margin-bottom: 12px"
-          :message="testResult.ok ? `连接正常（写入、读取、删除测试通过，耗时 ${testResult.latencyMs} ms）` : `连接失败：${testResult.error}`"
+          :message="testResult.ok ? t('assets.storage.testOk', { ms: testResult.latencyMs }) : t('assets.storage.testFailed', { error: testResult.error ?? '' })"
         />
         <div style="display: flex; justify-content: flex-end; gap: 8px">
-          <a-button @click="storageOpen = false">取消</a-button>
-          <a-button :loading="storageTesting" @click="testStorage">测试连接</a-button>
-          <a-button type="primary" :loading="storageSaving" @click="saveStorage">保存</a-button>
+          <a-button @click="storageOpen = false">{{ t('common.cancel') }}</a-button>
+          <a-button :loading="storageTesting" @click="testStorage">{{ t('assets.storage.test') }}</a-button>
+          <a-button type="primary" :loading="storageSaving" @click="saveStorage">{{ t('common.save') }}</a-button>
         </div>
       </a-form>
     </a-spin>
@@ -413,19 +410,20 @@ async function saveStorage() {
 .search { width: 260px; max-width: 100%; }
 .type { width: 130px; }
 .dragger { display: block; margin-bottom: 16px; }
-.hint { color: #8c8c8c; font-size: 12px; }
+.hint { color: var(--cp-text-tertiary); font-size: 12px; }
+.upload-icon { font-size: 24px; color: var(--cp-primary); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-.item { border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; background: #fff; display: flex; flex-direction: column; min-width: 0; }
-.item.checked { border-color: #1677ff; box-shadow: 0 0 0 1px #1677ff; }
-.thumb { position: relative; height: 140px; background: #fafafa; display: flex; align-items: center; justify-content: center; }
+.item { border: 1px solid var(--cp-border-secondary); border-radius: 8px; overflow: hidden; background: var(--cp-bg-container); display: flex; flex-direction: column; min-width: 0; }
+.item.checked { border-color: var(--cp-primary); box-shadow: 0 0 0 1px var(--cp-primary); }
+.thumb { position: relative; height: 140px; background: var(--cp-fill-alter); display: flex; align-items: center; justify-content: center; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
-.icon { font-size: 40px; color: #bfbfbf; }
+.icon { font-size: 40px; color: var(--cp-text-quaternary); }
 .check { position: absolute; top: 8px; left: 8px; }
 .badge { position: absolute; top: 8px; right: 0; }
 .meta { padding: 8px 10px 0; min-width: 0; flex: 1; }
 .name { display: block; font-weight: 500; }
 .tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 0; }
-.actions { display: flex; justify-content: space-around; border-top: 1px solid #f0f0f0; padding: 2px 0; margin-top: 8px; }
+.actions { display: flex; justify-content: space-around; border-top: 1px solid var(--cp-border-secondary); padding: 2px 0; margin-top: 8px; }
 @media (max-width: 640px) {
   .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
   .thumb { height: 110px; }

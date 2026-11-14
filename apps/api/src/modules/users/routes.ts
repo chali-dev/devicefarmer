@@ -24,7 +24,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Locks the target row; 404 when missing. */
 async function lockUser(tx: Tx, id: string): Promise<User> {
   const [u] = await tx.select().from(schema.users).where(eq(schema.users.id, id)).for('update');
-  if (!u) throw notFound('用户不存在');
+  if (!u) throw notFound('用户不存在', 'users.not_found');
   return u;
 }
 
@@ -32,7 +32,7 @@ async function lockUser(tx: Tx, id: string): Promise<User> {
 async function assertOtherEnabledAdmin(tx: Tx, exceptId: string, msg: string) {
   const others = await tx.select({ id: schema.users.id }).from(schema.users)
     .where(and(eq(schema.users.role, 'admin'), eq(schema.users.disabled, false), ne(schema.users.id, exceptId))).for('update');
-  if (others.length === 0) throw badRequest(msg);
+  if (others.length === 0) throw badRequest(msg, 'users.last_admin');
 }
 
 /** User management + device grants. Admin only. */
@@ -53,7 +53,7 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     const passwordHash = await bcrypt.hash(req.body.password, 10);
     const [u] = await db.insert(schema.users).values({ username: req.body.username, passwordHash, role: req.body.role })
       .onConflictDoNothing().returning(publicUser);
-    if (!u) throw conflict('用户名已存在');
+    if (!u) throw conflict('用户名已存在', 'users.username_taken');
     reply.code(201);
     return { user: u };
   });
@@ -65,18 +65,18 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     },
   }, async (req) => {
     const { role, password, disabled } = req.body;
-    if (role === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update');
+    if (role === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
     const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
     return db.transaction(async (tx) => {
       const target = await lockUser(tx, req.params.id);
       const demote = role !== undefined && role !== target.role && target.role === 'admin';
       const disable = disabled === true && !target.disabled;
       if (target.builtin) {
-        if (role !== undefined && role !== target.role) throw badRequest('内置管理员的角色不可修改');
-        if (disable) throw badRequest('内置管理员不可禁用');
-        if (password) throw badRequest('内置管理员的密码只能由其本人在个人设置中修改');
+        if (role !== undefined && role !== target.role) throw badRequest('内置管理员的角色不可修改', 'users.builtin_role');
+        if (disable) throw badRequest('内置管理员不可禁用', 'users.builtin_disable');
+        if (password) throw badRequest('内置管理员的密码只能由其本人在个人设置中修改', 'users.builtin_password');
       }
-      if (target.id === req.user.id && (demote || disable)) throw badRequest('不能降级或禁用自己');
+      if (target.id === req.user.id && (demote || disable)) throw badRequest('不能降级或禁用自己', 'users.self_demote');
       if (target.role === 'admin' && !target.disabled && (demote || disable)) {
         await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
       }
@@ -92,8 +92,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   app.delete('/api/users/:id', { schema: { params: Id } }, async (req, reply) => {
     await db.transaction(async (tx) => {
       const target = await lockUser(tx, req.params.id);
-      if (target.builtin) throw badRequest('内置管理员不可删除');
-      if (target.id === req.user.id) throw badRequest('不能删除自己');
+      if (target.builtin) throw badRequest('内置管理员不可删除', 'users.builtin_delete');
+      if (target.id === req.user.id) throw badRequest('不能删除自己', 'users.self_delete');
       if (target.role === 'admin' && !target.disabled) await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
       await tx.delete(schema.users).where(eq(schema.users.id, target.id));
     });
@@ -107,10 +107,10 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     const ids = [...new Set(req.body.instanceIds)];
     await db.transaction(async (tx) => {
       const u = await lockUser(tx, req.params.id);
-      if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权');
+      if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
       if (ids.length) {
         const found = await tx.select({ id: schema.instances.id }).from(schema.instances).where(inArray(schema.instances.id, ids));
-        if (found.length !== ids.length) throw badRequest('设备不存在');
+        if (found.length !== ids.length) throw badRequest('设备不存在', 'instances.not_found');
       }
       await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.userId, u.id));
       if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((instanceId) => ({ userId: u.id, instanceId })));
@@ -125,11 +125,11 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     const ids = [...new Set(req.body.userIds)];
     await db.transaction(async (tx) => {
       const [inst] = await tx.select({ id: schema.instances.id }).from(schema.instances).where(eq(schema.instances.id, req.params.id)).for('update');
-      if (!inst) throw notFound('设备不存在');
+      if (!inst) throw notFound('设备不存在', 'instances.not_found');
       if (ids.length) {
         const found = await tx.select({ id: schema.users.id, role: schema.users.role }).from(schema.users).where(inArray(schema.users.id, ids));
-        if (found.length !== ids.length) throw badRequest('用户不存在');
-        if (found.some((u) => u.role !== 'user')) throw badRequest('管理员可访问全部设备，无需授权');
+        if (found.length !== ids.length) throw badRequest('用户不存在', 'users.not_found');
+        if (found.some((u) => u.role !== 'user')) throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
       }
       await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
       if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((userId) => ({ userId, instanceId: inst.id })));

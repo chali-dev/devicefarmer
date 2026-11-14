@@ -29,7 +29,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   // Always re-load the user so role changes / disabling take effect immediately.
   async function loadUser(sub: string): Promise<AuthUser> {
     const [u] = await db.select().from(schema.users).where(eq(schema.users.id, sub));
-    if (!u || u.disabled) throw unauthorized('account disabled or removed');
+    if (!u || u.disabled) throw unauthorized('account disabled or removed', 'auth.account_disabled');
     return { id: u.id, username: u.username, role: u.role };
   }
 
@@ -47,6 +47,6 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
 
   app.decorate('requireAdmin', async (req: FastifyRequest) => {
     await app.authenticate(req);
-    if (req.user.role !== 'admin') throw forbidden('admin only');
+    if (req.user.role !== 'admin') throw forbidden('admin only', 'auth.admin_only');
   });
 });

@@ -2,9 +2,11 @@
 import { message } from 'ant-design-vue'
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api, getToken } from '../api/client'
-import { AUDIT_ACTION_TEXT, type AuditLog } from '../api/types'
+import { useI18n } from 'vue-i18n'
+import { api, errorText, getToken, responseError } from '../api/client'
+import { auditActionText, type AuditLog } from '../api/types'
 
+const { t } = useI18n()
 const items = ref<AuditLog[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -21,7 +23,7 @@ const filters = reactive({
 const page = ref(1)
 const pageSize = ref(50)
 
-const actionLabel = (a: string) => AUDIT_ACTION_TEXT[a] ?? a
+const actionLabel = (a: string) => auditActionText(a)
 
 function query(extra: Record<string, string> = {}): string {
   const p = new URLSearchParams()
@@ -40,7 +42,7 @@ async function load() {
     const r = await api<{ items: AuditLog[]; total: number }>('GET', `/api/audit?${query({ page: String(page.value), pageSize: String(pageSize.value) })}`)
     items.value = r.items
     total.value = r.total
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 
@@ -58,7 +60,7 @@ function reset() {
 const pagination = computed(() => ({
   current: page.value, pageSize: pageSize.value, total: total.value,
   showSizeChanger: true, pageSizeOptions: ['20', '50', '100', '200'],
-  showTotal: (t: number) => `共 ${t} 条`,
+  showTotal: (n: number) => t('audit.total', { n }),
 }))
 function onTableChange(p: { current?: number; pageSize?: number }) {
   if (p.pageSize && p.pageSize !== pageSize.value) { pageSize.value = p.pageSize; page.value = 1 }
@@ -72,69 +74,66 @@ async function exportCsv() {
   try {
     const token = getToken()
     const res = await fetch(`/api/audit/export.csv?${query()}`, { headers: token ? { authorization: `Bearer ${token}` } : {} })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(data.error ?? `导出失败 (${res.status})`)
-    }
+    if (!res.ok) throw await responseError(res, 'audit.exportFailed')
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `操作日志-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
+    a.download = `${t('audit.exportFile')}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
     document.body.appendChild(a)
     a.click()
     a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
     const rows = Number(res.headers.get('x-total-rows') ?? 0)
-    if (rows >= 10000) message.warning('仅导出了最新的 10000 条，请缩小筛选范围')
-  } catch (e) { message.error((e as Error).message) }
+    if (rows >= 10000) message.warning(t('audit.exportLimited'))
+  } catch (e) { message.error(errorText(e)) }
   finally { exporting.value = false }
 }
 
 onMounted(() => { void load(); void loadActions() })
 
-const columns = [
-  { title: '时间', key: 'at', width: 170 },
-  { title: '操作人', key: 'user', width: 130 },
-  { title: '操作', key: 'action', width: 170 },
-  { title: '对象', key: 'target', ellipsis: true },
-  { title: '结果', key: 'result', width: 110 },
+const columns = computed(() => [
+  { title: t('common.time'), key: 'at', width: 170 },
+  { title: t('common.operator'), key: 'user', width: 130 },
+  { title: t('common.action'), key: 'action', width: 170 },
+  { title: t('audit.target'), key: 'target', ellipsis: true },
+  { title: t('audit.result'), key: 'result', width: 110 },
   { title: 'IP', dataIndex: 'ip', key: 'ip', width: 130 },
-]
+])
 </script>
 
 <template>
-  <a-card title="操作日志" size="small">
+  <a-card :title="t('audit.title')" size="small">
     <template #extra>
-      <a-button :loading="exporting" @click="exportCsv"><DownloadOutlined /> 导出 CSV</a-button>
+      <a-button :loading="exporting" @click="exportCsv"><DownloadOutlined /> {{ t('audit.exportCsv') }}</a-button>
     </template>
 
     <a-form layout="inline" style="margin-bottom: 12px; row-gap: 8px" @submit.prevent="search">
-      <a-form-item label="时间">
-        <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" :placeholder="['开始时间', '结束时间']" />
+      <a-form-item :label="t('common.time')">
+        <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" :placeholder="[t('audit.start'), t('audit.end')]" />
       </a-form-item>
-      <a-form-item label="操作人">
-        <a-input v-model:value="filters.user" placeholder="用户名" allow-clear style="width: 140px" />
+      <a-form-item :label="t('common.operator')">
+        <a-input v-model:value="filters.user" :placeholder="t('common.username')" allow-clear style="width: 140px" />
       </a-form-item>
-      <a-form-item label="操作">
-        <a-select v-model:value="filters.action" placeholder="全部" allow-clear show-search style="width: 200px" :filter-option="(input: string, opt: any) => `${opt.value} ${actionLabel(opt.value)}`.toLowerCase().includes(input.toLowerCase())">
+      <a-form-item :label="t('common.action')">
+        <a-select v-model:value="filters.action" :placeholder="t('common.all')" allow-clear show-search style="width: 200px" :filter-option="(input: string, opt: any) => `${opt.value} ${actionLabel(opt.value)}`.toLowerCase().includes(input.toLowerCase())">
           <a-select-option v-for="a in actions" :key="a" :value="a">{{ actionLabel(a) }}</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="结果">
+      <a-form-item :label="t('audit.result')">
         <a-select v-model:value="filters.ok" style="width: 100px">
-          <a-select-option value="">全部</a-select-option>
-          <a-select-option value="true">成功</a-select-option>
-          <a-select-option value="false">失败</a-select-option>
+          <a-select-option value="">{{ t('common.all') }}</a-select-option>
+          <a-select-option value="true">{{ t('common.success') }}</a-select-option>
+          <a-select-option value="false">{{ t('common.failed') }}</a-select-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="关键字">
-        <a-input v-model:value="filters.q" placeholder="对象 / 路径 / 用户名" allow-clear style="width: 180px" @press-enter="search" />
+      <a-form-item :label="t('audit.keyword')">
+        <a-input v-model:value="filters.q" :placeholder="t('audit.keywordPlaceholder')" allow-clear style="width: 180px" @press-enter="search" />
       </a-form-item>
       <a-form-item>
         <a-space>
-          <a-button type="primary" html-type="submit">查询</a-button>
-          <a-button @click="reset">重置</a-button>
+          <a-button type="primary" html-type="submit">{{ t('common.search') }}</a-button>
+          <a-button @click="reset">{{ t('common.reset') }}</a-button>
         </a-space>
       </a-form-item>
     </a-form>
@@ -147,7 +146,7 @@ const columns = [
         <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString() }}</template>
         <template v-else-if="column.key === 'user'">
           <span v-if="record.username">{{ record.username }}</span>
-          <a-typography-text v-else type="secondary">{{ record.userId ? '系统' : '匿名' }}</a-typography-text>
+          <a-typography-text v-else type="secondary">{{ record.userId ? t('common.system') : t('audit.anonymous') }}</a-typography-text>
         </template>
         <template v-else-if="column.key === 'action'">
           <a-tooltip :title="record.action">{{ actionLabel(record.action) }}</a-tooltip>
@@ -156,14 +155,14 @@ const columns = [
           <a-tooltip :title="`${record.method} ${record.path}`">{{ record.target || '—' }}</a-tooltip>
         </template>
         <template v-else-if="column.key === 'result'">
-          <a-tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? '成功' : '失败' }} {{ record.status }}</a-tag>
+          <a-tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? t('common.success') : t('common.failed') }} {{ record.status }}</a-tag>
         </template>
       </template>
       <template #expandedRowRender="{ record }">
         <a-descriptions size="small" :column="1">
-          <a-descriptions-item label="请求">{{ record.method }} {{ record.path }}</a-descriptions-item>
-          <a-descriptions-item v-if="record.targetId" label="对象 ID">{{ record.targetId }}</a-descriptions-item>
-          <a-descriptions-item label="详情">
+          <a-descriptions-item :label="t('audit.request')">{{ record.method }} {{ record.path }}</a-descriptions-item>
+          <a-descriptions-item v-if="record.targetId" :label="t('audit.targetId')">{{ record.targetId }}</a-descriptions-item>
+          <a-descriptions-item :label="t('audit.detail')">
             <pre v-if="record.detail" style="margin: 0; white-space: pre-wrap; word-break: break-all">{{ JSON.stringify(record.detail, null, 2) }}</pre>
             <span v-else>—</span>
           </a-descriptions-item>

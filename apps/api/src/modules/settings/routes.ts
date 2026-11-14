@@ -10,7 +10,7 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.put('/api/settings/storage', { schema: { body: StorageInput } }, async (req) => {
     const r = await saveStorageSettings(req.body);
-    if (!r.saved) throw new HttpError(400, `存储连接测试失败，未保存：${r.test.error}`);
+    if (!r.saved) throw new HttpError(400, `存储连接测试失败，未保存：${r.test.error}`, 'settings.storage_test_failed', { error: r.test.error ?? '' });
     return { storage: r.settings };
   });
 

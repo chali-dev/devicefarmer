@@ -55,7 +55,7 @@ async function resolveS3(input: z.infer<typeof S3Input>, stored: StoredStorage):
   if (!secret) {
     const prev = stored.s3;
     const same = prev && (prev.endpoint ?? '') === (input.endpoint ?? '') && prev.bucket === input.bucket && prev.accessKeyId === input.accessKeyId;
-    if (!same || !prev.secretEnc) throw badRequest('Secret Access Key is required (endpoint, bucket or access key changed)');
+    if (!same || !prev.secretEnc) throw badRequest('Secret Access Key is required (endpoint, bucket or access key changed)', 'settings.secret_required');
     secret = openSecret(prev.secretEnc);
   }
   return {

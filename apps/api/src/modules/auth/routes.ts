@@ -18,7 +18,7 @@ const profileColumns = {
 
 async function loadProfile(id: string) {
   const [u] = await db.select(profileColumns).from(schema.users).where(eq(schema.users.id, id));
-  if (!u) throw unauthorized('account disabled or removed');
+  if (!u) throw unauthorized('account disabled or removed', 'auth.account_disabled');
   return u;
 }
 
@@ -38,7 +38,7 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
         action: 'auth.login_failed', userId: u?.id ?? null, username: req.body.username.slice(0, 64), target: req.body.username.slice(0, 64), status: 401,
         detail: { reason: !u ? 'unknown_user' : u.disabled && ok ? 'disabled' : 'bad_password' },
       });
-      throw unauthorized('invalid username or password');
+      throw unauthorized('invalid username or password', 'auth.invalid_credentials');
     }
     const token = app.jwt.sign({ sub: u.id });
     auditRequest(req, { action: 'auth.login', userId: u.id, username: u.username, target: u.username, targetId: u.id, status: 200 });
@@ -73,9 +73,9 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     },
   }, async (req, reply) => {
     const [u] = await db.select({ passwordHash: schema.users.passwordHash }).from(schema.users).where(eq(schema.users.id, req.user.id));
-    if (!u) throw unauthorized('account disabled or removed');
-    if (!(await bcrypt.compare(req.body.currentPassword, u.passwordHash))) throw badRequest('当前密码不正确');
-    if (req.body.newPassword === req.body.currentPassword) throw badRequest('新密码不能与当前密码相同');
+    if (!u) throw unauthorized('account disabled or removed', 'auth.account_disabled');
+    if (!(await bcrypt.compare(req.body.currentPassword, u.passwordHash))) throw badRequest('当前密码不正确', 'auth.wrong_password');
+    if (req.body.newPassword === req.body.currentPassword) throw badRequest('新密码不能与当前密码相同', 'auth.same_password');
     const passwordHash = await bcrypt.hash(req.body.newPassword, 10);
     await db.update(schema.users).set({ passwordHash }).where(eq(schema.users.id, req.user.id));
     return reply.code(204).send();

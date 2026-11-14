@@ -25,7 +25,7 @@ export async function prepareUpload(stream: Readable & { truncated?: boolean }, 
   const lower = filename.toLowerCase();
   const isApk = lower.endsWith('.apk');
   if (!isApk && !BUNDLE_EXT.some((e) => lower.endsWith(e))) {
-    throw badRequest('支持 .apk，或拆分包 .apks / .xapk / .apkm / .zip');
+    throw badRequest('支持 .apk，或拆分包 .apks / .xapk / .apkm / .zip', 'apps.unsupported_type');
   }
   const dir = path.resolve(config.UPLOAD_DIR, randomUUID());
   await fs.promises.mkdir(dir, { recursive: true });
@@ -33,7 +33,7 @@ export async function prepareUpload(stream: Readable & { truncated?: boolean }, 
   await pipeline(stream, fs.createWriteStream(raw));
   if (stream.truncated) {
     await fs.promises.rm(dir, { recursive: true, force: true });
-    throw badRequest(`文件超过 ${config.MAX_APK_MB} MB 上限`);
+    throw badRequest(`文件超过 ${config.MAX_APK_MB} MB 上限`, 'apps.too_large', { max: config.MAX_APK_MB });
   }
   if (isApk) return { name: filename, apkPaths: [raw], sizes: [(await fs.promises.stat(raw)).size] };
 
@@ -42,12 +42,12 @@ export async function prepareUpload(stream: Readable & { truncated?: boolean }, 
     entries = unzipSync(await fs.promises.readFile(raw), { filter: (f) => f.name.toLowerCase().endsWith('.apk') && !f.name.includes('/') });
   } catch (err) {
     await fs.promises.rm(dir, { recursive: true, force: true });
-    throw badRequest(`无法解压拆分包（可能已加密或损坏）：${(err as Error).message}`);
+    throw badRequest(`无法解压拆分包（可能已加密或损坏）：${(err as Error).message}`, 'apps.bad_bundle', { error: (err as Error).message });
   }
   const names = Object.keys(entries).sort((a, b) => (a === 'base.apk' ? -1 : b === 'base.apk' ? 1 : a.localeCompare(b)));
   if (names.length === 0) {
     await fs.promises.rm(dir, { recursive: true, force: true });
-    throw badRequest('拆分包中没有找到 .apk 文件');
+    throw badRequest('拆分包中没有找到 .apk 文件', 'apps.no_apk');
   }
   const apkPaths: string[] = [];
   const sizes: number[] = [];

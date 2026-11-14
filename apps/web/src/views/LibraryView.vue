@@ -1,20 +1,22 @@
 <script setup lang="ts">
 import { message, Modal } from 'ant-design-vue'
-import { onMounted, ref } from 'vue'
-import { api } from '../api/client'
+import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { api, errorText } from '../api/client'
 import type { LibraryApp } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
+const { t } = useI18n()
 const apps = ref<LibraryApp[]>([])
 const loading = ref(false)
 
 async function load() {
   loading.value = true
   try { apps.value = (await api<{ apps: LibraryApp[] }>('GET', '/api/library')).apps }
-  catch (e) { message.error((e as Error).message) }
+  catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 onMounted(load)
@@ -23,13 +25,14 @@ const size = (a: LibraryApp) => `${(a.files.reduce((s, f) => s + f.size, 0) / 10
 
 async function setPreinstall(a: LibraryApp, v: boolean) {
   try { await api('PATCH', `/api/library/${a.id}`, { preinstall: v }); await load() }
-  catch (e) { message.error((e as Error).message) }
+  catch (e) { message.error(errorText(e)) }
 }
 
 function remove(a: LibraryApp) {
   Modal.confirm({
-    title: `从应用库删除 ${a.package} ${a.versionName ?? ''}？`, content: '不影响已安装到设备上的应用。', okType: 'danger', okText: '删除',
-    onOk: async () => { try { await api('DELETE', `/api/library/${a.id}`); await load() } catch (e) { message.error((e as Error).message) } },
+    title: t('library.confirmDelete', { name: `${a.package} ${a.versionName ?? ''}`.trim() }), content: t('library.deleteContent'), okType: 'danger',
+    okText: t('common.delete'), cancelText: t('common.cancel'),
+    onOk: async () => { try { await api('DELETE', `/api/library/${a.id}`); await load() } catch (e) { message.error(errorText(e)) } },
   })
 }
 
@@ -39,52 +42,52 @@ async function install() {
   if (!target.value || !targetIds.value.length) return
   try {
     const r = await api<{ accepted: unknown[]; skipped: { reason: string }[] }>('POST', `/api/library/${target.value.id}/install`, { instanceIds: targetIds.value })
-    message.success(`已提交 ${r.accepted.length} 个安装任务`)
-    if (r.skipped.length) message.warning(`跳过 ${r.skipped.length} 个：${[...new Set(r.skipped.map((s) => s.reason))].join('，')}`)
+    message.success(t('library.submitted', { n: r.accepted.length }))
+    if (r.skipped.length) message.warning(t('common.skipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((s) => s.reason))].join(t('common.reasonSep')) }))
     target.value = null
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) { message.error(errorText(e)) }
 }
 
-const columns = [
-  { title: '包名', dataIndex: 'package', key: 'package' },
-  { title: '版本', key: 'version', width: 200 },
-  { title: '文件', key: 'files', width: 140 },
-  { title: '来源', dataIndex: 'sourceInstance', key: 'source', width: 120 },
-  { title: '新设备预装', key: 'preinstall', width: 110 },
+const columns = computed(() => [
+  { title: t('library.package'), dataIndex: 'package', key: 'package' },
+  { title: t('library.version'), key: 'version', width: 200 },
+  { title: t('library.files'), key: 'files', width: 140 },
+  { title: t('library.source'), dataIndex: 'sourceInstance', key: 'source', width: 120 },
+  { title: t('library.preinstall'), key: 'preinstall', width: 110 },
   { title: '', key: 'ops', width: 160, align: 'right' as const },
-]
+])
 </script>
 
 <template>
-  <a-card title="应用库" size="small">
-    <template #extra><a-button size="small" :loading="loading" @click="load">刷新</a-button></template>
+  <a-card :title="t('library.title')" size="small">
+    <template #extra><a-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</a-button></template>
     <a-alert type="info" show-icon style="margin-bottom: 12px">
-      <template #message>如何添加 YouTube / Instagram / Chrome</template>
-      <template #description>
-        在任一设备登录 Google 账号，从 Play 商店安装应用；然后在该设备详情页「应用管理」中点击「加入应用库」。
-        之后可一键安装到其他设备，或开启「新设备预装」让新建设备自动安装（不需要再登录 Play 商店）。
-        更新：在来源设备更新后再次「加入应用库」，新版本会自动接管预装。
-      </template>
+      <template #message>{{ t('library.howTo') }}</template>
+      <template #description>{{ t('library.howToBody') }}</template>
     </a-alert>
     <a-table :data-source="apps" :columns="columns" row-key="id" size="middle" :loading="loading" :pagination="false" :scroll="{ x: 820 }"
-      :locale="{ emptyText: '应用库为空' }">
+      :locale="{ emptyText: t('library.empty') }">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span style="color: #8c8c8c">({{ record.versionCode }})</span></template>
-        <template v-else-if="column.key === 'files'">{{ record.files.length }} 个 APK · {{ size(record) }}</template>
+        <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span class="muted">({{ record.versionCode }})</span></template>
+        <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
         <template v-else-if="column.key === 'preinstall'">
           <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
-          <span v-else>{{ record.preinstall ? '是' : '—' }}</span>
+          <span v-else>{{ record.preinstall ? t('common.yes') : '—' }}</span>
         </template>
         <template v-else-if="column.key === 'ops'">
-          <a-button type="link" size="small" @click="target = record; targetIds = []">安装到设备</a-button>
-          <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">删除</a-button>
+          <a-button type="link" size="small" @click="target = record; targetIds = []">{{ t('library.installTo') }}</a-button>
+          <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
         </template>
       </template>
     </a-table>
   </a-card>
 
-  <a-modal :open="!!target" :title="`安装 ${target?.package} 到设备`" ok-text="安装" @ok="install" @cancel="target = null">
-    <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" placeholder="选择运行中的设备"
+  <a-modal :open="!!target" :title="t('library.installTitle', { pkg: target?.package ?? '' })" :ok-text="t('common.install')" :cancel-text="t('common.cancel')" @ok="install" @cancel="target = null">
+    <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" :placeholder="t('library.pickRunning')"
       :options="store.list.filter((i) => i.status === 'running').map((i) => ({ value: i.id, label: i.name }))" />
   </a-modal>
 </template>
+
+<style scoped>
+.muted { color: var(--cp-text-tertiary); }
+</style>

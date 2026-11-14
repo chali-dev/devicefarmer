@@ -29,8 +29,8 @@ export async function createAsset(stream: Readable & { truncated?: boolean }, fi
     const hash = createHash('sha256');
     let size = 0;
     await pipeline(stream, new Transform({ transform(chunk: Buffer, _e, cb) { hash.update(chunk); size += chunk.length; cb(null, chunk); } }), fs.createWriteStream(tmp));
-    if (stream.truncated) throw new HttpError(413, `file too large (max ${config.ASSET_MAX_MB} MB)`);
-    if (size === 0) throw new HttpError(400, 'empty file');
+    if (stream.truncated) throw new HttpError(413, `file too large (max ${config.ASSET_MAX_MB} MB)`, 'assets.too_large', { max: config.ASSET_MAX_MB });
+    if (size === 0) throw new HttpError(400, 'empty file', 'assets.empty_file');
     const now = new Date();
     const key = `assets/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${randomUUID()}`;
     try {
@@ -51,7 +51,7 @@ export async function openAsset(asset: Asset): Promise<Readable> {
   try {
     return await (await storageFor(asset.storage)).getStream(asset.key);
   } catch (err) {
-    throw new HttpError(502, `素材文件无法从存储（${asset.storage}）读取：${describeError(err)}`);
+    throw new HttpError(502, `素材文件无法从存储（${asset.storage}）读取：${describeError(err)}`, 'assets.storage_read_failed', { storage: asset.storage, error: describeError(err) });
   }
 }
 
@@ -60,7 +60,7 @@ export async function removeAsset(asset: Asset): Promise<void> {
   try {
     await (await storageFor(asset.storage)).delete(asset.key);
   } catch (err) {
-    throw new HttpError(502, `素材文件无法从存储（${asset.storage}）删除：${describeError(err)}`);
+    throw new HttpError(502, `素材文件无法从存储（${asset.storage}）删除：${describeError(err)}`, 'assets.storage_delete_failed', { storage: asset.storage, error: describeError(err) });
   }
   await db.delete(schema.assets).where(eq(schema.assets.id, asset.id));
 }

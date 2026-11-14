@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { getToken, wsUrl } from '../api/client'
+import { useI18n } from 'vue-i18n'
+import { codeText, getToken, wsUrl } from '../api/client'
 
 const props = defineProps<{ instanceId: string; width: number; height: number }>()
 const emit = defineEmits<{ (e: 'state', s: PlayerState): void }>()
+const { t } = useI18n()
 
 export type PlayerState = 'connecting' | 'live' | 'closed' | 'error'
 
@@ -65,12 +67,12 @@ function connect() {
     if (msg.type === 'ready') { setState('live'); if (secureView.value) send({ type: 'screenSource', source: 'secure' }) }
     else if (msg.type === 'screenSource') {
       secureView.value = msg.source === 'secure'
-      if (msg.reason) void import('ant-design-vue').then(({ message: m }) => m.warning(msg.reason))
+      if (msg.reason) void import('ant-design-vue').then(({ message: m }) => m.warning(codeText(msg.code, msg.params, msg.reason)))
     }
     else if (msg.type === 'error') message.value = msg.message
   }
   ws.onclose = (e) => {
-    if (state.value !== 'closed') setState(e.code === 1000 ? 'closed' : 'error', e.reason || message.value || '连接已断开')
+    if (state.value !== 'closed') setState(e.code === 1000 ? 'closed' : 'error', e.reason || message.value || t('player.connectionLost'))
   }
   fpsTimer = setInterval(() => { fps.value = frames; frames = 0 }, 1000)
 }
@@ -178,22 +180,22 @@ watch(() => props.instanceId, connect)
         @contextmenu.prevent="key('back')"
       />
       <div v-if="state !== 'live'" class="overlay">
-        <a-spin v-if="state === 'connecting'" tip="连接中…" />
+        <a-spin v-if="state === 'connecting'" :tip="t('player.connecting')" />
         <template v-else>
-          <div class="overlay-msg">{{ message || '已断开' }}</div>
-          <a-button size="small" type="primary" @click="connect">重新连接</a-button>
+          <div class="overlay-msg">{{ message || t('player.disconnected') }}</div>
+          <a-button size="small" type="primary" @click="connect">{{ t('player.reconnect') }}</a-button>
         </template>
       </div>
     </div>
     <div class="nav">
-      <a-tooltip title="返回（也可右键画面）"><a-button shape="circle" @click="key('back')">◁</a-button></a-tooltip>
-      <a-tooltip title="主页"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
-      <a-tooltip title="最近任务"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
+      <a-tooltip :title="t('player.back')"><a-button shape="circle" @click="key('back')">◁</a-button></a-tooltip>
+      <a-tooltip :title="t('player.home')"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
+      <a-tooltip :title="t('player.recents')"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
       <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
-      <a-tooltip title="显示受保护画面（如 Google 登录页）。关闭时使用按需刷新的普通画面流，更省资源。">
+      <a-tooltip :title="t('player.secureTip')">
         <a-switch size="small" :checked="secureView" :disabled="state !== 'live'" @change="(v: any) => setSecureView(v)" />
       </a-tooltip>
-      <span class="fps" style="width: auto">受保护画面</span>
+      <span class="fps" style="width: auto">{{ t('player.secure') }}</span>
     </div>
   </div>
 </template>
@@ -205,12 +207,12 @@ watch(() => props.instanceId, connect)
   background: #000; border-radius: 18px; overflow: hidden; border: 6px solid #1f1f1f;
 }
 canvas { width: 100%; height: 100%; display: block; touch-action: none; outline: none; cursor: pointer; }
-canvas:focus-visible { box-shadow: inset 0 0 0 2px #1677ff; }
+canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--cp-primary); }
 .overlay {
   position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px;
   align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); color: #fff; padding: 16px; text-align: center;
 }
 .overlay-msg { font-size: 13px; }
 .nav { display: flex; gap: 16px; align-items: center; }
-.fps { width: 52px; color: #8c8c8c; font-size: 12px; font-variant-numeric: tabular-nums; }
+.fps { width: 52px; color: var(--cp-text-tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
 </style>

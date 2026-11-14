@@ -116,7 +116,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
               secureStream = await adb.openSecureCapture(adbPort, path.resolve(config.CAPTURE_DEX_PATH));
             } catch (err) {
               req.log.warn({ err, instanceId }, 'secure capture failed');
-              send({ type: 'screenSource', source: 'stf', reason: `受保护画面不可用：${(err as Error).message}` });
+              send({ type: 'screenSource', source: 'stf', reason: `受保护画面不可用：${(err as Error).message}`, code: 'player.secure_unavailable', params: { error: (err as Error).message } });
               return;
             }
             let buf: Buffer = Buffer.alloc(0);
@@ -131,7 +131,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
                 if (source === 'secure' && client.readyState === WebSocket.OPEN && client.bufferedAmount < MAX_BUFFERED) client.send(frame, { binary: true });
               }
             });
-            secureStream.on('close', () => { if (source === 'secure') { source = 'stf'; send({ type: 'screenSource', source: 'stf', reason: 'secure capture ended' }); } });
+            secureStream.on('close', () => { if (source === 'secure') { source = 'stf'; send({ type: 'screenSource', source: 'stf', reason: 'secure capture ended', code: 'player.secure_ended' }); } });
             secureStream.on('error', () => undefined);
             source = 'secure';
           } else {

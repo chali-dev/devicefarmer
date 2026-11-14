@@ -21,8 +21,8 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/library/import', { schema: { body: z.object({ instanceId: z.string().uuid(), package: Pkg }) } }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.body.instanceId, 'operate');
     const inst = await getInstance(req.body.instanceId);
-    if (!inst) throw notFound('instance not found');
-    if (inst.status !== 'running') throw conflict('instance is not running');
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     const taskId = await enqueue('import-app', inst, req.user.id, { package: req.body.package }, `导入应用库 ${req.body.package}`);
     reply.code(202);
     return { taskId };
@@ -31,9 +31,9 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch('/api/library/:id', {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ preinstall: z.boolean() }) },
   }, async (req) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改应用库预装设置');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改应用库预装设置', 'library.preinstall_admin_only');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
-    if (!row) throw notFound('library app not found');
+    if (!row) throw notFound('library app not found', 'library.not_found');
     // Only one version of a package is preinstalled.
     if (req.body.preinstall) await db.update(schema.libraryApps).set({ preinstall: false }).where(eq(schema.libraryApps.package, row.package));
     const [updated] = await db.update(schema.libraryApps).set({ preinstall: req.body.preinstall }).where(eq(schema.libraryApps.id, row.id)).returning();
@@ -44,7 +44,7 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(100) }) },
   }, async (req, reply) => {
     const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
-    if (!lib) throw notFound('library app not found');
+    if (!lib) throw notFound('library app not found', 'library.not_found');
     for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
     const accepted: { instanceId: string; taskId: string }[] = [];
@@ -58,9 +58,9 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/library/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以从应用库删除');
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以从应用库删除', 'library.delete_admin_only');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
-    if (!row) throw notFound('library app not found');
+    if (!row) throw notFound('library app not found', 'library.not_found');
     await removeLibraryApp(row);
     reply.code(204);
   });
