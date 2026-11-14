@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import path from 'node:path';
 import WebSocket from 'ws';
 import { z } from 'zod';
 import { config } from '../../config.js';
@@ -21,6 +22,8 @@ const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('paste'), text: z.string().max(10_000) }),
   // Secure input (passwords): per-character key events, never via the device clipboard.
   z.object({ type: z.literal('typeSecure'), text: z.string().min(1).max(256) }),
+  // 'secure': frames from the system-level capture helper, which also shows FLAG_SECURE windows.
+  z.object({ type: z.literal('screenSource'), source: z.enum(['stf', 'secure']) }),
 ]);
 
 const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
@@ -44,6 +47,9 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
     const instanceId = req.params.id;
     let upstream: WebSocket | null = null;
     let channel: string | null = null;
+    let adbPort = 0;
+    let source: 'stf' | 'secure' = 'stf';
+    let secureStream: import('node:stream').Duplex | null = null;
     let authed = false;
     const send = (msg: object) => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(msg)); };
     const fail = (message: string, code = 4000) => { send({ type: 'error', message }); client.close(code, message.slice(0, 100)); };
@@ -67,6 +73,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           const dev = await stf.getDevice(serial);
           if (!dev?.channel || !dev.display?.url) return fail('device not ready in STF', 4009);
           channel = dev.channel;
+          adbPort = inst.adbPort;
           authed = true;
           clearTimeout(authTimer);
           req.log.info({ instanceId, user: user.username }, 'control session opened');
@@ -81,7 +88,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           upstream.on('message', (data, bin) => {
             if (client.readyState !== WebSocket.OPEN) return;
             if (bin) {
-              if (client.bufferedAmount < MAX_BUFFERED) client.send(data, { binary: true });
+              if (source === 'stf' && client.bufferedAmount < MAX_BUFFERED) client.send(data, { binary: true });
             } else {
               const text = data.toString();
               if (text.startsWith('start ')) {
@@ -102,6 +109,32 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         if (msg.type === 'touch') await stf.touch(channel!, msg.ev);
         else if (msg.type === 'key') await stf.key(channel!, msg.action, msg.key);
         else if (msg.type === 'paste') { await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
+        else if (msg.type === 'screenSource') {
+          if (msg.source === source) return;
+          if (msg.source === 'secure') {
+            secureStream = await adb.openSecureCapture(adbPort, path.resolve(config.CAPTURE_DEX_PATH));
+            let buf: Buffer = Buffer.alloc(0);
+            secureStream.on('data', (chunk: Buffer) => {
+              buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+              while (buf.length >= 4) {
+                const len = buf.readUInt32BE(0);
+                if (len > 20 * 1024 * 1024) { secureStream?.destroy(); return; } // corrupt stream
+                if (buf.length < 4 + len) break;
+                const frame = buf.subarray(4, 4 + len);
+                buf = buf.subarray(4 + len);
+                if (source === 'secure' && client.readyState === WebSocket.OPEN && client.bufferedAmount < MAX_BUFFERED) client.send(frame, { binary: true });
+              }
+            });
+            secureStream.on('close', () => { if (source === 'secure') { source = 'stf'; send({ type: 'screenSource', source: 'stf', reason: 'secure capture ended' }); } });
+            secureStream.on('error', () => undefined);
+            source = 'secure';
+          } else {
+            source = 'stf';
+            secureStream?.destroy();
+            secureStream = null;
+          }
+          send({ type: 'screenSource', source });
+        }
         else if (msg.type === 'typeSecure') {
           // Content is never logged or persisted; only forwarded to the device.
           for (const ch of msg.text) {
@@ -118,6 +151,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
     client.on('close', () => {
       clearTimeout(authTimer);
       upstream?.close();
+      secureStream?.destroy();
     });
   });
 };

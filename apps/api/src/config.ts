@@ -37,6 +37,8 @@ const Env = z.object({
   WEB_ORIGIN: z.string().default('http://localhost:5173'),
   MAX_APK_MB: z.coerce.number().int().default(500),
   UPLOAD_DIR: z.string().default('var/uploads'),
+  /** Secure-window capture helper (infra/device-tools/capture/build.sh) */
+  CAPTURE_DEX_PATH: z.string().default('../../infra/device-tools/capture/out/cpcapture.dex'),
   /** App library storage (imported official APKs). Not cleaned up automatically. */
   LIBRARY_DIR: z.string().default('var/library'),
 });

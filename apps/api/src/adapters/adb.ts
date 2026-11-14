@@ -129,6 +129,29 @@ export class AdbAdapter {
     await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}'`);
   }
 
+  /**
+   * Starts the secure capture helper (CpCapture via app_process as the system user) if it
+   * isn't listening yet, and returns a stream of [int32 len][JPEG] frames.
+   * Requires a userdebug build with `su` (redroid).
+   */
+  async openSecureCapture(adbPort: number, dexPath: string, fps = 10, quality = 70): Promise<import('node:stream').Duplex> {
+    const SOCK = 'cloudphone-capture';
+    const listening = async () => (await this.shell(adbPort, `grep -c '@${SOCK}$' /proc/net/unix`)).trim() !== '0';
+    if (!(await listening())) {
+      await this.push(adbPort, dexPath, '/data/local/tmp/cpcapture.dex');
+      await this.shell(adbPort, 'chmod 644 /data/local/tmp/cpcapture.dex');
+      // Detached (all fds redirected, or `adb shell` waits for it); runs as uid 1000 so
+      // SurfaceFlinger honours captureSecureLayers.
+      await this.shell(adbPort, `su 1000 sh -c 'CLASSPATH=/data/local/tmp/cpcapture.dex nohup app_process / CpCapture ${SOCK} ${fps} ${quality} </dev/null >/dev/null 2>&1 &'`);
+      const deadline = Date.now() + 10_000;
+      while (!(await listening())) {
+        if (Date.now() > deadline) throw new Error('secure capture helper did not start');
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+    return this.client.getDevice(this.serialFor(adbPort)).openLocal(`localabstract:${SOCK}`);
+  }
+
   /** Version of an installed package. */
   async packageVersion(adbPort: number, pkg: string): Promise<{ versionName: string | null; versionCode: string } | null> {
     const out = await this.shell(adbPort, `dumpsys package ${pkg} | grep -m2 -E "versionCode=|versionName="`);

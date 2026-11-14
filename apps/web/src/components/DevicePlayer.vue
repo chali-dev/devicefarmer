@@ -11,6 +11,12 @@ const canvas = ref<HTMLCanvasElement | null>(null)
 const state = ref<PlayerState>('connecting')
 const message = ref('')
 const fps = ref(0)
+/** Show FLAG_SECURE windows (e.g. Google sign-in) via the system capture helper. */
+const secureView = ref(false)
+function setSecureView(v: boolean) {
+  secureView.value = v
+  send({ type: 'screenSource', source: v ? 'secure' : 'stf' })
+}
 let ws: WebSocket | null = null
 let frames = 0
 let fpsTimer: ReturnType<typeof setInterval> | null = null
@@ -56,7 +62,8 @@ function connect() {
   ws.onmessage = (m) => {
     if (m.data instanceof Blob) { void draw(m.data); return }
     const msg = JSON.parse(m.data)
-    if (msg.type === 'ready') setState('live')
+    if (msg.type === 'ready') { setState('live'); if (secureView.value) send({ type: 'screenSource', source: 'secure' }) }
+    else if (msg.type === 'screenSource') secureView.value = msg.source === 'secure'
     else if (msg.type === 'error') message.value = msg.message
   }
   ws.onclose = (e) => {
@@ -180,6 +187,10 @@ watch(() => props.instanceId, connect)
       <a-tooltip title="主页"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
       <a-tooltip title="最近任务"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
       <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
+      <a-tooltip title="显示受保护画面（如 Google 登录页）。关闭时使用按需刷新的普通画面流，更省资源。">
+        <a-switch size="small" :checked="secureView" :disabled="state !== 'live'" @change="(v: any) => setSecureView(v)" />
+      </a-tooltip>
+      <span class="fps" style="width: auto">受保护画面</span>
     </div>
   </div>
 </template>
