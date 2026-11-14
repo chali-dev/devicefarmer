@@ -56,6 +56,25 @@ const Env = z.object({
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
   /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
   YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
+  /**
+   * Official platform integrations (modules/platforms). OAuth redirect URIs are
+   * `${PUBLIC_BASE_URL}/api/platforms/<platform>/callback` (default: WEB_ORIGIN, whose /api is the API).
+   * Meta and TikTok only accept https redirect URIs, Google also allows http://localhost.
+   * The endpoints are overridable for a compatible test endpoint only.
+   */
+  PUBLIC_BASE_URL: z.string().url().optional(),
+  GOOGLE_OAUTH_AUTH_URL: z.string().url().default('https://accounts.google.com/o/oauth2/v2/auth'),
+  GOOGLE_OAUTH_TOKEN_URL: z.string().url().default('https://oauth2.googleapis.com/token'),
+  GOOGLE_OAUTH_REVOKE_URL: z.string().url().default('https://oauth2.googleapis.com/revoke'),
+  YOUTUBE_UPLOAD_BASE: z.string().url().default('https://www.googleapis.com/upload/youtube/v3'),
+  INSTAGRAM_AUTH_URL: z.string().url().default('https://www.instagram.com/oauth/authorize'),
+  INSTAGRAM_TOKEN_URL: z.string().url().default('https://api.instagram.com/oauth/access_token'),
+  /** Unversioned = the app's default Graph API version; set e.g. https://graph.instagram.com/v24.0 to pin one. */
+  INSTAGRAM_GRAPH_BASE: z.string().url().default('https://graph.instagram.com'),
+  TIKTOK_AUTH_URL: z.string().url().default('https://www.tiktok.com/v2/auth/authorize/'),
+  TIKTOK_API_BASE: z.string().url().default('https://open.tiktokapis.com'),
+  /** Lifetime of presigned media URLs handed to platforms that fetch media by URL (Instagram). */
+  PLATFORM_MEDIA_URL_TTL_SEC: z.coerce.number().int().min(300).max(7 * 86400).default(3600),
   /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
   TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });

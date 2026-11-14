@@ -248,7 +248,7 @@ export interface SocialAccountLog {
   at: string
   actorId: string | null
   actorName: string | null
-  action: 'create' | 'update' | 'status' | 'checked' | 'link' | 'unlink'
+  action: 'create' | 'update' | 'status' | 'checked' | 'link' | 'unlink' | 'connect' | 'disconnect'
   field: string | null
   fromValue: string | null
   toValue: string | null
@@ -290,3 +290,45 @@ export function compactNumber(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—'
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
+
+// ---------------------------------------------------------------- official platform integrations (平台接入)
+export interface PlatformCapabilities {
+  publishVideo: boolean
+  publishImage: boolean
+  publishCarousel: boolean
+  draftOnly: boolean
+  needsPublicMediaUrl: boolean
+  commentsRead: boolean
+  commentsReply: boolean
+  profileStats: boolean
+}
+export interface PlatformInfo { id: string; name: string; configured: boolean; capabilities: PlatformCapabilities; scopes: string[]; pkce: boolean }
+export interface PlatformAppSettings {
+  platform: string
+  name: string
+  clientId: string | null
+  clientSecretSet: boolean
+  configured: boolean
+  redirectUri: string
+  options: { directPost?: boolean }
+  scopes: string[]
+  updatedAt: string | null
+}
+export type PlatformConnectionStatus = 'connected' | 'expired' | 'revoked' | 'error'
+export interface PlatformConnection {
+  id: string
+  socialAccountId: string
+  userId: string
+  platform: string
+  externalAccountId: string | null
+  externalAccountName: string | null
+  scopes: string[]
+  status: PlatformConnectionStatus
+  expiresAt: string | null
+  lastError: string | null
+  lastErrorCode: string | null
+  connectedAt: string
+  lastRefreshedAt: string | null
+  lastCheckedAt: string | null
+}
+export const CONNECTION_COLOR: Record<PlatformConnectionStatus, string> = { connected: 'green', expired: 'orange', revoked: 'red', error: 'red' }

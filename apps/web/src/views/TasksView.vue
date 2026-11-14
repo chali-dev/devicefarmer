@@ -115,6 +115,7 @@ function owner(task: Task) {
 function targetLink(task: Task): string | null {
   if (task.instanceId && store.byId.has(task.instanceId)) return `/instances/${task.instanceId}`
   if (task.refType === 'media') return '/media'
+  if (task.refType === 'social-account') return '/social'
   return null
 }
 

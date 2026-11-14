@@ -80,6 +80,12 @@ async function mediaNames(list: string[]): Promise<string | null> {
   return names.length > 5 ? `${names.slice(0, 5).join(', ')} 等 ${names.length} 个` : names.join(', ');
 }
 
+async function socialAccountName(id: unknown): Promise<string | null> {
+  if (typeof id !== 'string' || !UUID.test(id)) return null;
+  const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
+  return r ? `${r.platform} @${r.handle}` : null;
+}
+
 const proxyText = (b: Body) => (typeof b.host === 'string' ? `${String(b.type)}://${b.host}:${String(b.port)}` : null);
 
 /** `${METHOD} ${routePattern}` → action. Unknown routes fall back to `${method} ${routePattern}`. */
@@ -233,6 +239,22 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
+  // platform integrations (平台接入). Client secrets and tokens are never logged; the OAuth callback
+  // (a GET) is recorded explicitly by its route as platform.connect / platform.connect_failed.
+  'PUT /api/settings/platforms/:platform': {
+    action: 'platform.credentials_update', target: ({ params }) => String(params.platform),
+    detail: ({ body }) => ({
+      clientId: typeof body.clientId === 'string' ? body.clientId : body.clientId === null ? null : undefined,
+      confidential: typeof body.clientSecret === 'string' ? 'set' : body.clientSecret === null ? 'cleared' : undefined, options: body.options,
+    }),
+  },
+  'POST /api/platforms/:platform/connect': {
+    action: 'platform.connect_start', target: ({ body }) => socialAccountName(body.socialAccountId),
+    targetId: ({ body }) => (typeof body.socialAccountId === 'string' ? body.socialAccountId : null),
+    detail: ({ params }) => ({ platform: params.platform }),
+  },
+  'DELETE /api/platforms/accounts/:id/connection': { action: 'platform.disconnect' },
+  'POST /api/platforms/accounts/:id/check': { action: 'platform.account_check' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
@@ -273,7 +295,7 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
       .from(schema.proxies).where(eq(schema.proxies.id, id));
     return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
   }
-  if (pattern.startsWith('/api/social/accounts/:id')) {
+  if (pattern.startsWith('/api/social/accounts/:id') || pattern.startsWith('/api/platforms/accounts/:id')) {
     const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
     return r ? `${r.platform} @${r.handle}` : null;
   }
