@@ -17,13 +17,15 @@ import { recordAudit } from './audit.js';
  * Not recorded by the hook (method + route pattern):
  * - POST /api/auth/login: recorded explicitly by the login route (auth.login / auth.login_failed).
  * - read-like POSTs that only query/probe and change nothing the user configured:
- *   proxy egress check, Google health check, storage connection test.
+ *   proxy egress checks (device and pool), Google health check, storage connection test.
  * Also skipped: non-mutating methods (GET/HEAD/OPTIONS), WebSocket upgrades, requests outside
  * /api/ and requests that matched no route (404 without a route pattern).
  */
 export const AUDIT_EXCLUDED = new Set([
   'POST /api/auth/login',
   'POST /api/instances/:id/proxy/check',
+  'POST /api/proxies/:id/check',
+  'POST /api/proxies/check',
   'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
 ]);
@@ -32,7 +34,11 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface Upload { filename: string; size: number; instanceIds?: string[] }
-interface AuditCtx { target?: string | null; upload?: { filename: string; mimetype: string; stream: { bytesRead?: number }; fields: Record<string, unknown> }; error?: string }
+interface AuditCtx {
+  target?: string | null;
+  /** Server-side facts merged into `detail` by the route itself (e.g. auto-assigned proxy ids). Never secrets. */
+  extra?: Record<string, unknown>;
+  upload?: { filename: string; mimetype: string; stream: { bytesRead?: number }; fields: Record<string, unknown> }; error?: string }
 
 declare module 'fastify' {
   interface FastifyRequest { audit: AuditCtx | null }
@@ -72,6 +78,8 @@ async function assetNames(list: string[]): Promise<string | null> {
   return names.length > 5 ? `${names.slice(0, 5).join(', ')} 等 ${names.length} 个` : names.join(', ');
 }
 
+const proxyText = (b: Body) => (typeof b.host === 'string' ? `${String(b.type)}://${b.host}:${String(b.port)}` : null);
+
 /** `${METHOD} ${routePattern}` → action. Unknown routes fall back to `${method} ${routePattern}`. */
 export const ACTIONS: Record<string, ActionSpec> = {
   // auth (self-service)
@@ -103,8 +111,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
       profile: body.profile, count: body.count, namePrefix: body.namePrefix,
       width: body.width, height: body.height, dpi: body.dpi, memoryMb: body.memoryMb,
       locale: body.locale, timezone: body.timezone, deviceName: body.deviceName,
-      proxies: body.proxies ? (body.proxies as unknown[]).length : body.proxy ? 1 : 0,
-      force: body.force, allowShared: body.allowShared,
+      proxyMode: body.proxyMode, force: body.force,
     }),
   },
   'POST /api/instances/actions': {
@@ -115,14 +122,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PATCH /api/instances/:id/settings': {
     action: 'device.settings', detail: ({ body }) => ({ locale: body.locale, timezone: body.timezone, deviceName: body.deviceName }),
   },
-  'PUT /api/instances/:id/proxy': {
-    action: 'proxy.set',
-    detail: ({ body }) => {
-      const p = body.proxy as { type?: string; host?: string; port?: number; username?: string } | null | undefined;
-      // Proxy username/password are never stored; only whether auth is configured.
-      return { proxy: p ? { type: p.type, host: p.host, port: p.port, auth: Boolean(p.username) } : null, allowShared: body.allowShared };
-    },
-  },
+  'PUT /api/instances/:id/proxy': { action: 'proxy.set', detail: ({ body }) => ({ proxyId: body.proxyId ?? null }) },
   'POST /api/instances/:id/apk': { action: 'app.install', detail: fileDetail },
   'POST /api/instances/:id/files': { action: 'file.upload', detail: fileDetail },
   // apps
@@ -157,6 +157,20 @@ export const ACTIONS: Record<string, ActionSpec> = {
       assets: ids(body.assetIds).length, devices: ids(body.instanceIds).length,
     }),
   },
+  // proxy pool (代理管理). Usernames/passwords are never stored in the log.
+  'POST /api/proxies': {
+    action: 'proxy.create', target: ({ body }) => proxyText(body),
+    detail: ({ body }) => ({ type: body.type, host: body.host, port: body.port, auth: Boolean(body.username), label: body.label, provider: body.provider }),
+  },
+  'PUT /api/proxies/:id': {
+    action: 'proxy.update',
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined && k !== 'password' && k !== 'username'), authChanged: body.password !== undefined || body.username !== undefined || undefined }),
+  },
+  'DELETE /api/proxies/:id': { action: 'proxy.delete' },
+  'POST /api/proxies/import': {
+    action: 'proxy.import',
+    detail: ({ body }) => ({ defaultType: body.defaultType, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
+  },
   // settings
   'PUT /api/settings/storage': {
     action: 'storage.update',
@@ -182,6 +196,11 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   if (pattern.startsWith('/api/assets/:id')) {
     const [r] = await db.select({ name: schema.assets.name }).from(schema.assets).where(eq(schema.assets.id, id));
     return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/proxies/:id')) {
+    const [r] = await db.select({ label: schema.proxies.label, type: schema.proxies.type, host: schema.proxies.host, port: schema.proxies.port })
+      .from(schema.proxies).where(eq(schema.proxies.id, id));
+    return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
   }
   if (pattern.startsWith('/api/library/:id')) {
     const [r] = await db.select({ pkg: schema.libraryApps.package, v: schema.libraryApps.versionName, c: schema.libraryApps.versionCode })
@@ -224,7 +243,7 @@ async function buildEntry(req: FastifyRequest, key: string, status: number) {
   if (target === undefined && id) target = await resolveTarget(pattern, id);
 
   // Unknown routes: no body summary at all, only the route params.
-  const detail: Record<string, unknown> = { ...(spec ? spec.detail?.(c) : { params }) };
+  const detail: Record<string, unknown> = { ...(spec ? spec.detail?.(c) : { params }), ...ctx.extra };
   if (status >= 400 && ctx.error) detail.error = ctx.error.slice(0, 200);
 
   return {

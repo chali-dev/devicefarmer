@@ -6,6 +6,7 @@ import { enqueue } from './queue.js';
 import { getAsset, withAssetFile } from '../assets/assets.js';
 import { mediaTarget } from '../../adapters/adb.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
+import { resolveProxyConfig } from '../proxies/pool.js';
 
 const BOOT_TIMEOUT_MS = 180_000;
 const STF_TIMEOUT_MS = 90_000;
@@ -59,7 +60,7 @@ async function detachDevice(inst: Instance): Promise<void> {
 
 /** Creates the network sidecar (owns netns + adb port) and the engine container joined to it. */
 async function createContainers(inst: Instance): Promise<Instance> {
-  const netContainerId = await network.create({ instanceId: inst.id, name: inst.name, adbPort: inst.adbPort }, inst.proxy ?? null);
+  const netContainerId = await network.create({ instanceId: inst.id, name: inst.name, adbPort: inst.adbPort }, await resolveProxyConfig(inst.proxyId));
   await updateInstance(inst.id, { netContainerId });
   const { containerId } = await runtimeFor(inst.engine).create({
     instanceId: inst.id, name: inst.name, image: inst.image, adbPort: inst.adbPort, spec: inst.spec, netContainerId,
@@ -80,7 +81,7 @@ async function stopContainers(inst: Instance): Promise<void> {
 }
 
 async function refreshProxyStatus(inst: Instance): Promise<void> {
-  if (!inst.proxy || !inst.netContainerId) { await updateInstance(inst.id, { proxyStatus: null }); return; }
+  if (!inst.proxyId || !inst.netContainerId) { await updateInstance(inst.id, { proxyStatus: null }); return; }
   await updateInstance(inst.id, { proxyStatus: await network.check(inst.netContainerId) });
 }
 
@@ -145,7 +146,8 @@ export async function opDelete(id: string): Promise<void> {
 }
 
 /**
- * Applies the instance's proxy setting (already saved on the row).
+ * Applies the instance's bound pool proxy (`proxy_id`, already saved on the row; the pool entry's
+ * current host/credentials are read and decrypted here, so it also re-applies edited pool entries).
  * With a sidecar: rewrite config + nft rules, hot reload; Android keeps running.
  * Legacy instance (no sidecar): recreate the engine container joined to a new sidecar
  * on the same /data, restarting it if it was running.
@@ -153,7 +155,7 @@ export async function opDelete(id: string): Promise<void> {
 export async function opSetProxy(id: string): Promise<void> {
   let inst = await mustGet(id);
   if (inst.netContainerId) {
-    await network.apply(inst.name, inst.netContainerId, inst.proxy ?? null);
+    await network.apply(inst.name, inst.netContainerId, await resolveProxyConfig(inst.proxyId));
   } else {
     const wasRunning = inst.status === 'running';
     await updateInstance(id, { status: 'restarting', lastError: null });

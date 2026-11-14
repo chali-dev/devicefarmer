@@ -23,7 +23,8 @@ export interface Instance {
   lastError: string | null
   google: GoogleHealth | null
   netContainerId: string | null
-  proxy: { type: 'socks5' | 'http'; host: string; port: number; username?: string; hasPassword: boolean } | null
+  /** Bound pool proxy (non-secret fields only). */
+  proxy: InstanceProxy | null
   proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null } | null
   spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
   createdAt: string
@@ -50,7 +51,31 @@ export interface LibraryApp {
   files: { name: string; size: number; sha256: string }[]; preinstall: boolean; sourceInstance: string | null; createdAt: string
 }
 
-export interface ProxyInput { type: 'socks5' | 'http'; host: string; port: number; username?: string; password?: string }
+export type ProxyType = 'socks5' | 'http'
+export type ProxyStatus = 'unchecked' | 'ok' | 'failed'
+export const PROXY_STATUS_COLOR: Record<ProxyStatus, string> = { unchecked: 'default', ok: 'success', failed: 'error' }
+
+/** What any user who can see a device knows about its proxy (no credentials). */
+export interface InstanceProxy {
+  id: string; label: string | null; type: ProxyType; host: string; port: number
+  country: string | null; city: string | null; hasAuth: boolean; status: ProxyStatus
+}
+
+export interface ProxyCheck { at: string; ok: boolean; egressIp: string | null; latencyMs: number | null; country: string | null; city: string | null; error: string | null }
+
+/** Pool entry (admin API). The password is write-only: only `hasPassword` is returned. */
+export interface PoolProxy {
+  id: string; label: string | null; type: ProxyType; host: string; port: number; username: string | null; hasPassword: boolean
+  country: string | null; region: string | null; city: string | null; provider: string | null; notes: string | null
+  status: ProxyStatus; lastCheck: ProxyCheck | null; createdAt: string; updatedAt: string
+  boundInstance: { id: string; name: string } | null
+}
+
+export interface ProxyImportLine { line: number; input: string; status: 'created' | 'duplicate' | 'invalid'; id?: string; error?: string }
+export interface ProxyImportResult { dryRun: boolean; results: ProxyImportLine[]; created: number; duplicate: number; invalid: number }
+
+/** Short display of a device's / pool proxy. */
+export const proxyLabel = (p: { label: string | null; host: string; port: number }) => p.label || `${p.host}:${p.port}`
 
 export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
 

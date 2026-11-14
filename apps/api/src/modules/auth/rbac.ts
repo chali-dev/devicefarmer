@@ -8,7 +8,8 @@ export interface AuthUser { id: string; username: string; role: Role }
 /**
  * view    – see status
  * control – remote control (screen/touch/keys/paste/secure input), screenshot, file upload to the phone
- * operate – lifecycle (start/stop/restart), app install/uninstall, proxy, device settings, pushes
+ * operate – lifecycle (start/stop/restart), app install/uninstall, device settings, pushes
+ *           (binding a pool proxy is admin-only, see modules/proxies)
  *
  * Both roles may do all three on the devices they can see: `admin` sees every device,
  * `user` only devices granted in `instance_grants`. Creating/deleting devices, user/grant

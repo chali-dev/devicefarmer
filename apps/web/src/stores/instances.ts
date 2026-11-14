@@ -76,7 +76,7 @@ export const useInstancesStore = defineStore('instances', () => {
     tasks.value = []
   }
 
-  async function create(body: { profile: string; count: number; namePrefix: string; width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }) {
+  async function create(body: { proxyMode: 'auto' | 'none' | 'pick'; proxyIds?: string[]; profile: string; count: number; namePrefix: string; width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }) {
     const r = await api<{ instances: Instance[]; taskIds: string[] }>('POST', '/api/instances', body)
     r.instances.forEach((i) => byId.value.set(i.id, i))
     return r

@@ -74,7 +74,7 @@ export function startMonitor(log: FastifyBaseLogger, intervalMs = 5000): () => v
           if (inst.containerId !== c.containerId) patch.containerId = c.containerId;
           // Google services health for GApps profiles, at most once a minute.
           const due = !inst.google || Date.now() - Date.parse(inst.google.checkedAt) > GOOGLE_CHECK_MS;
-          const proxyDue = inst.proxy && inst.netContainerId && (!inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > PROXY_CHECK_MS);
+          const proxyDue = inst.proxyId && inst.netContainerId && (!inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > PROXY_CHECK_MS);
           if (proxyDue && booted) patch.proxyStatus = await network.check(inst.netContainerId!);
           if (getProfile(inst.profile)?.gapps && booted && adbState === 'device' && due) {
             patch.google = await checkGoogleHealth(inst.adbPort).catch((err) => { log.warn({ err, instance: inst.name }, 'google health failed'); return inst.google; });

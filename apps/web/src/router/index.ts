@@ -14,6 +14,7 @@ const router = createRouter({
         { path: 'instances/:id', name: 'instance', component: () => import('../views/InstanceDetailView.vue'), props: true },
         { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
         { path: 'assets', name: 'assets', component: () => import('../views/AssetsView.vue') },
+        { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },

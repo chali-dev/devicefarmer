@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', ['admin', 'user']);
 
@@ -36,8 +36,12 @@ export const instances = pgTable('instances', {
   containerId: text('container_id'),
   /** Network sidecar (sing-box) owning the instance's network namespace; null = legacy direct networking */
   netContainerId: text('net_container_id'),
-  /** Per-instance upstream proxy. Password never leaves the API (see publicInstance). */
-  proxy: jsonb('proxy').$type<ProxyConfig>(),
+  /**
+   * Bound proxy from the pool (至多绑定一台设备: unique). The sidecar config is built from the pool entry,
+   * password decrypted only at apply time. Deleting a bound proxy is refused (restrict).
+   */
+  proxyId: uuid('proxy_id').unique('instances_proxy_id_unique').references((): AnyPgColumn => proxies.id, { onDelete: 'restrict' }),
+  /** Egress as seen from inside the device's netns (monitor / per-device check). */
   proxyStatus: jsonb('proxy_status').$type<ProxyStatus>(),
   status: instanceStatusEnum('status').notNull().default('creating'),
   adbState: text('adb_state'),
@@ -51,6 +55,32 @@ export const instances = pgTable('instances', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 });
+
+/**
+ * Static residential proxy pool (代理管理, admin-managed). The password is AES-256-GCM encrypted
+ * (lib/secret-box.ts) and write-only. `lastCheck` is the check from the API host through the proxy.
+ */
+export const proxies = pgTable('proxies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  label: text('label'),
+  type: text('type', { enum: ['socks5', 'http'] }).notNull(),
+  host: text('host').notNull(),
+  port: integer('port').notNull(),
+  username: text('username'),
+  passwordEnc: text('password_enc'),
+  country: text('country'),
+  region: text('region'),
+  city: text('city'),
+  provider: text('provider'),
+  notes: text('notes'),
+  status: text('status', { enum: ['unchecked', 'ok', 'failed'] }).notNull().default('unchecked'),
+  lastCheck: jsonb('last_check').$type<ProxyCheck>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('proxies_endpoint_unique').on(t.type, sql`lower(${t.host})`, t.port, sql`coalesce(${t.username}, '')`),
+  index('proxies_status_idx').on(t.status),
+]);
 
 export const instanceGrants = pgTable('instance_grants', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -142,6 +172,7 @@ export interface InstanceSpec {
   deviceName?: string;
 }
 
+/** Resolved upstream proxy handed to the sidecar (runtime only, never stored in this form). */
 export interface ProxyConfig {
   type: 'socks5' | 'http';
   host: string;
@@ -159,6 +190,17 @@ export interface ProxyStatus {
   error: string | null;
 }
 
+/** Result of checking a pool proxy from the API host (egress IP + geo through the proxy). */
+export interface ProxyCheck {
+  at: string;
+  ok: boolean;
+  egressIp: string | null;
+  latencyMs: number | null;
+  country: string | null;
+  city: string | null;
+  error: string | null;
+}
+
 export interface GoogleHealth {
   checkedAt: string;
   gms: { installed: boolean; version: string | null; running: boolean };
@@ -173,6 +215,7 @@ export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
+export type PoolProxy = typeof proxies.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type Role = User['role'];

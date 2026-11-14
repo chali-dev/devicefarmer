@@ -26,9 +26,11 @@
     "fastify-plugin": "^6.0.1",
     "fastify-type-provider-zod": "^7.0.0",
     "fflate": "^0.8.3",
+    "https-proxy-agent": "^9.1.0",
     "ioredis": "^6.0.0",
     "postgres": "^4.1.1",
     "socket.io-client": "^4.8.4",
+    "socks-proxy-agent": "^10.1.0",
     "ws": "^8.23.0",
     "zod": "^4.6.7"
   },
