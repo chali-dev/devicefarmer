@@ -3,11 +3,12 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { updateInstance, updateTask } from './repo.js';
 import { processMedia } from '../media/media.js';
+import { refreshTrackedAccount } from '../tracked/tracked.js';
 import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opPushAsset, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
 
 export type DeviceOpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy' | 'import-app' | 'push-asset';
 /** Ops that need no device (instanceId absent): background jobs of other modules. */
-export type TaskOpName = 'media-process';
+export type TaskOpName = 'media-process' | 'tracked-refresh';
 export type OpName = DeviceOpName | TaskOpName;
 export interface OpJob {
   taskId: string; op: OpName;
@@ -19,6 +20,8 @@ export interface OpJob {
   package?: string;
   /** push-asset, media-process: media_assets.id */
   assetId?: string;
+  /** tracked-refresh: tracked_accounts.id */
+  trackedAccountId?: string;
 }
 /** Optional task metadata: what the task works on (e.g. refType 'media' + asset id). */
 export interface TaskRef { refType?: string; refId?: string }
@@ -58,6 +61,7 @@ export async function enqueueTask(op: TaskOpName, extra: Partial<OpJob>, userId:
 async function run(job: Job<OpJob>): Promise<void> {
   const { op } = job.data;
   if (op === 'media-process') return processMedia(job.data.assetId!);
+  if (op === 'tracked-refresh') { await refreshTrackedAccount(job.data.trackedAccountId!); return; }
   const instanceId = job.data.instanceId;
   if (!instanceId) throw new Error(`${op}: missing instanceId`);
   switch (op) {
