@@ -1,0 +1,41 @@
+import { z } from 'zod';
+
+const Env = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  API_PORT: z.coerce.number().int().default(3000),
+  DATABASE_URL: z.string().url(),
+  REDIS_URL: z.string().url(),
+  JWT_SECRET: z.string().min(16),
+  ADMIN_USERNAME: z.string().default('admin'),
+  ADMIN_PASSWORD: z.string().min(8).optional(),
+
+  DOCKER_HOST: z.string().default('unix:///var/run/docker.sock'),
+  REDROID_IMAGE: z.string().default('redroid/redroid:12.0.0_64only-latest'),
+  /** Redroid 13 + official MindTheGapps, built locally (see infra/redroid-gapps). */
+  REDROID_GAPPS_IMAGE: z.string().default('cloudphone/redroid:13-mtg-20231025'),
+  /** Image produced by google/android-emulator-container-scripts (google_apis_playstore). Unset = profile unavailable. */
+  EMULATOR_IMAGE: z.string().optional(),
+  /** Where the emulator image keeps its AVD (persisted per instance). */
+  EMULATOR_DATA_PATH: z.string().default('/android-home'),
+  /** Private key of the STF adb server, handed to Play Store emulator images (ADBKEY). */
+  EMULATOR_ADBKEY_PATH: z.string().optional(),
+  INSTANCE_DATA_ROOT: z.string().default('/srv/cloudphone/instances'),
+  ADB_PORT_MIN: z.coerce.number().int().default(5555),
+  ADB_PORT_MAX: z.coerce.number().int().default(5604),
+  ADB_DEVICE_HOST: z.string().default('host.docker.internal'),
+
+  STF_URL: z.string().url(),
+  STF_WS_URL: z.string().url(),
+  STF_ADB_HOST: z.string().default('127.0.0.1'),
+  STF_ADB_PORT: z.coerce.number().int().default(5037),
+  STF_SERVICE_EMAIL: z.string().email(),
+  STF_SERVICE_NAME: z.string().default('cloudphone-svc'),
+  /** Rewrites the host of STF screen URLs when the API can't reach STF's public host (e.g. inside compose). */
+  STF_SCREEN_HOST: z.string().optional(),
+  WEB_ORIGIN: z.string().default('http://localhost:5173'),
+  MAX_APK_MB: z.coerce.number().int().default(500),
+  UPLOAD_DIR: z.string().default('var/uploads'),
+});
+
+export const config = Env.parse(process.env);
+export type Config = typeof config;

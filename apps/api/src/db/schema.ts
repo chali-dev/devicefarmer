@@ -1,0 +1,88 @@
+import { sql } from 'drizzle-orm';
+import { boolean, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+
+export const roleEnum = pgEnum('role', ['admin', 'operator', 'viewer']);
+
+/**
+ * Instance lifecycle (Docker) and device state (adb/STF) are tracked separately:
+ * `status` is what the platform is doing/observed at container level,
+ * `adbState` / `bootCompleted` / `stfReady` are device-level observations.
+ */
+export const instanceStatusEnum = pgEnum('instance_status', [
+  'creating', 'starting', 'running', 'stopping', 'stopped', 'restarting', 'deleting', 'error',
+]);
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  username: text('username').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: roleEnum('role').notNull().default('viewer'),
+  disabled: boolean('disabled').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const instances = pgTable('instances', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull().unique(),
+  engine: text('engine', { enum: ['redroid', 'emulator'] }).notNull().default('redroid'),
+  /** Image profile id (see profiles.ts), e.g. redroid-13-gapps */
+  profile: text('profile').notNull().default('redroid-12'),
+  image: text('image').notNull(),
+  adbPort: integer('adb_port').notNull().unique(),
+  containerId: text('container_id'),
+  status: instanceStatusEnum('status').notNull().default('creating'),
+  adbState: text('adb_state'),
+  bootCompleted: boolean('boot_completed').notNull().default(false),
+  stfReady: boolean('stf_ready').notNull().default(false),
+  lastError: text('last_error'),
+  /** Latest Google services health snapshot (no account identifiers stored). */
+  google: jsonb('google').$type<GoogleHealth>(),
+  spec: jsonb('spec').$type<InstanceSpec>().notNull(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+});
+
+export const instanceGrants = pgTable('instance_grants', {
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  instanceId: uuid('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
+}, (t) => [primaryKey({ columns: [t.userId, t.instanceId] })]);
+
+export const tasks = pgTable('tasks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  type: text('type').notNull(),
+  instanceId: uuid('instance_id'),
+  instanceName: text('instance_name'),
+  status: text('status', { enum: ['queued', 'running', 'succeeded', 'failed'] }).notNull().default('queued'),
+  error: text('error'),
+  createdBy: uuid('created_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+});
+
+export interface InstanceSpec {
+  width: number;
+  height: number;
+  dpi: number;
+  /** MiB, applied as a container memory limit when set */
+  memoryMb?: number;
+  /** Android system settings (see device-settings.ts); persisted in /data */
+  locale?: string;
+  timezone?: string;
+  deviceName?: string;
+}
+
+export interface GoogleHealth {
+  checkedAt: string;
+  gms: { installed: boolean; version: string | null; running: boolean };
+  gsf: { installed: boolean; gsfId: string | null };
+  playStore: { installed: boolean; version: string | null };
+  youtube: { installed: boolean; version: string | null; playing: boolean };
+  /** Number of Google accounts on the device; emails are never read or stored. */
+  googleAccounts: number;
+}
+
+export type User = typeof users.$inferSelect;
+export type Instance = typeof instances.$inferSelect;
+export type Task = typeof tasks.$inferSelect;
+export type Role = User['role'];

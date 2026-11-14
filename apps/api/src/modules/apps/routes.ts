@@ -1,0 +1,65 @@
+import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
+import { inArray } from 'drizzle-orm';
+import { z } from 'zod';
+import { db, schema } from '../../db/index.js';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { adb } from '../../services.js';
+import { assertInstanceAccess, roleAllows } from '../auth/rbac.js';
+import { enqueue } from '../instances/queue.js';
+import { getInstance } from '../instances/repo.js';
+import { prepareUpload } from './package.js';
+
+const Ids = z.array(z.string().uuid()).min(1).max(100);
+
+/** App management: list, batch install/update (APK or split bundle), batch uninstall. */
+export const appRoutes: FastifyPluginAsyncZod = async (app) => {
+  app.addHook('preHandler', app.authenticate);
+
+  app.get('/api/instances/:id/apps', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
+    await assertInstanceAccess(req.user, req.params.id, 'view');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found');
+    if (inst.status !== 'running') throw conflict('instance is not running');
+    return { apps: await adb.listApps(inst.adbPort) };
+  });
+
+  /**
+   * Batch install/update. multipart: field `instanceIds` (JSON array) BEFORE the file part.
+   * The upload is stored once and installed on every target as its own task (installs with -r = update).
+   */
+  app.post('/api/apps/install', async (req, reply) => {
+    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot install apps');
+    const file = await req.file();
+    if (!file) throw badRequest('missing file');
+    const rawIds = (file.fields.instanceIds as { value?: string } | undefined)?.value;
+    let ids: string[];
+    try { ids = Ids.parse(JSON.parse(rawIds ?? '[]')); } catch { file.file.resume(); throw badRequest('instanceIds must be a JSON array of ids, sent before the file'); }
+    for (const id of ids) await assertInstanceAccess(req.user, id, 'operate');
+    const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
+    const prepared = await prepareUpload(file.file, file.filename);
+    const accepted: { instanceId: string; taskId: string }[] = [];
+    const skipped: { instanceId: string; reason: string }[] = [];
+    for (const r of rows) {
+      if (r.status !== 'running') { skipped.push({ instanceId: r.id, reason: `not running (${r.status})` }); continue; }
+      accepted.push({ instanceId: r.id, taskId: await enqueue('install-apk', r, req.user.id, { apkPaths: prepared.apkPaths, sizes: prepared.sizes }, prepared.name) });
+    }
+    reply.code(202);
+    return { filename: prepared.name, apks: prepared.apkPaths.length, accepted, skipped };
+  });
+
+  app.post('/api/apps/uninstall', {
+    schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
+  }, async (req, reply) => {
+    if (!roleAllows(req.user.role, 'operate')) throw forbidden('your role cannot uninstall apps');
+    for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
+    const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
+    const accepted: { instanceId: string; taskId: string }[] = [];
+    const skipped: { instanceId: string; reason: string }[] = [];
+    for (const r of rows) {
+      if (r.status !== 'running') { skipped.push({ instanceId: r.id, reason: `not running (${r.status})` }); continue; }
+      accepted.push({ instanceId: r.id, taskId: await enqueue('uninstall-app', r, req.user.id, { package: req.body.package }, req.body.package) });
+    }
+    reply.code(202);
+    return { accepted, skipped };
+  });
+};

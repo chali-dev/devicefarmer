@@ -1,0 +1,21 @@
+# Dev dependencies for the control plane (macOS). STF lives in infra/stf.
+name: cloudphone-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: cloudphone
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cloudphone}
+      POSTGRES_DB: cloudphone
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pg-data:/var/lib/postgresql/data]
+    restart: unless-stopped
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    ports: ["127.0.0.1:6380:6379"]
+    volumes: [redis-data:/data]
+    restart: unless-stopped
+volumes:
+  pg-data:
+  redis-data:

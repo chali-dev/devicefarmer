@@ -1,0 +1,45 @@
+# DeviceFarmer STF as an independent service. The Node API talks to it through
+# its REST API (via StfAdapter). Android devices (redroid) are attached by
+# running `adb connect <host>:<port>` against the shared adb server.
+name: cloudphone-stf
+
+services:
+  rethinkdb:
+    image: rethinkdb:2.4.4-bookworm-slim
+    command: rethinkdb --bind all --cache-size 256
+    volumes:
+      - rethinkdb-data:/data
+    restart: unless-stopped
+
+  adb:
+    build: ./adb
+    image: cloudphone/adb:local
+    ports:
+      - "127.0.0.1:5037:5037"
+    restart: unless-stopped
+
+  stf:
+    image: devicefarmer/stf:3.9.0
+    depends_on: [rethinkdb, adb]
+    environment:
+      RETHINKDB_PORT_28015_TCP: tcp://rethinkdb:28015
+      # The platform's service account is STF's admin (no device quota limit).
+      # Must match STF_SERVICE_EMAIL / STF_SERVICE_NAME in the API .env.
+      STF_ADMIN_EMAIL: ${STF_ADMIN_EMAIL:-svc-cloudphone@cloudphone.local}
+      STF_ADMIN_NAME: ${STF_ADMIN_NAME:-cloudphone-svc}
+    command: >
+      stf local
+      --public-ip ${STF_PUBLIC_IP:-localhost}
+      --port 7100
+      --adb-host adb --adb-port 5037
+      --allow-remote
+      --provider-min-port 7400 --provider-max-port 7420
+      --auth-secret ${STF_AUTH_SECRET:-dev-only-change-me}
+    ports:
+      - "7100:7100"
+      - "7110:7110" # websocket unit; the UI connects to http://<public-ip>:7110 directly
+      - "7400-7420:7400-7420"
+    restart: unless-stopped
+
+volumes:
+  rethinkdb-data:
