@@ -59,9 +59,12 @@ class Share {
   /** Last position per pointer, for 'up' events (the client sends no coordinates there). */
   pointers = new Map<number, { x: number; y: number }>();
 
-  constructor(readonly adbPort: number) {
+  constructor(readonly adbPort: number, external: boolean) {
+    // External phones stream through a narrow tunnel (BitBrowser: ~1-2 Mb/s): a bit rate above what it
+    // carries queues up in the tunnel and the picture lags further and further behind.
     this.server = new ScrcpyServer(adb, adbPort, path.resolve(config.SCRCPY_SERVER_PATH), {
-      maxSize: config.SCRCPY_MAX_SIZE, maxFps: config.SCRCPY_MAX_FPS, bitRate: config.SCRCPY_BIT_RATE,
+      maxSize: config.SCRCPY_MAX_SIZE, maxFps: config.SCRCPY_MAX_FPS,
+      bitRate: external ? config.SCRCPY_BIT_RATE_EXTERNAL : config.SCRCPY_BIT_RATE,
     });
     this.server.on('packet', (p: VideoPacket) => this.onPacket(p));
     this.server.on('clipboard', (text: string) => this.onClipboard(text));
@@ -153,11 +156,16 @@ function frame(p: VideoPacket): Buffer {
   return b;
 }
 
+/** Whether a scrcpy server is currently streaming this device (its link is busy with video). */
+export function scrcpyActive(adbPort: number): boolean {
+  return shares.has(adbPort);
+}
+
 /** Joins (starting if needed) the device's scrcpy session. Rejects if the server can't be started. */
-export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer): Promise<ScrcpyHandle> {
+export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external = false): Promise<ScrcpyHandle> {
   let share = shares.get(adbPort);
   if (!share || share.server.closed) {
-    share = new Share(adbPort);
+    share = new Share(adbPort, external);
     shares.set(adbPort, share);
     share.ready.catch(() => { if (shares.get(adbPort) === share) shares.delete(adbPort); });
   }

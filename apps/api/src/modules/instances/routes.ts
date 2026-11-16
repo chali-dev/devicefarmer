@@ -20,16 +20,26 @@ import { checkGoogleHealth } from '../google/health.js';
 import { DeviceSettings, readDeviceSettings } from './device-settings.js';
 import { prepareUpload } from '../apps/package.js';
 import { PLATFORM_IDS } from '../social/platforms.js';
+import { scrcpyActive } from '../control/scrcpy-hub.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 
-/** Grid thumbnails: one screencap per device per TTL, shared by every viewer (and by concurrent requests). */
+/**
+ * Grid thumbnails: one screencap per device per TTL, shared by every viewer (and by concurrent requests).
+ * `screencap` is a full-resolution PNG (~1.1 MB on a 1080x2374 phone), which over an external phone's
+ * tunnel takes 15-30 s and starves its remote-control stream; so external phones get a long TTL, and no
+ * phone is screencapped while scrcpy streams it (the last thumbnail is served instead).
+ */
 const THUMB_TTL_MS = 3000;
+const THUMB_TTL_EXTERNAL_MS = 60_000;
 const THUMB_WIDTH = 270;
 const thumbs = new Map<string, { at: number; jpeg: Promise<Buffer> }>();
-function thumbnail(instanceId: string, adbPort: number): Promise<Buffer> {
+function thumbnail(inst: Instance): Promise<Buffer> | null {
+  const { id: instanceId, adbPort } = inst;
   const hit = thumbs.get(instanceId);
-  if (hit && Date.now() - hit.at < THUMB_TTL_MS) return hit.jpeg;
+  const ttl = inst.sourceId ? THUMB_TTL_EXTERNAL_MS : THUMB_TTL_MS;
+  if (hit && (Date.now() - hit.at < ttl || scrcpyActive(adbPort))) return hit.jpeg;
+  if (scrcpyActive(adbPort)) return null;
   const jpeg = adb.screenshot(adbPort).then((png) => sharp(png).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer());
   thumbs.set(instanceId, { at: Date.now(), jpeg });
   jpeg.catch(() => { if (thumbs.get(instanceId)?.jpeg === jpeg) thumbs.delete(instanceId); });
@@ -256,7 +266,9 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!inst) throw notFound('instance not found', 'instances.not_found');
     if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     if (req.query.thumb) {
-      const jpeg = await thumbnail(inst.id, inst.adbPort);
+      const pending = thumbnail(inst);
+      if (!pending) return reply.code(204).send();
+      const jpeg = await pending;
       return reply.header('content-type', 'image/jpeg').header('cache-control', 'private, no-store').send(jpeg);
     }
     const png = await adb.screenshot(inst.adbPort);

@@ -6,8 +6,15 @@ import { getToken } from '../api/client'
  * Live-ish screen preview for the cloud phone grid: a small JPEG refreshed every few seconds, only
  * while the card is on screen and the tab is visible (the API shares one screencap per device).
  */
-const props = defineProps<{ instanceId: string; running: boolean; width: number; height: number }>()
+const props = defineProps<{
+  instanceId: string; running: boolean; width: number; height: number
+  /** Stop refreshing (e.g. while a control drawer is open: a screencap competes with the live stream). */
+  paused?: boolean
+  /** Phones behind a tunnel (external sources): a screencap costs ~1 MB there, so refresh rarely. */
+  slow?: boolean
+}>()
 const REFRESH_MS = 5000
+const SLOW_REFRESH_MS = 60_000
 
 const el = ref<HTMLElement | null>(null)
 const src = ref<string | null>(null)
@@ -24,19 +31,19 @@ function setSrc(url: string | null) {
 
 async function load() {
   timer = null
-  if (!props.running || denied.value || !visible || document.hidden || busy) return schedule()
+  if (!props.running || props.paused || denied.value || !visible || document.hidden || busy) return schedule()
   busy = true
   try {
     const res = await fetch(`/api/instances/${props.instanceId}/screenshot?thumb=1`, { headers: { authorization: `Bearer ${getToken()}` } })
     if (res.status === 403) denied.value = true // no `control` grant: keep the placeholder
-    else if (res.ok) setSrc(URL.createObjectURL(await res.blob()))
+    else if (res.status === 200) setSrc(URL.createObjectURL(await res.blob())) // 204: streaming now, keep the last one
   } catch { /* keep the last frame */ }
   busy = false
   schedule()
 }
 function schedule() {
   if (timer) clearTimeout(timer)
-  timer = setTimeout(load, REFRESH_MS)
+  timer = setTimeout(load, props.slow ? SLOW_REFRESH_MS : REFRESH_MS)
 }
 function now() { if (timer) clearTimeout(timer); void load() }
 function onVisibility() { if (!document.hidden) now() }
@@ -57,6 +64,7 @@ onBeforeUnmount(() => {
   setSrc(null)
 })
 watch(() => props.running, (r) => { if (r) now(); else setSrc(null) })
+watch(() => props.paused, (p) => { if (!p) schedule() })
 </script>
 
 <template>

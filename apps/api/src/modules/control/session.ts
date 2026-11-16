@@ -54,6 +54,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
     let upstream: WebSocket | null = null;
     let channel: string | null = null;
     let adbPort = 0;
+    let external = false;
     let source: 'stf' | 'secure' | 'scrcpy' = 'stf';
     let secureStream: import('node:stream').Duplex | null = null;
     let scrcpy: ScrcpyHandle | null = null;
@@ -97,6 +98,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           if (!dev?.channel || !dev.display?.url) return fail('device not ready in STF', 4009);
           channel = dev.channel;
           adbPort = inst.adbPort;
+          external = !!inst.sourceId;
           authed = true;
           clearTimeout(authTimer);
           req.log.info({ instanceId, user: user.username }, 'control session opened');
@@ -150,7 +152,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
             const prev = source;
             source = 'scrcpy'; // stop relaying JPEGs while it starts; the canvas keeps the last frame
             try {
-              scrcpy = await joinScrcpy(adbPort, viewer);
+              scrcpy = await joinScrcpy(adbPort, viewer, external);
             } catch (err) {
               req.log.warn({ err, instanceId }, 'scrcpy start failed');
               source = prev;

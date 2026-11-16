@@ -529,7 +529,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             </a-dropdown>
           </div>
           <div class="card-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
-            <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :width="i.spec.width" :height="i.spec.height">
+            <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :paused="phoneOpen" :slow="!!i.sourceId" :width="i.spec.width" :height="i.spec.height">
               <StatusTag :status="i.status" />
               <span v-if="i.lastError" class="err" :title="i.lastError">{{ i.lastError }}</span>
             </DeviceThumb>
