@@ -9,10 +9,13 @@
  *   (set-proxy then only writes the sidecar config, which is verified to carry the decrypted password).
  *   Device-level traffic/kill-switch is covered by scripts/proxy-check.ts.
  * - Requires that the pool has no free usable proxies other than the ones it creates (concurrency test).
+ * - Also covers the IP kind (static/dynamic/mobile) and POST /api/proxies/test (unsaved config probe). The parts of
+ *   the test-endpoint check that need a working proxy are reported as SKIP when the test proxy is unreachable.
  * Usage (from apps/api, API running): npx tsx --env-file=<env> scripts/proxy-pool-check.ts
  */
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import net from 'node:net';
 import { inArray, like, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { assignFreeProxies, countFreeUsable, isUniqueViolation } from '../src/modules/proxies/pool.js';
@@ -40,6 +43,14 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
   for (;;) { const v = await fn().catch(() => null); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${label}`); await new Promise((r) => setTimeout(r, 1000)); }
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const skipped: string[] = [];
+const skip = (name: string, why: string) => { skipped.push(name); console.log(`- SKIP ${name} — ${why}`); };
+const reachable = (host: string, port: number) => new Promise<boolean>((resolve) => {
+  const s = net.connect({ host, port, timeout: 3000 }, () => { s.destroy(); resolve(true); });
+  s.on('error', () => resolve(false)).on('timeout', () => { s.destroy(); resolve(false); });
+});
+const PROXY_UP = await reachable(PHOST, Number(PPORT));
+if (!PROXY_UP) console.log(`! test proxy ${PHOST}:${PPORT} is not reachable: checks that need a working proxy will fail or be skipped`);
 
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const waitTask = (taskId: string) => waitFor('task', async () => {
@@ -61,13 +72,26 @@ try {
   check('create pool proxy (201)', r.status === 201, r.text.slice(0, 120));
   const goodId: string = r.body.proxy.id; created.push(goodId);
   check('response never contains the password', !r.text.includes(PW) && !('password' in r.body.proxy) && !('passwordEnc' in r.body.proxy) && r.body.proxy.hasPassword === true);
+  check('kind defaults to static', r.body.proxy.kind === 'static', r.body.proxy.kind);
   r = await http('POST', '/api/proxies', T, { ...good, label: 'dup', password: 'other' });
   check('duplicate endpoint (type, host, port, user) refused 409', r.status === 409 && r.body.code === 'proxy.duplicate', r.body?.code);
-  r = await http('POST', '/api/proxies', T, { ...good, label: 'pp-test-http', type: 'http' });
+  r = await http('POST', '/api/proxies', T, { ...good, label: 'pp-test-http', type: 'http', kind: 'dynamic' });
   check('same host/port as HTTP is a different pool entry', r.status === 201);
+  check('create with kind dynamic', r.body.proxy?.kind === 'dynamic', r.body.proxy?.kind);
   const httpId: string = r.body.proxy.id; created.push(httpId);
   r = await http('POST', '/api/proxies', T, { label: 'pp-test-bad', type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser-wrong', password: 'wrong-pass' });
   const badId: string = r.body.proxy.id; created.push(badId);
+  r = await http('POST', '/api/proxies', T, { type: 'socks5', host: '192.0.2.1', port: 1080, kind: 'satellite' });
+  check('unknown kind rejected 400', r.status === 400);
+  r = await http('PUT', `/api/proxies/${badId}`, T, { kind: 'mobile' });
+  check('update kind → mobile (no re-apply, status kept)', r.status === 200 && r.body.proxy.kind === 'mobile' && r.body.taskId === null && r.body.proxy.status === 'unchecked');
+  r = await http('GET', '/api/proxies?kind=mobile', T);
+  check('list filter kind=mobile', r.status === 200 && r.body.proxies.some((p: any) => p.id === badId) && r.body.proxies.every((p: any) => p.kind === 'mobile'));
+  check('list returns per-kind counts (unfiltered)', typeof r.body.kindCounts?.static === 'number' && r.body.kindCounts.static >= 1 && r.body.kindCounts.dynamic >= 1 && r.body.kindCounts.mobile >= 1, JSON.stringify(r.body.kindCounts));
+  r = await http('GET', '/api/proxies', T);
+  check('list without kind returns every kind, each with its kind', ['static', 'dynamic', 'mobile'].every((k) => r.body.proxies.some((p: any) => p.kind === k)));
+  r = await http('GET', `/api/proxies?q=${encodeURIComponent('pp-test-http, pp-test-bad')}`, T);
+  check('search q: comma-separated terms match any', r.body.proxies.length === 2 && r.body.proxies.some((p: any) => p.id === httpId) && r.body.proxies.some((p: any) => p.id === badId), String(r.body.proxies?.length));
   r = await http('POST', '/api/proxies', T, { type: 'socks5', host: 'bad host!', port: 1080 });
   check('invalid host rejected 400', r.status === 400);
   r = await http('POST', '/api/proxies', T, { type: 'socks5', host: '192.0.2.1', port: 1080, password: 'x' });
@@ -98,6 +122,40 @@ try {
   const audit0 = await sqlClient`select count(*)::int as n from audit_logs where path like '/api/proxies%check'`;
   check('checks are not audit-logged (probe)', audit0[0]!.n === 0);
 
+  // ---------------------------------------------------------------- POST /api/proxies/test (unsaved config, stores nothing)
+  const TEST_PW = `pp-test-secret-${randomBytes(4).toString('hex')}`;
+  const countBefore = (await http('GET', '/api/proxies', T)).body.proxies.length;
+  r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: '127.0.0.1', port: 1, username: 'nobody', password: TEST_PW });
+  check('test: closed port → ok=false with error, no egress IP', r.status === 200 && r.body.result?.ok === false && !r.body.result.egressIp && !!r.body.result.error, r.body.result?.error?.slice(0, 80) ?? r.text.slice(0, 120));
+  check('test: response never contains the password', !r.text.includes(TEST_PW) && !('password' in (r.body.result ?? {})));
+  r = await http('POST', '/api/proxies/test', T, { type: 'http', host: '192.0.2.1', port: 70000 });
+  check('test: invalid port rejected 400', r.status === 400);
+  r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: '127.0.0.1', port: 1, password: 'x' });
+  check('test: password without username → 400 proxy.password_without_username', r.status === 400 && r.body.code === 'proxy.password_without_username');
+  r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: '127.0.0.1', port: 1, id: '00000000-0000-4000-8000-000000000000' });
+  check('test: unknown id → 404 proxy.not_found', r.status === 404 && r.body.code === 'proxy.not_found');
+  if (PROXY_UP) {
+    r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser', password: PW });
+    check('test: working config → ok + egress IP + latency', r.body.result?.ok === true && !!r.body.result.egressIp && typeof r.body.result.latencyMs === 'number' && !r.text.includes(PW),
+      `egress=${mask(r.body.result?.egressIp)} ${r.body.result?.latencyMs}ms`);
+    r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser', password: '', id: goodId });
+    check('test: editing with empty password falls back to the stored one', r.body.result?.ok === true && !r.text.includes(PW));
+    r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser', password: '' });
+    check('test: empty password without id is not filled in → fails', r.body.result?.ok === false);
+    r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser-wrong', password: 'wrong-pass' });
+    check('test: wrong credentials → ok=false', r.body.result?.ok === false && !!r.body.result.error);
+  } else {
+    for (const n of ['test: working config → ok + egress IP', 'test: empty password + id falls back to the stored one', 'test: empty password without id fails', 'test: wrong credentials → ok=false']) {
+      skip(n, `test proxy ${PHOST}:${PPORT} unreachable`);
+    }
+  }
+  check('test stores nothing', (await http('GET', '/api/proxies', T)).body.proxies.length === countBefore);
+  await sleep(500); // audit writes are fire-and-forget
+  const auditTest = await sqlClient`select count(*)::int as n from audit_logs where path like '/api/proxies/test%'`;
+  const leakTest = await sqlClient`select (select count(*) from audit_logs where audit_logs::text like ${'%' + TEST_PW + '%'})::int
+    + (select count(*) from proxies where proxies::text like ${'%' + TEST_PW + '%'})::int + (select count(*) from task_logs where task_logs::text like ${'%' + TEST_PW + '%'})::int as n`;
+  check('test endpoint not audit-logged, password stored nowhere', auditTest[0]!.n === 0 && leakTest[0]!.n === 0, `audit=${auditTest[0]!.n} leaks=${leakTest[0]!.n}`);
+
   // ---------------------------------------------------------------- bulk import
   const text = [
     'socks5://imp-u1:imp-secret-1@203.0.113.10:1080',
@@ -117,7 +175,7 @@ try {
   const expected = '1:created 2:created 3:created 4:created 6:duplicate 7:invalid 8:invalid 9:duplicate 10:invalid';
   check('import dry-run: per-line created/duplicate/invalid', st(r.body) === expected, st(r.body));
   check('dry-run inserts nothing', (await http('GET', '/api/proxies', T)).body.proxies.length === before);
-  r = await http('POST', '/api/proxies/import', T, { text, defaultType: 'http', provider: 'imp' });
+  r = await http('POST', '/api/proxies/import', T, { text, defaultType: 'http', provider: 'imp', kind: 'dynamic' });
   check('import: same per-line results, 4 created', st(r.body) === expected && r.body.created === 4 && r.body.duplicate === 2 && r.body.invalid === 3, `${r.body.created}/${r.body.duplicate}/${r.body.invalid}`);
   check('import results mask passwords', !r.text.includes('imp-secret'));
   const imported: string[] = r.body.results.filter((l: any) => l.id).map((l: any) => l.id);
@@ -128,6 +186,7 @@ try {
     byHost.get('203.0.113.10')?.type === 'socks5' && byHost.get('203.0.113.10')?.username === 'imp-u1'
     && byHost.get('203.0.113.11')?.type === 'http' && byHost.get('203.0.113.12')?.type === 'http' && byHost.get('203.0.113.12')?.username === 'imp-u3'
     && byHost.get('203.0.113.13')?.username === null && impRows.every((p) => p.provider === 'imp'));
+  check('import applies the optional kind', impRows.length === 4 && impRows.every((p) => p.kind === 'dynamic'));
   check('imported passwords encrypted', impRows.filter((p) => p.passwordEnc).length === 2 && impRows.every((p) => !p.passwordEnc || (p.passwordEnc.startsWith('v1:') && !p.passwordEnc.includes('imp-secret'))));
   r = await http('POST', '/api/proxies/import', T, { text: 'socks5://imp-u1:x@203.0.113.10:1080\n203.0.113.13:8000', defaultType: 'http' });
   check('re-import → duplicates', r.body.duplicate === 2 && r.body.created === 0);
@@ -199,6 +258,8 @@ try {
   check('user: create → 403', r.status === 403);
   r = await http('POST', `/api/proxies/${goodId}/check`, U);
   check('user: check → 403', r.status === 403);
+  r = await http('POST', '/api/proxies/test', U, { type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser', id: goodId });
+  check('user: test endpoint → 403 proxy.admin_only (no result)', r.status === 403 && r.body.code === 'proxy.admin_only' && !('result' in (r.body ?? {})));
   r = await http('PUT', `/api/instances/${F1.id}/proxy`, U, { proxyId: null });
   check('user: bind/unbind → 403', r.status === 403 && r.body.code === 'proxy.bind_admin_only');
   r = await http('GET', `/api/instances/${F1.id}`, U);
@@ -253,6 +314,6 @@ try {
   check('cleanup: test proxies and placeholder devices removed', left.length === 0 && (await db.select().from(schema.instances).where(like(schema.instances.name, 'ppfake-%'))).length === 0);
   await sqlClient.end();
   const failed = results.filter((x) => !x[1]).length;
-  console.log(`\n${results.length - failed}/${results.length} checks passed`);
+  console.log(`\n${results.length - failed}/${results.length} checks passed${skipped.length ? `, ${skipped.length} skipped` : ''}`);
   process.exit(failed ? 1 : 0);
 }

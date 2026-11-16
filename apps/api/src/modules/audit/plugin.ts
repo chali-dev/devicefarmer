@@ -17,7 +17,7 @@ import { recordAudit } from './audit.js';
  * Not recorded by the hook (method + route pattern):
  * - POST /api/auth/login: recorded explicitly by the login route (auth.login / auth.login_failed).
  * - read-like POSTs that only query/probe and change nothing the user configured:
- *   proxy egress checks (device and pool), Google health check, storage connection test,
+ *   proxy egress checks (device and pool, and the unsaved-config test), Google health check, storage connection test,
  *   tracked-account URL parsing (preview).
  * Also skipped: non-mutating methods (GET/HEAD/OPTIONS), WebSocket upgrades, requests outside
  * /api/ and requests that matched no route (404 without a route pattern).
@@ -27,6 +27,7 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/instances/:id/proxy/check',
   'POST /api/proxies/:id/check',
   'POST /api/proxies/check',
+  'POST /api/proxies/test',
   'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
   'POST /api/tracked-accounts/parse',
@@ -191,7 +192,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // proxy pool (代理管理). Usernames/passwords are never stored in the log.
   'POST /api/proxies': {
     action: 'proxy.create', target: ({ body }) => proxyText(body),
-    detail: ({ body }) => ({ type: body.type, host: body.host, port: body.port, auth: Boolean(body.username), label: body.label, provider: body.provider }),
+    detail: ({ body }) => ({ type: body.type, kind: body.kind, host: body.host, port: body.port, auth: Boolean(body.username), label: body.label, provider: body.provider }),
   },
   'PUT /api/proxies/:id': {
     action: 'proxy.update',
@@ -200,7 +201,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/proxies/:id': { action: 'proxy.delete' },
   'POST /api/proxies/import': {
     action: 'proxy.import',
-    detail: ({ body }) => ({ defaultType: body.defaultType, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
+    detail: ({ body }) => ({ defaultType: body.defaultType, kind: body.kind, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
   },
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {

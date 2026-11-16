@@ -58,6 +58,8 @@ export interface LibraryApp {
 
 export type ProxyType = 'socks5' | 'http'
 export type ProxyStatus = 'unchecked' | 'ok' | 'failed'
+export const PROXY_KINDS = ['static', 'dynamic', 'mobile'] as const
+export type ProxyKind = (typeof PROXY_KINDS)[number]
 export const PROXY_STATUS_COLOR: Record<ProxyStatus, string> = { unchecked: 'default', ok: 'success', failed: 'error' }
 
 /** What any user who can see a device knows about its proxy (no credentials). */
@@ -70,7 +72,7 @@ export interface ProxyCheck { at: string; ok: boolean; egressIp: string | null; 
 
 /** Pool entry (admin API). The password is write-only: only `hasPassword` is returned. */
 export interface PoolProxy {
-  id: string; label: string | null; type: ProxyType; host: string; port: number; username: string | null; hasPassword: boolean
+  id: string; label: string | null; type: ProxyType; kind: ProxyKind; host: string; port: number; username: string | null; hasPassword: boolean
   country: string | null; region: string | null; city: string | null; provider: string | null; notes: string | null
   status: ProxyStatus; lastCheck: ProxyCheck | null; createdAt: string; updatedAt: string
   boundInstance: { id: string; name: string } | null

@@ -3,10 +3,11 @@ import { dateLocale } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorText, getToken, responseError } from '../api/client'
+import { api, errorText } from '../api/client'
 import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
+import { downloadScreenshot, uploadDeviceFile } from '../api/device'
 import StatusTag from '../components/StatusTag.vue'
 import DeviceSocialCard from '../components/social/DeviceSocialCard.vue'
 import { useInstancesStore } from '../stores/instances'
@@ -128,9 +129,7 @@ const lastUploads = ref<string[]>([])
 async function uploadFile(opt: { file: File; onSuccess?: (r: unknown) => void; onError?: (e: Error) => void }) {
   fileUploading.value = true
   try {
-    const fd = new FormData()
-    fd.append('file', opt.file, opt.file.name)
-    const r = await api<{ path: string; folder: string }>('POST', `/api/instances/${props.id}/files`, fd)
+    const r = await uploadDeviceFile(props.id, opt.file)
     lastUploads.value = [r.path, ...lastUploads.value].slice(0, 5)
     message.success(t('detail.files.uploaded', { folder: r.folder }))
     opt.onSuccess?.(r)
@@ -187,16 +186,8 @@ async function checkProxy() {
 const shooting = ref(false)
 async function screenshot() {
   shooting.value = true
-  try {
-    const res = await fetch(`/api/instances/${props.id}/screenshot`, { headers: { authorization: `Bearer ${getToken()}` } })
-    if (!res.ok) throw await responseError(res, 'detail.screenshotFailed')
-    const url = URL.createObjectURL(await res.blob())
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${inst.value?.name}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`
-    a.click()
-    URL.revokeObjectURL(url)
-  } catch (e) { message.error(errorText(e)) }
+  try { await downloadScreenshot(props.id, inst.value?.name ?? props.id) }
+  catch (e) { message.error(errorText(e)) }
   finally { shooting.value = false }
 }
 

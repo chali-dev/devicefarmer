@@ -89,10 +89,15 @@ export type DeviceSource = typeof deviceSources.$inferSelect;
  * Static residential proxy pool (代理管理, admin-managed). The password is AES-256-GCM encrypted
  * (lib/secret-box.ts) and write-only. `lastCheck` is the check from the API host through the proxy.
  */
+export const PROXY_KINDS = ['static', 'dynamic', 'mobile'] as const;
+export type ProxyKind = (typeof PROXY_KINDS)[number];
+
 export const proxies = pgTable('proxies', {
   id: uuid('id').primaryKey().defaultRandom(),
   label: text('label'),
   type: text('type', { enum: ['socks5', 'http'] }).notNull(),
+  /** IP kind (static residential / rotating / mobile carrier); informational, used to group the pool page. */
+  kind: text('kind', { enum: PROXY_KINDS }).notNull().default('static'),
   host: text('host').notNull(),
   port: integer('port').notNull(),
   username: text('username'),
@@ -109,6 +114,7 @@ export const proxies = pgTable('proxies', {
 }, (t) => [
   uniqueIndex('proxies_endpoint_unique').on(t.type, sql`lower(${t.host})`, t.port, sql`coalesce(${t.username}, '')`),
   index('proxies_status_idx').on(t.status),
+  index('proxies_kind_idx').on(t.kind),
 ]);
 
 export const instanceGrants = pgTable('instance_grants', {

@@ -5,14 +5,14 @@ import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
-  AppstoreOutlined, BulbOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
-  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined,
+  AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
+  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import { roleText } from '../api/types'
 import { LOCALES, locale, setLocale, type Locale } from '../i18n'
-import { setThemeMode, themeMode, type ThemeMode } from '../theme'
+import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -22,11 +22,9 @@ const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 
-const THEMES = computed(() => [
-  { value: 'system' as ThemeMode, label: t('prefs.themeSystem') },
-  { value: 'light' as ThemeMode, label: t('prefs.themeLight') },
-  { value: 'dark' as ThemeMode, label: t('prefs.themeDark') },
-])
+/** Flips the effective theme; until the first click the preference stays 'system' and follows the OS. */
+const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('prefs.toDark')))
+function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
 const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit'] as const
@@ -144,11 +142,11 @@ async function savePassword() {
             <AppstoreOutlined />
             <span>{{ t('nav.library') }}</span>
           </a-menu-item>
-          <a-menu-item v-if="auth.isAdmin" key="proxies" @click="router.push('/proxies')">
-            <ClusterOutlined />
-            <span>{{ t('nav.proxies') }}</span>
-          </a-menu-item>
         </a-sub-menu>
+        <a-menu-item v-if="auth.isAdmin" key="proxies" @click="router.push('/proxies')">
+          <ClusterOutlined />
+          <span>{{ t('nav.proxies') }}</span>
+        </a-menu-item>
         <a-menu-item key="social" @click="router.push('/social')">
           <TeamOutlined />
           <span>{{ t('nav.social') }}</span>
@@ -203,19 +201,18 @@ async function savePassword() {
     </a-layout-sider>
     <a-layout>
       <a-layout-header class="header">
-        <a-tooltip :title="store.connected ? t('header.connected') : t('header.disconnected')">
-          <a-badge :status="store.connected ? 'success' : 'error'" />
+        <a-tooltip v-if="!store.connected" :title="t('header.disconnected')">
+          <WarningOutlined class="conn-lost" role="status" :aria-label="t('header.disconnected')" />
         </a-tooltip>
-        <a-dropdown :trigger="['click']" placement="bottomRight">
-          <a-button type="text" class="pref-btn" :title="t('prefs.theme')" :aria-label="t('prefs.theme')"><BulbOutlined /></a-button>
-          <template #overlay>
-            <a-menu :selected-keys="[themeMode]" @click="({ key }: any) => setThemeMode(key as ThemeMode)">
-              <a-menu-item v-for="m in THEMES" :key="m.value">
-                <CheckOutlined :style="{ visibility: themeMode === m.value ? 'visible' : 'hidden' }" /> {{ m.label }}
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
+        <a-tooltip :title="themeToggleLabel">
+          <a-button type="text" class="pref-btn" :aria-label="themeToggleLabel" @click="toggleTheme">
+            <span class="anticon" aria-hidden="true">
+              <!-- Moon while dark, sun while light (icons-vue has neither). -->
+              <svg v-if="isDark" viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+              <svg v-else viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5" /><path d="M12 1.5v2.5M12 20v2.5M1.5 12H4M20 12h2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8" /></svg>
+            </span>
+          </a-button>
+        </a-tooltip>
         <a-dropdown :trigger="['click']" placement="bottomRight">
           <a-button type="text" class="pref-btn" :title="t('prefs.language')" :aria-label="t('prefs.language')"><GlobalOutlined /></a-button>
           <template #overlay>
@@ -291,6 +288,7 @@ async function savePassword() {
 }
 .user-trigger:hover { background: var(--cp-bg-hover); }
 .pref-btn { color: inherit; }
+.conn-lost { color: var(--cp-warning); font-size: 16px; }
 .avatar { background: var(--cp-primary); flex: none; }
 .who { font-size: 13px; }
 .content { padding: 24px; }

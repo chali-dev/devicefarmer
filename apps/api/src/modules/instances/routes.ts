@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import sharp from 'sharp';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
@@ -21,6 +22,19 @@ import { prepareUpload } from '../apps/package.js';
 import { PLATFORM_IDS } from '../social/platforms.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
+
+/** Grid thumbnails: one screencap per device per TTL, shared by every viewer (and by concurrent requests). */
+const THUMB_TTL_MS = 3000;
+const THUMB_WIDTH = 270;
+const thumbs = new Map<string, { at: number; jpeg: Promise<Buffer> }>();
+function thumbnail(instanceId: string, adbPort: number): Promise<Buffer> {
+  const hit = thumbs.get(instanceId);
+  if (hit && Date.now() - hit.at < THUMB_TTL_MS) return hit.jpeg;
+  const jpeg = adb.screenshot(adbPort).then((png) => sharp(png).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer());
+  thumbs.set(instanceId, { at: Date.now(), jpeg });
+  jpeg.catch(() => { if (thumbs.get(instanceId)?.jpeg === jpeg) thumbs.delete(instanceId); });
+  return jpeg;
+}
 const MAX_BATCH = 20;
 
 const CreateBody = z.object({
@@ -230,12 +244,21 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { spec, taskId };
   });
 
-  /** Full-resolution PNG screenshot. */
-  app.get('/api/instances/:id/screenshot', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
+  /**
+   * Full-resolution PNG screenshot, or with `?thumb=1` a small JPEG for the device grid. Thumbnails are
+   * shared for THUMB_TTL_MS and concurrent requests share one screencap, so many viewers cost one adb call.
+   */
+  app.get('/api/instances/:id/screenshot', {
+    schema: { params: z.object({ id: z.string().uuid() }), querystring: z.object({ thumb: z.coerce.number().int().min(0).max(1).default(0) }) },
+  }, async (req, reply) => {
     await assertInstanceAccess(req.user, req.params.id, 'control');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
     if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
+    if (req.query.thumb) {
+      const jpeg = await thumbnail(inst.id, inst.adbPort);
+      return reply.header('content-type', 'image/jpeg').header('cache-control', 'private, no-store').send(jpeg);
+    }
     const png = await adb.screenshot(inst.adbPort);
     reply.header('content-type', 'image/png')
       .header('content-disposition', `attachment; filename="${inst.name}-${new Date().toISOString().replace(/[:.]/g, '-')}.png"`);

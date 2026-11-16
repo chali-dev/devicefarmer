@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { PlusOutlined, QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { dateLocale } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
@@ -9,7 +10,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
-  PROXY_STATUS_COLOR, proxyLabel, type PoolProxy, type ProxyImportResult, type ProxyStatus, type ProxyType,
+  PROXY_KINDS, PROXY_STATUS_COLOR, proxyLabel, type PoolProxy, type ProxyCheck, type ProxyImportResult, type ProxyKind, type ProxyStatus, type ProxyType,
 } from '../api/types'
 
 const { t } = useI18n()
@@ -21,28 +22,38 @@ const selectedKeys = ref<string[]>([])
 const checkingIds = ref(new Set<string>())
 const batchChecking = ref(false)
 
+const route = useRoute()
+// Active IP kind tab (静态 / 动态 / 移动); counts are totals per kind, independent of the other filters.
+const kind = ref<ProxyKind>(queryParam(route.query, 'kind', PROXY_KINDS) ?? 'static')
+const kindCounts = ref<Record<ProxyKind, number>>({ static: 0, dynamic: 0, mobile: 0 })
+const kindOptions = computed(() => PROXY_KINDS.map((k) => ({ value: k, payload: { count: kindCounts.value[k] } })))
+function switchKind() { selectedKeys.value = []; void load() }
+
 const filters = reactive({
   q: '',
-  status: queryParam<ProxyStatus>(useRoute().query, 'status', ['unchecked', 'ok', 'failed']),
-  bound: queryParam(useRoute().query, 'bound', ['bound', 'free'] as const),
+  status: queryParam<ProxyStatus>(route.query, 'status', ['unchecked', 'ok', 'failed']),
+  bound: queryParam(route.query, 'bound', ['bound', 'free'] as const),
   country: '',
 })
 
 async function load() {
   loading.value = true
   try {
-    const p = new URLSearchParams()
+    const p = new URLSearchParams({ kind: kind.value })
     if (filters.q.trim()) p.set('q', filters.q.trim())
     if (filters.status) p.set('status', filters.status)
     if (filters.bound) p.set('bound', filters.bound)
     if (filters.country.trim()) p.set('country', filters.country.trim())
-    items.value = (await api<{ proxies: PoolProxy[] }>('GET', `/api/proxies?${p}`)).proxies
+    const r = await api<{ proxies: PoolProxy[]; kindCounts: Record<ProxyKind, number> }>('GET', `/api/proxies?${p}`)
+    items.value = r.proxies
+    kindCounts.value = r.kindCounts
     const ids = new Set(items.value.map((x) => x.id))
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 onMounted(load)
+const hasFilters = computed(() => Boolean(filters.q.trim() || filters.status || filters.bound || filters.country.trim()))
 function reset() { Object.assign(filters, { q: '', status: undefined, bound: undefined, country: '' }); void load() }
 
 const summary = computed(() => ({
@@ -99,30 +110,48 @@ const saving = ref(false)
 const editing = ref<PoolProxy | null>(null)
 const formRef = ref<FormInstance>()
 const blank = () => ({
-  label: '', type: 'socks5' as ProxyType, host: '', port: 1080 as number | undefined, username: '', password: '', clearPassword: false,
+  label: '', type: 'socks5' as ProxyType, kind: kind.value as ProxyKind, host: '', port: 1080 as number | undefined, username: '', password: '', clearPassword: false,
   country: '', region: '', city: '', provider: '', notes: '',
 })
 const form = reactive(blank())
 const HOST_RE = /^[A-Za-z0-9.-]{1,253}$/
 const rules = computed<Record<string, Rule[]>>(() => ({
   host: [{ required: true, message: t('proxies.required') }, { pattern: HOST_RE, message: t('proxies.hostInvalid') }],
-  port: [{ required: true, message: t('proxies.required') }],
+  port: [{ required: true, message: t('proxies.required') }, { type: 'integer', min: 1, max: 65535, message: t('proxies.portInvalid') }],
 }))
-function openAdd() { editing.value = null; Object.assign(form, blank()); formRef.value?.clearValidate(); editOpen.value = true }
+function openAdd() { editing.value = null; Object.assign(form, blank()); testResult.value = null; formRef.value?.clearValidate(); editOpen.value = true }
 function openEdit(p: PoolProxy) {
   editing.value = p
   Object.assign(form, {
-    ...blank(), label: p.label ?? '', type: p.type, host: p.host, port: p.port, username: p.username ?? '',
+    ...blank(), label: p.label ?? '', type: p.type, kind: p.kind, host: p.host, port: p.port, username: p.username ?? '',
     country: p.country ?? '', region: p.region ?? '', city: p.city ?? '', provider: p.provider ?? '', notes: p.notes ?? '',
   })
+  testResult.value = null
   formRef.value?.clearValidate()
   editOpen.value = true
+}
+
+// ---- 网络检测: probe the values in the form before saving (nothing stored; with `id`, an empty password uses the stored one)
+const testing = ref(false)
+const testResult = ref<ProxyCheck | null>(null)
+async function testForm() {
+  try { await formRef.value?.validateFields(['host', 'port']) } catch { return }
+  testing.value = true
+  testResult.value = null
+  try {
+    const body: Record<string, unknown> = {
+      type: form.type, host: form.host.trim(), port: form.port, username: form.username.trim() || null, password: form.password || null,
+    }
+    if (editing.value && !form.clearPassword) body.id = editing.value.id
+    testResult.value = (await api<{ result: ProxyCheck }>('POST', '/api/proxies/test', body)).result
+  } catch (e) { message.error(errorText(e)) }
+  finally { testing.value = false }
 }
 async function save() {
   try { await formRef.value?.validate() } catch { return }
   saving.value = true
   const body: Record<string, unknown> = {
-    label: form.label, type: form.type, host: form.host.trim(), port: form.port, username: form.username.trim() || null,
+    label: form.label, type: form.type, kind: form.kind, host: form.host.trim(), port: form.port, username: form.username.trim() || null,
     country: form.country, region: form.region, city: form.city, provider: form.provider, notes: form.notes,
   }
   // Write-only: omitted keeps the stored password, null removes it.
@@ -133,9 +162,11 @@ async function save() {
       const r = await api<{ proxy: PoolProxy; taskId: string | null }>('PUT', `/api/proxies/${editing.value.id}`, body)
       replace(r.proxy)
       message.success(r.taskId ? t('proxies.reapplied') : t('common.saved'))
+      if (r.proxy.kind !== kind.value) void load()
     } else {
       await api('POST', '/api/proxies', body)
       message.success(t('common.created'))
+      if (form.kind !== kind.value) kind.value = form.kind
       void load()
     }
     form.password = ''
@@ -162,20 +193,21 @@ function remove(p: PoolProxy) {
 // ---- bulk import (preview = dry run, then import)
 const importOpen = ref(false)
 const importing = ref(false)
-const imp = reactive({ text: '', defaultType: 'socks5' as ProxyType, provider: '', country: '' })
+const imp = reactive({ text: '', defaultType: 'socks5' as ProxyType, kind: 'static' as ProxyKind, provider: '', country: '' })
 const preview = ref<ProxyImportResult | null>(null)
 const IMPORT_FORMATS = ['socks5://user:pass@host:port', 'http://user:pass@host:port', 'http://host:port', 'host:port:user:pass', 'host:port']
-function openImport() { Object.assign(imp, { text: '', defaultType: 'socks5', provider: '', country: '' }); preview.value = null; importOpen.value = true }
+function openImport() { Object.assign(imp, { text: '', defaultType: 'socks5', kind: kind.value, provider: '', country: '' }); preview.value = null; importOpen.value = true }
 async function runImport(dryRun: boolean) {
   if (!imp.text.trim()) return
   importing.value = true
   try {
     const r = await api<ProxyImportResult>('POST', '/api/proxies/import', {
-      text: imp.text, defaultType: imp.defaultType, dryRun, provider: imp.provider || undefined, country: imp.country || undefined,
+      text: imp.text, defaultType: imp.defaultType, kind: imp.kind, dryRun, provider: imp.provider || undefined, country: imp.country || undefined,
     })
     preview.value = r
     if (!dryRun) {
       message.success(t('proxies.importDone', { created: r.created, duplicate: r.duplicate, invalid: r.invalid }))
+      kind.value = imp.kind
       void load()
     }
   } catch (e) { message.error(errorText(e)) }
@@ -203,112 +235,178 @@ async function openUsage(p: PoolProxy) {
 </script>
 
 <template>
-  <a-card :title="t('proxies.title')" size="small">
-    <template #extra>
+  <div class="proxies-page">
+    <div class="page-head">
+      <div class="head-main">
+        <div class="title-row">
+          <h2 class="page-title">{{ t('proxies.title') }}</h2>
+          <a-popover trigger="click" placement="bottomLeft" :overlay-style="{ maxWidth: '440px' }">
+            <template #title>{{ t('proxies.guideTitle') }}</template>
+            <template #content>
+              <div class="guide">
+                <p v-for="k in PROXY_KINDS" :key="k"><b>{{ t(`proxies.kinds.${k}`) }}</b>：{{ t(`proxies.kindDesc.${k}`) }}</p>
+                <p><b>{{ t('proxies.guideBindTitle') }}</b>：{{ t('proxies.guideBind') }}</p>
+                <p class="muted">{{ t('proxies.checkHint') }}</p>
+              </div>
+            </template>
+            <a-button size="small" type="text" class="guide-btn"><template #icon><QuestionCircleOutlined /></template>{{ t('proxies.guide') }}</a-button>
+          </a-popover>
+        </div>
+        <div class="muted subtitle">{{ t(`proxies.kindDesc.${kind}`) }}</div>
+      </div>
       <a-space wrap>
+        <a-button @click="openImport">{{ t('proxies.import') }}</a-button>
+        <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('proxies.add') }}</a-button>
+      </a-space>
+    </div>
+
+    <a-segmented v-model:value="kind" :options="kindOptions" class="kind-tabs" @change="switchKind">
+      <template #label="{ value, payload }">
+        <span class="kind-label">{{ t(`proxies.kinds.${value}`) }}<span class="kind-count">{{ payload?.count ?? 0 }}</span></span>
+      </template>
+    </a-segmented>
+
+    <a-card size="small">
+      <div class="toolbar">
+        <a-input-search v-model:value="filters.q" :placeholder="t('proxies.searchPlaceholder')" allow-clear class="search" @search="load" />
+        <a-select v-model:value="filters.status" :placeholder="t('proxies.filterStatus')" allow-clear style="width: 130px" @change="load">
+          <a-select-option v-for="st in (['ok', 'failed', 'unchecked'] as const)" :key="st" :value="st">{{ statusText(st) }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.bound" :placeholder="t('proxies.filterBound')" allow-clear style="width: 120px" @change="load">
+          <a-select-option value="free">{{ t('proxies.free') }}</a-select-option>
+          <a-select-option value="bound">{{ t('proxies.bound') }}</a-select-option>
+        </a-select>
+        <a-input v-model:value="filters.country" :placeholder="t('proxies.filterCountry')" allow-clear style="width: 120px" @press-enter="load" />
+        <a-button @click="reset">{{ t('common.reset') }}</a-button>
+        <a-tooltip :title="t('common.refresh')"><a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template></a-button></a-tooltip>
         <a-tooltip :title="t('proxies.checkBatchHint')">
           <a-button :loading="batchChecking" :disabled="!items.length" @click="checkBatch">
             {{ t('proxies.checkBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
           </a-button>
         </a-tooltip>
-        <a-button @click="openImport">{{ t('proxies.import') }}</a-button>
-        <a-button type="primary" @click="openAdd">{{ t('proxies.add') }}</a-button>
-      </a-space>
-    </template>
+        <span class="muted small summary">{{ t('proxies.summary', summary) }}</span>
+      </div>
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-input-search v-model:value="filters.q" :placeholder="t('proxies.searchPlaceholder')" allow-clear style="width: 280px" @search="load" />
-      <a-select v-model:value="filters.status" :placeholder="t('proxies.filterStatus')" allow-clear style="width: 130px" @change="load">
-        <a-select-option v-for="s in (['ok', 'failed', 'unchecked'] as const)" :key="s" :value="s">{{ statusText(s) }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.bound" :placeholder="t('proxies.filterBound')" allow-clear style="width: 120px" @change="load">
-        <a-select-option value="free">{{ t('proxies.free') }}</a-select-option>
-        <a-select-option value="bound">{{ t('proxies.bound') }}</a-select-option>
-      </a-select>
-      <a-input v-model:value="filters.country" :placeholder="t('proxies.filterCountry')" allow-clear style="width: 120px" @press-enter="load" />
-      <a-button @click="load">{{ t('common.search') }}</a-button>
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-      <span class="muted">{{ t('proxies.summary', summary) }}</span>
-    </a-space>
+      <a-table
+        :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1310 }"
+        :pagination="{ pageSize: 50, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
+        :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
+      >
+        <template #emptyText>
+          <a-empty :description="hasFilters ? t('proxies.emptyFiltered') : t('proxies.empty', { kind: t(`proxies.kinds.${kind}`) })">
+            <a-button v-if="!hasFilters" type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('proxies.add') }}</a-button>
+            <a-button v-else @click="reset">{{ t('common.reset') }}</a-button>
+          </a-empty>
+        </template>
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'label'">
+            <a-typography-text :ellipsis="{ tooltip: record.notes || undefined }" :content="record.label || '—'" />
+          </template>
+          <template v-else-if="column.key === 'type'"><a-tag>{{ record.type.toUpperCase() }}</a-tag></template>
+          <template v-else-if="column.key === 'endpoint'">
+            <span class="mono">{{ record.host }}:{{ record.port }}</span>
+            <div v-if="record.username" class="muted small">{{ record.username }}{{ record.hasPassword ? ' · ******' : '' }}</div>
+          </template>
+          <template v-else-if="column.key === 'location'">{{ location(record as PoolProxy) }}</template>
+          <template v-else-if="column.key === 'provider'">{{ record.provider || '—' }}</template>
+          <template v-else-if="column.key === 'status'">
+            <a-space :size="4" wrap>
+              <a-tooltip :title="record.lastCheck?.error || undefined">
+                <a-tag :color="PROXY_STATUS_COLOR[record.status as ProxyStatus]">{{ statusText(record.status) }}</a-tag>
+              </a-tooltip>
+              <span v-if="record.lastCheck?.egressIp" class="mono small">{{ record.lastCheck.egressIp }}</span>
+              <span v-if="record.lastCheck?.latencyMs != null" class="muted small">{{ record.lastCheck.latencyMs }} ms</span>
+            </a-space>
+            <div v-if="record.lastCheck" class="faint small">{{ t('proxies.checkedAt', { time: new Date(record.lastCheck.at).toLocaleString(dateLocale()) }) }}</div>
+          </template>
+          <template v-else-if="column.key === 'device'">
+            <a v-if="record.boundInstance" @click="router.push(`/instances/${record.boundInstance.id}`)">{{ record.boundInstance.name }}</a>
+            <a-tag v-else color="green">{{ t('proxies.free') }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button size="small" type="link" :loading="checkingIds.has(record.id)" @click="checkOne(record as PoolProxy)">{{ t('proxies.check') }}</a-button>
+              <a-button size="small" type="link" @click="openEdit(record as PoolProxy)">{{ t('common.edit') }}</a-button>
+              <a-button size="small" type="link" @click="openUsage(record as PoolProxy)">{{ t('proxies.usage') }}</a-button>
+              <a-tooltip :title="record.boundInstance ? t('proxies.boundNoDelete', { name: record.boundInstance.name }) : undefined">
+                <a-button size="small" type="link" danger :disabled="!!record.boundInstance" @click="remove(record as PoolProxy)">{{ t('common.delete') }}</a-button>
+              </a-tooltip>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+      <div class="faint small" style="margin-top: 8px">{{ t('proxies.checkHint') }}</div>
+    </a-card>
+  </div>
 
-    <a-table
-      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1310 }"
-      :pagination="{ pageSize: 50, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
-      :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'label'">
-          <a-typography-text :ellipsis="{ tooltip: record.notes || undefined }" :content="record.label || '—'" />
-        </template>
-        <template v-else-if="column.key === 'type'"><a-tag>{{ record.type.toUpperCase() }}</a-tag></template>
-        <template v-else-if="column.key === 'endpoint'">
-          <span class="mono">{{ record.host }}:{{ record.port }}</span>
-          <div v-if="record.username" class="muted small">{{ record.username }}{{ record.hasPassword ? ' · ******' : '' }}</div>
-        </template>
-        <template v-else-if="column.key === 'location'">{{ location(record as PoolProxy) }}</template>
-        <template v-else-if="column.key === 'provider'">{{ record.provider || '—' }}</template>
-        <template v-else-if="column.key === 'status'">
-          <a-space :size="4" wrap>
-            <a-tooltip :title="record.lastCheck?.error || undefined">
-              <a-tag :color="PROXY_STATUS_COLOR[record.status as ProxyStatus]">{{ statusText(record.status) }}</a-tag>
-            </a-tooltip>
-            <span v-if="record.lastCheck?.egressIp" class="mono small">{{ record.lastCheck.egressIp }}</span>
-            <span v-if="record.lastCheck?.latencyMs != null" class="muted small">{{ record.lastCheck.latencyMs }} ms</span>
-          </a-space>
-          <div v-if="record.lastCheck" class="faint small">{{ t('proxies.checkedAt', { time: new Date(record.lastCheck.at).toLocaleString(dateLocale()) }) }}</div>
-        </template>
-        <template v-else-if="column.key === 'device'">
-          <a v-if="record.boundInstance" @click="router.push(`/instances/${record.boundInstance.id}`)">{{ record.boundInstance.name }}</a>
-          <a-tag v-else color="green">{{ t('proxies.free') }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'ops'">
-          <a-space :size="0">
-            <a-button size="small" type="link" :loading="checkingIds.has(record.id)" @click="checkOne(record as PoolProxy)">{{ t('proxies.check') }}</a-button>
-            <a-button size="small" type="link" @click="openEdit(record as PoolProxy)">{{ t('common.edit') }}</a-button>
-            <a-button size="small" type="link" @click="openUsage(record as PoolProxy)">{{ t('proxies.usage') }}</a-button>
-            <a-tooltip :title="record.boundInstance ? t('proxies.boundNoDelete', { name: record.boundInstance.name }) : undefined">
-              <a-button size="small" type="link" danger :disabled="!!record.boundInstance" @click="remove(record as PoolProxy)">{{ t('common.delete') }}</a-button>
-            </a-tooltip>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-    <div class="faint small" style="margin-top: 8px">{{ t('proxies.checkHint') }}</div>
-  </a-card>
-
-  <a-modal v-model:open="editOpen" :title="editing ? t('proxies.edit') : t('proxies.add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="saving" :width="620" @ok="save">
-    <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+  <a-modal v-model:open="editOpen" :title="editing ? t('proxies.edit') : t('proxies.add')" :width="600">
+    <a-form ref="formRef" :model="form" :rules="rules" layout="vertical" class="proxy-form">
+      <a-row :gutter="12">
+        <a-col :xs="24" :sm="12">
+          <a-form-item :label="t('proxies.type')" name="type" required>
+            <a-select v-model:value="form.type" :options="[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]" @change="testResult = null" />
+          </a-form-item>
+        </a-col>
+        <a-col :xs="24" :sm="12">
+          <a-form-item :label="t('proxies.kind')" name="kind">
+            <a-select v-model:value="form.kind" :options="PROXY_KINDS.map((k) => ({ value: k, label: t(`proxies.kinds.${k}`) }))" />
+          </a-form-item>
+        </a-col>
+      </a-row>
       <a-form-item :label="t('proxies.label')" name="label">
         <a-input v-model:value="form.label" :maxlength="80" :placeholder="t('proxies.labelPlaceholder')" />
       </a-form-item>
       <a-row :gutter="12">
-        <a-col :xs="24" :sm="6">
-          <a-form-item :label="t('proxies.type')" name="type">
-            <a-select v-model:value="form.type" :options="[{ value: 'socks5', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }]" />
-          </a-form-item>
+        <a-col :xs="24" :sm="16">
+          <a-form-item :label="t('proxies.host')" name="host"><a-input v-model:value="form.host" :placeholder="t('proxies.hostPlaceholder')" @change="testResult = null" /></a-form-item>
+        </a-col>
+        <a-col :xs="24" :sm="8">
+          <a-form-item :label="t('proxies.port')" name="port"><a-input-number v-model:value="form.port" :min="1" :max="65535" :precision="0" style="width: 100%" @change="testResult = null" /></a-form-item>
         </a-col>
         <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('proxies.host')" name="host"><a-input v-model:value="form.host" :placeholder="t('proxies.hostPlaceholder')" /></a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="6">
-          <a-form-item :label="t('proxies.port')" name="port"><a-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 100%" /></a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('proxies.username')" name="username"><a-input v-model:value="form.username" autocomplete="off" :maxlength="200" /></a-form-item>
+          <a-form-item :label="t('proxies.username')" name="username"><a-input v-model:value="form.username" autocomplete="off" :maxlength="200" @change="testResult = null" /></a-form-item>
         </a-col>
         <a-col :xs="24" :sm="12">
           <a-form-item :label="t('proxies.password')" name="password" :extra="editing?.hasPassword ? t('proxies.passwordKeep') : t('proxies.passwordHint')">
-            <a-input-password v-model:value="form.password" autocomplete="new-password" :maxlength="200" :disabled="form.clearPassword" />
-            <a-checkbox v-if="editing?.hasPassword" v-model:checked="form.clearPassword" style="margin-top: 4px">{{ t('proxies.clearPassword') }}</a-checkbox>
+            <a-input-password v-model:value="form.password" autocomplete="new-password" :maxlength="200" :disabled="form.clearPassword" @change="testResult = null" />
+            <a-checkbox v-if="editing?.hasPassword" v-model:checked="form.clearPassword" style="margin-top: 4px" @change="testResult = null">{{ t('proxies.clearPassword') }}</a-checkbox>
           </a-form-item>
         </a-col>
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('proxies.country')"><a-input v-model:value="form.country" :maxlength="64" :placeholder="t('proxies.countryPlaceholder')" /></a-form-item></a-col>
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('proxies.region')"><a-input v-model:value="form.region" :maxlength="80" /></a-form-item></a-col>
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('proxies.city')"><a-input v-model:value="form.city" :maxlength="80" /></a-form-item></a-col>
       </a-row>
-      <a-form-item :label="t('proxies.provider')"><a-input v-model:value="form.provider" :maxlength="80" /></a-form-item>
       <a-form-item :label="t('proxies.notes')"><a-textarea v-model:value="form.notes" :maxlength="500" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
+      <a-collapse ghost size="small" class="more">
+        <a-collapse-panel key="more" :header="t('proxies.moreInfo')">
+          <a-row :gutter="12">
+            <a-col :xs="12" :sm="6"><a-form-item :label="t('proxies.country')"><a-input v-model:value="form.country" :maxlength="64" :placeholder="t('proxies.countryPlaceholder')" /></a-form-item></a-col>
+            <a-col :xs="12" :sm="6"><a-form-item :label="t('proxies.region')"><a-input v-model:value="form.region" :maxlength="80" /></a-form-item></a-col>
+            <a-col :xs="12" :sm="6"><a-form-item :label="t('proxies.city')"><a-input v-model:value="form.city" :maxlength="80" /></a-form-item></a-col>
+            <a-col :xs="12" :sm="6"><a-form-item :label="t('proxies.provider')"><a-input v-model:value="form.provider" :maxlength="80" /></a-form-item></a-col>
+          </a-row>
+        </a-collapse-panel>
+      </a-collapse>
+      <a-alert v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon class="test-result">
+        <template #message>{{ testResult.ok ? t('proxies.testOk') : t('proxies.testFailed') }}</template>
+        <template #description>
+          <div v-if="testResult.ok" class="small">
+            {{ t('proxies.egressIp') }}：<span class="mono">{{ testResult.egressIp }}</span>
+            · {{ t('proxies.location') }}：{{ [testResult.country, testResult.city].filter(Boolean).join(' · ') || '—' }}
+            · {{ t('proxies.latency') }}：{{ testResult.latencyMs }} ms
+          </div>
+          <div v-else class="small mono">{{ testResult.error }}</div>
+        </template>
+      </a-alert>
     </a-form>
+    <template #footer>
+      <div class="modal-foot">
+        <a-tooltip :title="t('proxies.testHint')">
+          <a-button type="link" class="test-btn" :loading="testing" @click="testForm">{{ t('proxies.test') }}</a-button>
+        </a-tooltip>
+        <a-space>
+          <a-button @click="editOpen = false">{{ t('common.cancel') }}</a-button>
+          <a-button type="primary" :loading="saving" @click="save">{{ t('common.ok') }}</a-button>
+        </a-space>
+      </div>
+    </template>
   </a-modal>
 
   <a-modal v-model:open="importOpen" :title="t('proxies.importTitle')" :width="760" :footer="null">
@@ -316,18 +414,22 @@ async function openUsage(p: PoolProxy) {
     <ul class="formats mono small"><li v-for="f in IMPORT_FORMATS" :key="f">{{ f }}</li></ul>
     <a-textarea v-model:value="imp.text" :auto-size="{ minRows: 6, maxRows: 14 }" class="mono" spellcheck="false" autocomplete="off" @change="preview = null" />
     <a-row :gutter="12" style="margin-top: 12px">
-      <a-col :xs="24" :sm="8">
+      <a-col :xs="24" :sm="6">
+        <div class="small muted">{{ t('proxies.kind') }}</div>
+        <a-select v-model:value="imp.kind" size="small" style="width: 100%" :options="PROXY_KINDS.map((k) => ({ value: k, label: t(`proxies.kinds.${k}`) }))" />
+      </a-col>
+      <a-col :xs="24" :sm="6">
         <div class="small muted">{{ t('proxies.defaultType') }}</div>
         <a-radio-group v-model:value="imp.defaultType" size="small" @change="preview = null">
           <a-radio-button value="socks5">SOCKS5</a-radio-button>
           <a-radio-button value="http">HTTP</a-radio-button>
         </a-radio-group>
       </a-col>
-      <a-col :xs="24" :sm="8">
+      <a-col :xs="24" :sm="6">
         <div class="small muted">{{ t('proxies.importProvider') }}</div>
         <a-input v-model:value="imp.provider" size="small" :maxlength="80" />
       </a-col>
-      <a-col :xs="24" :sm="8">
+      <a-col :xs="24" :sm="6">
         <div class="small muted">{{ t('proxies.importCountry') }}</div>
         <a-input v-model:value="imp.country" size="small" :maxlength="64" :placeholder="t('proxies.countryPlaceholder')" />
       </a-col>
@@ -380,4 +482,24 @@ async function openUsage(p: PoolProxy) {
 .small { font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .formats { margin: 4px 0 8px; padding-left: 18px; color: var(--cp-text-secondary); }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.head-main { min-width: 0; }
+.title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.page-title { margin: 0; font-size: 20px; font-weight: 600; color: var(--cp-text); }
+.guide-btn { color: var(--cp-text-secondary); }
+.subtitle { margin-top: 2px; }
+.guide p { margin: 0 0 8px; }
+.guide p:last-child { margin-bottom: 0; }
+.kind-tabs { margin-bottom: 12px; max-width: 100%; overflow-x: auto; }
+.kind-label { display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; }
+.kind-count { min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 12px; line-height: 18px; text-align: center; background: var(--cp-fill-alter); color: var(--cp-text-secondary); }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.toolbar .search { width: 300px; max-width: 100%; }
+.summary { margin-left: auto; }
+.more { margin: -8px 0 8px; }
+.more :deep(.ant-collapse-header) { padding-left: 0 !important; color: var(--cp-text-secondary); }
+.more :deep(.ant-collapse-content-box) { padding: 0 !important; }
+.test-result { margin-top: 4px; }
+.modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.test-btn { padding-left: 0; }
 </style>

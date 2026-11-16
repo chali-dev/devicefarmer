@@ -2,14 +2,14 @@ import { and, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import type { Instance, PoolProxy } from '../../db/schema.js';
+import { PROXY_KINDS, type Instance, type PoolProxy, type ProxyCheck } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { sealSecret } from '../../lib/secret-box.js';
+import { openSecret, sealSecret } from '../../lib/secret-box.js';
 import { isAdmin } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { publishInstance, updateInstance } from '../instances/repo.js';
 import {
-  checkPoolProxy, endpointKey, endpointText, HOST_RE, isUniqueViolation, mapLimit, maskedLine, parseProxyLine, toPublicProxy, type ParsedProxy,
+  checkPoolProxy, endpointKey, probeProxy, endpointText, HOST_RE, isUniqueViolation, mapLimit, maskedLine, parseProxyLine, toPublicProxy, type ParsedProxy,
 } from './pool.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
@@ -25,19 +25,22 @@ const Fields = {
   provider: opt(80),
   notes: opt(500),
 };
+const Kind = z.enum(PROXY_KINDS);
 const Endpoint = {
   type: z.enum(['socks5', 'http']),
   host: z.string().trim().min(1).max(253).regex(HOST_RE, 'hostname or IPv4'),
   port: z.number().int().min(1).max(65535),
   username: z.string().max(200).nullable().optional(),
 };
-const CreateBody = z.object({ ...Endpoint, password: z.string().max(200).nullable().optional(), ...Fields });
+const CreateBody = z.object({ ...Endpoint, kind: Kind.default('static'), password: z.string().max(200).nullable().optional(), ...Fields });
 /** Password is write-only: omitted = keep, null/'' = clear, string = replace. */
 const UpdateBody = z.object({
-  type: Endpoint.type.optional(), host: Endpoint.host.optional(), port: Endpoint.port.optional(), username: Endpoint.username,
+  type: Endpoint.type.optional(), kind: Kind.optional(), host: Endpoint.host.optional(), port: Endpoint.port.optional(), username: Endpoint.username,
   password: z.string().max(200).nullable().optional(), ...Fields,
 });
 const IdParams = z.object({ id: z.string().uuid() });
+/** Unsaved configuration to probe. With `id` (editing), an empty password falls back to the stored one. */
+const TestBody = z.object({ ...Endpoint, password: z.string().max(200).nullable().optional(), id: z.string().uuid().optional() });
 
 const blankToNull = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v);
 
@@ -66,27 +69,36 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: {
       querystring: z.object({
         status: z.enum(['unchecked', 'ok', 'failed']).optional(),
+        kind: Kind.optional(),
         bound: z.enum(['bound', 'free']).optional(),
         q: z.string().trim().max(200).optional(),
         country: z.string().trim().max(64).optional(),
       }),
     },
   }, async (req) => {
-    const { status, bound, q, country } = req.query;
+    const { status, kind, bound, q, country } = req.query;
     const where: SQL[] = [];
     if (status) where.push(eq(schema.proxies.status, status));
+    if (kind) where.push(eq(schema.proxies.kind, kind));
     if (country) where.push(ilike(schema.proxies.country, country));
-    if (q) {
-      const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-      where.push(or(ilike(schema.proxies.label, like), ilike(schema.proxies.host, like), ilike(schema.proxies.provider, like),
-        ilike(schema.proxies.notes, like), ilike(schema.proxies.city, like), sql`${schema.proxies.lastCheck}->>'egressIp' ilike ${like}`)!);
+    // Several terms separated by commas (or Chinese commas) match any of them.
+    const terms = (q ?? '').split(/[,，]/).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+    if (terms.length) {
+      where.push(or(...terms.map((t) => {
+        const like = `%${t.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+        return or(ilike(schema.proxies.label, like), ilike(schema.proxies.host, like), ilike(schema.proxies.provider, like),
+          ilike(schema.proxies.notes, like), ilike(schema.proxies.city, like), sql`${schema.proxies.lastCheck}->>'egressIp' ilike ${like}`)!;
+      }))!);
     }
     const used = sql`exists (select 1 from ${schema.instances} i where i.proxy_id = ${schema.proxies.id})`;
     if (bound === 'bound') where.push(used);
     if (bound === 'free') where.push(sql`not ${used}`);
     const rows = await db.select().from(schema.proxies).where(where.length ? and(...where) : undefined).orderBy(schema.proxies.createdAt);
     const b = await boundMap();
-    return { proxies: rows.map((p) => toPublicProxy(p, b.get(p.id) ?? null)) };
+    // Per-kind totals for the tab badges (unfiltered).
+    const kc = await db.select({ kind: schema.proxies.kind, n: sql<number>`count(*)::int` }).from(schema.proxies).groupBy(schema.proxies.kind);
+    const kindCounts = Object.fromEntries(PROXY_KINDS.map((k) => [k, kc.find((r) => r.kind === k)?.n ?? 0]));
+    return { proxies: rows.map((p) => toPublicProxy(p, b.get(p.id) ?? null)), kindCounts };
   });
 
   app.post('/api/proxies', { schema: { body: CreateBody } }, async (req, reply) => {
@@ -115,6 +127,7 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
       const v = blankToNull(b[k]);
       if (v !== undefined) set[k] = v;
     }
+    if (b.kind !== undefined && b.kind !== cur.kind) set.kind = b.kind;
     if (b.type !== undefined && b.type !== cur.type) set.type = b.type;
     if (b.host !== undefined && b.host !== cur.host) set.host = b.host;
     if (b.port !== undefined && b.port !== cur.port) set.port = b.port;
@@ -164,6 +177,7 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
         text: z.string().max(200_000),
         defaultType: z.enum(['socks5', 'http']).default('socks5'),
         dryRun: z.boolean().default(false),
+        kind: Kind.default('static'),
         provider: opt(80), country: opt(64),
       }),
     },
@@ -194,7 +208,7 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
       if (existing.has(endpointKey(p))) { results.push({ line, input: maskedLine(p), status: 'duplicate', error: 'already in pool' }); continue; }
       if (dryRun) { results.push({ line, input: maskedLine(p), status: 'created' }); continue; }
       const [row] = await db.insert(schema.proxies).values({
-        type: p.type, host: p.host, port: p.port, username: p.username, passwordEnc: p.password ? sealSecret(p.password) : null,
+        type: p.type, kind: req.body.kind, host: p.host, port: p.port, username: p.username, passwordEnc: p.password ? sealSecret(p.password) : null,
         provider: blankToNull(req.body.provider), country: blankToNull(req.body.country),
       }).onConflictDoNothing().returning({ id: schema.proxies.id });
       results.push(row ? { line, input: maskedLine(p), status: 'created', id: row.id } : { line, input: maskedLine(p), status: 'duplicate', error: 'already in pool' });
@@ -202,6 +216,28 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
     results.sort((a, b) => a.line - b.line);
     const count = (s: Result['status']) => results.filter((r) => r.status === s).length;
     return { dryRun, results, created: count('created'), duplicate: count('duplicate'), invalid: count('invalid') };
+  });
+
+  /**
+   * Probe an unsaved configuration (add/edit dialog) with the same check as saved entries. Stores nothing;
+   * the password is never echoed (the result only has egress IP, geo, latency, error). Not audit-logged.
+   */
+  app.post('/api/proxies/test', { schema: { body: TestBody } }, async (req) => {
+    const { id, type, host, port } = req.body;
+    const username = blankToNull(req.body.username) ?? null;
+    let password = blankToNull(req.body.password) ?? null;
+    if (!password && id) {
+      const cur = await mustGet(id);
+      // Only reuse the stored password for the same username (a changed user must not get the old secret).
+      if (cur.passwordEnc && username && username === cur.username) password = openSecret(cur.passwordEnc);
+    }
+    if (password && !username) throw badRequest('设置密码时必须填写用户名', 'proxy.password_without_username');
+    const result = await probeProxy({ type, host, port, ...(username ? { username } : {}), ...(password ? { password } : {}) })
+      .catch((err: Error): ProxyCheck => ({ at: new Date().toISOString(), ok: false, egressIp: null, latencyMs: null, country: null, city: null, error: err.message }));
+    if (password && result.error) {
+      for (const s of [password, encodeURIComponent(password)]) result.error = result.error.split(s).join('***');
+    }
+    return { result };
   });
 
   /** Check through the proxy from the API host (not via a device): egress IP, geo, latency. */

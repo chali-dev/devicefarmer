@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { DownOutlined, ExclamationCircleOutlined, MoreOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, ExclamationCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -8,7 +8,9 @@ import { api, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
+import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
+import DeviceThumb from '../components/DeviceThumb.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -23,9 +25,10 @@ type Action = 'start' | 'stop' | 'restart' | 'delete'
 const actionText = (a: Action) => t(`devices.${a}`)
 
 const counts = computed(() => {
-  const c = { total: store.list.length, running: 0, busy: 0, error: 0 }
+  const c = { total: store.list.length, running: 0, stopped: 0, busy: 0, error: 0 }
   for (const i of store.list) {
     if (i.status === 'running') c.running++
+    else if (i.status === 'stopped') c.stopped++
     else if (BUSY_STATUSES.includes(i.status)) c.busy++
     else if (i.status === 'error') c.error++
   }
@@ -49,11 +52,52 @@ type StatusGroup = 'running' | 'stopped' | 'busy' | 'error'
 const statusFilter = ref<StatusGroup | undefined>(queryParam<StatusGroup>(useRoute().query, 'status', ['running', 'stopped', 'busy', 'error']))
 const inGroup = (i: Instance, g: StatusGroup) => (g === 'busy' ? BUSY_STATUSES.includes(i.status) : i.status === g)
 const ownerFilter = ref<InstanceOwner | null>(null)
+// Search: name / id / phone id / image / proxy / egress IP; several terms separated by comma or space match any.
+const search = ref('')
+const terms = computed(() => search.value.toLowerCase().split(/[\s,，;；]+/).filter(Boolean))
+function matches(i: Instance) {
+  if (!terms.value.length) return true
+  const hay = [i.name, i.id, i.externalId, profileName(i.profile), i.proxy && proxyLabel(i.proxy), i.proxy?.host, i.proxyStatus?.egressIp]
+    .filter(Boolean).join(' ').toLowerCase()
+  return terms.value.some((q) => hay.includes(q))
+}
 const rows = computed(() => {
   const f = ownerFilter.value
   const s = statusFilter.value
-  return store.list.filter((i) => (!f || i.owners?.some((o) => o.id === f.id)) && (!s || inGroup(i, s)))
+  return store.list.filter((i) => (!f || i.owners?.some((o) => o.id === f.id)) && (!s || inGroup(i, s)) && matches(i))
 })
+const statusOptions = computed(() => [
+  { value: '', label: t('cloud.allPhones', { n: counts.value.total }) },
+  { value: 'running', label: `${t('devices.running')} (${counts.value.running})` },
+  { value: 'stopped', label: `${t('status.stopped')} (${counts.value.stopped})` },
+  { value: 'busy', label: `${t('devices.busy')} (${counts.value.busy})` },
+  { value: 'error', label: `${t('devices.error')} (${counts.value.error})` },
+])
+
+// ---- selection over the visible rows
+const allSelected = computed(() => rows.value.length > 0 && rows.value.every((i) => selectedKeys.value.includes(i.id)))
+const someSelected = computed(() => !allSelected.value && rows.value.some((i) => selectedKeys.value.includes(i.id)))
+function toggleAll(on: boolean) {
+  const visible = new Set(rows.value.map((i) => i.id))
+  selectedKeys.value = on ? [...new Set([...selectedKeys.value, ...visible])] : selectedKeys.value.filter((k) => !visible.has(k))
+}
+function toggleOne(id: string, on: boolean) {
+  selectedKeys.value = on ? [...selectedKeys.value, id] : selectedKeys.value.filter((k) => k !== id)
+}
+
+// ---- layout preferences (per browser)
+const PREF_KEY = 'devicefarmer.cloudPhones.view'
+function readPref(): { view: 'grid' | 'table'; panel: boolean } {
+  try { const p = JSON.parse(localStorage.getItem(PREF_KEY) ?? '{}'); return { view: p.view === 'table' ? 'table' : 'grid', panel: p.panel !== false } }
+  catch { return { view: 'grid', panel: true } }
+}
+const pref = reactive(readPref())
+watch(pref, (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify(p)) } catch { /* private mode */ } })
+
+// ---- slide-in remote control
+const phoneOpen = ref(false)
+const phoneId = ref<string | null>(null)
+function openPhone(id: string) { phoneId.value = id; phoneOpen.value = true }
 function filterByOwner(o: InstanceOwner) {
   ownerFilter.value = o
   const visible = new Set(rows.value.map((i) => i.id))
@@ -318,53 +362,56 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 </script>
 
 <template>
-  <a-space direction="vertical" size="middle" style="width: 100%">
-    <a-row :gutter="[16, 16]">
-      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic :title="t('devices.total')" :value="counts.total" /></a-card></a-col>
-      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic :title="t('devices.running')" :value="counts.running" /></a-card></a-col>
-      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic :title="t('devices.busy')" :value="counts.busy" /></a-card></a-col>
-      <a-col :xs="12" :md="6"><a-card size="small"><a-statistic :title="t('devices.error')" :value="counts.error" /></a-card></a-col>
-    </a-row>
-
-    <a-card :title="t('devices.list')" size="small">
-      <template #extra>
-        <a-space wrap>
-          <a-dropdown :disabled="!selectedKeys.length" :trigger="['click']">
-            <a-button :disabled="!selectedKeys.length">{{ selectedKeys.length ? t('devices.batchCount', { n: selectedKeys.length }) : t('devices.batch') }} <DownOutlined /></a-button>
-            <template #overlay>
-              <a-menu @click="({ key }: any) => onMenu(key as MenuKey, selectedKeys)">
-                <a-menu-item key="start">{{ t('devices.start') }}</a-menu-item>
-                <a-menu-item key="stop">{{ t('devices.stop') }}</a-menu-item>
-                <a-menu-item key="restart">{{ t('devices.restart') }}</a-menu-item>
-                <a-menu-item key="install">{{ t('devices.installApp') }}</a-menu-item>
-                <a-menu-item key="uninstall">{{ t('devices.uninstallApp') }}</a-menu-item>
-                <template v-if="auth.isAdmin">
-                  <a-menu-divider />
-                  <a-menu-item key="delete" danger>{{ t('devices.delete') }}</a-menu-item>
-                </template>
-              </a-menu>
+  <div class="cloud">
+    <div class="toolbar">
+      <a-tooltip :title="t('cloud.togglePanel')">
+        <a-button type="text" :disabled="pref.view !== 'grid'" @click="pref.panel = !pref.panel"><MenuFoldOutlined v-if="pref.panel" /><MenuUnfoldOutlined v-else /></a-button>
+      </a-tooltip>
+      <a-tooltip :title="t('cloud.selectAll')">
+        <a-checkbox :checked="allSelected" :indeterminate="someSelected" :disabled="!rows.length" @change="(e: any) => toggleAll(e.target.checked)" />
+      </a-tooltip>
+      <a-input v-model:value="search" allow-clear :placeholder="t('cloud.search')" class="search">
+        <template #prefix><SearchOutlined class="muted" /></template>
+      </a-input>
+      <a-select :value="statusFilter ?? ''" :options="statusOptions" class="status" @change="(v: any) => (statusFilter = v || undefined)" />
+      <a-dropdown :disabled="!selectedKeys.length" :trigger="['click']">
+        <a-button :disabled="!selectedKeys.length">{{ selectedKeys.length ? t('devices.batchCount', { n: selectedKeys.length }) : t('devices.batch') }} <DownOutlined /></a-button>
+        <template #overlay>
+          <a-menu @click="({ key }: any) => onMenu(key as MenuKey, selectedKeys)">
+            <a-menu-item key="start">{{ t('devices.start') }}</a-menu-item>
+            <a-menu-item key="stop">{{ t('devices.stop') }}</a-menu-item>
+            <a-menu-item key="restart">{{ t('devices.restart') }}</a-menu-item>
+            <a-menu-item key="install">{{ t('devices.installApp') }}</a-menu-item>
+            <a-menu-item key="uninstall">{{ t('devices.uninstallApp') }}</a-menu-item>
+            <template v-if="auth.isAdmin">
+              <a-menu-divider />
+              <a-menu-item key="delete" danger>{{ t('devices.delete') }}</a-menu-item>
             </template>
-          </a-dropdown>
-          <a-button v-if="auth.isAdmin" type="primary" @click="openCreate">{{ t('devices.createDevice') }}</a-button>
-          <a-button :loading="store.loading" @click="store.refresh()">{{ t('common.refresh') }}</a-button>
+          </a-menu>
+        </template>
+      </a-dropdown>
+      <div class="grow" />
+      <a-segmented v-model:value="pref.view" :options="[{ value: 'grid', label: t('cloud.viewGrid') }, { value: 'table', label: t('cloud.viewTable') }]" />
+      <a-tooltip :title="t('common.refresh')"><a-button :loading="store.loading" @click="store.refresh()"><template #icon><ReloadOutlined /></template></a-button></a-tooltip>
+      <a-button v-if="auth.isAdmin" type="primary" @click="openCreate"><template #icon><PlusOutlined /></template>{{ t('devices.createDevice') }}</a-button>
+    </div>
+
+    <a-alert v-if="showFailed" type="error" show-icon>
+      <template #icon><ExclamationCircleOutlined /></template>
+      <template #message>{{ t('devices.failedRecent', { n: failedTasks.length }) }}</template>
+      <template #action>
+        <a-space>
+          <a-button size="small" type="link" @click="failedOpen = true">{{ t('common.view') }}</a-button>
+          <a-button size="small" type="text" @click="dismissFailed">{{ t('common.ignore') }}</a-button>
         </a-space>
       </template>
+    </a-alert>
+    <div v-if="ownerFilter">
+      <span class="muted" style="margin-right: 8px">{{ t('devices.filter') }}</span>
+      <a-tag closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
+    </div>
 
-      <a-alert v-if="showFailed" type="error" show-icon style="margin-bottom: 12px">
-        <template #icon><ExclamationCircleOutlined /></template>
-        <template #message>{{ t('devices.failedRecent', { n: failedTasks.length }) }}</template>
-        <template #action>
-          <a-space>
-            <a-button size="small" type="link" @click="failedOpen = true">{{ t('common.view') }}</a-button>
-            <a-button size="small" type="text" @click="dismissFailed">{{ t('common.ignore') }}</a-button>
-          </a-space>
-        </template>
-      </a-alert>
-      <div v-if="ownerFilter || statusFilter" style="margin-bottom: 12px">
-        <span class="muted" style="margin-right: 8px">{{ t('devices.filter') }}</span>
-        <a-tag v-if="ownerFilter" closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
-        <a-tag v-if="statusFilter" closable color="blue" @close="statusFilter = undefined">{{ t('devices.statusTag', { status: t(`devices.${statusFilter}`) }) }}</a-tag>
-      </div>
+    <a-card v-if="pref.view === 'table'" size="small">
       <a-table
         :data-source="rows"
         :columns="columns"
@@ -377,7 +424,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a @click="router.push(`/instances/${record.id}`)">{{ record.name }}</a>
+            <a @click="openPhone(record.id)">{{ record.name }}</a>
           </template>
           <template v-else-if="column.key === 'profile'">
             <a-space :size="4">
@@ -418,7 +465,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-button size="small" type="link" :disabled="record.status !== 'running'" @click="router.push(`/instances/${record.id}`)">{{ t('devices.control') }}</a-button>
+              <a-button size="small" type="link" :disabled="record.status !== 'running'" @click="openPhone(record.id)">{{ t('devices.control') }}</a-button>
               <a-button size="small" type="link" @click="openLog(record.id)">{{ t('devices.log') }}</a-button>
               <a-dropdown :trigger="['click']" placement="bottomRight">
                 <a-button size="small" type="text"><MoreOutlined /></a-button>
@@ -442,7 +489,66 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       </a-table>
     </a-card>
 
-  </a-space>
+    <div v-else class="body">
+      <aside v-if="pref.panel" class="side">
+        <div class="side-head">{{ statusOptions.find((o) => o.value === (statusFilter ?? ''))?.label }}</div>
+        <div class="side-list">
+          <div v-for="i in rows" :key="i.id" class="item" :class="{ active: phoneOpen && phoneId === i.id }" @click="openPhone(i.id)">
+            <a-checkbox :checked="selectedKeys.includes(i.id)" @click.stop @change="(e: any) => toggleOne(i.id, e.target.checked)" />
+            <div class="item-main">
+              <div class="item-name">{{ i.name }}</div>
+              <div class="item-sub">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}<template v-if="i.proxy"> · {{ i.proxy.country ?? proxyLabel(i.proxy) }}</template></div>
+            </div>
+            <StatusTag :status="i.status" />
+          </div>
+          <div v-if="!rows.length" class="side-empty muted">{{ store.list.length ? t('cloud.noMatch') : '—' }}</div>
+        </div>
+      </aside>
+
+      <section class="grid">
+        <div v-for="i in rows" :key="i.id" class="card" :class="{ selected: selectedKeys.includes(i.id) }">
+          <div class="card-head">
+            <a-checkbox :checked="selectedKeys.includes(i.id)" @change="(e: any) => toggleOne(i.id, e.target.checked)" />
+            <span class="card-name" :title="i.name">{{ i.name }}</span>
+            <a-dropdown :trigger="['click']" placement="bottomRight">
+              <a-button size="small" type="text"><MoreOutlined /></a-button>
+              <template #overlay>
+                <a-menu @click="({ key }: any) => (key === 'log' ? openLog(i.id) : onMenu(key as MenuKey, [i.id]))">
+                  <a-menu-item key="start" :disabled="!canDo('start', i)">{{ t('devices.start') }}</a-menu-item>
+                  <a-menu-item key="stop" :disabled="!canDo('stop', i)">{{ t('devices.stop') }}</a-menu-item>
+                  <a-menu-item key="restart" :disabled="!canDo('restart', i)">{{ t('devices.restart') }}</a-menu-item>
+                  <a-menu-item key="install" :disabled="!canDo('install', i)">{{ t('devices.installApp') }}</a-menu-item>
+                  <a-menu-item key="uninstall" :disabled="!canDo('uninstall', i)">{{ t('devices.uninstallApp') }}</a-menu-item>
+                  <a-menu-item key="log">{{ t('devices.log') }}</a-menu-item>
+                  <template v-if="auth.isAdmin">
+                    <a-menu-divider />
+                    <a-menu-item key="delete" danger :disabled="!canDo('delete', i)">{{ t('devices.delete') }}</a-menu-item>
+                  </template>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
+          <div class="card-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
+            <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :width="i.spec.width" :height="i.spec.height">
+              <StatusTag :status="i.status" />
+              <span v-if="i.lastError" class="err" :title="i.lastError">{{ i.lastError }}</span>
+            </DeviceThumb>
+            <div class="badges">
+              <span class="badge">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}</span>
+              <span v-if="i.proxy" class="badge" :class="{ bad: i.proxyStatus && !i.proxyStatus.ok }" :title="netTitle(i)">{{ i.proxy.country ?? i.proxy.type.toUpperCase() }}</span>
+            </div>
+            <div v-if="i.status === 'running'" class="hover"><span>{{ t('cloud.clickToControl') }}</span></div>
+          </div>
+        </div>
+
+        <button v-if="auth.isAdmin" type="button" class="card add" @click="openCreate">
+          <span class="add-icon"><PlusOutlined /></span>
+          <span>{{ t('devices.createDevice') }}</span>
+        </button>
+        <div v-if="!rows.length && !auth.isAdmin" class="empty"><a-empty :description="store.list.length ? t('cloud.noMatch') : t('devices.emptyUser')" /></div>
+      </section>
+    </div>
+  </div>
 
   <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :confirm-loading="creating" :ok-text="kind === 'local' ? t('common.create') : t('devices.ext.addN', { n: pickedPhones.length })" :cancel-text="t('common.cancel')" :width="kind === 'local' ? 520 : 760" @ok="submitCreate">
     <a-form-item :label="t('devices.ext.kind')" style="margin-bottom: 16px">
@@ -560,9 +666,48 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
   </a-modal>
 
   <DeviceLogDrawer v-model:open="logOpen" :instance="logInstance" />
+  <CloudPhoneDrawer v-model:open="phoneOpen" :instance-id="phoneId" :profile-name="profileName" @menu="onMenu" @log="openLog" />
 </template>
 
 <style scoped>
+.cloud { display: flex; flex-direction: column; gap: 12px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--cp-bg-container); border-radius: 8px; }
+.search { width: min(340px, 100%); }
+.status { width: 150px; }
+.grow { flex: 1; }
+.body { display: flex; gap: 12px; align-items: flex-start; }
+.side { width: 260px; flex: none; background: var(--cp-bg-container); border-radius: 8px; position: sticky; top: 12px; max-height: calc(100vh - 160px); display: flex; flex-direction: column; }
+.side-head { padding: 12px 14px; font-weight: 600; border-bottom: 1px solid var(--cp-border-secondary); }
+.side-list { overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.side-empty { padding: 24px 0; text-align: center; }
+.item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--cp-border-secondary); border-radius: 8px; cursor: pointer; }
+.item:hover { background: var(--cp-bg-hover); }
+.item.active { border-color: var(--cp-primary); background: var(--cp-primary-bg); }
+.item-main { flex: 1; min-width: 0; }
+.item-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-sub { font-size: 12px; color: var(--cp-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; padding: 12px; background: var(--cp-bg-container); border-radius: 8px; align-items: start; }
+.card { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--cp-border-secondary); border-radius: 10px; background: var(--cp-bg-container); min-width: 0; }
+.card.selected { border-color: var(--cp-primary); }
+.card-head { display: flex; align-items: center; gap: 8px; }
+.card-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-screen { position: relative; cursor: pointer; border-radius: 10px; outline: none; }
+.card-screen:focus-visible { box-shadow: 0 0 0 2px var(--cp-primary); }
+.badges { position: absolute; top: 6px; left: 6px; right: 6px; display: flex; gap: 4px; flex-wrap: wrap; pointer-events: none; }
+.badge { padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 18px; color: #fff; background: rgba(0, 0, 0, 0.55); }
+.badge.bad { background: var(--cp-error); }
+.hover { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 10px; background: rgba(0, 0, 0, 0.35); color: #fff; opacity: 0; transition: opacity 0.15s; }
+.card-screen:hover .hover, .card-screen:focus-visible .hover { opacity: 1; }
+.err { color: var(--cp-error); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.add { align-self: stretch; align-items: center; justify-content: center; gap: 10px; min-height: 320px; border-style: dashed; background: var(--cp-fill-alter); color: var(--cp-text-secondary); cursor: pointer; font: inherit; }
+.add:hover { border-color: var(--cp-primary); color: var(--cp-primary); }
+.add-icon { width: 36px; height: 36px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--cp-primary-bg); color: var(--cp-primary); font-size: 16px; }
+.empty { grid-column: 1 / -1; padding: 40px 0; }
+@media (max-width: 768px) {
+  .side { display: none; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); padding: 8px; gap: 8px; }
+  .status { width: 130px; }
+}
 .muted { color: var(--cp-text-tertiary); }
 .faint { color: var(--cp-text-quaternary); }
 </style>
