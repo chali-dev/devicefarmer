@@ -100,24 +100,65 @@ let decoder: VideoDecoder | null = null
 let codec = ''
 let avcConfig: Uint8Array | null = null
 let needKey = true
-let nextFrame: VideoFrame | null = null
 let rafId = 0
 const MAX_DECODE_QUEUE = 4
+
+/*
+ * Playout buffer. Through a high-latency adb link (BitBrowser's SSH tunnel, ~0.3 s RTT, no adb
+ * `delayed_ack`) frames arrive in bursts, one burst per round trip; painting only the newest frame per
+ * display refresh then shows ~5-7 fps although ~20 arrive. So frames are shown at their own pts cadence,
+ * delayed by the recent worst lateness (max of arrival - pts over JITTER_WINDOW_MS). On a smooth link
+ * (local redroid) that lateness is flat and the added delay stays near zero. Bounded by MAX_JITTER_MS.
+ */
+const JITTER_WINDOW_MS = 2000
+const MAX_JITTER_MS = 600
+let frames_q: VideoFrame[] = []
+let lateness: { at: number; ms: number }[] = []
+let minLate = Infinity
+function playoutDelay(now: number): number {
+  while (lateness.length && now - lateness[0]!.at > JITTER_WINDOW_MS) lateness.shift()
+  let max = 0
+  for (const l of lateness) if (l.ms > max) max = l.ms
+  return Math.min(MAX_JITTER_MS, max)
+}
+function clearQueue() {
+  for (const f of frames_q) f.close()
+  frames_q = []
+  lateness = []
+  minLate = Infinity
+}
 
 function closeDecoder() {
   if (decoder && decoder.state !== 'closed') { try { decoder.close() } catch { /* already closed */ } }
   decoder = null
-  nextFrame?.close()
-  nextFrame = null
+  clearQueue()
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
   needKey = true
 }
 
-function paintLatest() {
+function onDecoded(f: VideoFrame) {
+  const now = performance.now()
+  // Lateness relative to the earliest frame seen (device pts and our clock have different origins).
+  const raw = now - f.timestamp / 1000
+  // pts restart with the encoder (rotation, reset for a late joiner): start the estimate over.
+  if (raw < minLate || raw - minLate > 5000) { if (raw - minLate > 5000) lateness = []; minLate = raw }
+  lateness.push({ at: now, ms: raw - minLate })
+  frames_q.push(f)
+  if (!rafId) rafId = requestAnimationFrame(paintDue)
+}
+
+/** Paints the newest frame whose playout time has come; older due frames are skipped. */
+function paintDue() {
   rafId = 0
-  const f = nextFrame
-  nextFrame = null
+  const now = performance.now()
+  const delay = playoutDelay(now)
+  let f: VideoFrame | null = null
+  while (frames_q.length && (frames_q[0]!.timestamp / 1000 + minLate + delay <= now || frames_q.length > 30)) {
+    f?.close()
+    f = frames_q.shift()!
+  }
+  if (frames_q.length) rafId = requestAnimationFrame(paintDue)
   const c = canvas.value
   if (!f) return
   if (c) {
@@ -132,7 +173,7 @@ function ensureDecoder(): VideoDecoder | null {
   if (decoder && decoder.state !== 'closed') return decoder
   if (!codec) return null
   decoder = new VideoDecoder({
-    output: (f) => { nextFrame?.close(); nextFrame = f; if (!rafId) rafId = requestAnimationFrame(paintLatest) },
+    output: onDecoded,
     error: () => { decoder = null; needKey = true }, // recovers at the next key frame
   })
   decoder.configure({ codec, optimizeForLatency: true })
