@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -67,12 +68,12 @@ const last = computed(() => data.value?.lastCleanup ?? null)
         <a-space wrap>
           <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
           <a-button :loading="running" @click="runNow">{{ t('settings.retention.runNow') }}</a-button>
-          <span v-if="data?.retention.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(data.retention.updatedAt).toLocaleString() }) }}</span>
+          <span v-if="data?.retention.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(data.retention.updatedAt).toLocaleString(dateLocale()) }) }}</span>
         </a-space>
       </a-form>
       <p v-if="last" class="last">
         {{ t('settings.retention.lastRun') }}:
-        <router-link :to="{ path: '/tasks', query: { task: last.id } }">{{ new Date(last.createdAt).toLocaleString() }}</router-link>
+        <router-link :to="{ path: '/tasks', query: { task: last.id } }">{{ new Date(last.createdAt).toLocaleString(dateLocale()) }}</router-link>
         · {{ t(`tasks.status.${last.status}`) }}
         <template v-if="last.result">· {{ t('settings.retention.lastResult', { tasks: last.result.tasks, logs: last.result.logs }) }}</template>
       </p>

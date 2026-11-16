@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 /**
@@ -24,7 +25,7 @@ onMounted(() => {
 onBeforeUnmount(() => ro?.disconnect())
 
 const fmt = (v: number) => (props.format ? props.format(v) : String(v))
-const fmtT = (t: number) => (props.formatTime ? props.formatTime(t) : new Date(t).toLocaleDateString())
+const fmtT = (t: number) => (props.formatTime ? props.formatTime(t) : new Date(t).toLocaleDateString(dateLocale()))
 const PAD = { l: 56, r: 16, t: 12, b: 26 }
 
 const geo = computed(() => {
@@ -77,7 +78,7 @@ const hp = computed(() => (hover.value === null ? null : geo.value.xy[hover.valu
     </svg>
     <div v-if="hp" class="tip" :style="{ left: `${Math.min(hp.x + 10, geo.w - 150)}px`, top: `${Math.max(hp.y - 44, 0)}px` }">
       <div class="tip-v">{{ fmt(hp.v) }}</div>
-      <div class="tip-t">{{ new Date(hp.t).toLocaleString() }}</div>
+      <div class="tip-t">{{ new Date(hp.t).toLocaleString(dateLocale()) }}</div>
     </div>
   </div>
 </template>

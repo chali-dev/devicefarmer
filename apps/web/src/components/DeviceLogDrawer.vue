@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
@@ -91,7 +92,7 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
         <a-table :data-source="taskRows" :columns="taskColumns" row-key="id" size="small" :loading="tasksLoading"
           :pagination="{ pageSize: 20, size: 'small', hideOnSinglePage: true }" :locale="{ emptyText: t('logs.noTasks') }">
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString() }}</template>
+            <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
             <template v-else-if="column.key === 'type'">{{ taskText(record.type) }}</template>
             <template v-else-if="column.key === 'status'">
               <a-tag :color="TASK_STATUS_COLOR[record.status as Task['status']]">{{ taskStatusText(record.status) }}</a-tag>

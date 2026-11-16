@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -117,7 +118,7 @@ async function savePw() {
             <a-switch :checked="!record.disabled" size="small" :disabled="!!lockReason(record)" @change="(v: any) => patch(record, { disabled: !v })" />
           </a-tooltip>
         </template>
-        <template v-else-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString() }}</template>
+        <template v-else-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'ops'">
           <a-space :size="4">
             <a-tooltip :title="lockReason(record)">

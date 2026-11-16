@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -33,7 +34,7 @@ async function saveKey(clear = false) {
       <p>
         {{ t('tracked.youtubeKeyState') }}:
         <a-tag :color="keyState?.apiKeySet ? 'success' : 'default'">{{ keyState?.apiKeySet ? t('tracked.keySet') : t('tracked.keyNotSet') }}</a-tag>
-        <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(keyState.updatedAt).toLocaleString() }) }}</span>
+        <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(keyState.updatedAt).toLocaleString(dateLocale()) }) }}</span>
       </p>
       <a-input-password v-model:value="keyInput" :placeholder="keyState?.apiKeySet ? t('tracked.keyReplace') : 'AIza…'" autocomplete="off" :maxlength="200" />
       <a-space style="margin-top: 12px">

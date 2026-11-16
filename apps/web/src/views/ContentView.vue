@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
@@ -28,7 +29,7 @@ const page = reactive({ current: 1, pageSize: 20 })
 const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), category: undefined as string | undefined, tag: undefined as string | undefined, ownerId: undefined as string | undefined })
 const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
 const users = ref<ManagedUser[]>([])
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`content.status.${s}`)
 
 async function load() {

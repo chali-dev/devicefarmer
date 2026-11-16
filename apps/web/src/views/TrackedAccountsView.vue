@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import { StarFilled, StarOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
@@ -271,7 +272,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
         </template>
         <template v-else-if="column.key === 'followers'">
-          <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString() : undefined">
+          <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString(dateLocale()) : undefined">
             <span class="num">{{ compactNumber(record.followers) }}</span>
           </a-tooltip>
           <div v-if="record.followersDelta !== null" :class="['delta small', record.followersDelta >= 0 ? 'up' : 'down']">
@@ -279,7 +280,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           </div>
         </template>
         <template v-else-if="column.key === 'checked'">
-          <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString() }}</span>
+          <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
           <span v-else class="muted">{{ t('tracked.never') }}</span>
           <div v-if="record.lastSource" class="muted small">{{ t(`tracked.sources.${record.lastSource}`) }}</div>
         </template>

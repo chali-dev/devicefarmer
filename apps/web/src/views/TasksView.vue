@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { logText } from '../api/logText'
 import { useRoute } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import {
@@ -92,7 +94,7 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 }
 
 // ---- display helpers
-const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
+const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`
   const s = Math.round(ms / 100) / 10
@@ -327,7 +329,7 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
         <a-empty v-if="!logs.length" :description="t('taskCenter.noLogs')" />
         <a-timeline v-else>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="LOG_COLOR[l.level]">
-            <div class="log-head"><span class="muted">{{ new Date(l.ts).toLocaleString() }}</span> {{ l.message }}</div>
+            <div class="log-head"><span class="muted">{{ new Date(l.ts).toLocaleString(dateLocale()) }}</span> {{ logText(l.message, l.data) }}</div>
             <pre v-if="l.data && Object.keys(l.data).length" class="log-data">{{ json(l.data) }}</pre>
           </a-timeline-item>
         </a-timeline>

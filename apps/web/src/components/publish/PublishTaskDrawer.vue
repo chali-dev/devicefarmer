@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
+import { logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
 import { PUBLISH_STATUS_COLOR, SOCIAL_LOGIN_COLOR, TASK_STATUS_COLOR, taskStatusText, type PublishLog, type PublishRun, type PublishTaskItem } from '../../api/types'
 import MediaStrip from '../content/MediaStrip.vue'
@@ -18,7 +20,7 @@ const logs = ref<PublishLog[]>([])
 const runs = ref<PublishRun[]>([])
 const loading = ref(false)
 const busy = ref(false)
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 async function load() {
   if (!props.taskId) return
@@ -190,7 +192,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-timeline>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="l.level === 'error' ? 'red' : l.level === 'warn' ? 'orange' : 'blue'">
             <span class="muted">{{ fmt(l.at) }} · {{ t('publish.roundShort', { n: l.attemptNo ?? 1 }) }}<template v-if="l.actorName"> · {{ l.actorName }}</template></span>
-            <div>{{ l.message }}</div>
+            <div>{{ logText(l.message, l.data) }}</div>
             <div v-if="l.data && Object.keys(l.data).length" class="data">{{ JSON.stringify(l.data) }}</div>
           </a-timeline-item>
         </a-timeline>

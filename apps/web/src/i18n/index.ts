@@ -58,3 +58,6 @@ watch(locale, (l) => {
     document.title = t('app.title')
   }
 }, { immediate: true })
+
+/** BCP 47 tag for Date/Number toLocale*String(): follows the UI language, not the browser's. */
+export const dateLocale = (): string => i18n.global.locale.value

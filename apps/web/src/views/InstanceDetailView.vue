@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -280,7 +281,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
                 </template>
                 <span v-else class="muted">{{ t('detail.google.gsfPending') }}</span>
               </a-descriptions-item>
-              <a-descriptions-item :label="t('detail.google.checkedAt')">{{ new Date(google.checkedAt).toLocaleString() }}</a-descriptions-item>
+              <a-descriptions-item :label="t('detail.google.checkedAt')">{{ new Date(google.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
             </a-descriptions>
             <a-alert v-if="!google.googleAccounts" type="info" show-icon style="margin-top: 8px">
               <template #message>{{ t('detail.google.beforeLogin') }}</template>
@@ -373,7 +374,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
           <a-space v-if="auth.isAdmin" wrap style="margin-top: 8px">
             <a-select
               v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
-              :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" style="min-width: 320px; max-width: 100%"
+              :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" style="min-width: min(320px, 70vw); max-width: 100%"
               @dropdown-visible-change="(o: boolean) => o && loadFreeProxies()"
             />
             <a-button type="primary" size="small" :loading="proxySaving" :disabled="!proxyChoice || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" @click="bindProxy(proxyChoice!)">{{ t('detail.proxy.bindApply') }}</a-button>
@@ -388,7 +389,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
             <a-descriptions-item :label="t('detail.proxy.egressIp')">{{ inst.proxyStatus.egressIp ?? '—' }}</a-descriptions-item>
             <a-descriptions-item :label="t('detail.proxy.latency')">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
             <a-descriptions-item :label="t('detail.proxy.dns')">{{ inst.proxyStatus.dnsOk ? t('detail.proxy.ok') : t('detail.proxy.dnsFailed') }}</a-descriptions-item>
-            <a-descriptions-item :label="t('detail.proxy.checkedAt')">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString() }}</a-descriptions-item>
+            <a-descriptions-item :label="t('detail.proxy.checkedAt')">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
             <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
           </a-descriptions>
           <div class="hint" style="margin-top: 8px">{{ t('detail.proxy.killSwitch') }}</div>
@@ -431,7 +432,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
                   <a-badge :status="TASK_STATUS_BADGE[item.status as keyof typeof TASK_STATUS_BADGE]" :text="taskText(item.type)" />
                   <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
                 </a-space>
-                <template #extra><span class="time">{{ new Date(item.createdAt).toLocaleString() }}</span></template>
+                <template #extra><span class="time">{{ new Date(item.createdAt).toLocaleString(dateLocale()) }}</span></template>
               </a-list-item>
             </template>
           </a-list>

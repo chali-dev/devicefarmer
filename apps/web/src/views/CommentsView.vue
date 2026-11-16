@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
@@ -30,7 +31,7 @@ const tab = computed<Tab>({
 const QUEUE: CommentReplyStatus[] = ['draft', 'approved', 'scheduled', 'sending', 'awaiting_operator']
 const HISTORY: CommentReplyStatus[] = ['sent', 'failed', 'rejected', 'cancelled']
 const STATUSES: CommentStatus[] = ['new', 'read', 'replied', 'hidden', 'ignored']
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const errText = (code: string | null, raw: string | null, platform?: string) => (code ? codeText(code, { platform: platform ?? '' }, raw ?? code) : raw ?? '')
 
 const accounts = ref<CommentAccount[]>([])

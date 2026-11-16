@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { DownOutlined, ExclamationCircleOutlined, MoreOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
@@ -409,7 +410,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
   <a-modal v-model:open="failedOpen" :title="t('devices.failedTitle')" :footer="null" :width="760">
     <a-table :data-source="failedTasks" :columns="failedColumns" row-key="id" size="small" :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true }">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString() }}</template>
+        <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'device'">
           <a @click="failedOpen = false; router.push(`/instances/${record.instanceId}`)">{{ store.byId.get(record.instanceId)?.name ?? record.instanceName }}</a>
         </template>

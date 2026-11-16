@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
@@ -301,7 +302,7 @@ const rowSelection = computed(() => ({
   selectedRowKeys: selected.value,
   onChange: (keys: (string | number)[]) => { selected.value = keys.map(String) },
 }))
-const fmtTime = (s: string) => new Date(s).toLocaleString()
+const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 </script>
 
 <template>
@@ -373,7 +374,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString()
             <div class="hint">
               {{ m.fileType === 'video' ? t('media.video') : t('media.image') }} · {{ fmtSize(m.fileSize) }}<template v-if="m.width"> · {{ m.width }}×{{ m.height }}</template>
             </div>
-            <div class="hint">{{ new Date(m.createdAt).toLocaleString() }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
+            <div class="hint">{{ new Date(m.createdAt).toLocaleString(dateLocale()) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
             <div v-if="m.categoryName || m.tags.length" class="tags">
               <a-tag v-if="m.categoryName" color="blue"><FolderOutlined /> {{ m.categoryName }}</a-tag>
               <a-tag v-for="x in m.tags" :key="x">{{ x }}</a-tag>

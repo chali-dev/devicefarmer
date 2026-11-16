@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
+import { commentActionText, logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
 import {
   COMMENT_REPLY_STATUS_COLOR, COMMENT_STATUS_COLOR, type CommentItem, type CommentLog, type CommentReplyItem, type CommentRules, type CommentTemplate,
@@ -26,7 +28,7 @@ const logs = ref<CommentLog[]>([])
 const mode = ref<{ mode: 'api' | 'manual'; reason: string | null } | null>(null)
 const loading = ref(false)
 const busy = ref(false)
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const DONE = ['failed', 'rejected', 'cancelled']
 
 const form = reactive({ text: '', templateId: undefined as string | undefined, at: null as Dayjs | null })
@@ -227,9 +229,9 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
         <a-divider orientation="left">{{ t('comments.logs') }}</a-divider>
         <a-timeline>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="LOG_COLOR[l.level]">
-            <span class="muted">{{ fmt(l.at) }}</span> <b>{{ l.action === 'blocked' ? t('comments.blocked') : l.action }}</b>
+            <span class="muted">{{ fmt(l.at) }}</span> <b>{{ commentActionText(l.action) }}</b>
             <span v-if="l.code"> · {{ errText(l.code, l.message) }}</span>
-            <span v-else-if="l.message"> · {{ l.message }}</span>
+            <span v-else-if="l.message"> · {{ logText(l.message, l.data) }}</span>
             <span v-if="l.actorName" class="muted"> · {{ l.actorName }}</span>
           </a-timeline-item>
         </a-timeline>

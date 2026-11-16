@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
@@ -57,7 +58,7 @@ watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s &&
 const metric = ref<TrackedMetric>('followers')
 const metricText = (m: TrackedMetric) => t(`tracked.metrics.${m}`)
 const series = computed(() => snapshots.value.filter((s) => s[metric.value] !== null).map((s) => ({ t: new Date(s.capturedAt).getTime(), v: s[metric.value]! })))
-const fmtFull = (n: number | null) => (n === null ? '—' : n.toLocaleString())
+const fmtFull = (n: number | null) => (n === null ? '—' : n.toLocaleString(dateLocale()))
 
 const snapColumns = computed(() => [
   { title: t('tracked.capturedAt'), key: 'capturedAt', width: 170 },
@@ -148,7 +149,7 @@ function removePost(p: TrackedPost) {
   })
 }
 const isHttp = (u: string | null) => !!u && /^https?:\/\//i.test(u)
-const when = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
+const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 </script>
 
 <template>
@@ -190,7 +191,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
         <a-col v-for="m in metrics" :key="m" :xs="12" :sm="6">
           <a-statistic :title="metricText(m)" :value="acc.latest?.[m] ?? undefined" :formatter="({ value }: any) => fmtFull(value ?? null)" />
           <div v-if="m === 'followers' && acc.followersDelta !== null" :class="['delta', acc.followersDelta >= 0 ? 'up' : 'down']">
-            {{ acc.followersDelta >= 0 ? '+' : '' }}{{ acc.followersDelta.toLocaleString() }}
+            {{ acc.followersDelta >= 0 ? '+' : '' }}{{ acc.followersDelta.toLocaleString(dateLocale()) }}
           </div>
         </a-col>
       </a-row>

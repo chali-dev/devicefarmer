@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons-vue'
@@ -33,7 +34,7 @@ const platforms = ref<PublishPlatform[]>([])
 const users = ref<ManagedUser[]>([])
 const filters = reactive({ q: '', platform: undefined as string | undefined, ownerId: undefined as string | undefined, status: queryParam<PublishStatus>(route.query, 'status') })
 const contentId = computed(() => (typeof route.query.contentId === 'string' ? route.query.contentId : undefined))
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`publish.status.${s}`)
 const BADGE: Record<PublishStatus, 'default' | 'processing' | 'success' | 'error' | 'warning'> = {
   pending: 'default', scheduled: 'default', running: 'processing', awaiting_operator: 'warning', published: 'success', failed: 'error', cancelled: 'default',

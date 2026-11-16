@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../../i18n'
 import { CheckOutlined, MinusOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
@@ -126,7 +127,7 @@ async function copy(text: string) {
               <a-button type="primary" :loading="saving === a.platform" :disabled="!forms[a.platform]!.clientId.trim()" @click="save(a)">{{ t('common.save') }}</a-button>
               <a-button v-if="a.clientSecretSet" @click="clearSecret(a)">{{ t('platforms.clearSecret') }}</a-button>
               <a-button v-if="a.clientId" danger @click="removeApp(a)">{{ t('common.delete') }}</a-button>
-              <span v-if="a.updatedAt" class="muted small">{{ t('platforms.updatedAt', { at: new Date(a.updatedAt).toLocaleString() }) }}</span>
+              <span v-if="a.updatedAt" class="muted small">{{ t('platforms.updatedAt', { at: new Date(a.updatedAt).toLocaleString(dateLocale()) }) }}</span>
             </a-space>
           </a-form>
         </a-card>

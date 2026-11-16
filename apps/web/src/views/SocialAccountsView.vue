@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
@@ -50,7 +51,7 @@ const filters = reactive({
 const platformName = (id: string) => platforms.value.find((p) => p.id === id)?.name ?? id
 const loginText = (s: SocialLoginStatus) => t(`social.login.${s}`)
 const accountText = (s: SocialAccountStatus) => t(`social.account.${s}`)
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString() : '—')
+const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 async function loadMeta() {
   try {

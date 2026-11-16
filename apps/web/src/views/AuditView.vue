@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
 import { DownloadOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -143,7 +144,7 @@ const columns = computed(() => [
       :pagination="pagination" :scroll="{ x: 900 }" @change="onTableChange"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString() }}</template>
+        <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'user'">
           <span v-if="record.username">{{ record.username }}</span>
           <a-typography-text v-else type="secondary">{{ record.userId ? t('common.system') : t('audit.anonymous') }}</a-typography-text>

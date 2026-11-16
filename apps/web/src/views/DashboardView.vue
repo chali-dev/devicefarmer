@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { dateLocale } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -64,7 +65,7 @@ onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer); if (poll) clearIn
 
 const w = computed(() => data.value?.widgets ?? {})
 const has = (k: string) => !!data.value?.order.includes(k)
-const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString() : '—')
+const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y!, m! - 1, dd!).getTime() }
 const trendPoints = computed(() => (w.value.publishing?.trend ?? []).map((r) => ({ t: dayTs(r.day), v: r.published })))
 const trendFailed = computed(() => (w.value.publishing?.trend ?? []).reduce((s, r) => s + r.failed, 0))
@@ -97,7 +98,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
           v-if="auth.isAdmin" v-model:value="asUser" allow-clear show-search option-filter-prop="label" style="width: 220px"
           :placeholder="t('dashboard.allUsers')" :options="userOptions"
         />
-        <span v-if="data" class="muted small">{{ t('dashboard.updatedAt', { at: new Date(data.generatedAt).toLocaleTimeString() }) }}</span>
+        <span v-if="data" class="muted small">{{ t('dashboard.updatedAt', { at: new Date(data.generatedAt).toLocaleTimeString(dateLocale()) }) }}</span>
         <a-button size="small" :loading="loading" @click="load"><ReloadOutlined /> {{ t('common.refresh') }}</a-button>
       </a-space>
     </div>
