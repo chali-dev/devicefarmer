@@ -41,7 +41,7 @@ async function attachDevice(inst: Instance): Promise<void> {
   // adb first, then boot via adb getprop: identical for redroid and the emulator.
   const serial = adb.serialFor(inst.adbPort);
   await waitUntil('adb connection', async () => {
-    await adb.connect(inst.adbPort);
+    await adb.ensureConnected(inst.adbPort, (await adb.states()).get(serial));
     return (await adb.states()).get(serial) === 'device';
   }, BOOT_TIMEOUT_MS);
   await updateInstance(inst.id, { adbState: 'device' });

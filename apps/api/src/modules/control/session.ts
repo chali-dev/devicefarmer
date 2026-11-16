@@ -100,7 +100,8 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           upstream.on('error', (err) => fail(`screen stream error: ${err.message}`, 4010));
           send({ type: 'ready', width: inst.spec.width, height: inst.spec.height });
         } catch (err) {
-          return fail(err instanceof HttpError ? err.message : 'session setup failed', err instanceof HttpError && err.statusCode === 403 ? 4003 : 4000);
+          if (!(err instanceof HttpError)) req.log.warn({ err, instanceId }, 'control session setup failed');
+          return fail(err instanceof HttpError ? err.message : `session setup failed: ${(err as Error).message}`, err instanceof HttpError && err.statusCode === 403 ? 4003 : 4000);
         }
         return;
       }

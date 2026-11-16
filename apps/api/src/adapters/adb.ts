@@ -22,6 +22,8 @@ export function isProtectedPackage(pkg: string): boolean {
   return PROTECTED_PREFIXES.some((p) => pkg === p || pkg.startsWith(`${p}.`));
 }
 
+const OFFLINE_RECONNECT_MS = 10_000;
+
 export class AdbAdapter {
   private readonly client: Client;
 
@@ -35,6 +37,29 @@ export class AdbAdapter {
 
   async connect(adbPort: number): Promise<string> {
     return this.client.connect(this.deviceHost, adbPort);
+  }
+
+  /** serial -> since when it has been seen "offline" (see ensureConnected). */
+  private readonly offlineSince = new Map<string, number>();
+
+  /**
+   * Connects, or repairs a stale connection. When the far end of a TCP adb connection goes away and
+   * comes back (e.g. a BitBrowser SSH tunnel renewed on the same local port), the adb server keeps the
+   * old transport as "offline" and `adb connect` only answers "already connected", so it never heals.
+   * A transport offline for longer than OFFLINE_RECONNECT_MS is dropped and connected again; shorter
+   * offline spells are left alone, since adbd briefly reports offline during its handshake at boot.
+   */
+  async ensureConnected(adbPort: number, state: string | undefined): Promise<void> {
+    const serial = this.serialFor(adbPort);
+    if (state === 'device') { this.offlineSince.delete(serial); return; }
+    if (state === 'offline') {
+      const since = this.offlineSince.get(serial) ?? Date.now();
+      this.offlineSince.set(serial, since);
+      if (Date.now() - since < OFFLINE_RECONNECT_MS) return;
+      this.offlineSince.delete(serial);
+      await this.disconnect(adbPort);
+    }
+    await this.connect(adbPort);
   }
 
   async disconnect(adbPort: number): Promise<void> {

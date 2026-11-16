@@ -25,10 +25,8 @@ type StfDevices = Map<string, { present?: boolean; ready?: boolean; owner?: { em
 async function observeAdb(log: FastifyBaseLogger, inst: Instance, adbStates: AdbStates, stfBySerial: StfDevices, patch: Partial<Instance>): Promise<boolean> {
   const serial = adb.serialFor(inst.adbPort);
   let adbState = adbStates.get(serial) ?? 'disconnected';
-  if (adbState !== 'device') {
-    // Self-heal: re-attach dropped TCP adb connections.
-    await adb.connect(inst.adbPort).catch(() => undefined);
-  }
+  // Self-heal: re-attach dropped TCP adb connections and repair stale "offline" ones.
+  await adb.ensureConnected(inst.adbPort, adbStates.get(serial)).catch(() => undefined);
   const booted = adbState === 'device' && (inst.bootCompleted || await adb.bootCompleted(inst.adbPort));
   const dev = stfBySerial.get(serial);
   const stfReady = Boolean(dev?.present && dev.ready) && adbState === 'device';
