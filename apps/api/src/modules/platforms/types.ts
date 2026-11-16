@@ -49,6 +49,12 @@ export interface Authed {
   app: PlatformApp;
   signal?: AbortSignal;
   log?: (message: string, data?: Record<string, unknown>) => Promise<void> | void;
+  /**
+   * Publishing only: called right before the request after which the post may exist on the platform
+   * (IG media_publish, the last upload chunk of TikTok/YouTube). Any failure after it is "outcome
+   * unknown" and must never be retried automatically (it could publish twice). Idempotent.
+   */
+  commit?: () => Promise<void>;
 }
 
 export interface OwnProfile {

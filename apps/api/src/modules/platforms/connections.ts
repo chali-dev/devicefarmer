@@ -96,7 +96,7 @@ async function setState(id: string, status: PlatformConnection['status'], err: u
  * the connection `expired` and throw platform.auth_expired; a transient failure with a still-valid
  * token keeps using it.
  */
-export async function authed(conn: PlatformConnection, opts: Pick<Authed, 'signal' | 'log'> = {}): Promise<Authed> {
+export async function authed(conn: PlatformConnection, opts: Pick<Authed, 'signal' | 'log' | 'commit'> = {}): Promise<Authed> {
   const adapter = requireAdapter(conn.platform);
   if (conn.status === 'expired' || conn.status === 'revoked') throw authExpired(adapter.name, conn.lastError ?? undefined);
   const app = await platformApp(conn.platform, adapter.name);
@@ -147,7 +147,7 @@ async function recordCallError(conn: PlatformConnection, err: unknown): Promise<
 }
 
 /** Runs `fn` with the account's authed connection; records failures on the connection. */
-export async function withConnection<T>(socialAccountId: string, fn: (a: Authed) => Promise<T>, opts: Pick<Authed, 'signal' | 'log'> = {}): Promise<T> {
+export async function withConnection<T>(socialAccountId: string, fn: (a: Authed) => Promise<T>, opts: Pick<Authed, 'signal' | 'log' | 'commit'> = {}): Promise<T> {
   const conn = await connectionFor(socialAccountId);
   if (!conn) throw platformError(409, 'not_connected', '该账号未通过官方接口授权');
   const a = await authed(conn, opts);

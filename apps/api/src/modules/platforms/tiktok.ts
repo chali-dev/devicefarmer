@@ -21,7 +21,8 @@ import type { Authed, PlatformAdapter, PlatformAppOptions, PublishInput, TokenSe
  */
 const NAME = 'TikTok';
 const POLL_MS = 5000;
-const POLL_MAX_MS = 15 * 60_000;
+/** Status polling budget; must stay well under PUBLISH_TIMEOUT_MS (a timeout after the upload is "outcome unknown"). */
+const POLL_MAX_MS = 5 * 60_000;
 const MIN_CHUNK = 5 * 1024 * 1024;
 const MAX_SINGLE = 64 * 1024 * 1024;
 const CHUNK = 10 * 1024 * 1024;
@@ -39,7 +40,9 @@ function apiError(res: Response, body: unknown, msg: (raw: string | undefined) =
   if (code === 'scope_not_authorized' || code === 'scope_permission_missed' || code.startsWith('unaudited_client')) {
     return platformError(403, 'permission_missing', `${NAME} 授权缺少所需权限或应用未通过审核：${text}`, p);
   }
-  if (code === 'rate_limit_exceeded' || code.startsWith('spam_risk') || code === 'reached_active_user_cap' || res.status === 429) {
+  // spam_risk_*: TikTok flagged the account/content. Retrying would only make it worse: fail at once.
+  if (code.startsWith('spam_risk')) return platformError(403, 'spam_risk', `${NAME} 判定存在风险（${code}），本次发布不再自动重试`, p);
+  if (code === 'rate_limit_exceeded' || code === 'reached_active_user_cap' || res.status === 429) {
     return platformError(429, 'rate_limited', `${NAME} 请求过于频繁或已达发布上限，请稍后再试`, p);
   }
   if (/file|video|duration|picture|frame_rate|resolution/i.test(code)) return platformError(400, 'media_rejected', `${NAME} 拒绝了该素材：${text}`, p);
@@ -175,6 +178,7 @@ export const tiktokAdapter: PlatformAdapter = {
           const end = i === count - 1 ? asset.fileSize - 1 : start + chunkSize - 1;
           const buf = Buffer.alloc(end - start + 1);
           await fd.read(buf, 0, buf.length, start);
+          if (i === count - 1) await a.commit?.(); // the post / inbox draft is created once the upload completes
           await platformFetch(uploadUrl, {
             method: 'PUT',
             headers: { 'content-type': asset.mimeType, 'content-length': String(buf.length), 'content-range': `bytes ${start}-${end}/${asset.fileSize}` },

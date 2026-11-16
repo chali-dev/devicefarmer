@@ -11,7 +11,7 @@ import type { Authed, CommentPage, PublishInput, PublishResult } from './types.j
  *     publish: (input, ctx) => apiPublish(account, input, { signal: ctx.signal, log: … }) })
  */
 export interface Reason { code: string; message: string }
-type CallOpts = Pick<Authed, 'signal' | 'log'>;
+type CallOpts = Pick<Authed, 'signal' | 'log' | 'commit'>;
 
 /** Null when `account` can publish `input` through its official API right now, else a coded reason. */
 export async function apiPublishUnavailableReason(account: SocialAccount, input: PublishInput): Promise<Reason | null> {

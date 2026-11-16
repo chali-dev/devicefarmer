@@ -17,6 +17,7 @@ import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
+import { parseJson } from '../src/modules/platforms/http.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type (for the idempotency checks below)
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -346,6 +347,56 @@ try {
   check('platform turned off on the device → publish.platform_disabled (1 attempt, logged)', d.task.status === 'failed' && d.task.errorCode === 'publish.platform_disabled' && d.runs[0].attempts === 1
     && !d.logs.some((l: any) => l.message === 'check: platform enabled on the device'), `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
   await http('PUT', `/api/instances/${DON2.id}/platforms`, T, { platforms: null });
+
+  // ---------------------------------------------------------------- API error classes + "outcome unknown" (test-only Facebook API method)
+  const fbMethods = (await http('GET', '/api/publish/platforms', A)).body.platforms.find((p: any) => p.id === 'facebook')?.methods ?? [];
+  if (!fbMethods.includes('api')) {
+    console.log('  (skipped: API error-class checks need the API started with TASKS_TEST_HANDLERS=1)');
+  } else {
+    const cFb = (await http('POST', '/api/contents', A, { title: `pc-${tag} fb`, body: 'fb text' })).body.content;
+    const fbRun = async (caption: string, extra: Record<string, unknown> = {}) => {
+      const accountId = await acc(A, { platform: 'facebook' });
+      const res = await http('POST', `/api/contents/${cFb.id}/distribute`, A, { targets: [{ accountId, caption, ...extra }], maxAttempts: 2 });
+      if (res.status !== 201) throw new Error(`distribute ${caption}: ${res.status} ${res.text}`);
+      ptIds.add(res.body.created[0].id);
+      return res.body.created[0] as { id: string; attemptNo: number };
+    };
+    const msgs = (x: any) => x.logs.map((l: any) => l.message) as string[];
+
+    let t1 = await fbRun('[test:permanent] x');
+    d = await waitStatus(A, t1.id, ['failed', 'awaiting_operator', 'published']);
+    check('permanent platform error (400 media_rejected) → failed at once, 1 of 2 attempts', d.task.status === 'failed' && d.task.errorCode === 'platform.media_rejected' && d.runs[0].attempts === 1 && d.runs[0].status === 'failed',
+      `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
+
+    t1 = await fbRun('[test:transient] x');
+    d = await waitStatus(A, t1.id, ['failed', 'awaiting_operator', 'published'], 150_000);
+    check('transient platform error (502) → retried, failed after 2/2 attempts', d.task.status === 'failed' && d.task.errorCode === 'platform.error' && d.runs[0].attempts === 2,
+      `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
+
+    t1 = await fbRun('[test:after-send] x');
+    d = await waitStatus(A, t1.id, ['failed', 'awaiting_operator', 'published']);
+    check('error after the publish request was sent → awaiting operator, publish.uncertain, not retried',
+      d.task.status === 'awaiting_operator' && d.task.errorCode === 'publish.uncertain' && d.runs[0].attempts === 1 && d.runs[0].status === 'success'
+      && msgs(d).includes('publish request sent to the platform') && msgs(d).some((m) => m.startsWith('outcome unknown')),
+      `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts} ${msgs(d).join(' | ')}`);
+    r = await http('POST', `/api/publish/tasks/${t1.id}/outcome`, A, { result: 'published', url: 'https://www.facebook.com/x/posts/1' });
+    check('operator records the outcome of an uncertain task', r.status === 200 && r.body.task.status === 'published', r.text);
+
+    // A later attempt of a round whose request already went out must not publish again (timeout / crash case).
+    t1 = await fbRun('[test:ok] x', { scheduledAt: new Date(Date.now() + 5000).toISOString() });
+    await db.insert(schema.publishLogs).values({ publishTaskId: t1.id, level: 'info', message: 'publish request sent to the platform', attemptNo: t1.attemptNo });
+    d = await waitStatus(A, t1.id, ['failed', 'awaiting_operator', 'published']);
+    check('round already sent (commit logged) → not published again, awaiting operator (uncertain)',
+      d.task.status === 'awaiting_operator' && d.task.errorCode === 'publish.uncertain' && !msgs(d).some((m) => m.startsWith('publishing via')),
+      `${d.task.status} ${d.task.errorCode} ${msgs(d).join(' | ')}`);
+
+    t1 = await fbRun('[test:ok] x');
+    d = await waitStatus(A, t1.id, ['failed', 'awaiting_operator', 'published']);
+    check('normal API publish logs the commit line once and ends published', d.task.status === 'published' && msgs(d).filter((m) => m === 'publish request sent to the platform').length === 1,
+      `${d.task.status} ${msgs(d).join(' | ')}`);
+  }
+  const big = parseJson('{"publicaly_available_post_id":[7312345678901234567],"n":42,"f":1.5}') as any;
+  check('platform JSON keeps int64 ids exact (TikTok post id)', big.publicaly_available_post_id[0] === '7312345678901234567' && big.n === 42 && big.f === 1.5, JSON.stringify(big));
 
   // TikTok on the offline device: retried once, then failed
   d = await waitStatus(A, ttTask.id, ['failed', 'awaiting_operator'], 120_000);

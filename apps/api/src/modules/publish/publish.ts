@@ -4,6 +4,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
 import { badRequest, conflict } from '../../lib/errors.js';
+import { isTransientPlatformError } from '../platforms/http.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
@@ -32,6 +33,28 @@ export const TASK_TYPE = 'publish';
 /** Check failure that retrying won't fix: fails the run at once (no further attempts). */
 export class PublishCheckError extends UnrecoverableError {
   constructor(readonly code: string, message: string, readonly params: Record<string, unknown> = {}) { super(message); }
+}
+
+/**
+ * Logged (publish_logs, per round) right before the request after which the post may exist on the
+ * platform. A later attempt of the same round that finds it does not publish again: the outcome is
+ * unknown, so the task goes to an operator who checks the account and records what happened.
+ */
+const COMMIT_MSG = 'publish request sent to the platform';
+const UNKNOWN_MSG = 'outcome unknown: the publish request was sent, check the account before publishing again';
+
+async function committedRound(row: Pick<PublishTask, 'id' | 'attemptNo'>): Promise<boolean> {
+  const [hit] = await db.select({ id: schema.publishLogs.id }).from(schema.publishLogs)
+    .where(and(eq(schema.publishLogs.publishTaskId, row.id), eq(schema.publishLogs.attemptNo, row.attemptNo), eq(schema.publishLogs.message, COMMIT_MSG))).limit(1);
+  return !!hit;
+}
+
+/** Hands a possibly-published task to an operator (never retried automatically). */
+async function markOutcomeUnknown(row: PublishTask, taskId: string, error: string | null, method: string | null) {
+  const [done] = await db.update(pt).set({ status: 'awaiting_operator', errorCode: 'publish.uncertain', error: error?.slice(0, 1000) ?? null, ...(method ? { method } : {}) })
+    .where(and(eq(pt.id, row.id), eq(pt.taskId, taskId), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+  if (done) await publishLog(done, 'warn', UNKNOWN_MSG, { code: 'publish.uncertain', ...(error ? { error: error.slice(0, 300) } : {}) });
+  return done;
 }
 
 // ---------------------------------------------------------------- logs
@@ -270,11 +293,26 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   };
   await refreshContentStatus(row.contentId);
   await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`);
+  // An earlier attempt of this round already sent the publish request (then timed out / crashed):
+  // publishing again could post twice.
+  if (await committedRound(row)) {
+    await markOutcomeUnknown(row, ctx.task.id, 'an earlier attempt sent the publish request; its outcome is unknown', null);
+    await refreshContentStatus(row.contentId);
+    return { state: 'awaiting_operator', uncertain: true };
+  }
+  let committed = false;
+  let methodId: string | null = null;
   try {
     const { method, input } = await preflight(row, log);
     if (ctx.signal.aborted) throw ctx.signal.reason;
+    methodId = method.id;
     await log('info', `publishing via ${method.id}`);
-    const res = await method.publish(input, { log, signal: ctx.signal });
+    const commit = async () => {
+      if (committed) return;
+      committed = true;
+      await log('info', COMMIT_MSG, { method: method.id });
+    };
+    const res = await method.publish(input, { log, signal: ctx.signal, commit });
     const set = res.state === 'published'
       ? { status: 'published' as const, method: method.id, externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: new Date() }
       : { status: 'awaiting_operator' as const, method: method.id };
@@ -284,12 +322,23 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   } catch (err) {
     const e = err as { code?: string; message?: string; params?: Record<string, unknown> };
     const code = typeof e.code === 'string' ? e.code : 'publish.failed';
-    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over.
+    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over
+    // (both see the commit log line and hand the task to an operator instead of publishing again).
     if (!ctx.signal.aborted) {
-      const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
+      if (committed) {
+        // The platform may have the post: never retry, let a person check and record the outcome.
+        await log('warn', `attempt failed after the publish request was sent: ${e.message}`, { code, ...(e.params ?? {}) });
+        await markOutcomeUnknown(row, ctx.task.id, e.message ?? String(err), methodId);
+        await refreshContentStatus(row.contentId);
+        return { state: 'awaiting_operator', uncertain: true, code };
+      }
+      // Only transient platform failures (429/5xx/network) and non-platform errors (e.g. device offline) are retried.
+      const permanent = err instanceof UnrecoverableError || (typeof code === 'string' && code.startsWith('platform.') && !isTransientPlatformError(err));
+      const final = permanent || ctx.attempt >= ctx.task.maxAttempts;
       await db.update(pt).set({ status: final ? 'failed' : 'pending', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
         .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
       await log(final ? 'error' : 'warn', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, { code, ...(e.params ?? {}) });
+      if (permanent && !(err instanceof UnrecoverableError)) throw new PublishCheckError(code, e.message ?? String(err), e.params ?? {});
     }
     throw err;
   } finally {
@@ -385,6 +434,14 @@ registerTaskHandler<Payload>(TASK_TYPE, {
     const id = (task.payload as Payload | null)?.publishTaskId ?? task.refId;
     if (!id) return;
     const status = task.status === 'cancelled' ? 'cancelled' as const : 'failed' as const;
+    if (status === 'failed') {
+      // Last attempt timed out / was interrupted after the publish request went out: don't call it failed.
+      const [cur] = await db.select().from(pt).where(and(eq(pt.id, id), eq(pt.taskId, task.id)));
+      if (cur && ['pending', 'scheduled', 'running'].includes(cur.status) && await committedRound(cur)) {
+        const done = await markOutcomeUnknown(cur, task.id, task.error, null);
+        if (done) { await refreshContentStatus(done.contentId); return; }
+      }
+    }
     const [row] = await db.update(pt).set({ status, error: task.error, errorCode: task.errorCode ?? (status === 'cancelled' ? 'publish.cancelled' : 'publish.failed') })
       .where(and(eq(pt.id, id), eq(pt.taskId, task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
     if (row) {

@@ -12,6 +12,20 @@ export function scrub(text: string, secrets: (string | null | undefined)[]): str
   return out.slice(0, 300);
 }
 
+/**
+ * JSON.parse that keeps integers beyond 2^53 as their exact source text (e.g. TikTok's int64
+ * publicaly_available_post_id): a plain parse would round them to a different id.
+ */
+export function parseJson(text: string): unknown {
+  return JSON.parse(text, ((_k: string, v: unknown, ctx?: { source?: string }) =>
+    typeof v === 'number' && Number.isInteger(v) && !Number.isSafeInteger(v) && ctx?.source ? ctx.source : v) as (k: string, v: unknown) => unknown);
+}
+
+/** Platform failure that may succeed when tried again later (rate limits, 5xx, network); everything else is final. */
+export function isTransientPlatformError(err: unknown): boolean {
+  return err instanceof HttpError && (err.statusCode === 429 || err.statusCode >= 500);
+}
+
 export interface FetchOpts {
   /** Platform display name for messages. */
   platform: string;
@@ -66,7 +80,7 @@ export async function platformFetch(url: string, init: RequestInit, o: FetchOpts
     }
     const text = await res.text().catch(() => '');
     let body: unknown = text;
-    try { body = text ? JSON.parse(text) : {}; } catch { /* non-JSON body */ }
+    try { body = text ? parseJson(text) : {}; } catch { /* non-JSON body */ }
     if (res.ok || o.okStatuses?.includes(res.status)) return { res, body };
     if (res.status === 429 && attempt < retries) {
       await sleep(retryAfterMs(res, attempt), undefined, o.signal ? { signal: o.signal } : undefined);

@@ -177,6 +177,7 @@ export const youtubeAdapter: PlatformAdapter = {
           a.signal?.throwIfAborted();
           const len = Math.min(CHUNK, total - offset);
           const chunk = await readChunk(fd, offset, len);
+          if (offset + len === total) await a.commit?.(); // the video exists once the last byte arrives
           let r: { res: Response; body: unknown };
           try {
             r = await platformFetch(session, {

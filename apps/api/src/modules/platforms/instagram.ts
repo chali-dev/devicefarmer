@@ -178,6 +178,7 @@ export const instagramAdapter: PlatformAdapter = {
       await a.log?.('carousel container created', { items: children.length });
       await waitContainer(a, creationId);
     }
+    await a.commit?.();
     const published = await graph<{ id: string }>(a, 'POST', `${user}/media_publish`, { creation_id: creationId });
     const info = await graph<{ permalink?: string }>(a, 'GET', published.id, { fields: 'permalink' }).catch(() => ({ permalink: undefined }));
     return { externalId: published.id, url: info.permalink, state: 'published' };

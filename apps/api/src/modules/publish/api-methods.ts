@@ -11,6 +11,6 @@ for (const adapter of ADAPTERS) {
   registerPublishMethod(adapter.id, {
     id: 'api',
     unavailableReason: (account, input) => apiPublishUnavailableReason(account, input),
-    publish: (input, ctx) => apiPublish(input.account, input, { signal: ctx.signal, log: (msg, data) => ctx.log('info', msg, data) }),
+    publish: (input, ctx) => apiPublish(input.account, input, { signal: ctx.signal, log: (msg, data) => ctx.log('info', msg, data), commit: ctx.commit }),
   });
 }

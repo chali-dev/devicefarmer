@@ -9,7 +9,9 @@ import { PLATFORMS } from '../social/platforms.js';
  *
  * Official-API adapters register with `registerPublishMethod(platform, { id: 'api', ... })`. Media files
  * are read with `withMediaFile(asset, fn)` from modules/media/media.ts. `publish` must honour
- * `ctx.signal` (aborted on cancel/timeout): an attempt that timed out may be retried.
+ * `ctx.signal` (aborted on cancel/timeout) and call `ctx.commit()` right before the request after which
+ * the post may exist: until then a failed attempt may be retried; after it the task goes to an operator
+ * (outcome unknown) and is never published again automatically.
  */
 
 export interface PublishInput {
@@ -43,6 +45,8 @@ export type PublishLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export interface PublishContext {
   log(level: PublishLogLevel, msg: string, data?: Record<string, unknown>): Promise<void>;
   signal: AbortSignal;
+  /** Call right before the request after which the post may exist on the platform (see Authed.commit). */
+  commit(): Promise<void>;
 }
 
 export interface PublishResult {
@@ -57,7 +61,10 @@ export interface PublishMethod {
   needsDevice?: boolean;
   /** Why this account can't use the method right now (missing OAuth connection, unsupported media…), or null. */
   unavailableReason(account: SocialAccount, content: PublishInput): Promise<UnavailableReason | null>;
-  /** Throw (preferably an Error with a stable `code`) to fail the attempt; it is retried while attempts remain. */
+  /**
+   * Throw (preferably an Error with a stable `code`) to fail the attempt. Retried while attempts remain
+   * unless it is a non-transient platform error (platform.* below 500, except 429) or came after commit().
+   */
   publish(input: PublishInput, ctx: PublishContext): Promise<PublishResult>;
 }
 

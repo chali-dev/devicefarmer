@@ -46,6 +46,8 @@ const EXACT: Record<string, string> = {
   'check: account owner ok': 'checkOwner',
   'check: account active': 'checkActive',
   'check: platform enabled on the device': 'checkPlatformEnabled',
+  'publish request sent to the platform': 'publishSent',
+  'outcome unknown: the publish request was sent, check the account before publishing again': 'outcomeUnknown',
   'check: media ready and valid for the platform': 'checkMedia',
   'check: not published before on this account': 'checkNotPublished',
   'check: device online': 'checkDeviceOnline',
@@ -74,6 +76,7 @@ const EXACT: Record<string, string> = {
 const RULES: Rule[] = [
   [/^failed: ([\s\S]*)$/, 'failed', (m, d) => ({ msg: coded(m[1]!, d) })],
   [/^attempt failed, will retry: ([\s\S]*)$/, 'attemptFailedWillRetry', (m, d) => ({ msg: coded(m[1]!, d) })],
+  [/^attempt failed after the publish request was sent: ([\s\S]*)$/, 'attemptFailedAfterSend', (m, d) => ({ msg: coded(m[1]!, d) })],
   [/^failure hook error: ([\s\S]*)$/, 'failureHook', (m) => ({ msg: m[1]! })],
   [/^could not schedule: ([\s\S]*)$/, 'couldNotSchedule', (m) => ({ msg: m[1]! })],
   [/^attempt (\d+)\/(\d+) started$/, 'attemptStarted', (m) => ({ n: m[1]!, max: m[2]! })],
