@@ -409,6 +409,18 @@ const en: Messages = {
     recents: 'Recent apps',
     secureTip: 'Show protected screens (e.g. Google sign-in). When off, the regular on-demand screen stream is used, which needs fewer resources.',
     secure: 'Protected screens',
+    sourceStf: 'Standard',
+    sourceScrcpy: 'Fast',
+    sourceTip: 'Screen source: Standard = STF image stream (most compatible); Fast = scrcpy H.264 video, higher frame rate and lower latency, decoded by the browser. Remembered in this browser.',
+    noWebCodecs: 'This browser cannot decode video (no WebCodecs); only the standard screen is available',
+    decoderUnsupported: 'This browser cannot decode this video format ({codec}); switched back to the standard screen',
+    clipboard: 'Clipboard',
+    readClipboard: 'Read the phone clipboard (in Fast mode, text copied on the phone also pops up automatically)',
+    clipboardTitle: 'Phone clipboard',
+    clipboardEmpty: 'The phone clipboard is empty',
+    copy: 'Copy to computer',
+    copied: 'Copied',
+    copyFailed: 'The browser does not allow writing to the clipboard',
     stage: { socket: 'Opening connection', session: 'Checking access and attaching the device', frame: 'Receiving the screen' },
   },
   cloud: {
@@ -1959,6 +1971,9 @@ const en: Messages = {
     player: {
       secure_unavailable: 'Protected screen unavailable: {error}',
       secure_ended: 'Protected screen capture ended; switched back to the normal stream',
+      scrcpy_unavailable: 'Fast screen unavailable, using the standard screen: {error}',
+      scrcpy_ended: 'Fast screen stopped; switched back to the standard screen: {error}',
+      clipboard_needs_scrcpy: 'Reading the phone clipboard needs the Fast screen',
     },
   },
 }

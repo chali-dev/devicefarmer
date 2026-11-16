@@ -52,6 +52,14 @@ const Env = z.object({
   UPLOAD_DIR: z.string().default('var/uploads'),
   /** Secure-window capture helper (infra/device-tools/capture/build.sh) */
   CAPTURE_DEX_PATH: z.string().default('../../infra/device-tools/capture/out/cpcapture.dex'),
+  /**
+   * scrcpy remote-control source: official scrcpy-server (infra/device-tools/scrcpy/fetch.sh). Its version
+   * must equal SCRCPY_VERSION in adapters/scrcpy.ts. Video size (long edge), fps cap and H.264 bit rate.
+   */
+  SCRCPY_SERVER_PATH: z.string().default('../../infra/device-tools/scrcpy/out/scrcpy-server-v5.0.1'),
+  SCRCPY_MAX_SIZE: z.coerce.number().int().min(0).default(1280),
+  SCRCPY_MAX_FPS: z.coerce.number().int().min(1).max(120).default(30),
+  SCRCPY_BIT_RATE: z.coerce.number().int().min(100_000).default(4_000_000),
   /** App library storage (imported official APKs). Not cleaned up automatically. */
   LIBRARY_DIR: z.string().default('var/library'),
   /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */

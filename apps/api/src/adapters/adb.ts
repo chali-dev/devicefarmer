@@ -116,6 +116,21 @@ export class AdbAdapter {
     await new Promise<void>((resolve, reject) => { transfer.on('end', resolve); transfer.on('error', reject); });
   }
 
+  /** Pushes a file (mode 644) unless the device already has one of the same size at that path. */
+  async pushIfMissing(adbPort: number, localPath: string, remotePath: string): Promise<void> {
+    if (!/^\/data\/local\/tmp\/[\w.-]+$/.test(remotePath)) throw new Error('invalid target path');
+    const { size } = await (await import('node:fs')).promises.stat(localPath);
+    const remote = (await this.shell(adbPort, `stat -c %s ${remotePath} 2>/dev/null`)).trim();
+    if (remote === String(size)) return;
+    await this.push(adbPort, localPath, remotePath);
+    await this.shell(adbPort, `chmod 644 ${remotePath}`);
+  }
+
+  /** Raw shell / local-socket streams for long-running helpers (adapters/scrcpy.ts). */
+  device(adbPort: number) {
+    return this.client.getDevice(this.serialFor(adbPort));
+  }
+
   /**
    * Installs one app made of one or more APKs (base + splits) in a single
    * PackageInstaller session (same as `adb install-multiple -r`).

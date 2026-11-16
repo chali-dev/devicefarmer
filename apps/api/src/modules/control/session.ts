@@ -7,6 +7,7 @@ import { HttpError } from '../../lib/errors.js';
 import { adb, stf } from '../../services.js';
 import { assertInstanceAccess } from '../auth/rbac.js';
 import { getInstance } from '../instances/repo.js';
+import { joinScrcpy, type ScrcpyHandle, type ScrcpyViewer } from './scrcpy-hub.js';
 
 const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('auth'), token: z.string() }),
@@ -23,7 +24,10 @@ const ClientMsg = z.discriminatedUnion('type', [
   // Secure input (passwords): per-character key events, never via the device clipboard.
   z.object({ type: z.literal('typeSecure'), text: z.string().min(1).max(256) }),
   // 'secure': frames from the system-level capture helper, which also shows FLAG_SECURE windows.
-  z.object({ type: z.literal('screenSource'), source: z.enum(['stf', 'secure']) }),
+  // 'scrcpy': H.264 from scrcpy-server (shared per device); input then goes through scrcpy too.
+  z.object({ type: z.literal('screenSource'), source: z.enum(['stf', 'secure', 'scrcpy']) }),
+  // Reads the device clipboard (scrcpy source only).
+  z.object({ type: z.literal('getClipboard') }),
 ]);
 
 const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
@@ -39,7 +43,9 @@ function screenUrl(url: string): string {
 
 /**
  * Remote-control session: one WebSocket per viewer.
- * Down: JPEG frames relayed from STF's screen stream. Up: JSON input events.
+ * Down: JPEG frames relayed from STF's screen stream (or the secure helper), or with the scrcpy
+ * source a {type:'video'} JSON message followed by binary H.264 packets ([u8 flags][u64 pts][Annex B],
+ * see scrcpy-hub.ts) plus {type:'clipboard'} on device clipboard changes. Up: JSON input events.
  * RBAC is enforced here; STF itself is never exposed to end users.
  */
 export const controlRoutes: FastifyPluginAsync = async (app) => {
@@ -48,10 +54,27 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
     let upstream: WebSocket | null = null;
     let channel: string | null = null;
     let adbPort = 0;
-    let source: 'stf' | 'secure' = 'stf';
+    let source: 'stf' | 'secure' | 'scrcpy' = 'stf';
     let secureStream: import('node:stream').Duplex | null = null;
+    let scrcpy: ScrcpyHandle | null = null;
     let authed = false;
     const send = (msg: object) => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(msg)); };
+    /** STF keeps encoding JPEGs for this socket only while 'on': pause it while scrcpy delivers the screen. */
+    const stfScreen = (on: boolean) => { if (upstream?.readyState === WebSocket.OPEN) upstream.send(on ? 'on' : 'off'); };
+    const viewer: ScrcpyViewer = {
+      sendBinary: (data) => { if (client.readyState === WebSocket.OPEN) client.send(data, { binary: true }); },
+      sendJson: send,
+      buffered: () => client.bufferedAmount,
+      onEnd: (reason) => {
+        scrcpy = null;
+        if (source !== 'scrcpy') return;
+        source = 'stf';
+        stfScreen(true);
+        send({ type: 'screenSource', source: 'stf', reason: `scrcpy ended: ${reason}`, code: 'player.scrcpy_ended', params: { error: reason } });
+      },
+    };
+    const leaveScrcpy = () => { scrcpy?.leave(); scrcpy = null; };
+    const stopSecure = () => { secureStream?.destroy(); secureStream = null; };
     const fail = (message: string, code = 4000) => { send({ type: 'error', message }); client.close(code, message.slice(0, 100)); };
     const authTimer = setTimeout(() => { if (!authed) fail('auth timeout', 4001); }, 5000);
 
@@ -83,7 +106,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           upstream.binaryType = 'nodebuffer';
           upstream.on('open', () => {
             upstream!.send(`size ${inst.spec.width}x${inst.spec.height}`);
-            upstream!.send('on');
+            if (source !== 'scrcpy') upstream!.send('on');
           });
           upstream.on('message', (data, bin) => {
             if (client.readyState !== WebSocket.OPEN) return;
@@ -107,12 +130,37 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
       }
 
       try {
-        if (msg.type === 'touch') await stf.touch(channel!, msg.ev);
-        else if (msg.type === 'key') await stf.key(channel!, msg.action, msg.key);
-        else if (msg.type === 'paste') { await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
+        // While scrcpy delivers the screen, input goes through its control socket (STF's touch
+        // gestures don't apply: scrcpy takes plain down/move/up per pointer).
+        const sc = source === 'scrcpy' ? scrcpy : null;
+        if (msg.type === 'touch') {
+          if (sc) { if (msg.ev.type === 'down' || msg.ev.type === 'move' || msg.ev.type === 'up') sc.touch(msg.ev); }
+          else await stf.touch(channel!, msg.ev);
+        }
+        else if (msg.type === 'key') { if (!sc?.key(msg.action, msg.key)) await stf.key(channel!, msg.action, msg.key); }
+        else if (msg.type === 'paste') { if (sc) sc.paste(msg.text); else await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
+        else if (msg.type === 'getClipboard') {
+          if (!sc) return send({ type: 'error', message: 'device clipboard needs the scrcpy source', code: 'player.clipboard_needs_scrcpy' });
+          // Content is only forwarded to this (control-authorised) viewer, never logged.
+          send({ type: 'clipboard', text: await sc.getClipboard(), requested: true });
+        }
         else if (msg.type === 'screenSource') {
           if (msg.source === source) return;
-          if (msg.source === 'secure') {
+          if (msg.source === 'scrcpy') {
+            const prev = source;
+            source = 'scrcpy'; // stop relaying JPEGs while it starts; the canvas keeps the last frame
+            try {
+              scrcpy = await joinScrcpy(adbPort, viewer);
+            } catch (err) {
+              req.log.warn({ err, instanceId }, 'scrcpy start failed');
+              source = prev;
+              send({ type: 'screenSource', source, reason: `高速画面不可用：${(err as Error).message}`, code: 'player.scrcpy_unavailable', params: { error: (err as Error).message } });
+              return;
+            }
+            if (client.readyState !== WebSocket.OPEN) { leaveScrcpy(); return; }
+            stopSecure();
+            stfScreen(false);
+          } else if (msg.source === 'secure') {
             try {
               secureStream = await adb.openSecureCapture(adbPort, path.resolve(config.CAPTURE_DEX_PATH));
             } catch (err) {
@@ -134,18 +182,20 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
             });
             secureStream.on('close', () => { if (source === 'secure') { source = 'stf'; send({ type: 'screenSource', source: 'stf', reason: 'secure capture ended', code: 'player.secure_ended' }); } });
             secureStream.on('error', () => undefined);
+            if (source === 'scrcpy') { leaveScrcpy(); stfScreen(true); }
             source = 'secure';
           } else {
+            if (source === 'scrcpy') { leaveScrcpy(); stfScreen(true); }
             source = 'stf';
-            secureStream?.destroy();
-            secureStream = null;
+            stopSecure();
           }
           send({ type: 'screenSource', source });
         }
         else if (msg.type === 'typeSecure') {
           // Content is never logged or persisted; only forwarded to the device.
           for (const ch of msg.text) {
-            await stf.type(channel!, ch);
+            if (source === 'scrcpy' && scrcpy) scrcpy.type(ch);
+            else await stf.type(channel!, ch);
             await new Promise((r) => setTimeout(r, SECURE_CHAR_GAP_MS));
           }
           send({ type: 'typed', count: [...msg.text].length });
@@ -159,6 +209,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
       clearTimeout(authTimer);
       upstream?.close();
       secureStream?.destroy();
+      leaveScrcpy();
     });
   });
 };

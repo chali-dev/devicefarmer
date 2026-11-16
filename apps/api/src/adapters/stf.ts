@@ -215,7 +215,7 @@ export class StfAdapter {
   }
 
   // Note: reading the device clipboard via STF ('clipboard.copy') does not work on Android 10+:
-  // ClipboardService denies background apps (STFService). Planned via scrcpy-server (P1).
+  // ClipboardService denies background apps (STFService). The scrcpy screen source reads it (modules/control/scrcpy-hub.ts).
 
   /** STF transaction: emit with a response channel, resolve on tx.done, reject on failure/timeout. */
   private async transaction(event: string, channel: string, data: unknown, timeoutMs = 10_000): Promise<unknown> {

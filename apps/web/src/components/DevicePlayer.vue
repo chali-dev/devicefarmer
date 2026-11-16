@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Button, message as toast, notification } from 'ant-design-vue'
 import { codeText, getToken, wsUrl } from '../api/client'
 
 const props = defineProps<{
@@ -36,11 +37,36 @@ const stage = ref<Stage>('socket')
 let liveTimer: ReturnType<typeof setTimeout> | null = null
 const message = ref('')
 const fps = ref(0)
-/** Show FLAG_SECURE windows (e.g. Google sign-in) via the system capture helper. */
-const secureView = ref(false)
+
+/**
+ * Screen sources: 'stf' (标准, JPEG frames from STF), 'scrcpy' (高速, H.264 from scrcpy-server, decoded
+ * here with WebCodecs) and 'secure' (JPEG from the capture helper, shows FLAG_SECURE windows).
+ * `preferred` is the viewer's stf/scrcpy choice (remembered in this browser); `source` is what the
+ * server currently delivers (it falls back to STF on its own and says so).
+ */
+type Source = 'stf' | 'scrcpy' | 'secure'
+const canH264 = typeof VideoDecoder !== 'undefined'
+const PREF_KEY = 'cp.player.source'
+/** Default 高速 (scrcpy) where the browser can decode it; the server falls back to STF when scrcpy can't start. */
+const DEFAULT_SOURCE: 'stf' | 'scrcpy' = 'scrcpy'
+function loadPref(): 'stf' | 'scrcpy' {
+  try { const v = localStorage.getItem(PREF_KEY); if (v === 'stf' || v === 'scrcpy') return v } catch { /* storage unavailable */ }
+  return DEFAULT_SOURCE
+}
+const preferred = ref<'stf' | 'scrcpy'>(canH264 ? loadPref() : 'stf')
+const source = ref<Source>('stf')
+const secureView = computed(() => source.value === 'secure')
+function setPreferred(v: 'stf' | 'scrcpy') {
+  if (v === 'scrcpy' && !canH264) { toast.warning(t('player.noWebCodecs')); return }
+  preferred.value = v
+  try { localStorage.setItem(PREF_KEY, v) } catch { /* storage unavailable */ }
+  if (!secureView.value) send({ type: 'screenSource', source: v })
+}
+/** Show FLAG_SECURE windows (e.g. Google sign-in) via the system capture helper. Kept across reconnects. */
+let secureWanted = false
 function setSecureView(v: boolean) {
-  secureView.value = v
-  send({ type: 'screenSource', source: v ? 'secure' : 'stf' })
+  secureWanted = v
+  send({ type: 'screenSource', source: v ? 'secure' : preferred.value })
 }
 let ws: WebSocket | null = null
 let frames = 0
@@ -49,6 +75,8 @@ let drawing = false
 let pending: Blob | null = null
 let pointerDown = false
 let lastMove = 0
+/** How binary messages are decoded: JPEG (stf/secure) until a {type:'video'} message announces H.264. */
+let binMode: 'jpeg' | 'h264' = 'jpeg'
 
 function setState(s: PlayerState, msg = '') {
   state.value = s
@@ -60,6 +88,91 @@ function send(msg: object) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
 }
 
+function onFrameDrawn() {
+  frames++
+  if (state.value === 'connecting' && stage.value === 'frame') goLive()
+}
+
+// ---- H.264 (scrcpy) ----
+// Packets: [u8 flags: 1 = config (SPS/PPS), 2 = key frame][u64 pts][Annex B]. Without a `description`
+// the decoder takes Annex B with SPS/PPS in band, so the config is prepended to each key frame.
+let decoder: VideoDecoder | null = null
+let codec = ''
+let avcConfig: Uint8Array | null = null
+let needKey = true
+let nextFrame: VideoFrame | null = null
+let rafId = 0
+const MAX_DECODE_QUEUE = 4
+
+function closeDecoder() {
+  if (decoder && decoder.state !== 'closed') { try { decoder.close() } catch { /* already closed */ } }
+  decoder = null
+  nextFrame?.close()
+  nextFrame = null
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = 0
+  needKey = true
+}
+
+function paintLatest() {
+  rafId = 0
+  const f = nextFrame
+  nextFrame = null
+  const c = canvas.value
+  if (!f) return
+  if (c) {
+    if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight }
+    c.getContext('2d')?.drawImage(f, 0, 0)
+  }
+  f.close()
+  onFrameDrawn()
+}
+
+function ensureDecoder(): VideoDecoder | null {
+  if (decoder && decoder.state !== 'closed') return decoder
+  if (!codec) return null
+  decoder = new VideoDecoder({
+    output: (f) => { nextFrame?.close(); nextFrame = f; if (!rafId) rafId = requestAnimationFrame(paintLatest) },
+    error: () => { decoder = null; needKey = true }, // recovers at the next key frame
+  })
+  decoder.configure({ codec, optimizeForLatency: true })
+  needKey = true
+  return decoder
+}
+
+let videoSize = ''
+function onVideoInfo(msg: { codec: string | null; width: number; height: number }) {
+  binMode = 'h264'
+  const size = `${msg.width}x${msg.height}`
+  if (size !== videoSize) { videoSize = size; closeDecoder() } // e.g. rotation: start clean at the next key frame
+  if (msg.codec && msg.codec !== codec) {
+    codec = msg.codec
+    closeDecoder()
+    VideoDecoder.isConfigSupported({ codec }).then((r) => {
+      if (!r.supported) { toast.warning(t('player.decoderUnsupported', { codec })); setPreferred('stf') }
+    }).catch(() => undefined)
+  }
+}
+
+function onH264(buf: ArrayBuffer) {
+  const v = new DataView(buf)
+  if (buf.byteLength < 9) return
+  const flags = v.getUint8(0)
+  const data = new Uint8Array(buf, 9)
+  if (flags & 1) { avcConfig = data.slice(); needKey = true; return }
+  const key = (flags & 2) !== 0
+  const d = ensureDecoder()
+  if (!d) return
+  if (!key && (needKey || d.decodeQueueSize > MAX_DECODE_QUEUE)) { needKey = true; return } // wait for a key frame
+  let payload = data
+  if (key && avcConfig) { payload = new Uint8Array(avcConfig.length + data.length); payload.set(avcConfig); payload.set(data, avcConfig.length) }
+  try {
+    d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(v.getBigUint64(1)), data: payload }))
+    if (key) needKey = false
+  } catch { closeDecoder() }
+}
+
+// ---- JPEG (stf, secure) ----
 /** Decode only the latest frame; drop intermediate ones when the client is slow. */
 async function draw(blob: Blob) {
   if (drawing) { pending = blob; return }
@@ -72,8 +185,7 @@ async function draw(blob: Blob) {
       c.getContext('2d')?.drawImage(bmp, 0, 0)
     }
     bmp.close()
-    frames++
-    if (state.value === 'connecting' && stage.value === 'frame') goLive()
+    onFrameDrawn()
   } catch { /* corrupt frame */ }
   drawing = false
   if (pending) { const p = pending; pending = null; void draw(p) }
@@ -83,25 +195,55 @@ async function draw(blob: Blob) {
 function goLive() {
   if (liveTimer) clearTimeout(liveTimer)
   liveTimer = null
-  if (state.value === 'connecting') { setState('live'); if (secureView.value) send({ type: 'screenSource', source: 'secure' }) }
+  if (state.value === 'connecting') { setState('live'); if (secureWanted) send({ type: 'screenSource', source: 'secure' }) }
 }
+
+/** Device clipboard (scrcpy): a toast with a copy button. */
+function showClipboard(text: string, requested: boolean) {
+  if (!text) { if (requested) toast.info(t('player.clipboardEmpty')); return }
+  const key = `clip-${props.instanceId}`
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); toast.success(t('player.copied')); notification.close(key) } catch { toast.error(t('player.copyFailed')) }
+  }
+  notification.open({
+    key, message: t('player.clipboardTitle'), duration: 8, placement: 'bottomRight',
+    description: h('div', { class: 'cp-clip-text' }, text.length > 300 ? `${text.slice(0, 300)}…` : text),
+    btn: () => h(Button, { type: 'primary', size: 'small', onClick: copy }, () => t('player.copy')),
+  })
+}
+function readClipboard() { send({ type: 'getClipboard' }) }
 
 function connect() {
   close()
   stage.value = 'socket'
   setState('connecting')
   ws = new WebSocket(wsUrl(`/api/instances/${props.instanceId}/session`))
-  ws.binaryType = 'blob'
+  ws.binaryType = 'arraybuffer'
   ws.onopen = () => { stage.value = 'session'; ws?.send(JSON.stringify({ type: 'auth', token: getToken() })) }
   ws.onmessage = (m) => {
-    if (m.data instanceof Blob) { void draw(m.data); return }
-    const msg = JSON.parse(m.data)
-    if (msg.type === 'ready') { stage.value = 'frame'; liveTimer = setTimeout(goLive, 3000) }
-    else if (msg.type === 'screenSource') {
-      secureView.value = msg.source === 'secure'
-      if (msg.reason) void import('ant-design-vue').then(({ message: m }) => m.warning(codeText(msg.code, msg.params, msg.reason)))
+    if (m.data instanceof ArrayBuffer) {
+      if (binMode === 'h264') onH264(m.data)
+      else void draw(new Blob([m.data], { type: 'image/jpeg' }))
+      return
     }
-    else if (msg.type === 'error') message.value = msg.message
+    const msg = JSON.parse(m.data)
+    if (msg.type === 'ready') {
+      stage.value = 'frame'
+      liveTimer = setTimeout(goLive, 3000)
+      if (preferred.value === 'scrcpy' && !secureWanted) send({ type: 'screenSource', source: 'scrcpy' })
+    }
+    else if (msg.type === 'video') onVideoInfo(msg)
+    else if (msg.type === 'screenSource') {
+      source.value = msg.source
+      secureWanted = msg.source === 'secure'
+      if (msg.source !== 'scrcpy') { binMode = 'jpeg'; closeDecoder() }
+      if (msg.reason) toast.warning(codeText(msg.code, msg.params, msg.reason))
+    }
+    else if (msg.type === 'clipboard') showClipboard(msg.text, !!msg.requested)
+    else if (msg.type === 'error') {
+      if (msg.code && state.value === 'live') toast.warning(codeText(msg.code, msg.params, msg.message))
+      else message.value = msg.message
+    }
   }
   ws.onclose = (e) => {
     if (state.value !== 'closed') setState(e.code === 1000 ? 'closed' : 'error', e.reason || message.value || t('player.connectionLost'))
@@ -116,6 +258,12 @@ function close() {
   fpsTimer = null
   if (ws) { ws.onclose = null; ws.close(1000) }
   ws = null
+  closeDecoder()
+  binMode = 'jpeg'
+  codec = ''
+  videoSize = ''
+  avcConfig = null
+  source.value = 'stf'
 }
 
 /** Device coordinates (0..1) of a pointer event, undoing the view rotation. */
@@ -238,6 +386,19 @@ watch(() => props.instanceId, connect)
       <a-tooltip :title="t('player.home')"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
       <a-tooltip :title="t('player.recents')"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
       <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
+      <a-tooltip :title="canH264 ? t('player.sourceTip') : t('player.noWebCodecs')">
+        <a-radio-group
+          size="small" button-style="solid" :value="secureView ? undefined : source"
+          :disabled="state !== 'live' || secureView"
+          @change="(e: any) => setPreferred(e.target.value)"
+        >
+          <a-radio-button value="stf">{{ t('player.sourceStf') }}</a-radio-button>
+          <a-radio-button value="scrcpy" :disabled="!canH264">{{ t('player.sourceScrcpy') }}</a-radio-button>
+        </a-radio-group>
+      </a-tooltip>
+      <a-tooltip v-if="source === 'scrcpy'" :title="t('player.readClipboard')">
+        <a-button size="small" :disabled="state !== 'live'" @click="readClipboard">{{ t('player.clipboard') }}</a-button>
+      </a-tooltip>
       <a-tooltip :title="t('player.secureTip')">
         <a-switch size="small" :checked="secureView" :disabled="state !== 'live'" @change="(v: any) => setSecureView(v)" />
       </a-tooltip>
@@ -266,6 +427,11 @@ canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--cp-primary); }
 .step.done { opacity: 0.8; }
 .step.active { opacity: 1; font-weight: 600; }
 .dot { width: 18px; height: 18px; border-radius: 50%; border: 1px solid currentColor; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
-.nav { display: flex; gap: 16px; align-items: center; }
+.nav { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; }
 .fps { width: 52px; color: var(--cp-text-tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
+</style>
+
+<style>
+/* notification content is rendered outside this component */
+.cp-clip-text { white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto; font-size: 12px; }
 </style>

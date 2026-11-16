@@ -410,6 +410,18 @@ const zhCN = {
     recents: '最近任务',
     secureTip: '显示受保护画面（如 Google 登录页）。关闭时使用按需刷新的普通画面流，更省资源。',
     secure: '受保护画面',
+    sourceStf: '标准',
+    sourceScrcpy: '高速',
+    sourceTip: '画面来源：标准 = STF 图片流（兼容性最好）；高速 = scrcpy H.264 视频流，帧率更高、延迟更低，由浏览器解码。选择会记在本浏览器。',
+    noWebCodecs: '此浏览器不支持 WebCodecs 视频解码，只能使用标准画面',
+    decoderUnsupported: '此浏览器无法解码该视频格式（{codec}），已切回标准画面',
+    clipboard: '剪贴板',
+    readClipboard: '读取手机剪贴板（高速模式下手机复制的内容也会自动弹出）',
+    clipboardTitle: '手机剪贴板',
+    clipboardEmpty: '手机剪贴板为空',
+    copy: '复制到电脑',
+    copied: '已复制',
+    copyFailed: '浏览器不允许写入剪贴板',
     stage: { socket: '建立连接', session: '验证权限并连接设备', frame: '获取画面' },
   },
   cloud: {
@@ -1961,6 +1973,9 @@ const zhCN = {
     player: {
       secure_unavailable: '受保护画面不可用：{error}',
       secure_ended: '受保护画面已结束，已切回普通画面',
+      scrcpy_unavailable: '高速画面不可用，已使用标准画面：{error}',
+      scrcpy_ended: '高速画面已中断，已切回标准画面：{error}',
+      clipboard_needs_scrcpy: '读取手机剪贴板需要高速画面',
     },
   },
 }
