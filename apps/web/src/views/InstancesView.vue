@@ -2,12 +2,12 @@
 import { dateLocale } from '../i18n'
 import { DownOutlined, ExclamationCircleOutlined, MoreOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
-import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type Instance, type InstanceOwner, type PoolProxy, type Profile, type Task } from '../api/types'
+import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
@@ -89,13 +89,22 @@ async function run(action: Action, ids: string[]) {
       message.error(errorText(e))
     }
   }
-  if (action === 'delete' || action === 'restart' || action === 'stop') {
+  // Cloud phones (BitBrowser) are billed while on; external phones are only removed from the platform on delete.
+  const sel = ids.map((id) => store.byId.get(id)).filter((i): i is Instance => !!i)
+  const bitNames = sel.filter((i) => i.engine === 'bitbrowser').map((i) => i.name)
+  const extCount = sel.filter((i) => i.sourceId).length
+  const billed = (action === 'start' || action === 'restart') && bitNames.length > 0
+  if (action === 'delete' || action === 'restart' || action === 'stop' || billed) {
     const names = ids.map((id) => store.byId.get(id)?.name).filter(Boolean)
+    const notes = [
+      billed ? t('devices.ext.billingList', { names: bitNames.join(t('common.listSep')) }) : '',
+      action === 'delete' && extCount ? t('devices.ext.deleteNote') : '',
+    ].filter(Boolean)
     Modal.confirm({
       title: t('devices.confirmAction', { action: actionText(action), n: ids.length }),
-      content: action === 'delete'
+      content: h('div', { style: 'white-space: pre-line' }, [action === 'delete'
         ? t('devices.confirmDelete', { names: names.join(t('common.listSep')) })
-        : names.join(t('common.listSep')),
+        : names.join(t('common.listSep')), ...notes].join('\n')),
       okType: action === 'delete' ? 'danger' : 'primary',
       okText: actionText(action),
       cancelText: t('common.cancel'),
@@ -137,6 +146,7 @@ const creating = ref(false)
 const PRESETS = { '720x1280@320': [720, 1280, 320], '1080x1920@480': [1080, 1920, 480], '540x960@240': [540, 960, 240] } as const
 const profiles = ref<Profile[]>([])
 const profileName = (id: string) => {
+  if (id === 'bitbrowser') return t('devices.ext.kinds.bitbrowser')
   const p = profiles.value.find((x) => x.id === id)
   return p ? profileLabel(p.id, p.label).split(/（| \(/)[0] : id
 }
@@ -162,6 +172,7 @@ const proxyOption = (p: PoolProxy) => ({
   label: `${proxyLabel(p)} · ${p.type.toUpperCase()} ${p.host}:${p.port}${p.country ? ` · ${p.country}` : ''} · ${t(`proxies.statusText.${p.status}`)}`,
 })
 async function submitCreate() {
+  if (kind.value !== 'local') return submitExternal()
   if (form.proxyMode === 'pick' && form.proxyIds.length !== form.count) { message.error(t('devices.form.proxyPickCount', { count: form.count })); return }
   if (form.proxyMode === 'auto' && freeUsable.value < form.count) { message.error(t('devices.form.proxyNotEnough', { need: form.count, free: freeUsable.value })); return }
   creating.value = true
@@ -178,6 +189,84 @@ async function submitCreate() {
   } finally {
     creating.value = false
   }
+}
+
+// ---- external phones (device sources) in the same create dialog: nothing is powered on here
+type DeviceKind = 'local' | DeviceSource['type']
+const kind = ref<DeviceKind>('local')
+const sources = ref<DeviceSource[]>([])
+const sourceId = ref<string | undefined>()
+const kindSources = computed(() => sources.value.filter((s) => s.type === kind.value))
+const phones = ref<SourcePhone[]>([])
+const phonesLoading = ref(false)
+const pickedPhones = ref<string[]>([])
+const phoneColumns = computed(() => [
+  { title: t('common.name'), key: 'name' },
+  { title: t('devices.ext.model'), key: 'model', width: 140 },
+  { title: t('devices.ext.region'), key: 'region', width: 120 },
+  { title: t('devices.ext.power'), key: 'power', width: 80 },
+])
+async function loadSources() {
+  try {
+    sources.value = (await api<{ sources: DeviceSource[] }>('GET', '/api/device-sources')).sources
+    if (!kindSources.value.some((s) => s.id === sourceId.value)) sourceId.value = kindSources.value[0]?.id
+  } catch (e) { message.error(errorText(e)) }
+}
+async function loadPhones() {
+  phones.value = []; pickedPhones.value = []
+  if (!sourceId.value) return
+  phonesLoading.value = true
+  try { phones.value = (await api<{ phones: SourcePhone[] }>('GET', `/api/device-sources/${sourceId.value}/phones`)).phones }
+  catch (e) { message.error(errorText(e)) }
+  finally { phonesLoading.value = false }
+}
+watch(kind, (k) => { if (k !== 'local') void loadSources() })
+watch(sourceId, () => void loadPhones())
+
+// source editor: BitBrowser = the client's local API address (host + port)
+const srcEdit = reactive({ open: false, id: null as string | null, name: '', host: '127.0.0.1', port: 54345, saving: false })
+function editSource(s?: DeviceSource) {
+  let host = '127.0.0.1'; let port = 54345
+  if (s && typeof s.config.apiUrl === 'string') {
+    try { const u = new URL(s.config.apiUrl); host = u.hostname; port = Number(u.port) || 80 } catch { /* keep defaults */ }
+  }
+  Object.assign(srcEdit, { open: true, id: s?.id ?? null, name: s?.name ?? t('devices.ext.defaultName'), host, port })
+}
+async function saveSource() {
+  srcEdit.saving = true
+  try {
+    const body = { name: srcEdit.name.trim(), config: { apiUrl: `http://${srcEdit.host.trim()}:${srcEdit.port}` } }
+    const r = srcEdit.id
+      ? await api<{ source: DeviceSource }>('PATCH', `/api/device-sources/${srcEdit.id}`, body)
+      : await api<{ source: DeviceSource }>('POST', '/api/device-sources', { type: kind.value, ...body })
+    srcEdit.open = false
+    message.success(t('devices.ext.sourceSaved'))
+    await loadSources()
+    if (sourceId.value === r.source.id) await loadPhones(); else sourceId.value = r.source.id
+  } catch (e) { message.error(errorText(e)) }
+  finally { srcEdit.saving = false }
+}
+function deleteSource() {
+  const id = srcEdit.id
+  if (!id) return
+  Modal.confirm({
+    title: t('devices.ext.deleteSource'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+    onOk: async () => {
+      try { await api('DELETE', `/api/device-sources/${id}`); srcEdit.open = false; await loadSources() }
+      catch (e) { message.error(errorText(e)) }
+    },
+  })
+}
+async function submitExternal() {
+  if (!sourceId.value || !pickedPhones.value.length) { message.error(t('devices.ext.pickPhones')); return }
+  creating.value = true
+  try {
+    const r = await api<{ instances: Instance[] }>('POST', '/api/instances/external', { sourceId: sourceId.value, phoneIds: pickedPhones.value })
+    message.success(t('devices.ext.added', { names: r.instances.map((i) => i.name).join(t('common.listSep')) }))
+    createOpen.value = false
+    await store.refresh()
+  } catch (e) { message.error(errorText(e)) }
+  finally { creating.value = false }
 }
 
 function netTitle(i: Instance) {
@@ -321,6 +410,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <a-tooltip v-if="record.proxy" :title="netTitle(record)">
               <a-tag :color="record.proxyStatus ? (record.proxyStatus.ok ? 'green' : 'red') : 'default'">{{ record.proxy.type.toUpperCase() }} {{ proxyLabel(record.proxy) }}</a-tag>
             </a-tooltip>
+            <span v-else-if="record.sourceId" class="muted">{{ t('devices.ext.proxyShort') }}</span>
             <span v-else class="muted">{{ t('devices.direct') }}</span>
           </template>
           <template v-else-if="column.key === 'spec'">
@@ -354,8 +444,43 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 
   </a-space>
 
-  <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :confirm-loading="creating" :ok-text="t('common.create')" :cancel-text="t('common.cancel')" @ok="submitCreate">
-    <a-form layout="vertical">
+  <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :confirm-loading="creating" :ok-text="kind === 'local' ? t('common.create') : t('devices.ext.addN', { n: pickedPhones.length })" :cancel-text="t('common.cancel')" :width="kind === 'local' ? 520 : 760" @ok="submitCreate">
+    <a-form-item :label="t('devices.ext.kind')" style="margin-bottom: 16px">
+      <a-radio-group v-model:value="kind">
+        <a-radio-button value="local">{{ t('devices.ext.kinds.local') }}</a-radio-button>
+        <a-radio-button value="bitbrowser">{{ t('devices.ext.kinds.bitbrowser') }}</a-radio-button>
+      </a-radio-group>
+    </a-form-item>
+    <template v-if="kind !== 'local'">
+      <a-form layout="vertical">
+        <a-form-item :label="t('devices.ext.source')" :extra="t('devices.ext.sourceHint')">
+          <a-space wrap style="width: 100%">
+            <a-select v-model:value="sourceId" :options="kindSources.map((s) => ({ value: s.id, label: `${s.name} · ${s.config.apiUrl ?? ''}` }))" :placeholder="t('devices.ext.noSource')" style="min-width: min(360px, 70vw)" />
+            <a-button v-if="sourceId" size="small" @click="editSource(kindSources.find((s) => s.id === sourceId))">{{ t('common.edit') }}</a-button>
+            <a-button size="small" type="dashed" @click="editSource()">{{ t('devices.ext.newSource') }}</a-button>
+          </a-space>
+        </a-form-item>
+      </a-form>
+      <div class="muted" style="margin-bottom: 8px">{{ t('devices.ext.addHint') }}</div>
+      <a-table
+        v-if="sourceId" :data-source="phones" :columns="phoneColumns" row-key="id" size="small" :loading="phonesLoading" :pagination="false" :scroll="{ x: 560, y: 320 }"
+        :row-selection="{ selectedRowKeys: pickedPhones, onChange: (k: any[]) => (pickedPhones = k as string[]), getCheckboxProps: (r: SourcePhone) => ({ disabled: !!r.instance }) }"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'name'">
+            <div>{{ record.name }} <a-tag v-if="record.instance" color="blue">{{ t('devices.ext.alreadyAdded', { name: record.instance.name }) }}</a-tag></div>
+            <div v-if="record.detail" class="muted" style="font-size: 12px">{{ record.detail }}</div>
+          </template>
+          <template v-else-if="column.key === 'model'">{{ record.model ?? '—' }}</template>
+          <template v-else-if="column.key === 'region'">{{ record.region ?? '—' }}</template>
+          <template v-else-if="column.key === 'power'">
+            <a-tag v-if="record.on !== null" :color="record.on ? 'green' : 'default'">{{ record.on ? t('devices.ext.on') : t('devices.ext.off') }}</a-tag>
+            <span v-else class="faint">—</span>
+          </template>
+        </template>
+      </a-table>
+    </template>
+    <a-form v-else layout="vertical">
       <a-form-item :label="t('devices.colImage')">
         <a-select v-model:value="form.profile">
           <a-select-option v-for="p in profiles" :key="p.id" :value="p.id" :disabled="!p.available">
@@ -397,6 +522,18 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       </a-form-item>
     </a-form>
   </a-modal>
+
+  <a-modal v-model:open="srcEdit.open" :title="srcEdit.id ? t('devices.ext.editSource') : t('devices.ext.newSource')" :confirm-loading="srcEdit.saving" :ok-text="t('devices.ext.saveTest')" :cancel-text="t('common.cancel')" @ok="saveSource">
+    <a-form layout="vertical">
+      <a-form-item :label="t('common.name')"><a-input v-model:value="srcEdit.name" :maxlength="60" /></a-form-item>
+      <a-row :gutter="12">
+        <a-col :span="16"><a-form-item :label="t('devices.ext.host')" :extra="t('devices.ext.hostHint')"><a-input v-model:value="srcEdit.host" placeholder="127.0.0.1" /></a-form-item></a-col>
+        <a-col :span="8"><a-form-item :label="t('devices.ext.port')"><a-input-number v-model:value="srcEdit.port" :min="1" :max="65535" style="width: 100%" /></a-form-item></a-col>
+      </a-row>
+    </a-form>
+    <a-button v-if="srcEdit.id" danger size="small" @click="deleteSource">{{ t('devices.ext.deleteSource') }}</a-button>
+  </a-modal>
+
   <a-modal v-model:open="appOpen" :title="t('devices.appTitle', { mode: appMode === 'install' ? t('devices.installUpdate') : t('devices.uninstallApp'), target: appIds.length === 1 ? store.byId.get(appIds[0]!)?.name ?? '' : t('devices.nDevices', { n: appIds.length }) })" :confirm-loading="appBusy" :ok-text="appMode === 'install' ? t('common.install') : t('common.uninstall')" :cancel-text="t('common.cancel')" :ok-button-props="{ danger: appMode === 'uninstall' }" @ok="submitApp">
     <template v-if="appMode === 'install'">
       <a-upload-dragger accept=".apk,.apks,.xapk,.apkm,.zip" :multiple="false" :show-upload-list="false" :before-upload="pickFile as any">

@@ -127,6 +127,13 @@
       "when": 1794812535456,
       "tag": "0017_instance_allowed_platforms",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794825025407,
+      "tag": "0018_device_sources",
+      "breakpoints": true
     }
   ]
 }

@@ -27,6 +27,17 @@ const Env = z.object({
   ADB_PORT_MIN: z.coerce.number().int().default(5555),
   ADB_PORT_MAX: z.coerce.number().int().default(5604),
   ADB_DEVICE_HOST: z.string().default('host.docker.internal'),
+  /**
+   * External phones (device sources, e.g. BitBrowser cloud phones; configured in the UI): each one's
+   * adbd is made reachable on EXTERNAL_ADB_BIND:<port from this range> by the API (SSH tunnel, TCP
+   * forward), which STF's adb server must reach as ADB_DEVICE_HOST:<port>.
+   */
+  EXTERNAL_ADB_PORT_MIN: z.coerce.number().int().default(5700),
+  EXTERNAL_ADB_PORT_MAX: z.coerce.number().int().default(5799),
+  EXTERNAL_ADB_BIND: z.string().default('127.0.0.1'),
+  /** ssh known_hosts for the BitBrowser ADB gateways (trust on first use). */
+  BITBROWSER_KNOWN_HOSTS: z.string().default('var/bitbrowser_known_hosts'),
+  SSH_PATH: z.string().default('ssh'),
 
   STF_URL: z.string().url(),
   STF_WS_URL: z.string().url(),

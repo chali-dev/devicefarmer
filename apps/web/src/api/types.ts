@@ -11,7 +11,10 @@ export interface ManagedUser extends User { disabled: boolean; builtin: boolean;
 export interface Instance {
   id: string
   name: string
-  engine: 'redroid' | 'emulator'
+  engine: 'redroid' | 'emulator' | 'bitbrowser'
+  /** Device source and the phone's id there (external phones, e.g. BitBrowser); null for local containers. */
+  sourceId: string | null
+  externalId: string | null
   profile: string
   image: string
   adbPort: number
@@ -78,6 +81,14 @@ export interface ProxyImportResult { dryRun: boolean; results: ProxyImportLine[]
 
 /** Short display of a device's / pool proxy. */
 export const proxyLabel = (p: { label: string | null; host: string; port: number }) => p.label || `${p.host}:${p.port}`
+
+/** Device source (设备来源): where external phones come from, e.g. a BitBrowser client. */
+export interface DeviceSource { id: string; type: 'bitbrowser'; name: string; config: Record<string, unknown>; devices: number }
+/** A phone offered by a device source (GET /api/device-sources/:id/phones). */
+export interface SourcePhone {
+  id: string; name: string; detail: string | null; model: string | null; region: string | null; on: boolean | null
+  instance: { id: string; name: string } | null
+}
 
 export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
 

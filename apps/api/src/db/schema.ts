@@ -28,7 +28,14 @@ export const users = pgTable('users', {
 export const instances = pgTable('instances', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull().unique(),
-  engine: text('engine', { enum: ['redroid', 'emulator'] }).notNull().default('redroid'),
+  engine: text('engine', { enum: ['redroid', 'emulator', 'bitbrowser'] }).notNull().default('redroid'),
+  /**
+   * External phone behind the device: its device source (e.g. a BitBrowser client) and the phone's id
+   * there; both null for local containers. For external phones `engine` is the source type and
+   * `adb_port` is the local end of the connection the API keeps to the phone's adbd.
+   */
+  sourceId: uuid('source_id').references((): AnyPgColumn => deviceSources.id, { onDelete: 'restrict' }),
+  externalId: text('external_id'),
   /** Image profile id (see profiles.ts), e.g. redroid-13-gapps */
   profile: text('profile').notNull().default('redroid-12'),
   image: text('image').notNull(),
@@ -60,7 +67,23 @@ export const instances = pgTable('instances', {
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [unique('instances_source_external_unique').on(t.sourceId, t.externalId)]);
+
+/**
+ * Device sources (设备来源, admin-managed): where external phones come from, e.g. one BitBrowser
+ * client (config `{ apiUrl }`). The driver per `type` lives in modules/sources. A source with
+ * devices can't be deleted (restrict).
+ */
+export const deviceSources = pgTable('device_sources', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  type: text('type', { enum: ['bitbrowser'] }).notNull(),
+  name: text('name').notNull().unique(),
+  config: jsonb('config').$type<Record<string, unknown>>().notNull(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 });
+export type DeviceSource = typeof deviceSources.$inferSelect;
 
 /**
  * Static residential proxy pool (代理管理, admin-managed). The password is AES-256-GCM encrypted

@@ -52,6 +52,16 @@ export class AdbAdapter {
   }
 
   /** Runs a shell command on the device and returns stdout (engine-agnostic). */
+  /** Effective screen size and density (`wm` override first, else physical). */
+  async screenSize(adbPort: number): Promise<{ width: number; height: number; dpi: number }> {
+    const out = await this.shell(adbPort, 'wm size; wm density');
+    const pick = (re: RegExp, over: RegExp) => over.exec(out) ?? re.exec(out);
+    const size = pick(/Physical size: (\d+)x(\d+)/, /Override size: (\d+)x(\d+)/);
+    const dens = pick(/Physical density: (\d+)/, /Override density: (\d+)/);
+    if (!size || !dens) throw new Error(`unexpected wm output: ${out.slice(0, 100)}`);
+    return { width: Number(size[1]), height: Number(size[2]), dpi: Number(dens[1]) };
+  }
+
   async shell(adbPort: number, command: string, timeoutMs = 15_000): Promise<string> {
     const device = this.client.getDevice(this.serialFor(adbPort));
     const run = async () => {

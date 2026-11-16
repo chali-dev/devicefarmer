@@ -7,9 +7,16 @@ import { getMedia, withMediaFile } from '../media/media.js';
 import { mediaTarget } from '../../adapters/adb.js';
 import { deleteInstanceRow, getInstance, updateInstance } from './repo.js';
 import { resolveProxyConfig } from '../proxies/pool.js';
+import { conflict } from '../../lib/errors.js';
+import { sourceOf } from '../sources/index.js';
 
 const BOOT_TIMEOUT_MS = 180_000;
 const STF_TIMEOUT_MS = 90_000;
+/** External phones: a cloud phone's cold boot takes about a minute. */
+const EXT_POWER_TIMEOUT_MS = 240_000;
+
+/** A phone from a device source (modules/sources) rather than a local container. */
+const isExternal = (inst: Instance) => inst.sourceId !== null;
 
 async function waitUntil(label: string, fn: () => Promise<boolean>, timeoutMs: number, everyMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -40,8 +47,15 @@ async function attachDevice(inst: Instance): Promise<void> {
   await updateInstance(inst.id, { adbState: 'device' });
   await waitUntil('Android boot', () => adb.bootCompleted(inst.adbPort), BOOT_TIMEOUT_MS);
   await updateInstance(inst.id, { bootCompleted: true });
-  // Locale/timezone/name before STF attaches (a locale change restarts the framework).
-  await applyDeviceSettings(inst.adbPort, inst.spec);
+  if (isExternal(inst)) {
+    // Locale/time zone of external phones belong to their source (e.g. BitBrowser re-applies its
+    // profile on every boot): never set them here. The screen size is the phone's, recorded for the player.
+    const screen = await adb.screenSize(inst.adbPort).catch(() => null);
+    if (screen) await updateInstance(inst.id, { spec: { ...inst.spec, ...screen } });
+  } else {
+    // Locale/timezone/name before STF attaches (a locale change restarts the framework).
+    await applyDeviceSettings(inst.adbPort, inst.spec);
+  }
 
   await waitUntil('STF device ready', async () => {
     const d = await stf.getDevice(serial);
@@ -55,7 +69,66 @@ async function detachDevice(inst: Instance): Promise<void> {
   const serial = adb.serialFor(inst.adbPort);
   await stf.release(serial).catch(() => undefined);
   await adb.disconnect(inst.adbPort);
+  if (isExternal(inst)) (await sourceOf(inst).catch(() => null))?.driver.closeAdb(inst.id);
   await updateInstance(inst.id, { adbState: null, stfReady: false, bootCompleted: false });
+}
+
+// ---------------------------------------------------------------- external phones (device sources)
+// No containers: power goes through the source's driver (may be billed while on), adb through the
+// connection the driver keeps (SSH tunnel, TCP forward). Deleting the device only removes it from
+// this platform; the phone itself is left as it is.
+
+async function waitPower(inst: Instance, on: boolean): Promise<void> {
+  const { driver, cfg } = await sourceOf(inst);
+  if (!driver.power) return;
+  await waitUntil(on ? 'phone power-on' : 'phone shutdown', async () => (await driver.power!.isOn(cfg, inst.externalId!)) === on, EXT_POWER_TIMEOUT_MS, 3000);
+}
+
+/** adb connection → adb → STF. A source's adb info can lag a fresh boot, so it is retried for a while. */
+async function attachExternal(inst: Instance): Promise<void> {
+  const { driver, cfg, target } = await sourceOf(inst);
+  await waitUntil('adb connection to the phone', async () => { await driver.openAdb(cfg, target); return true; }, 120_000, 5000);
+  await attachDevice(inst);
+}
+
+async function extIsOn(inst: Instance): Promise<boolean> {
+  const { driver, cfg } = await sourceOf(inst);
+  return driver.power ? driver.power.isOn(cfg, inst.externalId!) : true;
+}
+
+async function extStart(id: string): Promise<void> {
+  const inst = await mustGet(id);
+  await updateInstance(id, { status: 'starting', lastError: null });
+  const { driver, cfg } = await sourceOf(inst);
+  if (driver.power && !(await driver.power.isOn(cfg, inst.externalId!))) {
+    await driver.power.on(cfg, inst.externalId!);
+    await waitPower(inst, true);
+  }
+  await attachExternal(await mustGet(id));
+}
+
+async function extStop(id: string): Promise<void> {
+  const inst = await mustGet(id);
+  await updateInstance(id, { status: 'stopping', lastError: null });
+  await detachDevice(inst);
+  const { driver, cfg } = await sourceOf(inst);
+  if (driver.power && (await driver.power.isOn(cfg, inst.externalId!))) {
+    await driver.power.off(cfg, inst.externalId!);
+    await waitPower(inst, false);
+  }
+  await updateInstance(id, { status: 'stopped' });
+}
+
+/** Added to the platform: attach when the phone is already on, otherwise stay stopped (power-on may be billed). */
+async function extCreate(id: string): Promise<void> {
+  const inst = await mustGet(id);
+  await updateInstance(id, { status: 'creating', lastError: null });
+  if (await extIsOn(inst)) {
+    await updateInstance(id, { status: 'starting' });
+    await attachExternal(await mustGet(id));
+  } else {
+    await updateInstance(id, { status: 'stopped' });
+  }
 }
 
 /** Creates the network sidecar (owns netns + adb port) and the engine container joined to it. */
@@ -87,6 +160,7 @@ async function refreshProxyStatus(inst: Instance): Promise<void> {
 
 export async function opCreate(id: string): Promise<void> {
   let inst = await mustGet(id);
+  if (isExternal(inst)) return extCreate(id);
   await updateInstance(id, { status: 'creating', lastError: null });
   inst = await createContainers(inst);
   await updateInstance(id, { status: 'starting' });
@@ -101,6 +175,7 @@ export async function opCreate(id: string): Promise<void> {
 
 export async function opStart(id: string): Promise<void> {
   let inst = await mustGet(id);
+  if (isExternal(inst)) return extStart(id);
   const runtime = runtimeFor(inst.engine);
   const engineMissing = !inst.containerId || (await runtime.state(inst.containerId)) === 'missing';
   const netMissing = inst.netContainerId ? (await network.state(inst.netContainerId)) === 'missing' : false;
@@ -118,6 +193,7 @@ export async function opStart(id: string): Promise<void> {
 
 export async function opStop(id: string): Promise<void> {
   const inst = await mustGet(id);
+  if (isExternal(inst)) return extStop(id);
   await updateInstance(id, { status: 'stopping', lastError: null });
   await detachDevice(inst);
   await stopContainers(inst);
@@ -127,6 +203,7 @@ export async function opStop(id: string): Promise<void> {
 export async function opRestart(id: string): Promise<void> {
   await updateInstance(id, { status: 'restarting', lastError: null });
   const inst = await mustGet(id);
+  if (isExternal(inst)) { await extStop(id); await extStart(id); return; }
   await detachDevice(inst);
   await stopContainers(inst);
   await updateInstance(id, { status: 'restarting' });
@@ -138,6 +215,7 @@ export async function opDelete(id: string): Promise<void> {
   if (!inst) return;
   await updateInstance(id, { status: 'deleting', lastError: null });
   await detachDevice(inst);
+  if (isExternal(inst)) { await deleteInstanceRow(id); return; }
   const runtime = runtimeFor(inst.engine);
   if (inst.containerId) await runtime.remove(inst.containerId);
   if (inst.netContainerId) await network.remove(inst.netContainerId);
@@ -154,6 +232,7 @@ export async function opDelete(id: string): Promise<void> {
  */
 export async function opSetProxy(id: string): Promise<void> {
   let inst = await mustGet(id);
+  if (isExternal(inst)) throw conflict('外部手机的代理由其来源设置', 'instances.engine_unsupported', { engine: inst.engine });
   if (inst.netContainerId) {
     await network.apply(inst.name, inst.netContainerId, await resolveProxyConfig(inst.proxyId));
   } else {
@@ -216,6 +295,7 @@ export async function opUninstallApp(id: string, pkg: string): Promise<void> {
 
 export async function opApplySettings(id: string): Promise<void> {
   const inst = await mustBeRunning(id);
+  if (isExternal(inst)) throw conflict('外部手机的语言/时区由其来源设置', 'instances.engine_unsupported', { engine: inst.engine });
   await applyDeviceSettings(inst.adbPort, inst.spec);
   // Framework restart (locale) re-creates the STF worker: make sure it is attached again.
   const serial = adb.serialFor(inst.adbPort);

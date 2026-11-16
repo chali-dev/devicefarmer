@@ -122,6 +122,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
       proxyMode: body.proxyMode, force: body.force,
     }),
   },
+  'POST /api/instances/external': { action: 'device.add_external', detail: ({ body }) => ({ sourceId: body.sourceId, phoneIds: Array.isArray(body.phoneIds) ? body.phoneIds : [] }) },
+  'POST /api/device-sources': { action: 'device_source.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ type: body.type, config: body.config }) },
+  'PATCH /api/device-sources/:id': { action: 'device_source.update', detail: ({ body }) => ({ name: body.name, config: body.config }) },
+  'DELETE /api/device-sources/:id': { action: 'device_source.delete' },
   'POST /api/instances/actions': {
     action: ({ body }) => `device.action.${typeof body.action === 'string' ? body.action : 'unknown'}`,
     target: ({ body }) => instanceNames(ids(body.ids)),
@@ -334,6 +338,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   if (!UUID.test(id)) return null;
   if (pattern.startsWith('/api/instances/:id')) {
     const [r] = await db.select({ name: schema.instances.name }).from(schema.instances).where(eq(schema.instances.id, id));
+    return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/device-sources/:id')) {
+    const [r] = await db.select({ name: schema.deviceSources.name }).from(schema.deviceSources).where(eq(schema.deviceSources.id, id));
     return r?.name ?? null;
   }
   if (pattern.startsWith('/api/users/:id')) {

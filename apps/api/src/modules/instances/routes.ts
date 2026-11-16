@@ -70,6 +70,11 @@ async function allocate(prefix: string, count: number) {
   return out;
 }
 
+/** External phones (device sources) keep their own proxy and locale/time zone. */
+const unsupportedOnExternal = (inst: Instance, what: string) => {
+  if (inst.sourceId) throw conflict(`外部手机的${what}由其来源设置`, 'instances.engine_unsupported', { engine: inst.engine });
+};
+
 export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -215,6 +220,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     await assertInstanceAccess(req.user, req.params.id, 'operate');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
+    unsupportedOnExternal(inst, '语言/时区');
     if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
     const spec = { ...inst.spec, ...Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined)) };
     await updateInstance(inst.id, { spec });
@@ -285,6 +291,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!isAdmin(req.user)) throw forbidden('仅管理员可以为设备绑定代理', 'proxy.bind_admin_only');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
+    unsupportedOnExternal(inst, '代理');
     if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
     const { proxyId } = req.body;
     if (req.audit) req.audit.extra = { fromProxyId: inst.proxyId };

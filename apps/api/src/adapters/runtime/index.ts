@@ -17,6 +17,8 @@ const runtimes: Record<Engine, AndroidRuntime> = {
   emulator: new EmulatorRuntime(dockerHost, config.EMULATOR_DATA_PATH, config.EMULATOR_ADBKEY_PATH),
 };
 
-export function runtimeFor(engine: Engine): AndroidRuntime {
+/** Container runtime of a local engine. BitBrowser phones have no container (modules/instances/ops.ts). */
+export function runtimeFor(engine: Engine | 'bitbrowser'): AndroidRuntime {
+  if (engine === 'bitbrowser') throw new Error('bitbrowser devices have no container runtime');
   return runtimes[engine];
 }

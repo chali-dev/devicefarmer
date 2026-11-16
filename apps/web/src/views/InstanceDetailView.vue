@@ -200,13 +200,22 @@ async function screenshot() {
   finally { shooting.value = false }
 }
 
+/** Phone from a device source (e.g. BitBrowser): no proxy pool, locale/time zone owned by the source. */
+const isExternal = computed(() => !!inst.value?.sourceId)
+
 async function act(a: 'start' | 'stop' | 'restart') {
-  try {
-    const r = await store.action(a, [props.id])
-    if (r.skipped.length) message.warning(r.skipped[0]!.reason)
-  } catch (e) {
-    message.error(errorText(e))
+  const go = async () => {
+    try {
+      const r = await store.action(a, [props.id])
+      if (r.skipped.length) message.warning(r.skipped[0]!.reason)
+    } catch (e) {
+      message.error(errorText(e))
+    }
   }
+  // BitBrowser phones are billed from power-on until shutdown.
+  if (inst.value?.engine === 'bitbrowser' && a !== 'stop') {
+    Modal.confirm({ title: t('devices.ext.billingTitle'), content: t('devices.ext.billingConfirm'), okText: t(`devices.${a}`), cancelText: t('common.cancel'), onOk: go })
+  } else await go()
 }
 
 </script>
@@ -247,13 +256,14 @@ async function act(a: 'start' | 'stop' | 'restart') {
           </template>
           <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
             <a-descriptions-item :label="t('common.status')"><StatusTag :status="inst.status" /></a-descriptions-item>
-            <a-descriptions-item :label="t('detail.engine')">{{ inst.engine }} · {{ inst.profile }}</a-descriptions-item>
+            <a-descriptions-item :label="t('detail.engine')">{{ isExternal ? t(`devices.ext.kinds.${inst.engine}`) : `${inst.engine} · ${inst.profile}` }}</a-descriptions-item>
             <a-descriptions-item :label="t('detail.boot')">{{ inst.bootCompleted ? t('detail.bootDone') : t('detail.bootPending') }}</a-descriptions-item>
             <a-descriptions-item label="ADB">{{ inst.adbState ?? '—' }}</a-descriptions-item>
             <a-descriptions-item label="STF">{{ inst.stfReady ? t('detail.stfReady') : t('detail.stfNotReady') }}</a-descriptions-item>
             <a-descriptions-item :label="t('devices.colAdbPort')">{{ inst.adbPort }}</a-descriptions-item>
             <a-descriptions-item :label="t('devices.colResolution')">{{ inst.spec.width }}×{{ inst.spec.height }} @ {{ inst.spec.dpi }}dpi</a-descriptions-item>
-            <a-descriptions-item :label="t('devices.colImage')"><a-typography-text :ellipsis="true" style="max-width: 260px">{{ inst.image }}</a-typography-text></a-descriptions-item>
+            <a-descriptions-item v-if="isExternal" :label="t('devices.ext.phoneId')"><a-typography-text copyable>{{ inst.externalId }}</a-typography-text></a-descriptions-item>
+            <a-descriptions-item v-else :label="t('devices.colImage')"><a-typography-text :ellipsis="true" style="max-width: 260px">{{ inst.image }}</a-typography-text></a-descriptions-item>
           </a-descriptions>
           <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon style="margin-top: 8px" />
         </a-card>
@@ -353,7 +363,10 @@ async function act(a: 'start' | 'stop' | 'restart') {
           </a-table>
         </a-card>
 
-        <a-card size="small" :title="t('detail.proxy.title')">
+        <a-card v-if="isExternal" size="small" :title="t('detail.proxy.title')">
+          <div class="hint">{{ t('devices.ext.proxyHint') }}</div>
+        </a-card>
+        <a-card v-else size="small" :title="t('detail.proxy.title')">
           <template #extra>
             <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
           </template>
@@ -399,7 +412,8 @@ async function act(a: 'start' | 'stop' | 'restart') {
         <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
 
         <a-card size="small" :title="t('detail.settings.title')">
-          <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
+          <a-alert v-if="isExternal" type="info" show-icon :message="t('devices.ext.settingsHint')" style="margin-bottom: 12px" />
+          <a-form layout="vertical" :disabled="isExternal || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
             <a-row :gutter="12">
               <a-col :xs="24" :sm="8">
                 <a-form-item :label="t('devices.form.locale')">
@@ -418,7 +432,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
               </a-col>
             </a-row>
             <a-space wrap>
-              <a-button type="primary" size="small" :loading="savingSettings" @click="saveSettings">{{ t('detail.proxy.saveApply') }}</a-button>
+              <a-button v-if="!isExternal" type="primary" size="small" :loading="savingSettings" @click="saveSettings">{{ t('detail.proxy.saveApply') }}</a-button>
               <span v-if="actual" class="hint">{{ t('detail.settings.current', { locale: actual.locale || t('detail.settings.defaultLocale'), timezone: actual.timezone ?? '', release: actual.release ?? '', model: actual.model ?? '' }) }}</span>
             </a-space>
           </a-form>
