@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { InstagramOutlined, PlaySquareOutlined, ShareAltOutlined, YoutubeOutlined } from '@ant-design/icons-vue'
+import { FacebookOutlined, InstagramOutlined, PlaySquareOutlined, ShareAltOutlined, YoutubeOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 /** Platform badge. Unknown (newly registered) platforms fall back to a generic icon and the raw id. */
 const props = defineProps<{ platform: string; name?: string }>()
-const ICONS: Record<string, unknown> = { instagram: InstagramOutlined, youtube: YoutubeOutlined, tiktok: PlaySquareOutlined }
-const NAMES: Record<string, string> = { instagram: 'Instagram', youtube: 'YouTube', tiktok: 'TikTok' }
+const ICONS: Record<string, unknown> = { instagram: InstagramOutlined, youtube: YoutubeOutlined, tiktok: PlaySquareOutlined, facebook: FacebookOutlined }
+const NAMES: Record<string, string> = { instagram: 'Instagram', youtube: 'YouTube', tiktok: 'TikTok', facebook: 'Facebook' }
 const icon = computed(() => ICONS[props.platform] ?? ShareAltOutlined)
 </script>
 

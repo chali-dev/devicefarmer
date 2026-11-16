@@ -51,6 +51,12 @@ export const instances = pgTable('instances', {
   /** Latest Google services health snapshot (no account identifiers stored). */
   google: jsonb('google').$type<GoogleHealth>(),
   spec: jsonb('spec').$type<InstanceSpec>().notNull(),
+  /**
+   * Social platforms allowed on this device (ids from social/platforms.ts); null = all. Checked when an
+   * account is linked and before each publish run. Accounts already linked stay linked when a platform
+   * is turned off (their publish runs then fail with publish.platform_disabled).
+   */
+  allowedPlatforms: text('allowed_platforms').array(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -713,6 +719,7 @@ export interface ContentPlatformHints {
   youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' };
   instagram?: { caption?: string };
   tiktok?: { caption?: string };
+  facebook?: { caption?: string };
   [platform: string]: Record<string, unknown> | undefined;
 }
 

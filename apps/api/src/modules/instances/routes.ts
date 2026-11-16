@@ -18,6 +18,7 @@ import { adb, dockerHost, network } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
 import { DeviceSettings, readDeviceSettings } from './device-settings.js';
 import { prepareUpload } from '../apps/package.js';
+import { PLATFORM_IDS } from '../social/platforms.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 const MAX_BATCH = 20;
@@ -299,6 +300,23 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const taskId = await enqueue('set-proxy', inst, req.user.id, {}, updated.label);
     reply.code(202);
     return { instance: await publicInstance(updated.row), taskId };
+  });
+
+  /**
+   * Social platforms allowed on the device (admin only). `null` = all platforms. Turning a platform off
+   * keeps accounts already linked; new links are refused and their publish runs fail (platform_disabled).
+   */
+  app.put('/api/instances/:id/platforms', {
+    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ platforms: z.array(z.enum(PLATFORM_IDS)).max(PLATFORM_IDS.length).nullable() }) },
+  }, async (req) => {
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以设置设备允许的平台', 'instances.platforms_admin_only');
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('instance not found', 'instances.not_found');
+    const { platforms } = req.body;
+    if (req.audit) req.audit.extra = { from: inst.allowedPlatforms };
+    const allowedPlatforms = platforms === null ? null : PLATFORM_IDS.filter((p) => platforms.includes(p));
+    const row = await updateInstance(inst.id, { allowedPlatforms });
+    return { instance: await publicInstance(row!) };
   });
 
   /** Egress check from inside the instance's network namespace (same path as Android traffic). */

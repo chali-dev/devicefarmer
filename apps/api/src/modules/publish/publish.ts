@@ -6,7 +6,7 @@ import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, 
 import { badRequest, conflict } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
-import { visibleAccount } from '../social/social.js';
+import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { methodsFor, type PublishInput, type PublishLogLevel, type PublishMethod } from './methods.js';
 import { capabilityOf, composeText, validateForPlatform } from './platforms.js';
@@ -310,6 +310,15 @@ async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishM
     throw new PublishCheckError('publish.account_inactive', `account status is ${acc.accountStatus}`, { status: acc.accountStatus });
   }
   await log('info', 'check: account active');
+  // 2b. platform allowed on the linked device (admins may turn platforms off per device)
+  if (acc.instanceId) {
+    const [dev] = await db.select({ name: schema.instances.name, allowedPlatforms: schema.instances.allowedPlatforms })
+      .from(schema.instances).where(eq(schema.instances.id, acc.instanceId));
+    if (dev && !platformAllowed(dev.allowedPlatforms, row.platform)) {
+      throw new PublishCheckError('publish.platform_disabled', `${row.platform} is turned off on device ${dev.name}`, { device: dev.name, platform: row.platform });
+    }
+    await log('info', 'check: platform enabled on the device');
+  }
   // 3. media (still present, ready, valid for the platform)
   const rows = row.mediaIds.length ? await db.select().from(schema.mediaAssets).where(and(inArray(schema.mediaAssets.id, row.mediaIds), isNull(schema.mediaAssets.deletedAt))) : [];
   const media = row.mediaIds.map((mid) => rows.find((r) => r.id === mid));

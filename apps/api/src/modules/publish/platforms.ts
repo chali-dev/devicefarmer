@@ -21,6 +21,8 @@ export const PUBLISH_CAPABILITIES: Record<string, PublishCapability> = {
   instagram: { media: { min: 1, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 2200, hashtagsMax: 30 },
   // TikTok: one video; caption ≤ 2200.
   tiktok: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: null, captionMax: 2200, hashtagsMax: 30, privacy: ['public', 'friends', 'private'] },
+  // Facebook (manual publishing for now): text-only posts allowed, up to 10 photos/videos; text ≤ 63206.
+  facebook: { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 63206, hashtagsMax: 30 },
 };
 
 const DEFAULT: PublishCapability = { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 5000, hashtagsMax: 30 };

@@ -131,6 +131,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'device.settings', detail: ({ body }) => ({ locale: body.locale, timezone: body.timezone, deviceName: body.deviceName }),
   },
   'PUT /api/instances/:id/proxy': { action: 'proxy.set', detail: ({ body }) => ({ proxyId: body.proxyId ?? null }) },
+  'PUT /api/instances/:id/platforms': { action: 'device.platforms', detail: ({ body }) => ({ platforms: Array.isArray(body.platforms) ? body.platforms : null }) },
   'POST /api/instances/:id/apk': { action: 'app.install', detail: fileDetail },
   'POST /api/instances/:id/files': { action: 'file.upload', detail: fileDetail },
   // apps

@@ -6,7 +6,7 @@
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/social-check.ts
  */
 import { randomBytes } from 'node:crypto';
-import { eq, inArray, like } from 'drizzle-orm';
+import { and, eq, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -61,8 +61,8 @@ try {
 
   // ---------------------------------------------------------------- platforms + limits setting
   let r = await http('GET', '/api/social/platforms', A);
-  check('platform registry: instagram/youtube/tiktok, default limit 1',
-    r.status === 200 && ['instagram', 'youtube', 'tiktok'].every((p) => r.body.platforms.some((x: any) => x.id === p && x.limit === 1)), r.text);
+  check('platform registry: instagram/youtube/tiktok/facebook, default limit 1',
+    r.status === 200 && ['instagram', 'youtube', 'tiktok', 'facebook'].every((p) => r.body.platforms.some((x: any) => x.id === p && x.limit === 1)), r.text);
   r = await http('GET', '/api/social/settings', A);
   check('user: GET limits settings → 403', r.status === 403);
   r = await http('PUT', '/api/social/settings', A, { limits: { instagram: 5 } });
@@ -129,6 +129,38 @@ try {
   check('admin may link any owner\'s account to any device', r.status === 200 && r.body.account.instance?.id === D1.id);
   r = await http('GET', `/api/social/accounts/${b1}`, B);
   check('owner without a grant sees the device as not accessible and no proxy', r.status === 200 && r.body.account.instance?.accessible === false && r.body.account.proxy === null);
+
+  // ---------------------------------------------------------------- allowed platforms per device (null = all)
+  r = await http('PUT', `/api/instances/${D2.id}/platforms`, B, { platforms: ['instagram'] });
+  check('user: set allowed platforms → 403', r.status === 403 && r.body.code === 'instances.platforms_admin_only', r.text);
+  r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: ['myspace'] });
+  check('admin: unknown platform → 400', r.status === 400);
+  r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: ['facebook', 'instagram', 'facebook'] });
+  check('admin: allow instagram + facebook (deduped, registry order)', r.status === 200 && JSON.stringify(r.body.instance.allowedPlatforms) === '["instagram","facebook"]', r.text);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'tiktok', handle: h('tt1'), instanceId: D2.id });
+  check('link a turned-off platform → 409 social.platform_disabled', r.status === 409 && r.body.code === 'social.platform_disabled' && r.body.params?.platform === 'TikTok', r.text);
+  check('refused create left no row', (await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.handle, h('tt1')))).length === 0);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb1'), instanceId: D2.id });
+  check('facebook account on a device allowing facebook → 201, profile URL derived',
+    r.status === 201 && r.body.account.instance?.id === D2.id && r.body.account.profileUrl === `https://www.facebook.com/${h('fb1')}`, r.text);
+  const fb1: string = r.body.account?.id;
+  r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: [] });
+  check('admin: turn every platform off while an account is linked → 200', r.status === 200 && JSON.stringify(r.body.instance.allowedPlatforms) === '[]', r.text);
+  r = await http('GET', `/api/social/accounts/${fb1}`, B);
+  check('already linked account stays linked', r.status === 200 && r.body.account.instance?.id === D2.id);
+  r = await http('PUT', `/api/social/accounts/${fb1}`, B, { notes: 'still here' });
+  check('editing the linked account (same device) is still allowed', r.status === 200, r.text);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb2'), instanceId: D2.id });
+  check('new link after turning it off → 409', r.status === 409 && r.body.code === 'social.platform_disabled', r.text);
+  r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: null });
+  check('admin: back to all platforms (null)', r.status === 200 && r.body.instance.allowedPlatforms === null, r.text);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'tiktok', handle: h('tt2'), instanceId: D2.id });
+  check('null = every platform allowed again', r.status === 201, r.text);
+  for (const id of [fb1, r.body.account?.id]) if (id) await http('DELETE', `/api/social/accounts/${id}`, T);
+  await new Promise((res) => setTimeout(res, 500));
+  const pa = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'device.platforms'), eq(schema.auditLogs.targetId, D2.id)));
+  check('audit device.platforms with from → to', pa.filter((a) => a.ok).length === 3 && pa.some((a) => JSON.stringify((a.detail as any)?.platforms) === '[]' && JSON.stringify((a.detail as any)?.from) === '["instagram","facebook"]'),
+    JSON.stringify(pa.map((a) => a.detail)));
 
   // ---------------------------------------------------------------- derived proxy
   const [px] = await db.insert(schema.proxies).values({ label: `sc-${tag}`, type: 'socks5', host: '192.0.2.77', port: 1080, username: 'scuser', passwordEnc: 'v1:dummy' }).returning();

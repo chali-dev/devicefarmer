@@ -336,6 +336,16 @@ try {
   ptIds.add(out.id);
   d = await waitStatus(A, out.id, ['failed', 'awaiting_operator']);
   check('logged-out account on an online device → publish.not_logged_in', d.task.status === 'failed' && d.task.errorCode === 'publish.not_logged_in', `${d.task.status} ${d.task.errorCode}`);
+  // Platform turned off on the account's device after linking → the run fails at once (before device/login checks).
+  r = await http('PUT', `/api/instances/${DON2.id}/platforms`, T, { platforms: ['instagram'] });
+  check('admin turns youtube off on the linked device', r.status === 200, r.text);
+  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytOut }] });
+  const off = r.body.created?.[0];
+  if (off) ptIds.add(off.id);
+  d = await waitStatus(A, off.id, ['failed', 'awaiting_operator']);
+  check('platform turned off on the device → publish.platform_disabled (1 attempt, logged)', d.task.status === 'failed' && d.task.errorCode === 'publish.platform_disabled' && d.runs[0].attempts === 1
+    && !d.logs.some((l: any) => l.message === 'check: platform enabled on the device'), `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
+  await http('PUT', `/api/instances/${DON2.id}/platforms`, T, { platforms: null });
 
   // TikTok on the offline device: retried once, then failed
   d = await waitStatus(A, ttTask.id, ['failed', 'awaiting_operator'], 120_000);
@@ -380,7 +390,7 @@ try {
   r = await http('GET', `/api/tasks/${igTask.taskId}`, B);
   check("task centre: B cannot see A's publish scheduler task", r.status === 404);
   r = await http('GET', '/api/publish/platforms', A);
-  check('platform capabilities + methods (manual everywhere)', r.body.platforms.length === 3 && r.body.platforms.every((p: any) => p.methods.includes('manual'))
+  check('platform capabilities + methods (manual everywhere)', ['instagram', 'youtube', 'tiktok', 'facebook'].every((id) => r.body.platforms.some((p: any) => p.id === id)) && r.body.platforms.every((p: any) => p.methods.includes('manual'))
     && r.body.platforms.find((p: any) => p.id === 'youtube').capability.media.max === 1);
 
   // ---------------------------------------------------------------- delete content (finished only)

@@ -396,7 +396,7 @@ async function act(a: 'start' | 'stop' | 'restart') {
           <div class="hint">{{ t('detail.proxy.hint') }}</div>
         </a-card>
 
-        <DeviceSocialCard :instance-id="id" />
+        <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
 
         <a-card size="small" :title="t('detail.settings.title')">
           <a-form layout="vertical" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">

@@ -23,6 +23,7 @@ const Hints = z.object({
   youtube: z.object({ title: z.string().trim().max(100).optional(), description: z.string().max(5000).optional(), privacy: Privacy.optional() }).strict().optional(),
   instagram: z.object({ caption: z.string().max(2200).optional() }).strict().optional(),
   tiktok: z.object({ caption: z.string().max(2200).optional() }).strict().optional(),
+  facebook: z.object({ caption: z.string().max(5000).optional() }).strict().optional(),
 }).strict();
 
 const Editable = {

@@ -16,6 +16,8 @@ export const PLATFORMS: readonly SocialPlatform[] = [
   { id: 'instagram', name: 'Instagram', defaultLimit: 1, profileUrl: (h) => `https://www.instagram.com/${encodeURIComponent(h)}/` },
   { id: 'youtube', name: 'YouTube', defaultLimit: 1, profileUrl: (h) => `https://www.youtube.com/@${encodeURIComponent(h)}` },
   { id: 'tiktok', name: 'TikTok', defaultLimit: 1, profileUrl: (h) => `https://www.tiktok.com/@${encodeURIComponent(h)}` },
+  // Handle = Facebook username, or the numeric id of a profile without one (profile.php?id=…).
+  { id: 'facebook', name: 'Facebook', defaultLimit: 1, profileUrl: (h) => /^\d+$/.test(h) ? `https://www.facebook.com/profile.php?id=${h}` : `https://www.facebook.com/${encodeURIComponent(h)}` },
 ];
 
 export const PLATFORM_IDS = PLATFORMS.map((p) => p.id) as [string, ...string[]];

@@ -27,6 +27,8 @@ export interface Instance {
   proxy: InstanceProxy | null
   proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null } | null
   spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
+  /** Social platforms allowed on the device; null = all. */
+  allowedPlatforms: string[] | null
   createdAt: string
   updatedAt: string
   /** Users granted this device; only returned to admins. */
@@ -353,6 +355,7 @@ export interface ContentHints {
   youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' }
   instagram?: { caption?: string }
   tiktok?: { caption?: string }
+  facebook?: { caption?: string }
 }
 export interface Content {
   id: string; userId: string; ownerName: string | null; title: string; body: string; category: string | null

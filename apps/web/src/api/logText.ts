@@ -45,6 +45,7 @@ const EXACT: Record<string, string> = {
   'awaiting operator': 'awaitingOperator',
   'check: account owner ok': 'checkOwner',
   'check: account active': 'checkActive',
+  'check: platform enabled on the device': 'checkPlatformEnabled',
   'check: media ready and valid for the platform': 'checkMedia',
   'check: not published before on this account': 'checkNotPublished',
   'check: device online': 'checkDeviceOnline',

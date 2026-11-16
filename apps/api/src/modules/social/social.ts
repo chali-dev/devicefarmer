@@ -52,9 +52,14 @@ export function platformsWithLimits(limits: Record<string, number>) {
  * so concurrent linkers of the same (device, platform) serialize and the second one sees the first.
  */
 export async function assertLinkable(tx: Tx, user: AuthUser, instanceId: string, platform: string, exceptAccountId?: string): Promise<{ id: string; name: string }> {
-  const [inst] = await tx.select({ id: schema.instances.id, name: schema.instances.name }).from(schema.instances).where(eq(schema.instances.id, instanceId));
+  const [inst] = await tx.select({ id: schema.instances.id, name: schema.instances.name, allowedPlatforms: schema.instances.allowedPlatforms })
+    .from(schema.instances).where(eq(schema.instances.id, instanceId));
   if (!inst) throw notFound('设备不存在', 'instances.not_found');
   await assertInstanceAccess(user, instanceId, 'operate');
+  if (!platformAllowed(inst.allowedPlatforms, platform)) {
+    const name = platformById(platform)?.name ?? platform;
+    throw conflict(`设备 ${inst.name} 未开启 ${name}`, 'social.platform_disabled', { device: inst.name, platform: name });
+  }
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`social:${instanceId}:${platform}`}, 0))`);
   const limit = (await getLimits(tx))[platform] ?? 1;
   const [{ n } = { n: 0 }] = await tx.select({ n: sql<number>`count(*)::int` }).from(sa).where(and(
@@ -64,8 +69,11 @@ export async function assertLinkable(tx: Tx, user: AuthUser, instanceId: string,
     const name = platformById(platform)?.name ?? platform;
     throw conflict(`设备 ${inst.name} 上的 ${name} 账号已达上限（${limit} 个）`, 'social.device_limit', { device: inst.name, platform: name, limit });
   }
-  return inst;
+  return { id: inst.id, name: inst.name };
 }
+
+/** instances.allowed_platforms: null = every platform. */
+export const platformAllowed = (allowed: string[] | null, platform: string) => allowed === null || allowed.includes(platform);
 
 // ---------------------------------------------------------------- visibility
 

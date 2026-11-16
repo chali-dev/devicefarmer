@@ -72,7 +72,7 @@ const editing = ref<Content | null>(null)
 const editorTasks = ref<PublishTaskItem[]>([])
 const form = reactive({
   title: '', body: '', category: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[],
-  yt: { title: '', description: '', privacy: undefined as 'public' | 'unlisted' | 'private' | undefined }, ig: { caption: '' }, tt: { caption: '' }, ownerId: undefined as string | undefined,
+  yt: { title: '', description: '', privacy: undefined as 'public' | 'unlisted' | 'private' | undefined }, ig: { caption: '' }, tt: { caption: '' }, fb: { caption: '' }, ownerId: undefined as string | undefined,
 })
 const pickerOpen = ref(false)
 
@@ -81,7 +81,7 @@ function fillForm(c: Content | null) {
   Object.assign(form, {
     title: c?.title ?? '', body: c?.body ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
     yt: { title: h.youtube?.title ?? '', description: h.youtube?.description ?? '', privacy: h.youtube?.privacy },
-    ig: { caption: h.instagram?.caption ?? '' }, tt: { caption: h.tiktok?.caption ?? '' }, ownerId: undefined,
+    ig: { caption: h.instagram?.caption ?? '' }, tt: { caption: h.tiktok?.caption ?? '' }, fb: { caption: h.facebook?.caption ?? '' }, ownerId: undefined,
   })
 }
 function openNew() { editing.value = null; editorTasks.value = []; fillForm(null); editorOpen.value = true }
@@ -110,6 +110,7 @@ function hints(): ContentHints {
   const yt = clean(form.yt); if (Object.keys(yt).length) out.youtube = yt
   const ig = clean(form.ig); if (Object.keys(ig).length) out.instagram = ig
   const tt = clean(form.tt); if (Object.keys(tt).length) out.tiktok = tt
+  const fb = clean(form.fb); if (Object.keys(fb).length) out.facebook = fb
   return out
 }
 
@@ -250,6 +251,8 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.ig.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
           <a-divider orientation="left" plain><PlatformTag platform="tiktok" /></a-divider>
           <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.tt.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
+          <a-divider orientation="left" plain><PlatformTag platform="facebook" /></a-divider>
+          <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.fb.caption" :rows="3" :maxlength="5000" show-count /></a-form-item>
         </a-collapse-panel>
       </a-collapse>
     </a-form>
