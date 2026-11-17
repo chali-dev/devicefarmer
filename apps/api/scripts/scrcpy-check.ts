@@ -8,8 +8,11 @@
  *
  * Full run: codec info/config/key frame + fps/KB/s for scrcpy vs STF (with on-screen motion driven
  * over adb), VM CPU, a second concurrent viewer (fan-out), HOME key, tap, paste/typeSecure, device
- * clipboard messages, server gone after the last viewer left, no fling from a drag a remote link delivers
- * in bursts (external-phone path of the hub, in-process), STF fallback without the jar, RBAC.
+ * clipboard messages, server gone after the last viewer left, touch timing over remote links (external-phone
+ * path of the hub, in-process, touches delivered in clumps): over the relay a quick flick pages and a slow
+ * drag doesn't fling (CpRelay replays the browser's spacing; needs out/cprelay.dex and the device reaching
+ * this machine, RELAY_TEST_HOST, default Lima's 192.168.5.2), over adb a drag stops where the finger
+ * stopped; STF fallback without the jar, RBAC.
  * phone-* devices are refused.
  */
 import { execFileSync } from 'node:child_process';
@@ -17,7 +20,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { config } from '../src/config.js';
-import { joinScrcpy } from '../src/modules/control/scrcpy-hub.js';
+import { joinScrcpy, scrcpyActive, scrcpyInfo } from '../src/modules/control/scrcpy-hub.js';
+import { startRelayListener } from '../src/modules/control/scrcpy-relay.js';
 import { adb } from '../src/services.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
@@ -341,33 +345,114 @@ try {
   await waitFor('server stopped', async () => (await serverProcs(port)) === 0, 15_000, 500);
   check('server process gone after the last viewer left', true);
 
-  // ---- external phones: a remote link delivers moves in bursts that Android injects within 1 ms; the hub
-  // must hold the release so the list stops where the finger stopped instead of flinging (seen in Instagram
-  // on a BitBrowser phone). The hub's external path runs in-process here against this local device (adb path:
-  // the relay is only reachable for real external phones); the bursts are produced the way the tunnel does.
-  if (videoOnlyName) skip('no fling from a bursty drag (external path)', 'video-only run');
+  // ---- external phones: a remote link delivers touches in clumps (adb through the BitBrowser tunnel: ~270 ms;
+  // the relay through the phone's proxy too) and scrcpy-server stamps each event with its injection time.
+  // Relay path: CpRelay replays the browser's spacing, so a quick flick pages (Reels; here the launcher's
+  // swipe-up to all apps, which also needs fling velocity) and a slow drag that stops doesn't fling.
+  // adb path: the hub holds the release (velocity 0): a drag stops where the finger stopped.
+  // Both run in-process against this local device (external path of the hub); the clumps are produced here.
+  if (videoOnlyName) skip('touch timing over remote links (external path)', 'video-only run');
   else {
-    (config as { SCRCPY_RELAY_URL?: string }).SCRCPY_RELAY_URL = undefined;
-    const hub = await joinScrcpy(port, { sendBinary() {}, sendJson() {}, buffered: () => 0, onEnd() {} }, true);
-    try {
-      const rows = async () => {
-        const x = await adb.shell(port, 'uiautomator dump /sdcard/sc-ui.xml >/dev/null && cat /sdcard/sc-ui.xml; rm -f /sdcard/sc-ui.xml', 30_000);
-        return new Map([...x.matchAll(/text="([^"]+)" resource-id="android:id\/title"[^>]*bounds="\[\d+,(\d+)\]/g)].map((m) => [m[1]!, Number(m[2])]));
-      };
+    const viewer = { sendBinary() {}, sendJson() {}, buffered: () => 0, onEnd() {} };
+    const cfg = config as { SCRCPY_RELAY_URL?: string };
+    const CLUMP_MS = 270;
+    /** A vertical gesture with browser times, delivered in clumps every CLUMP_MS (what the link does). */
+    const gesture = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, X: number, y0: number, y1: number, durMs: number, n: number, stillMs = 0) => {
+      const t0 = performance.now();
+      const evs: { at: number; ev: Parameters<typeof hub.touch>[0] }[] = [{ at: 0, ev: { type: 'down', x: X, y: y0, t: t0 } }];
+      for (let i = 1; i <= n; i++) evs.push({ at: (durMs * i) / n, ev: { type: 'move', x: X, y: y0 + ((y1 - y0) * i) / n, t: t0 + (durMs * i) / n } });
+      evs.push({ at: durMs + stillMs + 4, ev: { type: 'up', t: t0 + durMs + stillMs + 4 } });
+      hub.touch(evs[0]!.ev);
+      for (let i = 1; i < evs.length;) {
+        const until = Math.ceil((performance.now() - t0 + 0.001) / CLUMP_MS) * CLUMP_MS;
+        await sleep(until - (performance.now() - t0));
+        while (i < evs.length && evs[i]!.at <= until) hub.touch(evs[i++]!.ev);
+      }
+    };
+    /** Spacing Android saw for the last events (dumpsys input RecentQueue) and the release velocity (px/s, last ≤ 100 ms, cut at 40 ms gaps). */
+    const seen = async () => {
+      const out = await adb.shell(port, 'dumpsys input | grep -A12 RecentQueue | grep MotionEvent');
+      const ev = [...out.matchAll(/eventTime=(\d+).*?action=(\w+).*?pointers=\[0: \([\d.]+, ([\d.]+)\)/g)].map((m) => ({ t: Number(m[1]) / 1e6, a: m[2]!, y: Number(m[3]) }));
+      const g = ev.slice(Math.max(0, ev.findLastIndex((e) => e.a === 'DOWN')), ev.findLastIndex((e) => e.a === 'UP') + 1);
+      const moves = g.filter((e) => e.a === 'MOVE');
+      const last = moves.at(-1), up = g.at(-1);
+      if (!last || !up) return { spacingMs: [], velocityPxS: 0 };
+      const w = [last];
+      for (let k = moves.length - 2; k >= 0 && last.t - moves[k]!.t <= 100 && w[0]!.t - moves[k]!.t <= 40; k--) w.unshift(moves[k]!);
+      const v = up.t - last.t > 40 || w.length < 2 ? 0 : Math.round(((w[0]!.y - last.y) / (last.t - w[0]!.t)) * 1000);
+      return { spacingMs: g.slice(1).map((e, k) => Math.round(e.t - g[k]!.t)), velocityPxS: v };
+    };
+    const ui = () => adb.shell(port, 'uiautomator dump /sdcard/sc-ui.xml >/dev/null && cat /sdcard/sc-ui.xml; rm -f /sdcard/sc-ui.xml', 30_000);
+    const rows = async () => new Map([...(await ui()).matchAll(/text="([^"]+)" resource-id="android:id\/title"[^>]*bounds="\[\d+,(\d+)\]/g)].map((m) => [m[1]!, Number(m[2])]));
+    const drag = Math.round(0.3 * inst.spec.height);
+    const allApps = async () => /apps_list_view/.test(await ui());
+    /**
+     * Swipe-up over 15 % of the height on an empty spot of the home screen: opens all apps only with fling
+     * velocity (measured with adb's input swipe: 192 px in 60 ms opens 4/4, in 120 ms or slower 0/4), like a Reels page.
+     */
+    const homeSwipe = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, durMs: number, n: number, stillMs: number) => {
+      // HOME while the launcher is already in front can leave the next swipe unanswered: only when needed
+      if (!(await adb.shell(port, 'dumpsys activity activities | grep -m1 ResumedActivity:')).includes('launcher')) await adb.shell(port, 'input keyevent 3');
+      else if (await allApps()) await adb.shell(port, 'input keyevent 4');
+      await sleep(2000);
+      await gesture(hub, 0.625, 0.55, 0.4, durMs, n, stillMs);
+      await sleep(1500);
+      return { allApps: await allApps(), ...(await seen()) };
+    };
+    /** Upward drag over 30 % of the height in the app list; px the first row moved (null: scrolled away). */
+    const listSwipe = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, durMs: number, n: number, stillMs: number) => {
       await adb.shell(port, 'am start -W -S -a android.settings.MANAGE_ALL_APPLICATIONS_SETTINGS >/dev/null');
       await sleep(2500);
-      const before = await rows();
-      const [label, y0px] = [...before][0] ?? ['', 0];
-      const y0 = 0.8, y1 = 0.5, n = 15; // a 0.5 s swipe of 30 % of the screen height
-      hub.touch({ type: 'down', x: 0.5, y: y0 });
-      await sleep(300); // one round trip later: the moves of the next ~300 ms at once, then the rest + the release
-      for (let i = 1; i <= n; i++) { hub.touch({ type: 'move', x: 0.5, y: y0 + (y1 - y0) * i / n }); if (i === 8) await sleep(300); }
-      hub.touch({ type: 'up' });
+      const [label, y0px] = [...(await rows())][0] ?? ['', 0];
+      await gesture(hub, 0.5, 0.8, 0.5, durMs, n, stillMs);
       await sleep(3000);
       const after = (await rows()).get(label);
-      const drag = Math.round((y0 - y1) * inst.spec.height);
-      check('bursty drag on an external link stops where the finger stopped (no fling)', after !== undefined && y0px - after > 0 && y0px - after <= drag,
-        `"${label}" ${y0px} → ${after ?? 'scrolled away'} px (drag ${drag} px)`);
+      return { moved: after === undefined ? null : y0px - after, ...(await seen()) };
+    };
+
+    // relay path: the device reaches this process's relay listener at the VM's host address (Lima: 192.168.5.2)
+    cfg.SCRCPY_RELAY_URL = `ws://${process.env.RELAY_TEST_HOST ?? '192.168.5.2'}:${config.SCRCPY_RELAY_PORT}/scrcpy-relay`;
+    startRelayListener({ info() {}, warn: (o, m) => console.warn(m, o) });
+    let hub = await joinScrcpy(port, viewer, true);
+    try {
+      const via = scrcpyInfo(port)?.link;
+      if (via !== 'relay') skip('touch timing over the relay', `relay did not connect from the device (via ${via}); set RELAY_TEST_HOST`);
+      else {
+        // the launcher itself misses an occasional flick with perfect timing (seen in ~1 of 6, also right after
+        // a miss with identical spacing): up to 3 tries
+        let flick = await homeSwipe(hub, 60, 4, 0), tries = 1;
+        while (!flick.allApps && tries < 3) { flick = await homeSwipe(hub, 60, 4, 0); tries++; }
+        measurements.relayFlick = { ...flick, tries };
+        check('relay: quick flick in clumps keeps its spacing and pages (home → all apps)', flick.allApps && flick.velocityPxS > 2000, `${JSON.stringify(flick)}, try ${tries}`);
+        const slow = await homeSwipe(hub, 700, 42, 150);
+        measurements.relaySlowPage = slow;
+        check('relay: slow drag of the same distance that stops does not page', !slow.allApps && slow.velocityPxS === 0, JSON.stringify(slow));
+        const ls = await listSwipe(hub, 900, 54, 150);
+        measurements.relaySlowList = ls;
+        check('relay: slow drag in a list stops where the finger stopped (no fling)', ls.moved !== null && ls.moved > 0 && ls.moved <= drag, `${JSON.stringify(ls)} (drag ${drag} px)`);
+        const lf = await listSwipe(hub, 150, 9, 0);
+        measurements.relayFlickList = lf;
+        check('relay: fast flick in a list flings past the finger', lf.moved === null || lf.moved > drag, `${JSON.stringify(lf)} (drag ${drag} px)`);
+        // untimed control messages still go straight through
+        await adb.shell(port, 'am start -W -a android.settings.SETTINGS >/dev/null');
+        await sleep(1000);
+        const k0 = Date.now();
+        hub.key('press', 'home');
+        await waitFor('HOME over the relay', async () => !(await adb.shell(port, 'dumpsys activity activities | grep -m1 ResumedActivity:')).includes('settings'), 5000, 50);
+        check('relay: HOME key (untimed) still works', true, `${Date.now() - k0} ms incl. adb polling`);
+      }
+    } finally {
+      hub.leave();
+    }
+    await waitFor('relay share closed', () => !scrcpyActive(port), 15_000, 200);
+
+    // adb path (no device-side helper): release held, velocity 0
+    cfg.SCRCPY_RELAY_URL = undefined;
+    hub = await joinScrcpy(port, viewer, true);
+    try {
+      const ls = await listSwipe(hub, 500, 15, 0);
+      measurements.adbList = ls;
+      check('adb: bursty drag on an external link stops where the finger stopped (no fling)', ls.moved !== null && ls.moved > 0 && ls.moved <= drag, `${JSON.stringify(ls)} (drag ${drag} px)`);
     } finally {
       hub.leave();
     }

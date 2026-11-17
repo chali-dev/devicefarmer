@@ -15,8 +15,9 @@ const ClientMsg = z.discriminatedUnion('type', [
     type: z.literal('touch'),
     ev: z.discriminatedUnion('type', [
       z.object({ type: z.enum(['gestureStart', 'gestureStop', 'commit']) }),
-      z.object({ type: z.enum(['down', 'move']), x: z.number().min(0).max(1), y: z.number().min(0).max(1), contact: z.number().int().min(0).max(9).optional(), pressure: z.number().min(0).max(1).optional() }),
-      z.object({ type: z.literal('up'), contact: z.number().int().min(0).max(9).optional() }),
+      // t: the browser's event time (ms), used to replay the gesture's timing on the device (relay path)
+      z.object({ type: z.enum(['down', 'move']), x: z.number().min(0).max(1), y: z.number().min(0).max(1), contact: z.number().int().min(0).max(9).optional(), pressure: z.number().min(0).max(1).optional(), t: z.number().optional() }),
+      z.object({ type: z.literal('up'), contact: z.number().int().min(0).max(9).optional(), t: z.number().optional() }),
     ]),
   }),
   z.object({ type: z.literal('key'), action: z.enum(['down', 'up', 'press']), key: z.string().regex(/^[a-z0-9_]{1,32}$/) }),

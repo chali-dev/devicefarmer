@@ -429,7 +429,8 @@ function onPointerDown(e: PointerEvent) {
   pointerDown = true
   const p = point(e)
   send({ type: 'touch', ev: { type: 'gestureStart' } })
-  send({ type: 'touch', ev: { type: 'down', ...p } })
+  // t: event time (ms, performance clock); the device side replays moves at this spacing (fling velocity)
+  send({ type: 'touch', ev: { type: 'down', ...p, t: e.timeStamp } })
   send({ type: 'touch', ev: { type: 'commit' } })
 }
 function onPointerMove(e: PointerEvent) {
@@ -437,13 +438,13 @@ function onPointerMove(e: PointerEvent) {
   const now = performance.now()
   if (now - lastMove < 16) return // ~60 Hz
   lastMove = now
-  send({ type: 'touch', ev: { type: 'move', ...point(e) } })
+  send({ type: 'touch', ev: { type: 'move', ...point(e), t: e.timeStamp } })
   send({ type: 'touch', ev: { type: 'commit' } })
 }
 function onPointerUp(e: PointerEvent) {
   if (!pointerDown || !e.isPrimary) return
   pointerDown = false
-  send({ type: 'touch', ev: { type: 'up' } })
+  send({ type: 'touch', ev: { type: 'up', t: e.timeStamp } })
   send({ type: 'touch', ev: { type: 'commit' } })
   send({ type: 'touch', ev: { type: 'gestureStop' } })
 }

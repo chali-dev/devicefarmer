@@ -47,6 +47,8 @@ export interface ScrcpyRelay {
   expect(channels: string[], timeoutMs: number): RelayWait;
   /** Round trip over one relay stream (WebSocket ping), null until measured. */
   rttMs(stream: Duplex): number | null;
+  /** The helper on this stream paces timed control frames (see send()). */
+  timed(stream: Duplex): boolean;
 }
 export interface VideoPacket { config: boolean; key: boolean; pts: bigint; data: Buffer }
 
@@ -216,8 +218,22 @@ export class ScrcpyServer extends EventEmitter {
     try { await header; } catch (err) { this.close('start failed'); throw err; }
   }
 
-  send(msg: Buffer): void {
-    if (!this.closed && this.control) this.control.write(msg);
+  /**
+   * Whether the control path replays the browser's timing on the device (relay helper with timed framing):
+   * then send(msg, dtMs) is written there dtMs after the previous timed message, whatever clumps the link makes.
+   */
+  get timed(): boolean {
+    return !!this.opts.relay && !!this.control && this.opts.relay.timed(this.control);
+  }
+
+  /** dtMs (timed path only): ms after the previous timed message, in the sender's clock; omitted = no pacing. */
+  send(msg: Buffer, dtMs?: number): void {
+    if (this.closed || !this.control) return;
+    if (!this.timed) { this.control.write(msg); return; }
+    const h = Buffer.alloc(6); // CpRelay frame: [u32 len][u16 dt, 0xFFFF = untimed]
+    h.writeUInt32BE(msg.length, 0);
+    h.writeUInt16BE(dtMs === undefined ? 0xffff : Math.min(0xfffe, Math.max(0, Math.round(dtMs))), 4);
+    this.control.write(Buffer.concat([h, msg]));
   }
 
   close(reason: string): void {

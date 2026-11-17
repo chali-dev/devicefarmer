@@ -7,7 +7,7 @@ import {
   encodeSetClipboard, encodeText, encodeTouch, h264CodecString, type ScrcpyRelay, type VideoPacket,
 } from '../../adapters/scrcpy.js';
 import { adb } from '../../services.js';
-import { expectRelay, relayRttMs } from './scrcpy-relay.js';
+import { expectRelay, relayRttMs, relayTimed } from './scrcpy-relay.js';
 
 /**
  * One scrcpy server per device, shared by every viewer (fan-out). Late joiners get the cached config
@@ -25,7 +25,8 @@ export interface ScrcpyViewer {
   onEnd(reason: string): void;
 }
 
-export type TouchInput = { type: 'down' | 'move'; x: number; y: number; contact?: number; pressure?: number } | { type: 'up'; contact?: number };
+/** t: the browser's event time (ms), replayed on the device where the relay paces control messages. */
+export type TouchInput = { type: 'down' | 'move'; x: number; y: number; contact?: number; pressure?: number; t?: number } | { type: 'up'; contact?: number; t?: number };
 
 export interface ScrcpyHandle {
   touch(ev: TouchInput): void;
@@ -54,12 +55,16 @@ const RELAY_START_MS = 10_000;
 /**
  * Android stamps injected touches with the time scrcpy injects them, and a remote link (adb through a tunnel:
  * one write in flight per round trip; or the relay) delivers moves in bursts that get injected within a
- * millisecond: the fling velocity at release becomes absurd and lists fly off. On such links the release
- * of a drag is held until the last move has surely been injected on its own (link round trip + more than
- * Android's 40 ms "pointer stopped" time, see sendTouch): the list then stops where the finger stopped,
- * without a fling (a fling can't be reproduced reliably: the device never sees the browser's timing).
+ * millisecond: the fling velocity at release becomes absurd and lists fly off.
+ * Relay with timed framing: each touch carries the browser's spacing (dt) and CpRelay writes it to scrcpy at
+ * that spacing, so Android sees the real velocity (lists fling as they would, paging UIs like Reels page).
+ * Otherwise (adb path, or a gesture without browser times) the release of a drag is held until the last move
+ * has surely been injected on its own (link round trip + more than Android's 40 ms "pointer stopped" time, see
+ * sendTouch): the list then stops where the finger stopped, without a fling; paging needs a drag past half.
  */
 const RELEASE_MARGIN_MS = 60;
+/** Gap between two touch events beyond which the spacing is not replayed (a new gesture after a pause). */
+const MAX_TOUCH_DT_MS = 1000;
 /** Round trip assumed while none has been measured yet. */
 const DEFAULT_LINK_RTT_MS = 500;
 
@@ -73,7 +78,7 @@ function relayOptions(): ScrcpyRelay | undefined {
   if (relayDex?.mtimeMs !== st.mtimeMs) {
     relayDex = { mtimeMs: st.mtimeMs, remote: `/data/local/tmp/cprelay-${createHash('sha256').update(fs.readFileSync(dexPath)).digest('hex').slice(0, 12)}.dex` };
   }
-  return { url: config.SCRCPY_RELAY_URL, dexPath, remoteDex: relayDex.remote, expect: expectRelay, rttMs: relayRttMs };
+  return { url: config.SCRCPY_RELAY_URL, dexPath, remoteDex: relayDex.remote, expect: expectRelay, rttMs: relayRttMs, timed: relayTimed };
 }
 
 interface ViewerState { v: ScrcpyViewer; needKey: boolean }
@@ -93,11 +98,16 @@ class Share {
   clipboard: string | undefined;
   clipWaiters: ((text: string) => void)[] = [];
   lastReset = 0;
-  /** Last position per pointer, for 'up' events (the client sends no coordinates there); movedAt: last move sent (0 = none since down). */
-  pointers = new Map<number, { x: number; y: number; movedAt: number }>();
-  /** Touch events behind a held release (external phones), sent in order. */
-  private touchQueue: TouchInput[] = [];
+  /**
+   * Last position per pointer, for 'up' events (the client sends no coordinates there); movedAt: last move sent
+   * (0 = none since down); paced: the gesture is replayed with the browser's timing (no held release).
+   */
+  pointers = new Map<number, { x: number; y: number; movedAt: number; paced: boolean }>();
+  /** Touch events (with their dt for the timed relay) behind a held release (external phones), sent in order. */
+  private touchQueue: { ev: TouchInput; dt?: number }[] = [];
   private touchTimer: NodeJS.Timeout | null = null;
+  /** Browser time of the previous touch event and who sent it (dt is only meaningful within one viewer's clock). */
+  private lastTouch: { from: object; t: number } | null = null;
 
   constructor(readonly adbPort: number, readonly external: boolean) {
     const relay = external ? relayOptions() : undefined;
@@ -159,31 +169,41 @@ class Share {
     this.server.send(encodeResetVideo());
   }
 
-  touch(ev: TouchInput) {
-    this.touchQueue.push(ev);
+  touch(ev: TouchInput, from: object) {
+    this.touchQueue.push({ ev, dt: this.touchDt(ev, from) });
     if (!this.touchTimer) this.flushTouches();
+  }
+
+  /** Browser-time spacing to the previous touch event (timed relay only), undefined without times. */
+  private touchDt(ev: TouchInput, from: object): number | undefined {
+    if (!this.server.timed || ev.t === undefined) { this.lastTouch = null; return undefined; }
+    const t = Math.round(ev.t);
+    const last = this.lastTouch;
+    this.lastTouch = { from, t };
+    return last?.from === from ? Math.min(MAX_TOUCH_DT_MS, Math.max(0, t - last.t)) : 0;
   }
 
   private flushTouches() {
     this.touchTimer = null;
     while (this.touchQueue.length) {
-      const ev = this.touchQueue[0]!;
-      const hold = ev.type === 'up' ? this.releaseHoldMs(ev.contact ?? 0) : 0;
+      const q = this.touchQueue[0]!;
+      const hold = q.ev.type === 'up' ? this.releaseHoldMs(q.ev.contact ?? 0) : 0;
       if (hold > 0) { this.touchTimer = setTimeout(() => this.flushTouches(), hold); return; }
       this.touchQueue.shift();
-      this.sendTouch(ev);
+      this.sendTouch(q.ev, q.dt);
     }
   }
 
-  /** How much longer the release of this pointer waits (see RELEASE_MARGIN_MS); 0 for taps and local devices. */
+  /** How much longer the release of this pointer waits (see RELEASE_MARGIN_MS); 0 for taps, local devices and paced gestures. */
   private releaseHoldMs(id: number): number {
-    const movedAt = this.pointers.get(id)?.movedAt;
-    if (!this.external || !movedAt) return 0;
+    const p = this.pointers.get(id);
+    const movedAt = p?.movedAt;
+    if (!this.external || !movedAt || p.paced) return 0;
     const rtt = this.server.relayRttMs() ?? adb.rttMs(this.adbPort) ?? DEFAULT_LINK_RTT_MS;
     return movedAt + rtt + RELEASE_MARGIN_MS - Date.now();
   }
 
-  private sendTouch(ev: TouchInput) {
+  private sendTouch(ev: TouchInput, dt: number | undefined) {
     const srv = this.server;
     if (!srv.width) return;
     const id = ev.contact ?? 0;
@@ -193,14 +213,15 @@ class Share {
       this.pointers.delete(id);
       // After the hold: one more move at the same spot, alone in its burst, makes Android drop the earlier
       // samples ("pointer stopped", every version), so the velocity at release is 0.
-      if (this.external && p.movedAt) srv.send(encodeTouch(ACTION_MOVE, BigInt(id), p.x, p.y, srv.width, srv.height, 1));
-      srv.send(encodeTouch(ACTION_UP, BigInt(id), p.x, p.y, srv.width, srv.height, 0));
+      if (this.external && p.movedAt && !p.paced) srv.send(encodeTouch(ACTION_MOVE, BigInt(id), p.x, p.y, srv.width, srv.height, 1));
+      srv.send(encodeTouch(ACTION_UP, BigInt(id), p.x, p.y, srv.width, srv.height, 0), p.paced ? dt ?? 0 : undefined);
       return;
     }
     const x = Math.min(srv.width - 1, Math.round(ev.x * srv.width));
     const y = Math.min(srv.height - 1, Math.round(ev.y * srv.height));
-    this.pointers.set(id, { x, y, movedAt: ev.type === 'move' ? Date.now() : 0 });
-    srv.send(encodeTouch(ev.type === 'down' ? ACTION_DOWN : ACTION_MOVE, BigInt(id), x, y, srv.width, srv.height, ev.pressure ?? 1));
+    const paced = ev.type === 'down' ? dt !== undefined : (this.pointers.get(id)?.paced ?? false) && dt !== undefined;
+    this.pointers.set(id, { x, y, movedAt: ev.type === 'move' ? Date.now() : 0, paced });
+    srv.send(encodeTouch(ev.type === 'down' ? ACTION_DOWN : ACTION_MOVE, BigInt(id), x, y, srv.width, srv.height, ev.pressure ?? 1), paced ? dt : undefined);
   }
 
   private onPacket(p: VideoPacket) {
@@ -293,7 +314,7 @@ export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external
   let left = false;
   return {
     touch(ev) {
-      sh.touch(ev);
+      sh.touch(ev, state);
     },
     key(action, name) {
       const code = KEYCODES[name];

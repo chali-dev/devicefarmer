@@ -12,7 +12,10 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLSocket;
@@ -27,9 +30,23 @@ import javax.net.ssl.SSLSocketFactory;
  * the local abstract socket (retried until the server listens), then pump both ways. The order matters:
  * scrcpy-server takes its first accepted socket as video, the second as control.
  * Any end (EOF, error, close frame) exits the process; the API sees its WebSocket close and tears down.
+ *
+ * Timed control (both sides send the header X-Relay-Timed: 1; otherwise raw bytes as before, so an older
+ * API or helper still works): API → device data on the control channel is framed as [u32 len][u16 dt][payload].
+ * A remote link delivers touch moves in clumps and scrcpy-server stamps each event with its injection time,
+ * so Android would see a clump as one instant (absurd fling velocity). Here each timed message (dt = ms
+ * after the previous timed one, in the browser's clock) is written at max(arrival, previous + dt), never
+ * more than MAX_LAG_MS after its arrival: the device sees the finger's real spacing (late ones go at once,
+ * nothing is reordered). dt = 0xFFFF = untimed (keys, clipboard): written as soon as its turn comes.
+ * A touch DOWN waits for the gesture's next message (at most DOWN_WAIT_MS) and is placed dt before it: the
+ * link often delivers the DOWN alone and the moves a clump later, and that gap would look like a long press.
  */
 public final class CpRelay {
   private static final int CHUNK = 16 * 1024; // below the API's WebSocket max payload
+  private static final int UNTIMED = 0xFFFF;
+  private static final long MAX_LAG_MS = 1000;
+  private static final long DOWN_WAIT_MS = 300;
+  private static final long MS = 1_000_000L;
 
   public static void main(String[] a) throws Exception {
     if (a.length != 4) { System.err.println("usage: CpRelay <socket> <ch1,ch2> <ws-url> <token>"); System.exit(2); }
@@ -77,12 +94,80 @@ public final class CpRelay {
     Thread down = new Thread(new Runnable() {
       @Override public void run() {
         try {
-          for (;;) { byte[] m = ws.readData(); if (m.length > 0) lout.write(m); }
+          if (ws.timed) readTimed(ws, lout, ch);
+          else for (;;) { byte[] m = ws.readData(); if (m.length > 0) lout.write(m); }
         } catch (Exception e) { die(ch + ": websocket: " + e); }
       }
     });
     up.start();
     down.start();
+  }
+
+  /** One framed control message with its arrival time (System.nanoTime). */
+  private static final class Timed {
+    final long at; final int dt; final byte[] data;
+    Timed(long at, int dt, byte[] data) { this.at = at; this.dt = dt; this.data = data; }
+  }
+
+  /** scrcpy INJECT_TOUCH_EVENT (type 2) with ACTION_DOWN (0). */
+  private static boolean isTouchDown(byte[] m) {
+    return m.length > 1 && m[0] == 2 && m[1] == 0;
+  }
+
+  /** Splits the framed stream (frames may span or share WebSocket messages) and hands them to a pacing writer. */
+  private static void readTimed(Ws ws, final OutputStream lout, final String ch) throws Exception {
+    final LinkedBlockingQueue<Timed> q = new LinkedBlockingQueue<Timed>();
+    Thread writer = new Thread(new Runnable() {
+      @Override public void run() {
+        long prev = Long.MIN_VALUE / 2; // target time of the previous timed message
+        ArrayDeque<Timed> taken = new ArrayDeque<Timed>(); // read ahead while a DOWN waited, still in order
+        try {
+          for (;;) {
+            Timed t = taken.isEmpty() ? q.take() : taken.removeFirst();
+            if (t.dt != UNTIMED) {
+              long at = t.at;
+              if (isTouchDown(t.data) && taken.isEmpty()) {
+                // wait for the next timed message (untimed ones, e.g. clipboard polls, are kept behind the DOWN)
+                long deadline = t.at + DOWN_WAIT_MS * MS;
+                Timed n;
+                while ((n = q.poll(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) != null) {
+                  taken.addLast(n);
+                  if (n.dt != UNTIMED) break;
+                }
+                at = n == null ? deadline : Math.max(t.at, n.at - n.dt * MS);
+              }
+              long target = Math.max(at, Math.min(prev + t.dt * MS, at + MAX_LAG_MS * MS));
+              long wait = target - System.nanoTime();
+              if (wait > 0) Thread.sleep(wait / MS, (int) (wait % MS));
+              prev = target;
+            }
+            lout.write(t.data);
+          }
+        } catch (Exception e) { die(ch + ": local write: " + e); }
+      }
+    });
+    writer.start();
+    byte[] buf = new byte[0];
+    for (;;) {
+      byte[] m = ws.readData();
+      long at = System.nanoTime();
+      byte[] all = new byte[buf.length + m.length];
+      System.arraycopy(buf, 0, all, 0, buf.length);
+      System.arraycopy(m, 0, all, buf.length, m.length);
+      int off = 0;
+      while (all.length - off >= 6) {
+        int len = ((all[off] & 0xff) << 24) | ((all[off + 1] & 0xff) << 16) | ((all[off + 2] & 0xff) << 8) | (all[off + 3] & 0xff);
+        if (len < 0 || len > 16 * 1024 * 1024) throw new IOException("bad frame length " + len);
+        if (all.length - off - 6 < len) break;
+        int dt = ((all[off + 4] & 0xff) << 8) | (all[off + 5] & 0xff);
+        byte[] data = new byte[len];
+        System.arraycopy(all, off + 6, data, 0, len);
+        q.put(new Timed(at, dt, data));
+        off += 6 + len;
+      }
+      buf = new byte[all.length - off];
+      System.arraycopy(all, off, buf, 0, buf.length);
+    }
   }
 
   private static void die(String why) {
@@ -95,6 +180,8 @@ public final class CpRelay {
     private final InputStream in;
     private final OutputStream out;
     private final SecureRandom rnd = new SecureRandom();
+    /** The API agreed to timed control framing (response header X-Relay-Timed: 1). */
+    boolean timed;
 
     private Ws(Socket s) throws IOException {
       in = new BufferedInputStream(s.getInputStream(), 64 * 1024);
@@ -123,7 +210,7 @@ public final class CpRelay {
           + (u.getRawQuery() == null ? "?" : "?" + u.getRawQuery() + "&") + "ch=" + ch;
       String req = "GET " + path + " HTTP/1.1\r\nHost: " + host + (u.getPort() > 0 ? ":" + port : "") + "\r\n"
           + "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
-          + "Sec-WebSocket-Key: " + key + "\r\nX-Relay-Token: " + token + "\r\nUser-Agent: CpRelay\r\n\r\n";
+          + "Sec-WebSocket-Key: " + key + "\r\nX-Relay-Token: " + token + "\r\nX-Relay-Timed: 1\r\nUser-Agent: CpRelay\r\n\r\n";
       ws.out.write(req.getBytes(StandardCharsets.US_ASCII));
       ws.out.flush();
       String status = ws.line();
@@ -133,7 +220,10 @@ public final class CpRelay {
       boolean accepted = false;
       for (String l; !(l = ws.line()).isEmpty(); ) {
         int i = l.indexOf(':');
-        if (i > 0 && l.substring(0, i).trim().equalsIgnoreCase("Sec-WebSocket-Accept") && l.substring(i + 1).trim().equals(expect)) accepted = true;
+        if (i <= 0) continue;
+        String name = l.substring(0, i).trim(), value = l.substring(i + 1).trim();
+        if (name.equalsIgnoreCase("Sec-WebSocket-Accept") && value.equals(expect)) accepted = true;
+        if (name.equalsIgnoreCase("X-Relay-Timed") && value.equals("1")) ws.timed = true;
       }
       if (!accepted) throw new IOException("handshake: bad Sec-WebSocket-Accept");
       return ws;
