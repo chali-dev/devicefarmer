@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
 import { computed, onMounted, reactive, ref } from 'vue'
-import { message, Modal } from 'ant-design-vue'
-import { PlusOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
-  CONTENT_STATUS_COLOR, CONTENT_STATUSES, PUBLISH_STATUS_COLOR, PUBLISH_UNFINISHED,
+  CONTENT_STATUSES, PUBLISH_UNFINISHED,
   type Content, type ContentHints, type ContentMedia, type ContentStatus, type ManagedUser, type PublishTaskItem,
 } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
@@ -57,15 +61,17 @@ function reset() { Object.assign(filters, { q: '', status: undefined, category: 
 onMounted(() => { void load(); void loadFacets() })
 
 const columns = computed(() => [
-  { title: t('content.colTitle'), key: 'title' },
+  { title: t('content.colTitle'), key: 'title', width: 280 },
   { title: t('content.colMedia'), key: 'media', width: 200 },
   { title: t('content.colStatus'), key: 'status', width: 120 },
   { title: t('content.colCategory'), key: 'category', width: 140 },
   { title: t('content.colPublish'), key: 'publish', width: 160 },
   ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 110 }] : []),
   { title: t('content.colUpdated'), key: 'updated', width: 170 },
-  { title: t('common.action'), key: 'action', width: 200 },
+  actionColumn(170),
 ])
+const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
+function onTableChange(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void load() }
 const publishTotal = (c: Content) => Object.entries(c.publishCounts).filter(([s]) => s !== 'cancelled').reduce((a, [, n]) => a + (n ?? 0), 0)
 
 // ---------------------------------------------------------------- editor
@@ -155,8 +161,8 @@ async function setArchived(c: Content, archived: boolean) {
   } catch (e) { message.error(errorText(e)) }
 }
 function remove(c: Content) {
-  Modal.confirm({
-    title: t('content.deleteConfirm', { title: c.title }), content: t('content.deleteHint'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('content.deleteConfirm', { title: c.title }), content: t('content.deleteHint'),
     async onOk() {
       try { await api('DELETE', `/api/contents/${c.id}`); message.success(t('common.deleted')); void load() } catch (e) { message.error(errorText(e)) }
     },
@@ -166,64 +172,70 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 </script>
 
 <template>
-  <a-card :title="t('content.title')" size="small">
+  <PageContainer :title="t('content.title')">
     <template #extra>
-      <a-space wrap>
-        <a-button @click="router.push('/publish')">{{ t('content.openScheduler') }}</a-button>
-        <a-button type="primary" @click="openNew"><PlusOutlined /> {{ t('content.add') }}</a-button>
-      </a-space>
+      <a-button @click="router.push('/publish')">{{ t('content.openScheduler') }}</a-button>
+      <a-button type="primary" @click="openNew"><template #icon><PlusOutlined /></template>{{ t('content.add') }}</a-button>
     </template>
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-input-search v-model:value="filters.q" :placeholder="t('content.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
-      <a-select v-model:value="filters.status" :placeholder="t('content.colStatus')" allow-clear style="width: 140px" @change="search">
-        <a-select-option v-for="s in CONTENT_STATUSES" :key="s" :value="s">{{ statusText(s) }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.category" :placeholder="t('content.colCategory')" allow-clear style="width: 140px" @change="search">
-        <a-select-option value="none">{{ t('content.uncategorized') }}</a-select-option>
-        <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
-      <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-        :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search(); loadFacets()" />
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-    </a-space>
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @reset="reset" @refresh="load">
+        <a-input-search v-model:value="filters.q" :placeholder="t('content.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
+        <a-select v-model:value="filters.status" :placeholder="t('content.colStatus')" allow-clear style="width: 140px" @change="search">
+          <a-select-option v-for="s in CONTENT_STATUSES" :key="s" :value="s">{{ statusText(s) }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.category" :placeholder="t('content.colCategory')" allow-clear style="width: 140px" @change="search">
+          <a-select-option value="none">{{ t('content.uncategorized') }}</a-select-option>
+          <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
+        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search(); loadFacets()" />
+      </SearchBar>
 
-    <a-table :data-source="items" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 1100 }"
-      :pagination="{ current: page.current, pageSize: page.pageSize, total, showSizeChanger: true, showTotal: (n: number) => t('content.total', { n }) }"
-      @change="(p: any) => { page.current = p.current; page.pageSize = p.pageSize; load() }">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'title'">
-          <a @click="openEdit(record)">{{ record.title }}</a>
-          <div v-if="record.tags.length" style="margin-top: 2px"><a-tag v-for="tg in record.tags" :key="tg">{{ tg }}</a-tag></div>
+      <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
+        :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" @change="onTableChange">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'title'">
+            <a @click="openEdit(record)">{{ record.title }}</a>
+            <div v-if="record.tags.length" style="margin-top: 2px"><a-tag v-for="tg in record.tags" :key="tg">{{ tg }}</a-tag></div>
+          </template>
+          <template v-else-if="column.key === 'media'"><MediaStrip :media="record.media" :size="36" :max="4" /></template>
+          <template v-else-if="column.key === 'status'"><StatusTag kind="content" :status="record.status" /></template>
+          <template v-else-if="column.key === 'category'">{{ record.category ?? '—' }}</template>
+          <template v-else-if="column.key === 'publish'">
+            <span v-if="!publishTotal(record)" class="muted">—</span>
+            <a v-else @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">
+              {{ t('content.publishSummary', { published: record.publishCounts.published ?? 0, total: publishTotal(record) }) }}
+            </a>
+          </template>
+          <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+          <template v-else-if="column.key === 'updated'">{{ fmt(record.updatedAt) }}</template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
+              <a-button v-if="record.stage !== 'archived'" type="link" size="small" @click="openDistribute(record)">{{ t('content.distribute') }}</a-button>
+              <a-button v-else type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
+              <a-dropdown>
+                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item v-if="record.stage !== 'archived'" key="archive" :disabled="hasUnfinished(record)" @click="setArchived(record, true)">{{ t('content.archive') }}</a-menu-item>
+                    <a-menu-item key="delete" danger @click="remove(record)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
+          </template>
         </template>
-        <template v-else-if="column.key === 'media'"><MediaStrip :media="record.media" :size="36" :max="4" /></template>
-        <template v-else-if="column.key === 'status'"><a-tag :color="CONTENT_STATUS_COLOR[record.status as ContentStatus]">{{ statusText(record.status) }}</a-tag></template>
-        <template v-else-if="column.key === 'category'">{{ record.category ?? '—' }}</template>
-        <template v-else-if="column.key === 'publish'">
-          <span v-if="!publishTotal(record)" class="muted">—</span>
-          <a v-else @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">
-            {{ t('content.publishSummary', { published: record.publishCounts.published ?? 0, total: publishTotal(record) }) }}
-          </a>
-        </template>
-        <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-        <template v-else-if="column.key === 'updated'">{{ fmt(record.updatedAt) }}</template>
-        <template v-else-if="column.key === 'action'">
-          <a-space size="small" wrap>
-            <a @click="openEdit(record)">{{ t('common.edit') }}</a>
-            <a v-if="record.stage !== 'archived'" @click="openDistribute(record)">{{ t('content.distribute') }}</a>
-            <a v-if="record.stage !== 'archived'" :class="{ disabled: hasUnfinished(record) }" @click="!hasUnfinished(record) && setArchived(record, true)">{{ t('content.archive') }}</a>
-            <a v-else @click="setArchived(record, false)">{{ t('content.unarchive') }}</a>
-            <a class="danger" @click="remove(record)">{{ t('common.delete') }}</a>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 
-  <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" width="min(760px, 100vw)" destroy-on-close>
+  <a-drawer
+  <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg" destroy-on-close>
     <a-form layout="vertical">
-      <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')" :extra="t('content.ownerHint')">
+      <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
         <a-select v-model:value="form.ownerId" allow-clear show-search option-filter-prop="label" :placeholder="t('content.ownerSelf')" :options="users.map((u) => ({ value: u.id, label: u.username }))" />
       </a-form-item>
       <a-form-item :label="t('content.fieldTitle')" required>
@@ -247,12 +259,14 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       </a-row>
       <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
-        <a-button style="margin-top: 8px" :disabled="form.media.length >= 20" @click="pickerOpen = true"><PlusOutlined /> {{ t('content.addMedia') }}</a-button>
-        <div class="muted" style="margin-top: 4px">{{ t('content.mediaHint') }}</div>
+        <a-button style="margin-top: 8px" :disabled="form.media.length >= 20" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
       </a-form-item>
       <a-collapse ghost>
-        <a-collapse-panel key="hints" :header="t('content.hints')">
-          <p class="muted">{{ t('content.hintsHelp') }}</p>
+        <a-collapse-panel key="hints">
+          <template #header>
+            {{ t('content.hints') }}
+            <a-tooltip :title="t('content.hintsHelp')"><QuestionCircleOutlined class="muted" style="margin-left: 4px" /></a-tooltip>
+          </template>
           <!-- Hints of disabled platforms stay in the form (and are saved) but are not shown. -->
           <template v-if="platforms.isEnabled('youtube')">
             <a-divider orientation="left" plain><PlatformTag platform="youtube" /></a-divider>
@@ -287,9 +301,9 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
             <a-space wrap>
               <PlatformTag :platform="item.platform" />
               <span>@{{ item.account?.handle ?? '—' }}</span>
-              <a-tag :color="PUBLISH_STATUS_COLOR[item.status as PublishTaskItem['status']]">{{ t(`publish.status.${item.status}`) }}</a-tag>
-              <span class="muted">{{ fmt(item.scheduledAt) }}</span>
-              <span v-if="item.errorCode" class="err">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</span>
+              <StatusTag kind="publish" :status="item.status" />
+              <span class="muted small">{{ fmt(item.scheduledAt) }}</span>
+              <a-typography-text v-if="item.errorCode" type="danger" class="small">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</a-typography-text>
               <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
             </a-space>
             <template #actions><a @click="router.push({ path: '/publish', query: { tab: 'queue', task: item.id } })">{{ t('common.view') }}</a></template>
@@ -299,16 +313,12 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
     </template>
 
     <template #footer>
-      <a-space style="float: right">
-        <a-button @click="editorOpen = false">{{ t('common.cancel') }}</a-button>
-        <template v-if="editing?.stage === 'archived'">
-          <a-button type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
-        </template>
-        <template v-else>
-          <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
-          <a-button type="primary" :loading="saving" @click="save('ready')">{{ t('content.saveReady') }}</a-button>
-        </template>
-      </a-space>
+      <a-button @click="editorOpen = false">{{ t('common.cancel') }}</a-button>
+      <a-button v-if="editing?.stage === 'archived'" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
+      <template v-else>
+        <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
+        <a-button type="primary" :loading="saving" @click="save('ready')">{{ t('content.saveReady') }}</a-button>
+      </template>
     </template>
   </a-drawer>
 
@@ -316,9 +326,3 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
   <DistributeModal v-model:open="distributeOpen" :content="distributing" @done="load" />
 </template>
 
-<style scoped>
-.muted { color: var(--cp-text-tertiary); font-size: 12px; }
-.err { color: var(--cp-error); font-size: 12px; }
-.danger { color: var(--cp-error); }
-.disabled { color: var(--cp-text-quaternary); cursor: not-allowed; }
-</style>

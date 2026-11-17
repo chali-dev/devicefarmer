@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { ArrowDownOutlined, ArrowUpOutlined, CheckOutlined, CloseOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { MediaCategory } from '../../api/types'
+import { confirmDanger, MODAL_WIDTH } from '../common/ui'
 
 /** Create / rename / reorder / delete the categories of one scope (public: admin; mine: own). */
 const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string }>()
@@ -56,30 +57,29 @@ function move(i: number, d: -1 | 1) {
   })
 }
 function remove(c: MediaCategory) {
-  Modal.confirm({
+  confirmDanger({
     title: t('media.categories.confirmDelete', { name: c.name }), content: t('media.categories.deleteContent'),
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: () => run(() => api('DELETE', `/api/media/categories/${c.id}`)),
   })
 }
 </script>
 
 <template>
-  <a-modal v-model:open="open" :title="t('media.categories.title', { scope: scopeLabel })" :footer="null" width="520px">
+  <a-modal v-model:open="open" :title="t('media.categories.title', { scope: scopeLabel })" :footer="null" :width="MODAL_WIDTH.sm">
     <div class="add">
       <a-input v-model:value="newName" :maxlength="50" :placeholder="t('media.categories.namePlaceholder')" @press-enter="add" />
-      <a-button type="primary" :loading="busy" :disabled="!newName.trim()" @click="add"><PlusOutlined /> {{ t('media.categories.add') }}</a-button>
+      <a-button type="primary" :loading="busy" :disabled="!newName.trim()" @click="add"><template #icon><PlusOutlined /></template>{{ t('media.categories.add') }}</a-button>
     </div>
     <a-spin :spinning="loading">
       <a-empty v-if="!list.length && !loading" :description="t('media.categories.empty')" />
       <div v-for="(c, i) in list" :key="c.id" class="row">
         <template v-if="editingId === c.id">
           <a-input v-model:value="editName" size="small" :maxlength="50" class="grow" @press-enter="saveRename(c)" />
-          <a-button type="text" size="small" @click="saveRename(c)"><CheckOutlined /></a-button>
-          <a-button type="text" size="small" @click="editingId = null"><CloseOutlined /></a-button>
+          <a-button type="text" size="small" :aria-label="t('common.save')" @click="saveRename(c)"><CheckOutlined /></a-button>
+          <a-button type="text" size="small" :aria-label="t('common.cancel')" @click="editingId = null"><CloseOutlined /></a-button>
         </template>
         <template v-else>
-          <span class="grow">{{ c.name }} <span class="hint">{{ t('media.categories.count', { n: c.count }) }}</span></span>
+          <span class="grow ellipsis">{{ c.name }} <span class="muted small count">{{ t('media.categories.count', { n: c.count }) }}</span></span>
           <a-tooltip :title="t('media.categories.moveUp')"><a-button type="text" size="small" :disabled="i === 0 || busy" @click="move(i, -1)"><ArrowUpOutlined /></a-button></a-tooltip>
           <a-tooltip :title="t('media.categories.moveDown')"><a-button type="text" size="small" :disabled="i === list.length - 1 || busy" @click="move(i, 1)"><ArrowDownOutlined /></a-button></a-tooltip>
           <a-tooltip :title="t('media.categories.rename')"><a-button type="text" size="small" @click="startRename(c)"><EditOutlined /></a-button></a-tooltip>
@@ -94,5 +94,5 @@ function remove(c: MediaCategory) {
 .add { display: flex; gap: 8px; margin-bottom: 12px; }
 .row { display: flex; align-items: center; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--cp-border-secondary); }
 .grow { flex: 1; min-width: 0; }
-.hint { color: var(--cp-text-tertiary); font-size: 12px; margin-left: 6px; }
+.count { margin-left: 6px; }
 </style>

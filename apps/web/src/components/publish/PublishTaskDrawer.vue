@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
-import { PUBLISH_STATUS_COLOR, SOCIAL_LOGIN_COLOR, TASK_STATUS_COLOR, taskStatusText, type PublishLog, type PublishRun, type PublishTaskItem } from '../../api/types'
+import type { PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
+import StatusTag from '../common/StatusTag.vue'
+import { confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
 import MediaStrip from '../content/MediaStrip.vue'
 import PlatformTag from '../social/PlatformTag.vue'
 
@@ -47,8 +49,8 @@ async function act(fn: () => Promise<unknown>, ok: string) {
   try { await fn(); message.success(ok); await load(); emit('changed') } catch (e) { message.error(errorText(e)) } finally { busy.value = false }
 }
 function cancel() {
-  Modal.confirm({
-    title: t('publish.cancelConfirm'), okText: t('publish.cancel'), cancelText: t('common.cancel'), okType: 'danger',
+  confirmDanger({
+    title: t('publish.cancelConfirm'), okText: t('publish.cancel'),
     onOk: () => act(() => api('POST', `/api/publish/tasks/${task.value!.id}/cancel`), t('publish.cancelled')),
   })
 }
@@ -109,11 +111,15 @@ async function pushMedia() {
     if (!r.accepted.length) throw new Error(t('publish.pushSkipped', { reason: r.skipped.map((x) => x.reason).join(', ') }))
   }, t('publish.pushed'))
 }
+const runColumns = computed(() => [
+  { title: t('publish.round'), key: 'n', width: 70 }, { title: t('common.status'), key: 'status', width: 100 },
+  { title: t('publish.colTime'), key: 'runAt' }, { title: t('taskCenter.attempts'), key: 'attempts', width: 90 }, { title: t('common.error'), key: 'error' },
+])
 const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); message.success(t('publish.copied')) } catch { message.error(t('publish.copyFailed')) } }
 </script>
 
 <template>
-  <a-drawer :open="open" :title="t('publish.detail')" width="min(720px, 100vw)" @close="emit('update:open', false)">
+  <a-drawer :open="open" :title="t('publish.detail')" :width="DRAWER_WIDTH.lg" @close="emit('update:open', false)">
     <a-spin :spinning="loading">
       <template v-if="task">
         <a-space wrap style="margin-bottom: 12px">
@@ -125,19 +131,19 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-button v-if="canRetry" :disabled="busy" @click="openTime('retry')">{{ t('publish.retry') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
         </a-space>
-        <a-alert v-if="canOutcome" type="warning" show-icon :message="task.method === 'api' ? t('publish.operatorHintApi') : t('publish.operatorHint')" style="margin-bottom: 12px" />
-        <a-alert v-if="errorMsg && (s === 'failed' || s === 'pending')" type="error" show-icon :message="errorMsg" :description="task.error && task.error !== errorMsg ? task.error : undefined" style="margin-bottom: 12px" />
+        <a-alert v-if="canOutcome" type="warning" show-icon :message="task.method === 'api' ? t('publish.operatorHintApi') : t('publish.operatorHint')" style="margin-bottom: 16px" />
+        <a-alert v-if="errorMsg && (s === 'failed' || s === 'pending')" type="error" show-icon :message="errorMsg" :description="task.error && task.error !== errorMsg ? task.error : undefined" style="margin-bottom: 16px" />
 
         <a-descriptions :column="1" size="small" bordered>
           <a-descriptions-item :label="t('common.status')">
-            <a-tag :color="PUBLISH_STATUS_COLOR[task.status]">{{ t(`publish.status.${task.status}`) }}</a-tag>
-            <span v-if="task.method" class="muted">{{ t(`publish.method.${task.method}`) }}</span>
+            <StatusTag kind="publish" :status="task.status" />
+            <span v-if="task.method" class="muted small">{{ t(`publish.method.${task.method}`) }}</span>
             <a-tag v-if="task.republish">{{ t('publish.republish') }}</a-tag>
           </a-descriptions-item>
           <a-descriptions-item :label="t('publish.colAccount')">
             <PlatformTag :platform="task.platform" /> @{{ task.account?.handle ?? '—' }}
-            <a-tag v-if="task.account" :color="SOCIAL_LOGIN_COLOR[task.account.loginStatus]" style="margin-left: 6px">{{ t(`social.login.${task.account.loginStatus}`) }}</a-tag>
-            <a-tag v-if="task.account && task.account.accountStatus !== 'active'" color="error">{{ t(`social.account.${task.account.accountStatus}`) }}</a-tag>
+            <StatusTag v-if="task.account" kind="socialLogin" :status="task.account.loginStatus" style="margin-left: 6px" />
+            <StatusTag v-if="task.account && task.account.accountStatus !== 'active'" kind="socialAccount" :status="task.account.accountStatus" />
           </a-descriptions-item>
           <a-descriptions-item :label="t('common.device')">
             <template v-if="task.instance">
@@ -155,7 +161,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-descriptions-item v-if="task.publishedAt" :label="t('publish.publishedAt')">{{ fmt(task.publishedAt) }}</a-descriptions-item>
           <a-descriptions-item v-if="task.url || task.externalId" :label="t('publish.result')">
             <a v-if="task.url" :href="task.url" target="_blank" rel="noopener noreferrer">{{ task.url }}</a>
-            <span v-if="task.externalId" class="muted"> {{ t('publish.externalId') }}: {{ task.externalId }}</span>
+            <span v-if="task.externalId" class="muted small"> {{ t('publish.externalId') }}: {{ task.externalId }}</span>
           </a-descriptions-item>
           <a-descriptions-item v-if="task.title" :label="t('distribute.titleOverride')">
             {{ task.title }} <a @click="copy(task.title!)">{{ t('common.copy') }}</a>
@@ -171,19 +177,16 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         </a-descriptions>
 
         <a-divider orientation="left" plain>{{ t('publish.runs') }}</a-divider>
-        <a-table :data-source="runs" row-key="id" size="small" :pagination="false" :columns="[
-          { title: t('publish.round'), key: 'n', width: 70 }, { title: t('common.status'), key: 'status', width: 100 },
-          { title: t('publish.colTime'), key: 'runAt' }, { title: t('taskCenter.attempts'), key: 'attempts', width: 90 }, { title: t('common.error'), key: 'error' },
-        ]">
+        <a-table :data-source="runs" row-key="id" size="small" :pagination="false" :columns="runColumns">
           <template #bodyCell="{ column, record, index }">
             <template v-if="column.key === 'n'">{{ index + 1 }}</template>
-            <template v-else-if="column.key === 'status'"><a-tag :color="TASK_STATUS_COLOR[record.status as PublishRun['status']]">{{ taskStatusText(record.status) }}</a-tag></template>
+            <template v-else-if="column.key === 'status'"><StatusTag kind="task" :status="record.status" /></template>
             <template v-else-if="column.key === 'runAt'">{{ fmt(record.startedAt ?? record.runAt ?? record.createdAt) }}</template>
             <template v-else-if="column.key === 'attempts'">{{ record.attempts }}/{{ record.maxAttempts }}</template>
             <template v-else-if="column.key === 'error'">
-              <span v-if="record.errorCode" class="err">{{ codeText(record.errorCode, undefined, record.error ?? record.errorCode) }}</span>
-              <span v-else-if="(record.result as any)?.state" class="muted">{{ t(`publish.status.${(record.result as any).state}`) }}</span>
-              <span v-else-if="(record.result as any)?.skipped" class="muted">{{ t('publish.skipped') }}</span>
+              <a-typography-text v-if="record.errorCode" type="danger" class="small">{{ codeText(record.errorCode, undefined, record.error ?? record.errorCode) }}</a-typography-text>
+              <span v-else-if="(record.result as any)?.state" class="muted small">{{ t(`publish.status.${(record.result as any).state}`) }}</span>
+              <span v-else-if="(record.result as any)?.skipped" class="muted small">{{ t('publish.skipped') }}</span>
             </template>
           </template>
         </a-table>
@@ -191,16 +194,15 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-divider orientation="left" plain>{{ t('publish.logs') }}</a-divider>
         <a-timeline>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="l.level === 'error' ? 'red' : l.level === 'warn' ? 'orange' : 'blue'">
-            <span class="muted">{{ fmt(l.at) }} · {{ t('publish.roundShort', { n: l.attemptNo ?? 1 }) }}<template v-if="l.actorName"> · {{ l.actorName }}</template></span>
+            <span class="muted small">{{ fmt(l.at) }} · {{ t('publish.roundShort', { n: l.attemptNo ?? 1 }) }}<template v-if="l.actorName"> · {{ l.actorName }}</template></span>
             <div>{{ logText(l.message, l.data) }}</div>
-            <div v-if="l.data && Object.keys(l.data).length" class="data">{{ JSON.stringify(l.data) }}</div>
+            <div v-if="l.data && Object.keys(l.data).length" class="muted small mono data">{{ JSON.stringify(l.data) }}</div>
           </a-timeline-item>
         </a-timeline>
       </template>
     </a-spin>
 
-    <a-modal v-model:open="timeOpen" :title="timeMode === 'retry' ? t('publish.retry') : t('publish.reschedule')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @ok="submitTime">
-      <p v-if="timeMode === 'retry'" class="muted">{{ t('publish.retryHint') }}</p>
+    <a-modal v-model:open="timeOpen" :title="timeMode === 'retry' ? t('publish.retry') : t('publish.reschedule')" :width="MODAL_WIDTH.sm" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @ok="submitTime">
       <a-radio-group v-model:value="timeForm.now">
         <a-radio :value="true">{{ t('distribute.now') }}</a-radio>
         <a-radio :value="false">{{ t('distribute.at') }}</a-radio>
@@ -208,7 +210,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
       <a-date-picker v-if="!timeForm.now" v-model:value="timeForm.at" show-time style="margin-top: 8px; display: flex" />
     </a-modal>
 
-    <a-modal v-model:open="editOpen" :title="t('publish.edit')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="submitEdit">
+    <a-modal v-model:open="editOpen" :title="t('publish.edit')" :width="MODAL_WIDTH.md" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="submitEdit">
       <a-form layout="vertical">
         <a-form-item v-if="task?.platform === 'youtube'" :label="t('distribute.titleOverride')"><a-input v-model:value="editForm.title" :maxlength="100" /></a-form-item>
         <a-form-item :label="t('distribute.captionOverride')"><a-textarea v-model:value="editForm.caption" :rows="4" /></a-form-item>
@@ -216,7 +218,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="outcomeOpen" :title="t('publish.outcome')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="busy" @ok="submitOutcome">
+    <a-modal v-model:open="outcomeOpen" :title="t('publish.outcome')" :width="MODAL_WIDTH.sm" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="busy" @ok="submitOutcome">
       <a-form layout="vertical">
         <a-form-item>
           <a-radio-group v-model:value="outForm.result" button-style="solid">
@@ -237,8 +239,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); font-size: 12px; margin-left: 6px; }
-.err { color: var(--cp-error); font-size: 12px; }
 .text { white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; }
-.data { color: var(--cp-text-tertiary); font-size: 12px; font-family: monospace; word-break: break-all; }
+.data { word-break: break-all; }
 </style>

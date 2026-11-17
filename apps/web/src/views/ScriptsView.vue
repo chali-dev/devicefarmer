@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -8,6 +8,9 @@ import { useRoute } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import type { CommentTemplate, TemplateKind } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 
 /**
@@ -46,11 +49,13 @@ const columns = computed(() => [
   { title: t('scripts.name'), key: 'name', width: 220 },
   { title: t('scripts.kind'), key: 'kind', width: 110 },
   { title: t('scripts.persona'), key: 'persona', width: 140 },
-  { title: t('scripts.text'), key: 'text' },
+  { title: t('scripts.text'), key: 'text', width: 360 },
   { title: t('scripts.scope'), key: 'scope', width: 120 },
   { title: t('scripts.updated'), key: 'updated', width: 170 },
-  { title: t('common.action'), key: 'action', width: 230 },
+  actionColumn(200),
 ])
+const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
+const isOwn = (x: CommentTemplate) => x.userId === auth.user?.id
 
 // ---- create / edit
 const open = ref(false)
@@ -86,105 +91,107 @@ async function copyText(x: CommentTemplate) {
   try { await navigator.clipboard.writeText(x.text); message.success(t('scripts.copied')) } catch (e) { message.error(errorText(e)) }
 }
 function remove(x: CommentTemplate) {
-  Modal.confirm({
-    title: t('scripts.deleteConfirm', { name: x.name }), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('scripts.deleteConfirm', { name: x.name }),
     onOk: async () => { try { await api('DELETE', `/api/comment-templates/${x.id}`); message.success(t('common.deleted')); void load(); void loadFacets() } catch (e) { message.error(errorText(e)) } },
   })
 }
 </script>
 
 <template>
-  <a-card :title="t('scripts.title')" size="small">
+  <PageContainer :title="t('scripts.title')">
     <template #extra>
-      <a-button type="primary" @click="openForm()"><PlusOutlined /> {{ t('scripts.add') }}</a-button>
+      <a-button type="primary" @click="openForm()"><template #icon><PlusOutlined /></template>{{ t('scripts.add') }}</a-button>
     </template>
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-radio-group v-model:value="filters.kind" button-style="solid" @change="onKind">
-        <a-radio-button value="all">{{ t('scripts.allKinds') }}</a-radio-button>
-        <a-radio-button value="post">{{ t('scripts.kinds.post') }}</a-radio-button>
-        <a-radio-button value="comment">{{ t('scripts.kinds.comment') }}</a-radio-button>
-      </a-radio-group>
-      <a-input-search v-model:value="filters.q" :placeholder="t('scripts.searchPlaceholder')" allow-clear style="width: 200px" @search="load" />
-      <a-select v-model:value="filters.persona" :placeholder="t('scripts.persona')" allow-clear show-search style="width: 150px" @change="load">
-        <a-select-option value="none">{{ t('scripts.noPersona') }}</a-select-option>
-        <a-select-option v-for="p in facets.personas" :key="p" :value="p">{{ p }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.tag" :placeholder="t('scripts.tags')" allow-clear show-search style="width: 130px"
-        :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="load" />
-      <a-select v-model:value="filters.scope" :placeholder="t('scripts.scope')" allow-clear style="width: 110px" @change="load">
-        <a-select-option value="own">{{ t('scripts.scopeOwn') }}</a-select-option>
-        <a-select-option value="shared">{{ t('scripts.scopeShared') }}</a-select-option>
-      </a-select>
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-      <span class="muted">{{ t('scripts.total', { n: items.length }) }}</span>
-    </a-space>
-
-    <a-table :data-source="items" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 1100 }" :pagination="{ pageSize: 50, hideOnSinglePage: true, size: 'small' }">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'name'">
-          <div>{{ record.name }}</div>
-          <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'kind'"><a-tag :color="record.kind === 'post' ? 'blue' : 'purple'">{{ t(`scripts.kinds.${record.kind}`) }}</a-tag></template>
-        <template v-else-if="column.key === 'persona'">{{ record.persona ?? '—' }}</template>
-        <template v-else-if="column.key === 'text'"><div class="pre clamp">{{ record.text }}</div></template>
-        <template v-else-if="column.key === 'scope'">
-          <a-tag v-if="record.shared" color="green">{{ t('scripts.scopeShared') }}</a-tag>
-          <span v-else>{{ record.userId === auth.user?.id ? t('scripts.scopeOwn') : record.ownerName ?? '—' }}</span>
-        </template>
-        <template v-else-if="column.key === 'updated'">{{ new Date(record.updatedAt).toLocaleString(dateLocale()) }}</template>
-        <template v-else-if="column.key === 'action'">
-          <a-space size="small" wrap>
-            <a @click="copyText(record as CommentTemplate)">{{ t('scripts.copy') }}</a>
-            <a v-if="record.userId !== auth.user?.id" @click="duplicate(record as CommentTemplate)">{{ t('scripts.duplicate') }}</a>
-            <template v-if="record.writable">
-              <a @click="openForm(record as CommentTemplate)">{{ t('common.edit') }}</a>
-              <a class="danger" @click="remove(record as CommentTemplate)">{{ t('common.delete') }}</a>
-            </template>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-    <div class="muted small" style="margin-top: 8px">{{ t('scripts.hint') }}</div>
-  </a-card>
-
-  <a-modal v-model:open="open" :title="form.id ? t('scripts.edit') : t('scripts.add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="saving" :width="640" @ok="save">
-    <a-form layout="vertical">
-      <a-form-item :label="t('scripts.kind')">
-        <a-radio-group v-model:value="form.kind">
+    <a-card :bordered="false">
+      <SearchBar @reset="reset">
+        <a-radio-group v-model:value="filters.kind" button-style="solid" @change="onKind">
+          <a-radio-button value="all">{{ t('scripts.allKinds') }}</a-radio-button>
           <a-radio-button value="post">{{ t('scripts.kinds.post') }}</a-radio-button>
           <a-radio-button value="comment">{{ t('scripts.kinds.comment') }}</a-radio-button>
         </a-radio-group>
-      </a-form-item>
-      <a-form-item :label="t('scripts.name')" required><a-input v-model:value="form.name" :maxlength="100" /></a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('scripts.persona')" :extra="t('scripts.personaHint')">
-            <a-auto-complete v-model:value="form.persona" :options="facets.personas.map((p) => ({ value: p }))" :maxlength="50" allow-clear />
-          </a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('scripts.tags')">
-            <a-select v-model:value="form.tags" mode="tags" :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-      <a-form-item :label="t('scripts.text')" required>
-        <a-textarea v-model:value="form.text" :auto-size="{ minRows: 4, maxRows: 12 }" :maxlength="5000" show-count />
-      </a-form-item>
-      <a-form-item v-if="auth.isAdmin && !form.id" :extra="t('scripts.sharedHint')">
-        <a-checkbox v-model:checked="form.shared">{{ t('scripts.shared') }}</a-checkbox>
-      </a-form-item>
-    </a-form>
-  </a-modal>
+        <a-input-search v-model:value="filters.q" :placeholder="t('scripts.searchPlaceholder')" allow-clear style="width: 240px" @search="load" />
+        <a-select v-model:value="filters.persona" :placeholder="t('scripts.persona')" allow-clear show-search style="width: 150px" @change="load">
+          <a-select-option value="none">{{ t('scripts.noPersona') }}</a-select-option>
+          <a-select-option v-for="p in facets.personas" :key="p" :value="p">{{ p }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.tag" :placeholder="t('scripts.tags')" allow-clear show-search style="width: 130px"
+          :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="load" />
+        <a-select v-model:value="filters.scope" :placeholder="t('scripts.scope')" allow-clear style="width: 110px" @change="load">
+          <a-select-option value="own">{{ t('scripts.scopeOwn') }}</a-select-option>
+          <a-select-option value="shared">{{ t('scripts.scopeShared') }}</a-select-option>
+        </a-select>
+      </SearchBar>
+
+      <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }" :pagination="pagination({ defaultPageSize: 50, totalText: (n) => t('scripts.total', { n }) })">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'name'">
+            <div>{{ record.name }}</div>
+            <a-tag v-for="tg in record.tags" :key="tg" style="margin-top: 2px">{{ tg }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'kind'"><a-tag :color="record.kind === 'post' ? 'blue' : 'purple'">{{ t(`scripts.kinds.${record.kind}`) }}</a-tag></template>
+          <template v-else-if="column.key === 'persona'">{{ record.persona ?? '—' }}</template>
+          <template v-else-if="column.key === 'text'"><div class="pre clamp">{{ record.text }}</div></template>
+          <template v-else-if="column.key === 'scope'">
+            <a-tag v-if="record.shared" color="green">{{ t('scripts.scopeShared') }}</a-tag>
+            <span v-else>{{ isOwn(record as CommentTemplate) ? t('scripts.scopeOwn') : record.ownerName ?? '—' }}</span>
+          </template>
+          <template v-else-if="column.key === 'updated'">{{ new Date(record.updatedAt).toLocaleString(dateLocale()) }}</template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button type="link" size="small" @click="copyText(record as CommentTemplate)">{{ t('scripts.copy') }}</a-button>
+              <a-button v-if="record.writable" type="link" size="small" @click="openForm(record as CommentTemplate)">{{ t('common.edit') }}</a-button>
+              <a-button v-else-if="!isOwn(record as CommentTemplate)" type="link" size="small" @click="duplicate(record as CommentTemplate)">{{ t('scripts.duplicate') }}</a-button>
+              <a-button v-if="record.writable && isOwn(record as CommentTemplate)" type="link" size="small" danger @click="remove(record as CommentTemplate)">{{ t('common.delete') }}</a-button>
+              <a-dropdown v-else-if="record.writable">
+                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="duplicate" @click="duplicate(record as CommentTemplate)">{{ t('scripts.duplicate') }}</a-menu-item>
+                    <a-menu-item key="delete" danger @click="remove(record as CommentTemplate)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-modal v-model:open="open" :title="form.id ? t('scripts.edit') : t('scripts.add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="saving" :width="MODAL_WIDTH.md" @ok="save">
+      <a-form layout="vertical">
+        <a-form-item :label="t('scripts.kind')">
+          <a-radio-group v-model:value="form.kind">
+            <a-radio-button value="post">{{ t('scripts.kinds.post') }}</a-radio-button>
+            <a-radio-button value="comment">{{ t('scripts.kinds.comment') }}</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item :label="t('scripts.name')" required><a-input v-model:value="form.name" :maxlength="100" /></a-form-item>
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('scripts.persona')">
+              <a-auto-complete v-model:value="form.persona" :options="facets.personas.map((p) => ({ value: p }))" :maxlength="50" allow-clear :placeholder="t('scripts.personaPlaceholder')" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('scripts.tags')">
+              <a-select v-model:value="form.tags" mode="tags" :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-form-item :label="t('scripts.text')" required>
+          <a-textarea v-model:value="form.text" :auto-size="{ minRows: 4, maxRows: 12 }" :maxlength="5000" show-count />
+        </a-form-item>
+        <a-form-item v-if="auth.isAdmin && !form.id">
+          <a-checkbox v-model:checked="form.shared">{{ t('scripts.shared') }}</a-checkbox>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+  </PageContainer>
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
-.small-tag { font-size: 11px; margin-top: 2px; }
-.danger { color: var(--cp-error); }
 .pre { white-space: pre-wrap; word-break: break-word; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

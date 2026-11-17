@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import {
   AppstoreOutlined, BarsOutlined, CloudUploadOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, EyeOutlined, FolderOutlined, LoadingOutlined,
   PictureOutlined, PlayCircleFilled, SendOutlined, StarFilled, StarOutlined, VideoCameraOutlined,
@@ -11,9 +11,12 @@ import { api, errorText } from '../../api/client'
 import type { ManagedUser, MediaCategory, MediaItem, MediaLimits, MediaScope } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { useInstancesStore } from '../../stores/instances'
+import SearchBar from '../common/SearchBar.vue'
+import StatusTag from '../common/StatusTag.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
 import CategoryManager from './CategoryManager.vue'
 import MediaUploader from './MediaUploader.vue'
-import { fetchAuthBlob, fmtDuration, fmtSize, STATUS_COLOR, useThumbs } from './media'
+import { fetchAuthBlob, fmtDuration, fmtSize, useThumbs } from './media'
 
 /** One tab of the media library: public, mine (admin: any user's private media) or favorites. */
 const props = defineProps<{ tab: 'public' | 'mine' | 'favorites'; limits: MediaLimits | null }>()
@@ -137,10 +140,9 @@ function batchDelete() {
   const ok = selectedItems.value.filter((i) => i.canManage)
   if (!ok.length) { message.warning(t('media.noPermitted')); return }
   const skip = selectedItems.value.length - ok.length
-  Modal.confirm({
+  confirmDanger({
     title: t('media.batchDeleteConfirm', { n: ok.length }),
     content: `${t('media.deleteContent')}${skip ? ` ${t('media.batchDeleteSkip', { n: skip })}` : ''}`,
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try {
         const r = await api<{ results: { id: string; ok: boolean; error?: string; code?: string; params?: Record<string, string | number> }[]; deleted: number; failed: number }>(
@@ -165,8 +167,8 @@ async function toggleFavorite(m: MediaItem) {
 }
 
 function remove(m: MediaItem) {
-  Modal.confirm({
-    title: t('media.confirmDelete', { name: m.name }), content: t('media.deleteContent'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('media.confirmDelete', { name: m.name }), content: t('media.deleteContent'),
     onOk: async () => {
       try {
         await api('DELETE', `/api/media/${m.id}`)
@@ -288,7 +290,7 @@ const uploadScope = computed<'public' | 'mine'>(() => (props.tab === 'public' ? 
 // ---------------------------------------------------------------- list view columns
 const columns = computed(() => [
   { key: 'thumb', width: 72 },
-  { key: 'name', title: t('common.name'), ellipsis: true },
+  { key: 'name', title: t('common.name'), width: 260 },
   { key: 'type', title: t('media.type'), width: 90 },
   { key: 'size', title: t('media.size'), width: 100 },
   { key: 'info', title: t('media.resolution'), width: 130 },
@@ -296,8 +298,9 @@ const columns = computed(() => [
   { key: 'category', title: t('media.category'), width: 120 },
   { key: 'status', title: t('common.status'), width: 110 },
   { key: 'createdAt', title: t('media.uploadedAt'), width: 170 },
-  { key: 'actions', title: t('common.action'), width: 210, fixed: 'right' as const },
+  actionColumn(190),
 ])
+const columnsWidth = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0) + 48)
 const rowSelection = computed(() => ({
   selectedRowKeys: selected.value,
   onChange: (keys: (string | number)[]) => { selected.value = keys.map(String) },
@@ -307,41 +310,37 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 
 <template>
   <div>
-    <a-alert v-if="tab === 'public'" type="info" show-icon class="intro" :message="auth.isAdmin ? t('media.publicHintAdmin') : t('media.publicHint')" />
-    <a-alert v-else-if="tab === 'favorites'" type="info" show-icon class="intro" :message="t('media.favoritesHint')" />
-
-    <div class="toolbar">
-      <a-select v-if="tab === 'mine' && auth.isAdmin" v-model:value="owner" :options="ownerOptions" class="owner" show-search option-filter-prop="label" />
-      <a-input-search v-model:value="q" :placeholder="t('media.searchPlaceholder')" allow-clear class="search" @search="search" />
-      <a-select v-model:value="type" :options="typeOptions" class="sel" />
-      <a-select v-if="categoryQuery" v-model:value="categoryId" :options="categoryOptions" class="sel-wide" />
+    <SearchBar :loading="loading" @refresh="refreshAll">
+      <a-select v-if="tab === 'mine' && auth.isAdmin" v-model:value="owner" :options="ownerOptions" show-search option-filter-prop="label" style="width: 200px" />
+      <a-input-search v-model:value="q" :placeholder="t('media.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
+      <a-select v-model:value="type" :options="typeOptions" style="width: 130px" />
+      <a-select v-if="categoryQuery" v-model:value="categoryId" :options="categoryOptions" style="width: 180px" />
       <a-select
-        v-model:value="tags" mode="multiple" :placeholder="t('media.tagFilter')" class="sel-wide" allow-clear :max-tag-count="2"
+        v-model:value="tags" mode="multiple" :placeholder="t('media.tagFilter')" allow-clear :max-tag-count="2" style="width: 180px"
         :options="tagOptions.map((x) => ({ value: x, label: x }))"
       />
-      <a-select v-if="showStatus" v-model:value="status" :options="statusOptions" class="sel" />
-      <span class="spacer" />
-      <a-radio-group v-model:value="view" size="small" button-style="solid">
-        <a-radio-button value="grid"><a-tooltip :title="t('media.gridView')"><AppstoreOutlined /></a-tooltip></a-radio-button>
-        <a-radio-button value="list"><a-tooltip :title="t('media.listView')"><BarsOutlined /></a-tooltip></a-radio-button>
-      </a-radio-group>
-    </div>
+      <a-select v-if="showStatus" v-model:value="status" :options="statusOptions" style="width: 130px" />
+      <template #actions>
+        <a-radio-group v-model:value="view" button-style="solid">
+          <a-radio-button value="grid"><a-tooltip :title="t('media.gridView')"><AppstoreOutlined /></a-tooltip></a-radio-button>
+          <a-radio-button value="list"><a-tooltip :title="t('media.listView')"><BarsOutlined /></a-tooltip></a-radio-button>
+        </a-radio-group>
+        <a-button v-if="canManageCategories" @click="categoriesOpen = true"><template #icon><FolderOutlined /></template>{{ t('media.categories.manage') }}</a-button>
+        <a-button v-if="canUpload" type="primary" @click="uploadOpen = true"><template #icon><CloudUploadOutlined /></template>{{ t('media.upload') }}</a-button>
+      </template>
+    </SearchBar>
 
-    <div class="toolbar">
-      <a-button v-if="canUpload" type="primary" @click="uploadOpen = true"><CloudUploadOutlined /> {{ t('media.upload') }}</a-button>
-      <a-button v-if="canManageCategories" @click="categoriesOpen = true"><FolderOutlined /> {{ t('media.categories.manage') }}</a-button>
+    <div v-if="(items.length && view === 'grid') || selected.length" class="select-bar" :class="{ active: selected.length }">
       <a-checkbox
         v-if="items.length && view === 'grid'" :checked="allChecked" :indeterminate="selected.length > 0 && !allChecked"
         @change="(e: any) => (selected = e.target.checked ? items.map((i) => i.id) : [])"
       >{{ t('media.selectAll') }}</a-checkbox>
       <template v-if="selected.length">
-        <span class="hint">{{ t('media.selectedN', { n: selected.length }) }}</span>
-        <a-button size="small" @click="openPush(selectedItems)"><SendOutlined /> {{ t('media.pushToDeviceN', { n: selected.length }) }}</a-button>
-        <a-button v-if="selectedItems.some((i) => i.canManage)" size="small" danger @click="batchDelete"><DeleteOutlined /> {{ t('media.batchDelete') }}</a-button>
+        <span>{{ t('media.selectedN', { n: selected.length }) }}</span>
+        <a-button size="small" @click="openPush(selectedItems)"><template #icon><SendOutlined /></template>{{ t('media.pushToDeviceN', { n: selected.length }) }}</a-button>
+        <a-button v-if="selectedItems.some((i) => i.canManage)" size="small" danger @click="batchDelete"><template #icon><DeleteOutlined /></template>{{ t('media.batchDelete') }}</a-button>
         <a-button size="small" type="link" @click="selected = []">{{ t('media.clearSelection') }}</a-button>
       </template>
-      <span class="spacer" />
-      <a-button size="small" :loading="loading" @click="refreshAll">{{ t('common.refresh') }}</a-button>
     </div>
 
     <a-spin :spinning="loading">
@@ -359,7 +358,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
             <span v-if="m.fileType === 'video' && m.duration" class="duration">{{ fmtDuration(m.duration) }}</span>
             <a-checkbox class="check" :checked="selected.includes(m.id)" @click.stop @change="(e: any) => toggle(m.id, e.target.checked)" />
             <a-tooltip v-if="m.status !== 'ready'" :title="m.status === 'failed' ? t('media.failedReason', { error: m.error ?? '' }) : undefined">
-              <a-tag class="badge" :color="STATUS_COLOR[m.status]">{{ t(`media.statuses.${m.status}`) }}</a-tag>
+              <StatusTag kind="media" :status="m.status" class="badge" />
             </a-tooltip>
           </div>
           <div class="meta">
@@ -371,29 +370,31 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
                 </span>
               </a-tooltip>
             </div>
-            <div class="hint">
+            <div class="muted small ellipsis">
               {{ m.fileType === 'video' ? t('media.video') : t('media.image') }} · {{ fmtSize(m.fileSize) }}<template v-if="m.width"> · {{ m.width }}×{{ m.height }}</template>
             </div>
-            <div class="hint">{{ new Date(m.createdAt).toLocaleString(dateLocale()) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
+            <div class="muted small ellipsis">{{ fmtTime(m.createdAt) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
             <div v-if="m.categoryName || m.tags.length" class="tags">
               <a-tag v-if="m.categoryName" color="blue"><FolderOutlined /> {{ m.categoryName }}</a-tag>
               <a-tag v-for="x in m.tags" :key="x">{{ x }}</a-tag>
             </div>
           </div>
           <div class="actions">
-            <a-tooltip :title="t('media.preview')"><a-button type="text" size="small" @click="openPreview(m)"><EyeOutlined /></a-button></a-tooltip>
-            <a-tooltip :title="t('media.pushToDevice')"><a-button type="text" size="small" :disabled="m.status !== 'ready' && m.status !== 'disabled'" @click="openPush([m])"><SendOutlined /></a-button></a-tooltip>
-            <a-tooltip :title="t('media.download')"><a-button type="text" size="small" @click="download(m)"><DownloadOutlined /></a-button></a-tooltip>
-            <a-tooltip v-if="m.canManage" :title="t('media.edit')"><a-button type="text" size="small" @click="openEdit(m)"><EditOutlined /></a-button></a-tooltip>
-            <a-tooltip v-if="m.canManage" :title="t('common.delete')"><a-button type="text" size="small" danger @click="remove(m)"><DeleteOutlined /></a-button></a-tooltip>
+            <a-tooltip :title="t('media.preview')"><a-button type="text" size="small" :aria-label="t('media.preview')" @click="openPreview(m)"><EyeOutlined /></a-button></a-tooltip>
+            <a-tooltip :title="t('media.pushToDevice')">
+              <a-button type="text" size="small" :aria-label="t('media.pushToDevice')" :disabled="m.status !== 'ready' && m.status !== 'disabled'" @click="openPush([m])"><SendOutlined /></a-button>
+            </a-tooltip>
+            <a-tooltip :title="t('media.download')"><a-button type="text" size="small" :aria-label="t('media.download')" @click="download(m)"><DownloadOutlined /></a-button></a-tooltip>
+            <a-tooltip v-if="m.canManage" :title="t('media.edit')"><a-button type="text" size="small" :aria-label="t('media.edit')" @click="openEdit(m)"><EditOutlined /></a-button></a-tooltip>
+            <a-tooltip v-if="m.canManage" :title="t('common.delete')"><a-button type="text" size="small" danger :aria-label="t('common.delete')" @click="remove(m)"><DeleteOutlined /></a-button></a-tooltip>
           </div>
         </div>
       </div>
 
       <!-- list -->
       <a-table
-        v-if="view === 'list' && items.length" :data-source="items" :columns="columns" row-key="id" size="middle" :pagination="false"
-        :row-selection="rowSelection" :scroll="{ x: 1100 }"
+        v-if="view === 'list' && items.length" :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :pagination="false"
+        :row-selection="rowSelection" :scroll="{ x: columnsWidth }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'thumb'">
@@ -404,11 +405,13 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
             </div>
           </template>
           <template v-else-if="column.key === 'name'">
-            <span v-if="record.ownerType === 'public'" class="star" :class="{ on: record.isFavorite }" @click="toggleFavorite(record)">
-              <StarFilled v-if="record.isFavorite" /><StarOutlined v-else />
-            </span>
-            {{ record.name }}
-            <div><a-tag v-for="x in record.tags" :key="x">{{ x }}</a-tag></div>
+            <div class="name-row">
+              <span v-if="record.ownerType === 'public'" class="star" :class="{ on: record.isFavorite }" @click="toggleFavorite(record)">
+                <StarFilled v-if="record.isFavorite" /><StarOutlined v-else />
+              </span>
+              <a-typography-text class="name" :content="record.name" :ellipsis="{ tooltip: record.name }" />
+            </div>
+            <div v-if="record.tags.length"><a-tag v-for="x in record.tags" :key="x">{{ x }}</a-tag></div>
           </template>
           <template v-else-if="column.key === 'type'">{{ record.fileType === 'video' ? t('media.video') : t('media.image') }}</template>
           <template v-else-if="column.key === 'size'">{{ fmtSize(record.fileSize) }}</template>
@@ -420,29 +423,36 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
           <template v-else-if="column.key === 'category'">{{ record.categoryName ?? '—' }}</template>
           <template v-else-if="column.key === 'status'">
             <a-tooltip :title="record.status === 'failed' ? t('media.failedReason', { error: record.error ?? '' }) : undefined">
-              <a-tag :color="STATUS_COLOR[record.status as MediaItem['status']]">{{ t(`media.statuses.${record.status}`) }}</a-tag>
+              <StatusTag kind="media" :status="record.status" />
             </a-tooltip>
           </template>
           <template v-else-if="column.key === 'createdAt'">{{ fmtTime(record.createdAt) }}</template>
-          <template v-else-if="column.key === 'actions'">
-            <a-button type="link" size="small" @click="openPreview(record)">{{ t('media.preview') }}</a-button>
-            <a-button type="link" size="small" :disabled="record.status !== 'ready' && record.status !== 'disabled'" @click="openPush([record])">{{ t('common.push') }}</a-button>
-            <a-button v-if="record.canManage" type="link" size="small" @click="openEdit(record)">{{ t('media.edit') }}</a-button>
-            <a-button v-if="record.canManage" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button type="link" size="small" @click="openPreview(record)">{{ t('media.preview') }}</a-button>
+              <a-button type="link" size="small" :disabled="record.status !== 'ready' && record.status !== 'disabled'" @click="openPush([record])">{{ t('common.push') }}</a-button>
+              <a-dropdown>
+                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="download" @click="download(record)">{{ t('media.download') }}</a-menu-item>
+                    <a-menu-item v-if="record.canManage" key="edit" @click="openEdit(record)">{{ t('media.edit') }}</a-menu-item>
+                    <a-menu-item v-if="record.canManage" key="delete" danger @click="remove(record)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
           </template>
         </template>
       </a-table>
 
       <div v-if="total > 0" class="pager">
-        <a-pagination
-          :current="page" :page-size="pageSize" :total="total" show-size-changer :page-size-options="['12', '24', '48', '96']"
-          :show-total="(n: number) => `${n}`" @change="onPage"
-        />
+        <a-pagination v-bind="pagination({ current: page, pageSize, total, pageSizeOptions: ['12', '24', '48', '96'] })" @change="onPage" />
       </div>
     </a-spin>
 
     <!-- preview -->
-    <a-modal :open="!!previewItem" :title="previewItem?.name" :footer="null" width="min(900px, 96vw)" centered destroy-on-close @cancel="closePreview">
+    <a-modal :open="!!previewItem" :title="previewItem?.name" :footer="null" :width="MODAL_WIDTH.lg" centered destroy-on-close @cancel="closePreview">
       <template v-if="previewItem">
         <div class="preview">
           <a-spin v-if="previewLoading" />
@@ -463,18 +473,18 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
     </a-modal>
 
     <!-- edit -->
-    <a-modal :open="!!editing" :title="t('media.editTitle')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="editSaving" @ok="saveEdit" @cancel="editing = null">
+    <a-modal :open="!!editing" :title="t('media.editTitle')" :width="MODAL_WIDTH.sm" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="editSaving" @ok="saveEdit" @cancel="editing = null">
       <a-form layout="vertical">
         <a-form-item :label="t('common.name')"><a-input v-model:value="editForm.name" :maxlength="200" /></a-form-item>
         <a-form-item :label="t('media.category')">
           <a-select v-model:value="editForm.categoryId" allow-clear :placeholder="t('media.uncategorized')" :options="editCategories.map((c) => ({ value: c.id, label: c.name }))" />
         </a-form-item>
-        <a-form-item :label="t('media.tags')" :extra="t('media.tagsHint')">
+        <a-form-item :label="t('media.tags')">
           <a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :placeholder="t('media.addTag')" style="width: 100%" />
         </a-form-item>
         <a-form-item
           v-if="editing && editing.ownerType === 'public' && auth.isAdmin && (editing.status === 'ready' || editing.status === 'disabled')"
-          :label="t('media.visible')" :extra="t('media.visibleHint')"
+          :label="t('media.visible')"
         >
           <a-switch v-model:checked="editForm.visible" />
         </a-form-item>
@@ -484,13 +494,13 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
     <!-- push -->
     <a-modal
       :open="!!pushItems" :title="pushItems?.length === 1 ? t('media.pushOne', { name: pushItems[0]!.name }) : t('media.pushMany', { n: pushItems?.length ?? 0 })"
-      :ok-text="t('common.push')" :cancel-text="t('common.cancel')" :confirm-loading="pushing" @ok="doPush" @cancel="pushItems = null"
+      :width="MODAL_WIDTH.sm" :ok-text="t('common.push')" :cancel-text="t('common.cancel')" :confirm-loading="pushing" @ok="doPush" @cancel="pushItems = null"
     >
       <a-select
         v-model:value="pushTargets" mode="multiple" style="width: 100%" :placeholder="t('media.pickRunning')" :options="runningDevices"
         :not-found-content="t('media.noRunning')" option-filter-prop="label"
       />
-      <p class="hint" style="margin-top: 8px">{{ t('media.pushHint') }}</p>
+      <div class="muted small" style="margin-top: 8px">{{ t('media.pushHint') }}</div>
     </a-modal>
 
     <MediaUploader
@@ -502,25 +512,20 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 </template>
 
 <style scoped>
-.intro { margin-bottom: 12px; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
-.spacer { flex: 1; }
-.search { width: 240px; max-width: 100%; }
-.sel { width: 130px; }
-.sel-wide { width: 190px; }
-.owner { width: 200px; }
-.hint { color: var(--cp-text-tertiary); font-size: 12px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
-.item { border: 1px solid var(--cp-border-secondary); border-radius: 8px; overflow: hidden; background: var(--cp-bg-container); display: flex; flex-direction: column; min-width: 0; }
+.select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: var(--cp-gap); padding: 6px 12px; border-radius: var(--cp-radius); }
+.select-bar.active { background: var(--cp-fill-alter); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--cp-gap); }
+.item { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius-lg); overflow: hidden; background: var(--cp-bg-container); display: flex; flex-direction: column; min-width: 0; }
 .item.checked { border-color: var(--cp-primary); box-shadow: 0 0 0 1px var(--cp-primary); }
 .thumb { position: relative; height: 140px; background: var(--cp-fill-alter); display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
 .icon { font-size: 36px; color: var(--cp-text-quaternary); }
+/* Play icon and duration sit on top of a photo, not on a theme surface, so they stay light-on-dark in both themes. */
 .play { position: absolute; font-size: 36px; color: rgba(255, 255, 255, 0.85); filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5)); pointer-events: none; }
 .duration { position: absolute; right: 6px; bottom: 6px; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 12px; padding: 0 6px; border-radius: 4px; }
 .check { position: absolute; top: 8px; left: 8px; }
 .badge { position: absolute; top: 8px; right: 0; }
-.meta { padding: 8px 10px 0; min-width: 0; flex: 1; }
+.meta { padding: 8px 12px 0; min-width: 0; flex: 1; }
 .name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .name { flex: 1; min-width: 0; font-weight: 500; }
 .star { cursor: pointer; color: var(--cp-text-quaternary); }
@@ -529,12 +534,11 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 .actions { display: flex; justify-content: space-around; border-top: 1px solid var(--cp-border-secondary); padding: 2px 0; margin-top: 8px; }
 .mini { width: 56px; height: 40px; border-radius: 4px; overflow: hidden; background: var(--cp-fill-alter); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--cp-text-quaternary); }
 .mini img { width: 100%; height: 100%; object-fit: cover; }
-.pager { display: flex; justify-content: flex-end; margin-top: 16px; }
-.preview { display: flex; justify-content: center; align-items: center; min-height: 200px; background: var(--cp-fill-alter); border-radius: 8px; }
+.pager { display: flex; justify-content: flex-end; margin-top: var(--cp-gap); }
+.preview { display: flex; justify-content: center; align-items: center; min-height: 200px; background: var(--cp-fill-alter); border-radius: var(--cp-radius-lg); }
 .preview img, .preview video { max-width: 100%; max-height: 70vh; display: block; }
 @media (max-width: 640px) {
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .thumb { height: 110px; }
-  .search, .owner, .sel-wide { width: 100%; }
 }
 </style>
