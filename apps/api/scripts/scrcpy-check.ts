@@ -8,7 +8,8 @@
  *
  * Full run: codec info/config/key frame + fps/KB/s for scrcpy vs STF (with on-screen motion driven
  * over adb), VM CPU, a second concurrent viewer (fan-out), HOME key, tap, paste/typeSecure, device
- * clipboard messages, server gone after the last viewer left, STF fallback without the jar, RBAC.
+ * clipboard messages, server gone after the last viewer left, no fling from a drag a remote link delivers
+ * in bursts (external-phone path of the hub, in-process), STF fallback without the jar, RBAC.
  * phone-* devices are refused.
  */
 import { execFileSync } from 'node:child_process';
@@ -16,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { config } from '../src/config.js';
+import { joinScrcpy } from '../src/modules/control/scrcpy-hub.js';
 import { adb } from '../src/services.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
@@ -338,6 +340,38 @@ try {
   check('server still running right after the last viewer left (grace period)', (await serverProcs(port)) === 1);
   await waitFor('server stopped', async () => (await serverProcs(port)) === 0, 15_000, 500);
   check('server process gone after the last viewer left', true);
+
+  // ---- external phones: a remote link delivers moves in bursts that Android injects within 1 ms; the hub
+  // must hold the release so the list stops where the finger stopped instead of flinging (seen in Instagram
+  // on a BitBrowser phone). The hub's external path runs in-process here against this local device (adb path:
+  // the relay is only reachable for real external phones); the bursts are produced the way the tunnel does.
+  if (videoOnlyName) skip('no fling from a bursty drag (external path)', 'video-only run');
+  else {
+    (config as { SCRCPY_RELAY_URL?: string }).SCRCPY_RELAY_URL = undefined;
+    const hub = await joinScrcpy(port, { sendBinary() {}, sendJson() {}, buffered: () => 0, onEnd() {} }, true);
+    try {
+      const rows = async () => {
+        const x = await adb.shell(port, 'uiautomator dump /sdcard/sc-ui.xml >/dev/null && cat /sdcard/sc-ui.xml; rm -f /sdcard/sc-ui.xml', 30_000);
+        return new Map([...x.matchAll(/text="([^"]+)" resource-id="android:id\/title"[^>]*bounds="\[\d+,(\d+)\]/g)].map((m) => [m[1]!, Number(m[2])]));
+      };
+      await adb.shell(port, 'am start -W -S -a android.settings.MANAGE_ALL_APPLICATIONS_SETTINGS >/dev/null');
+      await sleep(2500);
+      const before = await rows();
+      const [label, y0px] = [...before][0] ?? ['', 0];
+      const y0 = 0.8, y1 = 0.5, n = 15; // a 0.5 s swipe of 30 % of the screen height
+      hub.touch({ type: 'down', x: 0.5, y: y0 });
+      await sleep(300); // one round trip later: the moves of the next ~300 ms at once, then the rest + the release
+      for (let i = 1; i <= n; i++) { hub.touch({ type: 'move', x: 0.5, y: y0 + (y1 - y0) * i / n }); if (i === 8) await sleep(300); }
+      hub.touch({ type: 'up' });
+      await sleep(3000);
+      const after = (await rows()).get(label);
+      const drag = Math.round((y0 - y1) * inst.spec.height);
+      check('bursty drag on an external link stops where the finger stopped (no fling)', after !== undefined && y0px - after > 0 && y0px - after <= drag,
+        `"${label}" ${y0px} → ${after ?? 'scrolled away'} px (drag ${drag} px)`);
+    } finally {
+      hub.leave();
+    }
+  }
 
   // ---- fallback to STF when the jar is missing (local file renamed for a moment)
   if (videoOnlyName) skip('STF fallback without the jar', 'video-only run');
