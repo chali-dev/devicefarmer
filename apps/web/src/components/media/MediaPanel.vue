@@ -14,7 +14,7 @@ import { useInstancesStore } from '../../stores/instances'
 import SearchBar from '../common/SearchBar.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
-import CategoryManager from './CategoryManager.vue'
+import ScopedListManager from '../common/ScopedListManager.vue'
 import MediaUploader from './MediaUploader.vue'
 import { fetchAuthBlob, fmtDuration, fmtSize, useThumbs } from './media'
 
@@ -528,7 +528,8 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
       v-if="canUpload" v-model:open="uploadOpen" :scope="uploadScope" :scope-label="tabLabel" :limits="limits" :categories="categories"
       @uploaded="refreshAll"
     />
-    <CategoryManager v-if="canManageCategories" v-model:open="categoriesOpen" :scope="uploadScope" :scope-label="tabLabel" @changed="() => { void loadCategories(); void load() }" />
+    <ScopedListManager v-if="canManageCategories" v-model:open="categoriesOpen" path="/api/media/categories" list-key="categories" texts="media.categories"
+      :merge-into-public="false" :initial-tab="uploadScope" @changed="() => { void loadCategories(); void load() }" />
   </div>
 </template>
 

@@ -10,12 +10,11 @@ import { accountChecked } from '../notify/triggers.js';
 import { assertPersonaFor } from '../comments/personas.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
-  assertLinkable, EXCEPTION_SQL, getLimits, groupForOwner, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
+  assertLinkable, EXCEPTION_SQL, getLimits, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
   setAccountTags, tagsOf, toItems, visibleAccount, writeLogs, type LogEntry, type Tx,
 } from './social.js';
 
 const sa = schema.socialAccounts;
-const sg = schema.socialAccountGroups;
 
 const Id = z.object({ id: z.string().uuid() });
 const LOGIN = ['unknown', 'logged_in', 'logged_out', 'needs_verification'] as const;
@@ -31,7 +30,6 @@ const Editable = {
   displayName: opt(100),
   profileUrl: Url,
   externalId: opt(100),
-  groupId: z.string().uuid().nullable().optional(),
   tags: Tags.optional(),
   instanceId: z.string().uuid().nullable().optional(),
   /** 账号人设: public persona or one of the account owner's; null clears. */
@@ -47,8 +45,6 @@ const UpdateBody = z.object({ ...Editable, handle: Handle.optional() });
 const ListQuery = z.object({
   q: z.string().trim().max(100).optional(),
   platform: z.enum(PLATFORM_IDS).optional(),
-  /** uuid, or 'none' = ungrouped */
-  groupId: z.union([z.string().uuid(), z.literal('none')]).optional(),
   /** uuid, or 'none' = not linked to a device */
   instanceId: z.union([z.string().uuid(), z.literal('none')]).optional(),
   /** uuid, or 'none' = no persona */
@@ -77,15 +73,7 @@ async function resolveOwner(user: AuthUser, ownerId?: string): Promise<string> {
   return u.id;
 }
 
-/** Group names for the given ids in one query; the returned lookup maps null/unknown ids to null. */
-async function groupNames(tx: Tx, ids: (string | null)[]): Promise<(id: string | null) => string | null> {
-  const want = [...new Set(ids.filter((x): x is string => !!x))];
-  const rows = want.length ? await tx.select({ id: sg.id, name: sg.name }).from(sg).where(inArray(sg.id, want)) : [];
-  const byId = new Map(rows.map((g) => [g.id, g.name]));
-  return (id) => (id && byId.get(id)) || null;
-}
-
-/** Persona names for the given ids in one query (same lookup shape as groupNames). */
+/** Persona names for the given ids in one query. */
 async function personaNames(tx: Tx, ids: (string | null)[]): Promise<(id: string | null) => string | null> {
   const want = [...new Set(ids.filter((x): x is string => !!x))];
   const rows = want.length ? await tx.select({ id: schema.personas.id, name: schema.personas.name }).from(schema.personas).where(inArray(schema.personas.id, want)) : [];
@@ -97,7 +85,7 @@ const FIELDS = ['handle', 'displayName', 'profileUrl', 'externalId', 'notes'] as
 const STATUS_FIELDS = ['loginStatus', 'accountStatus', 'lastError'] as const;
 
 /**
- * Social accounts (社交账号): own platform accounts, groups, tags, status, logs and device links.
+ * Social accounts (社交账号): own platform accounts, personas, tags, status, logs and device links.
  * Per-device platform limits: GET/PUT /api/social/settings (admin).
  */
 export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
@@ -124,8 +112,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!isAdmin(req.user)) where.push(eq(sa.userId, req.user.id));
     else if (qy.ownerId) where.push(eq(sa.userId, qy.ownerId));
     if (qy.platform) where.push(eq(sa.platform, qy.platform));
-    if (qy.groupId === 'none') where.push(isNull(sa.groupId));
-    else if (qy.groupId) where.push(eq(sa.groupId, qy.groupId));
     if (qy.instanceId === 'none') where.push(isNull(sa.instanceId));
     else if (qy.instanceId) where.push(eq(sa.instanceId, qy.instanceId));
     if (qy.personaId === 'none') where.push(isNull(sa.personaId));
@@ -171,13 +157,12 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const ownerId = await resolveOwner(req.user, b.ownerId);
     const platform = platformById(b.platform)!;
     const id = await db.transaction(async (tx) => {
-      if (b.groupId) await groupForOwner(tx, req.user, b.groupId, ownerId);
       if (b.personaId) await assertPersonaFor(ownerId, b.personaId, 'account', tx);
       if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, b.platform);
       const [row] = await tx.insert(sa).values({
         userId: ownerId, platform: b.platform, handle: b.handle,
         displayName: blank(b.displayName) ?? null, profileUrl: blank(b.profileUrl) ?? platform.profileUrl(b.handle),
-        externalId: blank(b.externalId) ?? null, groupId: b.groupId ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null,
+        externalId: blank(b.externalId) ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null,
         loginStatus: b.loginStatus ?? 'unknown', accountStatus: b.accountStatus ?? 'active',
         notes: blank(b.notes) ?? null, lastError: blank(b.lastError) ?? null, createdBy: req.user.id,
       }).returning().catch((err) => { throw isUniqueViolation(err, 'social_accounts_platform_handle') ? handleTaken(b.platform, b.handle) : err; });
@@ -211,12 +196,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         if (v === undefined || v === cur[k]) continue;
         (set as Record<string, unknown>)[k] = v;
         logs.push({ accountId, action: 'status', field: k, fromValue: cur[k], toValue: v });
-      }
-      if (b.groupId !== undefined && b.groupId !== cur.groupId) {
-        if (b.groupId) await groupForOwner(tx, req.user, b.groupId, cur.userId);
-        set.groupId = b.groupId;
-        const names = await groupNames(tx, [cur.groupId, b.groupId ?? null]);
-        logs.push({ accountId, action: 'update', field: 'group', fromValue: names(cur.groupId), toValue: names(b.groupId) });
       }
       if (b.personaId !== undefined && b.personaId !== cur.personaId) {
         if (b.personaId) await assertPersonaFor(cur.userId, b.personaId, 'account', tx);
@@ -295,8 +274,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: {
       body: z.object({
         ids: z.array(z.string().uuid()).min(1).max(500),
-        action: z.enum(['move-group', 'set-persona', 'add-tags', 'remove-tags', 'unlink', 'delete']),
-        groupId: z.string().uuid().nullable().optional(),
+        action: z.enum(['set-persona', 'add-tags', 'remove-tags', 'unlink', 'delete']),
         /** set-persona: null clears */
         personaId: z.string().uuid().nullable().optional(),
         tags: Tags.optional(),
@@ -305,7 +283,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     const { action } = req.body;
     const ids = [...new Set(req.body.ids)];
-    if (action === 'move-group' && req.body.groupId === undefined) throw badRequest('groupId is required', 'social.batch_group_required');
     if (action === 'set-persona' && req.body.personaId === undefined) throw badRequest('personaId is required', 'social.batch_persona_required');
     if ((action === 'add-tags' || action === 'remove-tags') && !req.body.tags?.length) throw badRequest('tags are required', 'social.batch_tags_required');
     const changed = await db.transaction(async (tx) => {
@@ -324,17 +301,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         for (const r of linked) logs.push({ accountId: r.id, action: 'unlink', field: 'device', fromValue: names.get(r.instanceId!)!, toValue: null });
         if (linked.length) await tx.update(sa).set({ instanceId: null }).where(inArray(sa.id, linked.map((r) => r.id)));
         n = linked.length;
-      }
-      if (action === 'move-group') {
-        const gid = req.body.groupId ?? null;
-        // one group lookup; every account must belong to the group's owner
-        if (gid) await groupForOwner(tx, req.user, gid, visible[0]!.userId);
-        if (gid && visible.some((r) => r.userId !== visible[0]!.userId)) throw conflict('分组属于其他用户', 'social.group_owner_mismatch');
-        const moving = visible.filter((r) => r.groupId !== gid);
-        const names = await groupNames(tx, [gid, ...moving.map((r) => r.groupId)]);
-        for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'group', fromValue: names(r.groupId), toValue: names(gid) });
-        if (moving.length) await tx.update(sa).set({ groupId: gid }).where(inArray(sa.id, moving.map((r) => r.id)));
-        n = moving.length;
       }
       if (action === 'set-persona') {
         const pid = req.body.personaId ?? null;
@@ -365,59 +331,5 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
       return n;
     });
     return { action, count: ids.length, changed };
-  });
-
-  // ------------------------------------------------------------ groups (per user; admins see all)
-  app.get('/api/social/groups', { schema: { querystring: z.object({ ownerId: z.string().uuid().optional() }) } }, async (req) => {
-    const owner = !isAdmin(req.user) ? req.user.id : req.query.ownerId;
-    const rows = await db.select({
-      id: sg.id, userId: sg.userId, name: sg.name, createdAt: sg.createdAt, updatedAt: sg.updatedAt,
-      ownerName: schema.users.username,
-      count: sql<number>`(select count(*)::int from social_accounts a where a.group_id = ${sg.id})`,
-    }).from(sg).innerJoin(schema.users, eq(schema.users.id, sg.userId))
-      .where(owner ? eq(sg.userId, owner) : undefined).orderBy(asc(schema.users.username), asc(sg.name));
-    return { groups: rows };
-  });
-
-  const groupExists = (name: string) => conflict('分组名称已存在', 'social.group_exists', { name });
-
-  app.post('/api/social/groups', {
-    schema: { body: z.object({ name: z.string().trim().min(1).max(50), ownerId: z.string().uuid().optional() }) },
-  }, async (req, reply) => {
-    const userId = await resolveOwner(req.user, req.body.ownerId);
-    const [row] = await db.insert(sg).values({ userId, name: req.body.name }).returning()
-      .catch((err) => { throw isUniqueViolation(err, 'social_account_groups_user_name') ? groupExists(req.body.name) : err; });
-    reply.code(201);
-    return { group: row };
-  });
-
-  async function visibleGroup(user: AuthUser, id: string, tx: Tx) {
-    const [g] = await tx.select().from(sg).where(eq(sg.id, id)).for('update');
-    if (!g || (!isAdmin(user) && g.userId !== user.id)) throw notFound('分组不存在', 'social.group_not_found');
-    return g;
-  }
-
-  /** Rename. Accounts in the group get an update log (the group name they show changes). */
-  app.put('/api/social/groups/:id', { schema: { params: Id, body: z.object({ name: z.string().trim().min(1).max(50) }) } }, async (req) => {
-    return db.transaction(async (tx) => {
-      const g = await visibleGroup(req.user, req.params.id, tx);
-      if (g.name === req.body.name) return { group: g };
-      const [row] = await tx.update(sg).set({ name: req.body.name }).where(eq(sg.id, g.id)).returning()
-        .catch((err) => { throw isUniqueViolation(err, 'social_account_groups_user_name') ? groupExists(req.body.name) : err; });
-      const members = await tx.select({ id: sa.id }).from(sa).where(eq(sa.groupId, g.id));
-      await writeLogs(tx, req.user, members.map((m) => ({ accountId: m.id, action: 'update' as const, field: 'group', fromValue: g.name, toValue: req.body.name })));
-      return { group: row };
-    });
-  });
-
-  /** Delete a group; its accounts become ungrouped (logged per account). */
-  app.delete('/api/social/groups/:id', { schema: { params: Id } }, async (req, reply) => {
-    await db.transaction(async (tx) => {
-      const g = await visibleGroup(req.user, req.params.id, tx);
-      const members = await tx.select({ id: sa.id }).from(sa).where(eq(sa.groupId, g.id)).for('update');
-      await writeLogs(tx, req.user, members.map((m) => ({ accountId: m.id, action: 'update' as const, field: 'group', fromValue: g.name, toValue: null, message: 'group deleted' })));
-      await tx.delete(sg).where(eq(sg.id, g.id));
-    });
-    reply.code(204);
   });
 };

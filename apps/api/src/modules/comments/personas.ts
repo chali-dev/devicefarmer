@@ -56,19 +56,24 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /**
    * public = public personas; mine = the caller's; all-users = every user's personal personas (admin, optional ownerId).
-   * `count` = templates using the persona that the caller can see (one grouped query).
+   * `count` = templates using the persona that the caller can see, `accounts` = social accounts with it as 账号人设 that the
+   * caller can see (admin: all; else own), one grouped query each.
    */
   app.get('/api/personas', { schema: { querystring: ScopedListQuery } }, async (req) => {
     const { scope } = req.query;
     const where = scoped.listWhere(req.user, scope, req.query.ownerId);
     const counts = db.select({ personaId: TPL.personaId, n: sql<number>`count(*)::int`.as('n') }).from(TPL)
       .where(and(isNotNull(TPL.personaId), visibleTemplates(req.user))).groupBy(TPL.personaId).as('c');
-    const rows = await db.select({ p: P, ownerName: schema.users.username, count: sql<number>`coalesce(${counts.n}, 0)` }).from(P)
-      .leftJoin(counts, eq(counts.personaId, P.id)).leftJoin(schema.users, eq(schema.users.id, P.ownerId))
+    const accounts = db.select({ personaId: SA.personaId, na: sql<number>`count(*)::int`.as('na') }).from(SA)
+      .where(and(isNotNull(SA.personaId), isAdmin(req.user) ? undefined : eq(SA.userId, req.user.id))).groupBy(SA.personaId).as('a');
+    const rows = await db.select({
+      p: P, ownerName: schema.users.username, count: sql<number>`coalesce(${counts.n}, 0)`, accounts: sql<number>`coalesce(${accounts.na}, 0)`,
+    }).from(P)
+      .leftJoin(counts, eq(counts.personaId, P.id)).leftJoin(accounts, eq(accounts.personaId, P.id)).leftJoin(schema.users, eq(schema.users.id, P.ownerId))
       .where(where).orderBy(...(scope === 'all-users' ? [asc(schema.users.username)] : []), asc(P.sort), asc(P.name));
     return {
       personas: rows.map((r) => ({
-        ...r.p, ownerName: r.ownerName ?? null, count: r.count, writable: r.p.ownerType === 'user' || isAdmin(req.user),
+        ...r.p, ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: r.p.ownerType === 'user' || isAdmin(req.user),
       })),
     };
   });

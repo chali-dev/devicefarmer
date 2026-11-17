@@ -94,7 +94,7 @@ export async function setContentTargets(tx: Tx, contentId: string, accountIds: s
 }
 
 export interface ContentTargetItem {
-  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null; groupId: string | null;
+  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null;
   instance: { id: string; name: string } | null;
 }
 
@@ -231,7 +231,7 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
     translationLangs(ids),
     db.select({
       contentId: schema.contentTargets.contentId, id: sa.id, platform: sa.platform, handle: sa.handle, displayName: sa.displayName,
-      personaId: sa.personaId, groupId: sa.groupId, instanceId: schema.instances.id, instanceName: schema.instances.name,
+      personaId: sa.personaId, instanceId: schema.instances.id, instanceName: schema.instances.name,
     }).from(schema.contentTargets).innerJoin(sa, eq(sa.id, schema.contentTargets.accountId))
       .leftJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
       .where(inArray(schema.contentTargets.contentId, ids)).orderBy(asc(schema.contentTargets.position)),

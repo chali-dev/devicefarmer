@@ -44,11 +44,12 @@ const run = promisify(execFile);
 
 export type Owner = 'public' | 'admin' | 'user';
 export interface MediaSpec { file: string; owner: Owner; w: number; h: number; color: [string, string]; label: string; category?: string; tags: string[]; secs?: number; disabled?: boolean }
-export const CATEGORIES: { name: string; owner: Owner }[] = [
-  { name: 'demo 产品图', owner: 'public' },
-  { name: 'demo 生活方式', owner: 'public' },
+/** 素材分类 (media categories): public + personal, with an optional description (shared scoped-list model). */
+export const CATEGORIES: { name: string; owner: Owner; description?: string }[] = [
+  { name: 'demo 产品图', owner: 'public', description: '白底 / 场景产品图' },
+  { name: 'demo 生活方式', owner: 'public', description: '氛围图、生活场景' },
   { name: 'demo 节日活动', owner: 'public' },
-  { name: 'demo 待审素材', owner: 'admin' },
+  { name: 'demo 待审素材', owner: 'admin', description: '待确认后再使用' },
   { name: 'demo 我的拍摄', owner: 'user' },
 ];
 export const MEDIA: MediaSpec[] = [
@@ -303,7 +304,10 @@ async function seed() {
     const scope = c.owner === 'public' ? 'public' : 'mine';
     const list = must(await http('GET', `/api/media/categories?scope=${scope}`, tok(c.owner)), 'list categories').categories as any[];
     let row = list.find((x) => x.name === c.name);
-    if (!row) row = must(await http('POST', '/api/media/categories', tok(c.owner), { scope, name: c.name }), `create category ${c.name}`).category;
+    if (!row) row = must(await http('POST', '/api/media/categories', tok(c.owner), { scope, name: c.name, description: c.description ?? null }), `create category ${c.name}`).category;
+    else if ((row.description ?? null) !== (c.description ?? null)) {
+      row = must(await http('PATCH', `/api/media/categories/${row.id}`, tok(c.owner), { description: c.description ?? null }), `describe category ${c.name}`).category;
+    }
     note(!list.some((x) => x.name === c.name));
     addId(st.categories, row.id); catIds.set(c.name, row.id);
   }

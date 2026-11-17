@@ -2,11 +2,11 @@
  * 运营只能看到自己的媒体号: an operator (role user) never sees another user's social accounts, anywhere.
  * Real API + DB, no mocks. Two temporary users A and B (+ the built-in admin), placeholder `instances` rows
  * (adb ports 5598–5599, no containers). User A is granted device D1, which hosts one of B's accounts.
- * Seeds for both users: accounts (group, tag, personal persona), media + content with targets, scheduled
+ * Seeds for both users: accounts (tag, personal persona), media + content with targets, scheduled
  * publish tasks (plus an admin distribution of A's content to B's account), manual analytics stats,
  * manual comments + a reply draft, an account-check task and an account.problem notification.
  * Then, as A: every list/detail/filter/count/action endpoint must never contain B's account ids, handles,
- * display name, group, tag or persona, others' rows are 404 and ownerId filters are ignored or 403;
+ * display name, tag or persona, others' rows are 404 and ownerId filters are ignored or 403;
  * A's /api/events WebSocket must not carry B's account events. The admin sees both.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/account-visibility-check.ts
  * (E2E_API=http://127.0.0.1:<port> for another API).
@@ -90,19 +90,18 @@ try {
     setTimeout(() => reject(new Error('ws ready timeout')), 10_000);
   });
 
-  // Per user: group, personal persona, instagram account (B's on D1, A's unlinked), media, content with target.
+  // Per user: personal persona, instagram account (B's on D1, A's unlinked), media, content with target.
   const seed = async (who: 'a' | 'b', token: string) => {
-    const g = await http('POST', '/api/social/groups', token, { name: `av${who}group${tag}` });
     const p = await http('POST', '/api/personas', token, { scope: 'mine', name: `av${who}persona${tag}` });
     const acc = await http('POST', '/api/social/accounts', token, {
       platform: 'instagram', handle: `av${who}_${tag}_main`, displayName: `AV${who.toUpperCase()}Display${tag}`, notes: `av${who}notes${tag}`,
-      groupId: g.body.group.id, personaId: p.body.persona.id, tags: [`av${who}tag${tag}`],
+      personaId: p.body.persona.id, tags: [`av${who}tag${tag}`],
     });
     if (acc.status !== 201) throw new Error(`account ${who}: ${acc.status} ${acc.text}`);
     const media = await upload(token, `av${who}.jpg`, who === 'a' ? 30 : 200);
     const c = await http('POST', '/api/contents', token, { title: `av${who}content${tag}`, body: 'Body', mediaIds: [media], targetIds: [acc.body.account.id] });
     if (c.status !== 201) throw new Error(`content ${who}: ${c.status} ${c.text}`);
-    return { group: g.body.group.id as string, persona: p.body.persona.id as string, account: acc.body.account.id as string, content: c.body.content.id as string };
+    return { persona: p.body.persona.id as string, account: acc.body.account.id as string, content: c.body.content.id as string };
   };
   const a = await seed('a', A);
   const b = await seed('b', B);
@@ -143,7 +142,7 @@ try {
   await sleep(1500); // let pending events reach the WebSocket
 
   // ---------------------------------------------------------------- what must never reach A
-  const bTokens = [b.account, b.group, b.persona, `avb_${tag}_main`, `AVBDisplay${tag}`, `avbgroup${tag}`, `avbpersona${tag}`, `avbtag${tag}`, `avbnotes${tag}`,
+  const bTokens = [b.account, b.persona, `avb_${tag}_main`, `AVBDisplay${tag}`, `avbpersona${tag}`, `avbtag${tag}`, `avbnotes${tag}`,
     ptB, ptX, commentB, replyB, taskB, `avb comment ${tag}`, `avb reply ${tag}`, `avbpost${tag}`];
   const leaks = (text: string) => bTokens.filter((t) => text.toLowerCase().includes(t.toLowerCase()));
   const clean = async (label: string, path: string, expect = 200, token = A) => {
@@ -160,14 +159,24 @@ try {
   check('A: ownerId=<B> still returns only A\'s account', r.body.items.every((x: any) => x.userId === uA));
   r = await clean('/api/social/accounts?instanceId=<D1> (granted device hosting B\'s account)', `/api/social/accounts?instanceId=${D1.id}`);
   check('A: D1\'s account list is empty for A', r.body.total === 0);
-  for (const q of [`q=avb_${tag}`, `groupId=${b.group}`, `personaId=${b.persona}`, `tags=avbtag${tag}`, 'loginStatus=logged_out', 'exception=true']) {
+  for (const q of [`q=avb_${tag}`, `personaId=${b.persona}`, `tags=avbtag${tag}`, 'loginStatus=logged_out', 'exception=true']) {
     r = await clean(`/api/social/accounts?${q.split('=')[0]}=…`, `/api/social/accounts?${q}`);
     check(`A: filter ${q.split('=')[0]} matching only B's account → 0`, r.body.total === 0, r.text.slice(0, 200));
   }
   await clean('/api/social/tags', '/api/social/tags');
   await clean('/api/social/tags?ownerId=<B>', `/api/social/tags?ownerId=${uB}`);
-  r = await clean('/api/social/groups?ownerId=<B>', `/api/social/groups?ownerId=${uB}`);
-  check('A: groups = only A\'s group', r.body.groups.length === 1 && r.body.groups[0].id === a.group);
+  r = await clean('/api/personas?scope=mine&ownerId=<B>', `/api/personas?scope=mine&ownerId=${uB}`);
+  check('A: personal personas = only A\'s, counting A\'s account', r.body.personas.length === 1 && r.body.personas[0].id === a.persona && r.body.personas[0].accounts === 1, r.text.slice(0, 300));
+  await clean('/api/personas?scope=all-users (admin only)', '/api/personas?scope=all-users', 403);
+  // a public persona on both accounts: its account count is per viewer (A: own only; admin: both)
+  const pubP = (await http('POST', '/api/personas', T, { scope: 'public', name: `avpub${tag}` })).body.persona.id as string;
+  await http('PUT', `/api/social/accounts/${a.account}`, A, { personaId: pubP });
+  await http('PUT', `/api/social/accounts/${b.account}`, B, { personaId: pubP });
+  const pubCount = async (token: string) => ((await http('GET', '/api/personas?scope=public', token)).body.personas as any[]).find((x) => x.id === pubP)?.accounts;
+  check('public persona account count per viewer (A 1, admin 2)', (await pubCount(A)) === 1 && (await pubCount(T)) === 2);
+  await http('PUT', `/api/social/accounts/${a.account}`, A, { personaId: a.persona });
+  await http('PUT', `/api/social/accounts/${b.account}`, B, { personaId: b.persona });
+  await http('DELETE', `/api/personas/${pubP}`, T);
   await clean('/api/social/accounts/<B>', `/api/social/accounts/${b.account}`, 404);
   await clean('/api/social/accounts/<B>/logs', `/api/social/accounts/${b.account}/logs`, 404);
   const deny = async (label: string, method: string, path: string, body?: unknown, codes = [404]) => {
@@ -177,8 +186,7 @@ try {
   await deny('PUT B\'s account', 'PUT', `/api/social/accounts/${b.account}`, { notes: 'x' });
   await deny('mark B\'s account checked', 'POST', `/api/social/accounts/${b.account}/checked`, {});
   await deny('batch with B\'s account', 'POST', '/api/social/accounts/batch', { ids: [a.account, b.account], action: 'add-tags', tags: ['x'] });
-  await deny('rename B\'s group', 'PUT', `/api/social/groups/${b.group}`, { name: 'x' });
-  await deny('move own account into B\'s group', 'PUT', `/api/social/accounts/${a.account}`, { groupId: b.group });
+  await deny('rename B\'s persona', 'PATCH', `/api/personas/${b.persona}`, { name: 'x' });
   await deny('set B\'s personal persona on own account', 'PUT', `/api/social/accounts/${a.account}`, { personaId: b.persona }, [400, 404]);
   await deny('DELETE B\'s account', 'DELETE', `/api/social/accounts/${b.account}`);
   // A second instagram account of A on D1: refused by the per-device limit, which counts B's account (open question, see report).

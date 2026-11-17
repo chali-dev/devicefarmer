@@ -6,7 +6,7 @@ import { isAdmin, type AuthUser } from '../modules/auth/rbac.js';
 import { badRequest, conflict, forbidden, notFound } from './errors.js';
 
 /**
- * Shared rules of the scoped name lists (人设 personas, 内容分类 content categories): public rows (owner_id null) are
+ * Shared rules of the scoped name lists (人设 personas, 内容分类 content categories, 素材分类 media categories): public rows (owner_id null) are
  * managed by admins and usable by everyone; personal rows belong to one user (others get 404; admins see and manage
  * all). Names are unique per owner, case-insensitive (unique index). Each list keeps its own routes and counts; this
  * module holds the scope checks, error codes (`<code>.not_found|admin_only|exists|merge_same|merge_scope`) and schemas.
@@ -23,8 +23,12 @@ export const ScopedCreateBody = z.object({
 });
 export const ScopedPatchBody = z.object({ name: ScopedName.optional(), description: ScopedDescription, sort: ScopedSort.optional() });
 
-/** `code` = error code prefix (e.g. `persona`), `noun` = Chinese fallback text (e.g. 人设). */
-export function scopedList(code: string, noun: string, table: PgTable, cols: ScopedCols) {
+/**
+ * `code` = error code prefix (e.g. `persona`), `noun` = Chinese fallback text (e.g. 人设). `mergeIntoPublic: false` for a
+ * list whose personal rows may only hold their owner's things (media categories): merge then stays within one owner.
+ */
+export function scopedList(code: string, noun: string, table: PgTable, cols: ScopedCols, opts: { mergeIntoPublic?: boolean } = {}) {
+  const intoPublic = opts.mergeIntoPublic ?? true;
   const adminOnly = () => forbidden(`仅管理员可以管理公共${noun}或其他用户的${noun}`, `${code}.admin_only`);
 
   /** The row if the user may see it (public: everyone; personal: owner or admin), else 404. */
@@ -63,11 +67,12 @@ export function scopedList(code: string, noun: string, table: PgTable, cols: Sco
       throw err;
     }
   }
-  /** Merge direction: public → public; personal → the same owner's personal row or a public one. */
+  /** Merge direction: public → public; personal → the same owner's personal row or (mergeIntoPublic) a public one. */
   function assertMerge(src: ScopedRow, dst: ScopedRow): void {
     if (src.id === dst.id) throw badRequest('不能合并到自身', `${code}.merge_same`);
-    const ok = dst.ownerType === 'public' || (src.ownerType === 'user' && dst.ownerId === src.ownerId);
-    if (!ok) throw badRequest(`只能合并到同一范围的${noun}（个人${noun}可以合并到公共${noun}）`, `${code}.merge_scope`);
+    const ok = src.ownerType === 'public' ? dst.ownerType === 'public'
+      : (dst.ownerType === 'user' && dst.ownerId === src.ownerId) || (intoPublic && dst.ownerType === 'public');
+    if (!ok) throw badRequest(intoPublic ? `只能合并到同一范围的${noun}（个人${noun}可以合并到公共${noun}）` : `只能合并到同一范围的${noun}`, `${code}.merge_scope`);
   }
   /** Set of a PATCH body without undefined fields (400 when empty). */
   function patchSet<T extends Record<string, unknown>>(body: T): Partial<T> {

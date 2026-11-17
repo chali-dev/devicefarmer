@@ -193,10 +193,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/media/:id/favorite': { action: 'media.favorite' },
   'DELETE /api/media/:id/favorite': { action: 'media.unfavorite' },
   'POST /api/media/categories': {
-    action: 'media.category_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, sort: body.sort }),
+    action: 'media.category_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, ownerId: body.ownerId, name: body.name, sort: body.sort }),
   },
-  'PUT /api/media/categories/:id': { action: 'media.category_update', detail: ({ body }) => ({ name: body.name, sort: body.sort }) },
+  'PATCH /api/media/categories/:id': { action: 'media.category_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/media/categories/:id': { action: 'media.category_delete' },
+  'POST /api/media/categories/:id/merge': { action: 'media.category_merge' },
   'POST /api/media/push': {
     action: 'media.push',
     target: ({ body }) => mediaNames(ids(body.assetIds)),
@@ -222,12 +223,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
-    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, groupId: body.groupId, instanceId: body.instanceId, personaId: body.personaId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
   },
   'PUT /api/social/accounts/:id': {
     action: 'social.account_update',
     detail: ({ body }) => ({
-      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, groupId: body.groupId, personaId: body.personaId,
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, personaId: body.personaId,
       loginStatus: body.loginStatus, accountStatus: body.accountStatus,
     }),
   },
@@ -237,11 +238,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
-    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, groupId: body.groupId, personaId: body.personaId, tags: body.tags }),
+    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, personaId: body.personaId, tags: body.tags }),
   },
-  'POST /api/social/groups': { action: 'social.group_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ name: body.name, ownerId: body.ownerId }) },
-  'PUT /api/social/groups/:id': { action: 'social.group_update', detail: ({ body }) => ({ name: body.name }) },
-  'DELETE /api/social/groups/:id': { action: 'social.group_delete' },
   'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
   // tracked accounts (追踪账号)
   'POST /api/tracked-accounts': {
@@ -438,10 +436,6 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   if (pattern.startsWith('/api/social/accounts/:id') || pattern.startsWith('/api/platforms/accounts/:id') || pattern.startsWith('/api/analytics/accounts/:id')) {
     const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
     return r ? `${r.platform} @${r.handle}` : null;
-  }
-  if (pattern.startsWith('/api/social/groups/:id')) {
-    const [r] = await db.select({ name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups).where(eq(schema.socialAccountGroups.id, id));
-    return r?.name ?? null;
   }
   if (pattern.startsWith('/api/tracked-accounts/:id')) {
     const [r] = await db.select({ platform: schema.trackedAccounts.platform, handle: schema.trackedAccounts.handle })

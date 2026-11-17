@@ -9,11 +9,15 @@ import { useAuthStore } from '../../stores/auth'
 import { confirmDanger, MODAL_WIDTH } from './ui'
 
 /**
- * Manager of a scoped name list (人设 `/api/personas`, 内容分类 `/api/content-categories`; same API shape): public rows
- * (admins edit, users read) and personal ones (own; admins may also list every user's). Add / edit name + description /
- * reorder / merge / delete. `texts` is the i18n prefix of the list's own labels (manage, tabs.*, add, count, …).
+ * Manager of a scoped name list (人设 `/api/personas`, 内容分类 `/api/content-categories`, 素材分类 `/api/media/categories`;
+ * same API shape): public rows (admins edit, users read) and personal ones (own; admins may also list every user's).
+ * Add / edit name + description / reorder / merge / delete. `texts` is the i18n prefix of the list's own labels (manage,
+ * tabs.*, add, count, …; `accountCount` when rows carry `accounts`). `mergeIntoPublic: false` = a personal row merges
+ * only into the same owner's rows (media categories). `initialTab` = tab shown when the dialog opens.
  */
-const props = defineProps<{ path: string; listKey: string; texts: string }>()
+const props = withDefaults(defineProps<{ path: string; listKey: string; texts: string; mergeIntoPublic?: boolean; initialTab?: 'public' | 'mine' }>(), {
+  mergeIntoPublic: true, initialTab: undefined,
+})
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
@@ -41,7 +45,13 @@ async function load() {
     ;[publicList.value, personalList.value] = await Promise.all([get('scope=public'), get(allUsers.value ? 'scope=all-users' : 'scope=mine')])
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
-watch(open, (v) => { if (v) { draft.value = { name: '', description: '' }; editingId.value = null; void load() } })
+watch(open, (v) => {
+  if (!v) return
+  draft.value = { name: '', description: '' }
+  editingId.value = null
+  if (props.initialTab) tab.value = props.initialTab
+  void load()
+})
 watch(owner, () => { void load() })
 watch(tab, () => { editingId.value = null })
 
@@ -77,19 +87,21 @@ function move(i: number, d: -1 | 1) {
 }
 function remove(p: ScopedItem) {
   confirmDanger({
-    title: tx('confirmDelete', { name: p.name }), content: p.count ? tx('deleteContent', { n: p.count }) : undefined,
+    title: tx('confirmDelete', { name: p.name }),
+    content: p.count || p.accounts ? tx('deleteContent', { n: p.count, accounts: p.accounts ?? 0 }) : undefined,
     onOk: () => run(() => api('DELETE', `${props.path}/${p.id}`)),
   })
 }
 
-// ---- merge: public → public; personal → the same owner's or a public row
+// ---- merge: public → public; personal → the same owner's or (mergeIntoPublic) a public row
 const merging = ref<ScopedItem | null>(null)
 const mergeInto = ref<string | undefined>()
 const mergeTargets = computed(() => {
   const src = merging.value
   if (!src) return []
   const own = src.ownerType === 'user' ? personalList.value.filter((p) => p.ownerId === src.ownerId) : []
-  return [...own, ...publicList.value].filter((p) => p.id !== src.id)
+  const pub = src.ownerType === 'public' || props.mergeIntoPublic ? publicList.value : []
+  return [...own, ...pub].filter((p) => p.id !== src.id)
     .map((p) => ({ value: p.id, label: p.ownerType === 'public' && src.ownerType === 'user' ? `${p.name} · ${t('scopedList.public')}` : p.name }))
 })
 function startMerge(p: ScopedItem) { merging.value = p; mergeInto.value = undefined }
@@ -97,8 +109,8 @@ async function doMerge() {
   const src = merging.value
   if (!src || !mergeInto.value) return
   await run(async () => {
-    const r = await api<{ moved: number }>('POST', `${props.path}/${src.id}/merge`, { into: mergeInto.value })
-    message.success(tx('mergeOk', { n: r.moved }))
+    const r = await api<{ moved: number; movedAccounts?: number }>('POST', `${props.path}/${src.id}/merge`, { into: mergeInto.value })
+    message.success(tx('mergeOk', { n: r.moved, accounts: r.movedAccounts ?? 0 }))
     merging.value = null
   })
 }
@@ -133,6 +145,7 @@ async function doMerge() {
             <div class="ellipsis">
               {{ p.name }}
               <span class="muted small count">{{ tx('count', { n: p.count }) }}</span>
+              <span v-if="p.accounts !== undefined" class="muted small count">· {{ tx('accountCount', { n: p.accounts }) }}</span>
               <span v-if="allUsers && p.ownerName" class="muted small count">· {{ p.ownerName }}</span>
             </div>
             <div v-if="p.description" class="muted small ellipsis">{{ p.description }}</div>

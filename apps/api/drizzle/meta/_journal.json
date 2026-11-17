@@ -211,6 +211,13 @@
       "when": 1794930272770,
       "tag": "0029_account_posts",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794931464223,
+      "tag": "0030_media_categories_scoped",
+      "breakpoints": true
     }
   ]
 }

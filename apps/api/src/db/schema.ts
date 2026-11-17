@@ -228,11 +228,13 @@ export const mediaCategories = pgTable('media_categories', {
   ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
   ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
+  description: text('description'),
   sort: integer('sort').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [
-  unique('media_categories_owner_name').on(t.ownerType, t.ownerId, t.name).nullsNotDistinct(),
+  // Same rule as personas / content categories (lib/scoped-list.ts): unique per owner, case-insensitive.
+  uniqueIndex('media_categories_owner_name_lower').on(sql`coalesce(${t.ownerId}, '00000000-0000-0000-0000-000000000000'::uuid)`, sql`lower(${t.name})`),
   ownerCheck('media_categories_owner_chk'),
 ]);
 
@@ -413,6 +415,11 @@ export const auditLogs = pgTable('audit_logs', {
  * The account's egress proxy is its device's proxy (instances.proxy_id); it is never stored here.
  * No platform passwords are stored. Rows cascade with their owner; deleting a device unlinks (logged).
  */
+/**
+ * LEGACY (分组, removed): accounts are grouped by persona (人设) now. `social-group-data-migration.ts` (run by db:migrate)
+ * turned every group into a persona or a tag; the code no longer reads or writes this table or `social_accounts.group_id`.
+ * Kept for rollbacks (expand/contract); drop both (and social_accounts_group_idx) in a later release.
+ */
 export const socialAccountGroups = pgTable('social_account_groups', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -429,6 +436,7 @@ export const socialAccounts = pgTable('social_accounts', {
   displayName: text('display_name'),
   profileUrl: text('profile_url'),
   externalId: text('external_id'),
+  /** LEGACY, not read or written (see socialAccountGroups); drop in a later release. */
   groupId: uuid('group_id').references(() => socialAccountGroups.id, { onDelete: 'set null' }),
   instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
   /** 账号人设: a public persona or one of the account owner's personal personas (assertPersonaFor). */

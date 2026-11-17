@@ -186,9 +186,8 @@ export interface MediaItem {
   contentUrl: string
   thumbnailUrl: string | null
 }
-export interface MediaCategory {
-  id: string; ownerType: 'public' | 'user'; ownerId: string | null; name: string; sort: number; count: number; createdAt: string; updatedAt: string
-}
+/** 素材分类 (count = visible assets in it); a category only holds assets of its own owner. */
+export type MediaCategory = ScopedItem
 export interface MediaFormatLimit { id: string; mime: string; mimes: string[]; exts: string[]; processable: boolean }
 export type MediaCropAspect = 'original' | '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1'
 /** Crop rectangle in 0..1 of the (orientation-corrected) source; `aspect` = fixed preset it is locked to. */
@@ -253,8 +252,6 @@ export interface SocialAccount {
   displayName: string | null
   profileUrl: string | null
   externalId: string | null
-  groupId: string | null
-  groupName: string | null
   /** 账号人设 */
   personaId: string | null
   personaName: string | null
@@ -274,8 +271,6 @@ export interface SocialAccount {
   createdAt: string
   updatedAt: string
 }
-
-export interface SocialGroup { id: string; userId: string; ownerName: string; name: string; count: number }
 
 export interface SocialAccountLog {
   id: string
@@ -411,7 +406,7 @@ export interface ContentPublishAccount {
   status: PublishStatus; postType: PostType; scheduledAt: string; publishedAt: string | null
 }
 export interface ContentTarget {
-  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null; groupId: string | null
+  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null
   instance: { id: string; name: string } | null
 }
 /** 多语言内容: a human-written version of a content in another language (text fields only). */
@@ -560,10 +555,12 @@ export interface CommentLog {
 export type TemplateKind = 'comment' | 'post'
 /** 人设 as embedded in a template. Public ones are usable by every template, personal ones only by their owner's. */
 export interface PersonaRef { id: string; name: string; description: string | null; ownerType: 'public' | 'user'; ownerId: string | null }
-/** A row of a scoped name list (人设, 内容分类): public (admin-managed) or personal; `count` = uses the viewer can see. */
+/** A row of a scoped name list (人设, 内容分类, 素材分类): public (admin-managed) or personal; `count` = uses the viewer can see. */
 export interface ScopedItem extends PersonaRef {
   sort: number; createdAt: string; updatedAt: string
   count: number; writable: boolean; ownerName: string | null
+  /** 人设 only: social accounts with this 账号人设 that the viewer can see. */
+  accounts?: number
 }
 /** 人设 (count = templates using it). */
 export type Persona = ScopedItem

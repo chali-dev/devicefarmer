@@ -3,7 +3,7 @@
  * - CRUD + RBAC per scope: public personas admin-managed (users 403), personal ones private (others 404), admin all-users
  *   view with owner filter; names unique per owner, case-insensitive; validation.
  * - Template persona rules: shared template → public persona only; personal template → public or the owner's persona.
- * - Counts per persona (exact, per viewer), template filter personaId / none, facets without personas.
+ * - Counts per persona (templates and 账号人设 accounts, exact, per viewer), template filter personaId / none, facets without personas.
  * - Delete → templates become 未设人设; merge moves templates and deletes the source (scope rules).
  * - Audit entries (names only).
  * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
@@ -151,6 +151,14 @@ try {
   check('counts per viewer are exact (Brand: A sees s1+a2 = 2, admin 3; Old 1; Pre 0; Coach 1)',
     count(pubA, brand.id) === 2 && count(pubT, brand.id) === 3 && count(pubA, old.id) === 1 && count(pubA, pre.id) === 0 && count(mineA, aCoach.id) === 1 && count(mineA, aCoach2.id) === 1,
     JSON.stringify([count(pubA, brand.id), count(pubT, brand.id), count(pubA, old.id), count(pubA, pre.id), count(mineA, aCoach.id)]));
+  // 账号人设 counts: accounts with the persona that the viewer can see (users: own; admins: all)
+  const accA = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `pc_${tag}_a`, personaId: brand.id });
+  const accB = await http('POST', '/api/social/accounts', B.token, { platform: 'instagram', handle: `pc_${tag}_b`, personaId: brand.id });
+  const accounts = (xs: any[], id: string) => xs.find((x) => x.id === id)?.accounts;
+  const [pubA2, pubT2] = [(await plist(A.token, 'scope=public')).items, (await plist(T, 'scope=public')).items];
+  check('account counts per viewer (Brand: A 1, admin 2; Old 0)', accA.status === 201 && accB.status === 201
+    && accounts(pubA2, brand.id) === 1 && accounts(pubT2, brand.id) === 2 && accounts(pubA2, old.id) === 0,
+    JSON.stringify([accA.status, accB.status, accounts(pubA2, brand.id), accounts(pubT2, brand.id)]));
   const tl = async (token: string, q: string) => ((await http('GET', `/api/comment-templates?kind=all&${q}`, token)).body.templates as any[]).filter((x) => x.name.includes(tag)).map((x) => x.name).sort().join();
   check('filter personaId (A sees s1, a2 — not B\'s b1)', await tl(A.token, `personaId=${brand.id}`) === [`a2 ${tag}`, `s1 ${tag}`].sort().join());
   check('filter personaId as admin (s1, a2, b1)', await tl(T, `personaId=${brand.id}`) === [`a2 ${tag}`, `b1 ${tag}`, `s1 ${tag}`].sort().join());
