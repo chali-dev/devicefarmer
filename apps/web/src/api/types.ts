@@ -191,7 +191,9 @@ export interface MediaCategory {
 }
 export interface MediaFormatLimit { id: string; mime: string; mimes: string[]; exts: string[]; processable: boolean }
 export type MediaCropAspect = 'original' | '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1'
-export interface MediaProcessOptions { crop?: { aspect: MediaCropAspect; x: number; y: number }; maxSize?: 1080 | 720; quality?: 'high' | 'medium' | 'low' }
+/** Crop rectangle in 0..1 of the (orientation-corrected) source; `aspect` = fixed preset it is locked to. */
+export interface MediaCropRect { x: number; y: number; w: number; h: number; aspect?: MediaCropAspect }
+export interface MediaProcessOptions { crop?: MediaCropRect | { aspect: MediaCropAspect; x: number; y: number }; maxSize?: 1080 | 720; quality?: 'high' | 'medium' | 'low' }
 export interface MediaFileFacts { size: number; width: number | null; height: number | null; mime: string; duration?: number | null }
 export interface MediaProcessing { options: MediaProcessOptions; result?: { before: MediaFileFacts; after: MediaFileFacts; kept?: boolean } }
 export interface MediaLimits {
