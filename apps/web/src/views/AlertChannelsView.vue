@@ -149,7 +149,7 @@ async function save() {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
             <a-space :size="4" wrap>
-              <a-typography-text :ellipsis="{ tooltip: record.name }" style="max-width: 120px">{{ record.name }}</a-typography-text>
+              <a-typography-text :ellipsis="{ tooltip: record.name }" style="max-width: 120px; display: inline-block; vertical-align: middle">{{ record.name }}</a-typography-text>
               <a-tag>{{ t(`alertChannels.types.${record.type}`) }}</a-tag>
             </a-space>
           </template>

@@ -172,7 +172,8 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     const visible = owner.ownerType === 'public' && !isAdmin(req.user) ? sql`and a.status = 'ready'` : sql``;
     const rows = await db.select({
       id: mc.id, ownerType: mc.ownerType, ownerId: mc.ownerId, name: mc.name, sort: mc.sort, createdAt: mc.createdAt, updatedAt: mc.updatedAt,
-      count: sql<number>`(select count(*)::int from media_assets a where a.category_id = ${mc.id} and a.deleted_at is null ${visible})`,
+      // Qualified: in a single-table select drizzle renders ${mc.id} as a bare "id", which the subquery would bind to a.id.
+      count: sql<number>`(select count(*)::int from media_assets a where a.category_id = media_categories.id and a.deleted_at is null ${visible})`,
     }).from(mc)
       .where(and(eq(mc.ownerType, owner.ownerType), owner.ownerId ? eq(mc.ownerId, owner.ownerId) : isNull(mc.ownerId)))
       .orderBy(asc(mc.sort), asc(mc.name));
