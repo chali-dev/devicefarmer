@@ -1187,7 +1187,6 @@ const zhCN = {
   },
   publish: {
     title: '定时发布',
-    toContent: '内容管理',
     searchPlaceholder: '内容 / 账号 / 文案',
     platform: '平台',
     filteredByContent: '仅显示该内容',

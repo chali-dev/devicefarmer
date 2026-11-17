@@ -180,8 +180,6 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
 
 <template>
   <PageContainer :title="t('publish.title')">
-    <template #extra><a-button @click="router.push('/content')">{{ t('publish.toContent') }}</a-button></template>
-
     <a-card :bordered="false">
       <SearchBar :loading="tab === 'calendar' ? calLoading : loading" @reset="reset" @refresh="load">
         <a-input-search v-model:value="filters.q" :placeholder="t('publish.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />

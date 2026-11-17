@@ -1186,7 +1186,6 @@ const en: Messages = {
   },
   publish: {
     title: 'Publish scheduler',
-    toContent: 'Content',
     searchPlaceholder: 'Content / account / caption',
     platform: 'Platform',
     filteredByContent: 'This content only',
