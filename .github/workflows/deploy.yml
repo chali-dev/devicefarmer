@@ -1,0 +1,222 @@
+# Manual blue-green deploy / rollback (docs/10-deployment.md).
+# Branch: GitHub's "Use workflow from" selector. Secrets and required reviewers live in the GitHub Environment.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: deploy = build + push images, then blue-green switch; rollback = switch back (no build)
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      version:
+        description: "Version tag (deploy only; empty = <UTC date>-<time>-<short sha>; allowed: letters, digits, . _ -)"
+        type: string
+        required: false
+      rollback_steps:
+        description: Rollback only, versions back (1 = previous, 2 = the one before)
+        type: choice
+        options: ["1", "2"]
+        default: "1"
+      environment:
+        description: GitHub Environment (holds the server secrets and the required reviewers)
+        type: environment
+        default: production
+
+# Never two deploys/rollbacks for the same environment at once; a queued run waits, nothing is cancelled.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      api_image: ${{ steps.v.outputs.api_image }}
+      web_image: ${{ steps.v.outputs.web_image }}
+    steps:
+      - id: v
+        env:
+          ACTION: ${{ inputs.action }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=""
+          if [ "$ACTION" = deploy ]; then
+            version=${INPUT_VERSION:-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}}
+            # Same rule as deploy/lib.sh (a valid Docker tag, no shell metacharacters).
+            if ! [[ $version =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+              echo "::error::invalid version '$version'"; exit 1
+            fi
+          fi
+          repo=${GITHUB_REPOSITORY,,}
+          {
+            echo "version=$version"
+            echo "api_image=ghcr.io/${repo}-api"
+            echo "web_image=ghcr.io/${repo}-web"
+          } >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: inputs.action == 'deploy'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      API_IMAGE: ${{ needs.prepare.outputs.api_image }}
+      WEB_IMAGE: ${{ needs.prepare.outputs.web_image }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an existing version (rollback must get exactly what was deployed)
+        run: |
+          for img in "$API_IMAGE" "$WEB_IMAGE"; do
+            if docker buildx imagetools inspect "$img:$VERSION" >/dev/null 2>&1; then
+              echo "::error::$img:$VERSION already exists; choose another version"; exit 1
+            fi
+          done
+      - name: Build and push api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/api.Dockerfile
+          platforms: ${{ vars.IMAGE_PLATFORMS || 'linux/amd64' }}
+          push: true
+          tags: ${{ env.API_IMAGE }}:${{ env.VERSION }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
+            GIT_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+      - name: Build and push web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/web.Dockerfile
+          platforms: ${{ vars.IMAGE_PLATFORMS || 'linux/amd64' }}
+          push: true
+          tags: ${{ env.WEB_IMAGE }}:${{ env.VERSION }}
+          build-args: |
+            APP_VERSION=${{ env.VERSION }}
+            GIT_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.ref.name=${{ github.ref_name }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  deploy:
+    needs: [prepare, build]
+    # build is skipped for a rollback
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: read   # the job token logs the server into GHCR for this run only
+    env:
+      ACTION: ${{ inputs.action }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      STEPS: ${{ inputs.rollback_steps }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/srv/cloudphone' }}
+      SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: deploy
+      - name: SSH setup
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          for v in SSH_KEY KNOWN_HOSTS HOST USER; do [ -n "${!v}" ] || { echo "::error::secret for $v missing in environment"; exit 1; }; done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" >~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" >~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          cat >~/.ssh/config <<EOF
+          Host deploy-target
+            HostName $HOST
+            User $USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            ServerAliveInterval 30
+          EOF
+      - name: Copy deploy scripts
+        if: inputs.action == 'deploy'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2029
+          tar -C deploy -czf - . | ssh deploy-target "mkdir -p '$DEPLOY_DIR/deploy' && tar -xzf - -C '$DEPLOY_DIR/deploy' && chmod +x '$DEPLOY_DIR'/deploy/*.sh"
+      - name: Log the server into GHCR (job token, read-only)
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          # shellcheck disable=SC2029
+          printf '%s' "$TOKEN" | ssh deploy-target "docker login ghcr.io -u '$ACTOR' --password-stdin" >/dev/null
+      - name: ${{ inputs.action }}
+        run: |
+          # The remote command line is built locally on purpose, from validated inputs.
+          # shellcheck disable=SC2029
+          {
+          set -euo pipefail
+          if [ "$ACTION" = deploy ]; then cmd="'$DEPLOY_DIR/deploy/deploy.sh' '$VERSION'"; else cmd="'$DEPLOY_DIR/deploy/rollback.sh' '$STEPS'"; fi
+          set +e
+          ssh deploy-target "$cmd" 2>&1 | tee deploy-output.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          ssh deploy-target "'$DEPLOY_DIR/deploy/status.sh'" >status-output.txt 2>&1 || true
+          exit "$rc"
+          }
+      - name: Log the server out of GHCR
+        if: always()
+        run: ssh deploy-target "docker logout ghcr.io" >/dev/null 2>&1 || true
+      - name: Summary
+        if: always()
+        env:
+          REF: ${{ github.ref_name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          {
+            echo "## ${ACTION} on ${ENVIRONMENT}"
+            echo
+            echo "| | |"; echo "|---|---|"
+            echo "| branch | \`${REF}\` (\`${GITHUB_SHA::7}\`) |"
+            if [ "$ACTION" = deploy ]; then echo "| version | \`${VERSION}\` |"; else echo "| rollback steps | ${STEPS} |"; fi
+            echo "| result | $(grep -h '^RESULT:' deploy-output.txt 2>/dev/null | sed 's/^RESULT: //' || true) |"
+            echo
+            echo "<details><summary>deploy output</summary>"; echo; echo '```'; cat deploy-output.txt 2>/dev/null || echo "(none)"; echo '```'; echo "</details>"
+            echo
+            echo "### status.sh"; echo '```'; cat status-output.txt 2>/dev/null || echo "(none)"; echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

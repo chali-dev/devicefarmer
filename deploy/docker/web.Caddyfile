@@ -1,0 +1,21 @@
+# Static web build of one colour (blue/green). TLS and routing live in the shared proxy (deploy/caddy).
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:{$WEB_PORT} {
+	bind {$WEB_BIND}
+	root * /srv
+	encode zstd gzip
+	# Hashed assets are immutable; everything else (index.html, SPA routes) is revalidated,
+	# so a switch to the other colour takes effect on the next page load.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	@other not path /assets/*
+	header @other Cache-Control "no-cache"
+	header X-App-Version {$APP_VERSION}
+	try_files {path} /index.html
+	file_server
+}

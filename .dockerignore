@@ -1,0 +1,19 @@
+# Build context of deploy/docker/*.Dockerfile (repo root): sources and lockfiles only.
+**/node_modules
+**/dist
+**/out
+**/.DS_Store
+**/*.log
+.git
+.github
+.claude
+.env
+.env.*
+!.env.example
+apps/api/var
+docs
+infra/lima
+infra/redroid-gapps
+infra/stf
+deploy
+!deploy/docker

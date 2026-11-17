@@ -1,0 +1,54 @@
+# Shared, never switched: Postgres, Redis and the reverse proxy (Caddy). Project "${PROJECT}" (deploy.sh).
+# Host networking like the API colours; Postgres and Redis listen on loopback only, Caddy on
+# PROXY_HTTP_PORT/PROXY_HTTPS_PORT (80/443 in production, automatic TLS for SITE_ADDRESS).
+# STF keeps its own compose (infra/stf + deploy/stf.override.yml).
+services:
+  postgres:
+    image: postgres:17.11-alpine3.23   # major must match pg_dump in the API image (postgresql17-client)
+    network_mode: host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=${PG_PORT:-5432}"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cloudphone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy.env}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudphone}
+    volumes: [pg-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p ${PG_PORT:-5432} -U ${POSTGRES_USER:-cloudphone}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.12-alpine3.22
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "${REDIS_PORT:-6379}", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT:-6379}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.11.6-alpine
+    network_mode: host
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in deploy.env}
+      PROXY_HTTP_PORT: ${PROXY_HTTP_PORT:-80}
+      PROXY_HTTPS_PORT: ${PROXY_HTTPS_PORT:-443}
+      CADDY_ADMIN: ${CADDY_ADMIN:-127.0.0.1:2019}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # upstream.caddy is rewritten by deploy.sh (the switch); the directory is mounted so a rename is seen.
+      - ${STATE_DIR:?}/caddy:/etc/caddy/active:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
