@@ -19,6 +19,7 @@ watchEffect(() => {
     '--cp-text-secondary': t.colorTextSecondary,
     '--cp-text-tertiary': t.colorTextTertiary,
     '--cp-text-quaternary': t.colorTextQuaternary,
+    '--cp-border': t.colorBorder,
     '--cp-border-secondary': t.colorBorderSecondary,
     '--cp-fill-alter': t.colorFillAlter,
     '--cp-bg-hover': t.colorBgTextHover,
@@ -28,6 +29,9 @@ watchEffect(() => {
     '--cp-warning': t.colorWarning,
     '--cp-success': t.colorSuccess,
     '--cp-mask': t.colorBgMask,
+    '--cp-shadow': t.boxShadowTertiary,
+    '--cp-radius': `${t.borderRadius}px`,
+    '--cp-radius-lg': `${t.borderRadiusLG}px`,
     // preset palette (shade 6) for graded indicators, e.g. the remote-control latency
     '--cp-green': t['green-6'],
     '--cp-yellow': t['yellow-6'],

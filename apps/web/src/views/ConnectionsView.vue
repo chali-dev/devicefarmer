@@ -6,7 +6,7 @@ import { api, errorText } from '../api/client'
 import type { Instance, InstanceStatus } from '../api/types'
 import { dateLocale } from '../i18n'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
-import StatusTag from '../components/StatusTag.vue'
+import StatusTag from '../components/common/StatusTag.vue'
 import { useInstancesStore } from '../stores/instances'
 
 /**

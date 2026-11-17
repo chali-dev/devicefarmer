@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
-import { message, Modal } from 'ant-design-vue'
+import { ExclamationCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -10,9 +10,13 @@ import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
-  proxyLabel, SOCIAL_ACCOUNT_COLOR, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_COLOR, SOCIAL_LOGIN_STATUSES,
+  proxyLabel, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialGroup, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import ConnectionCell from '../components/social/ConnectionCell.vue'
 import { usePlatformConnections } from '../components/social/connections'
 import PlatformTag from '../components/social/PlatformTag.vue'
@@ -112,7 +116,7 @@ const columns = computed(() => [
   { title: t('social.colAccount'), key: 'account', width: 120 },
   { title: t('social.colChecked'), key: 'checked', width: 160 },
   { title: t('platforms.colConnection'), key: 'connection', width: 190 },
-  { title: '', key: 'ops', width: 210, align: 'right' as const, fixed: 'right' as const },
+  actionColumn(210),
 ])
 
 const groupOptions = computed(() => [
@@ -186,9 +190,8 @@ async function save() {
 }
 
 function remove(a: SocialAccount) {
-  Modal.confirm({
+  confirmDanger({
     title: t('social.confirmDelete', { name: `${platformName(a.platform)} @${a.handle}` }),
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try { await api('DELETE', `/api/social/accounts/${a.id}`); message.success(t('common.deleted')); void load() } catch (e) { message.error(errorText(e)) }
     },
@@ -260,12 +263,9 @@ async function batch(action: 'move-group' | 'add-tags' | 'remove-tags' | 'unlink
       void loadMeta()
     } catch (e) { message.error(errorText(e)) }
   }
-  if (action === 'delete' || action === 'unlink') {
-    Modal.confirm({
-      title: t(action === 'delete' ? 'social.confirmBatchDelete' : 'social.confirmBatchUnlink', { n: ids.length }),
-      okType: action === 'delete' ? 'danger' : 'primary', okText: t('common.ok'), cancelText: t('common.cancel'), onOk: run,
-    })
-  } else await run()
+  if (action === 'delete') confirmDanger({ title: t('social.confirmBatchDelete', { n: ids.length }), onOk: run })
+  else if (action === 'unlink') confirmAction({ title: t('social.confirmBatchUnlink', { n: ids.length }), onOk: run })
+  else await run()
 }
 
 // ---------------------------------------------------------------- groups
@@ -286,9 +286,8 @@ async function renameGroup(g: SocialGroup) {
   try { await api('PUT', `/api/social/groups/${g.id}`, { name }); delete renaming[g.id]; await loadMeta(); void load() } catch (e) { message.error(errorText(e)) }
 }
 function deleteGroup(g: SocialGroup) {
-  Modal.confirm({
+  confirmDanger({
     title: t('social.confirmDeleteGroup', { name: g.name, n: g.count }),
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try { await api('DELETE', `/api/social/groups/${g.id}`); await loadMeta(); void load() } catch (e) { message.error(errorText(e)) }
     },
@@ -304,134 +303,133 @@ const groupColumns = computed(() => [
 </script>
 
 <template>
-  <a-card :title="t('social.title')" size="small">
+  <PageContainer :title="t('social.title')">
     <template #extra>
-      <a-space wrap>
-        <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'social' } })">{{ t('social.limits') }}</a-button>
-        <a-button @click="groupsOpen = true">{{ t('social.groups') }}</a-button>
-        <a-button type="primary" @click="openAdd">{{ t('social.add') }}</a-button>
-      </a-space>
+      <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'social' } })">{{ t('social.limits') }}</a-button>
+      <a-button @click="groupsOpen = true">{{ t('social.groups') }}</a-button>
+      <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
     </template>
 
-    <a-alert v-if="filters.instanceId" type="info" show-icon style="margin-bottom: 12px" :message="t('social.filteredByDevice', { name: deviceName })">
+    <a-alert v-if="filters.instanceId" type="info" show-icon :message="t('social.filteredByDevice', { name: deviceName })">
       <template #action><a-button size="small" type="link" @click="reset">{{ t('common.reset') }}</a-button></template>
     </a-alert>
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
-      <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
-        <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.groupId" :placeholder="t('social.colGroup')" allow-clear style="width: 150px" :options="groupOptions" @change="search" />
-      <a-select v-model:value="filters.loginStatus" :placeholder="t('social.colLogin')" allow-clear style="width: 130px" @change="search">
-        <a-select-option v-for="s in SOCIAL_LOGIN_STATUSES" :key="s" :value="s">{{ loginText(s) }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.accountStatus" :placeholder="t('social.colAccount')" allow-clear style="width: 130px" @change="search">
-        <a-select-option v-for="s in SOCIAL_ACCOUNT_STATUSES" :key="s" :value="s">{{ accountText(s) }}</a-select-option>
-      </a-select>
-      <a-select
-        v-model:value="filters.tags" mode="multiple" :placeholder="t('social.colTags')" allow-clear style="min-width: 150px; max-width: 280px"
-        :options="allTags.map((x) => ({ value: x, label: x }))" @change="search"
-      />
-      <a-select
-        v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('social.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-        :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search"
-      />
-      <a-checkbox v-model:checked="filters.exception" @change="search">
-        <a-tooltip :title="t('social.exceptionHint')">{{ t('social.exceptionOnly') }}</a-tooltip>
-      </a-checkbox>
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-    </a-space>
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @reset="reset" @refresh="load">
+        <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
+        <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.groupId" :placeholder="t('social.colGroup')" allow-clear style="width: 150px" :options="groupOptions" @change="search" />
+        <a-select v-model:value="filters.loginStatus" :placeholder="t('social.colLogin')" allow-clear style="width: 130px" @change="search">
+          <a-select-option v-for="s in SOCIAL_LOGIN_STATUSES" :key="s" :value="s">{{ loginText(s) }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.accountStatus" :placeholder="t('social.colAccount')" allow-clear style="width: 130px" @change="search">
+          <a-select-option v-for="s in SOCIAL_ACCOUNT_STATUSES" :key="s" :value="s">{{ accountText(s) }}</a-select-option>
+        </a-select>
+        <a-select
+          v-model:value="filters.tags" mode="multiple" :placeholder="t('social.colTags')" allow-clear style="min-width: 150px; max-width: 280px"
+          :options="allTags.map((x) => ({ value: x, label: x }))" @change="search"
+        />
+        <a-select
+          v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('social.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search"
+        />
+        <a-checkbox v-model:checked="filters.exception" @change="search">
+          <a-tooltip :title="t('social.exceptionHint')">{{ t('social.exceptionOnly') }}</a-tooltip>
+        </a-checkbox>
+      </SearchBar>
 
-    <a-space v-if="selectedKeys.length" wrap class="batch-bar">
-      <span>{{ t('social.selected', { n: selectedKeys.length }) }}</span>
-      <a-tooltip :title="batchOwner ? undefined : t('social.batchGroupOneOwner')">
-        <a-select v-model:value="batchGroup" :disabled="!batchOwner" :placeholder="t('social.moveTo')" size="small" style="width: 140px" :options="batchGroupOptions" />
-      </a-tooltip>
-      <a-button size="small" :disabled="!batchGroup" @click="batch('move-group')">{{ t('social.moveGroup') }}</a-button>
-      <a-select
-        v-model:value="batchTags" mode="tags" size="small" :placeholder="t('social.colTags')" style="min-width: 160px"
-        :options="allTags.map((x) => ({ value: x, label: x }))"
-      />
-      <a-button size="small" :disabled="!batchTags.length" @click="batch('add-tags')">{{ t('social.addTags') }}</a-button>
-      <a-button size="small" :disabled="!batchTags.length" @click="batch('remove-tags')">{{ t('social.removeTags') }}</a-button>
-      <a-button size="small" @click="batch('unlink')">{{ t('social.unlink') }}</a-button>
-      <a-button size="small" danger @click="batch('delete')">{{ t('common.delete') }}</a-button>
-    </a-space>
+      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
+        <span>{{ t('social.selected', { n: selectedKeys.length }) }}</span>
+        <a-tooltip :title="batchOwner ? undefined : t('social.batchGroupOneOwner')">
+          <a-select v-model:value="batchGroup" :disabled="!batchOwner" :placeholder="t('social.moveTo')" size="small" style="width: 140px" :options="batchGroupOptions" />
+        </a-tooltip>
+        <a-button size="small" :disabled="!batchGroup" @click="batch('move-group')">{{ t('social.moveGroup') }}</a-button>
+        <a-select
+          v-model:value="batchTags" mode="tags" size="small" :placeholder="t('social.colTags')" style="min-width: 160px"
+          :options="allTags.map((x) => ({ value: x, label: x }))"
+        />
+        <a-button size="small" :disabled="!batchTags.length" @click="batch('add-tags')">{{ t('social.addTags') }}</a-button>
+        <a-button size="small" :disabled="!batchTags.length" @click="batch('remove-tags')">{{ t('social.removeTags') }}</a-button>
+        <a-button size="small" @click="batch('unlink')">{{ t('social.unlink') }}</a-button>
+        <a-button size="small" danger @click="batch('delete')">{{ t('common.delete') }}</a-button>
+      </a-space>
 
-    <a-table
-      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1790 }"
-      :pagination="{ current: page.current, pageSize: page.pageSize, total, size: 'small', showSizeChanger: true, showTotal: (n: number) => t('social.total', { n }) }"
-      :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
-      @change="onTableChange"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformName(record.platform)" /></template>
-        <template v-else-if="column.key === 'handle'">
-          <a v-if="record.profileUrl" :href="record.profileUrl" target="_blank" rel="noopener noreferrer">@{{ record.handle }}</a>
-          <span v-else>@{{ record.handle }}</span>
-          <div v-if="record.displayName" class="muted small">{{ record.displayName }}</div>
-          <div v-if="record.notes" class="muted small"><a-typography-text :ellipsis="{ tooltip: record.notes }" :content="record.notes" style="max-width: 180px" class="muted" /></div>
-        </template>
-        <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-        <template v-else-if="column.key === 'group'">{{ record.groupName ?? '—' }}</template>
-        <template v-else-if="column.key === 'tags'">
-          <a-tag v-for="tg in record.tags" :key="tg" style="margin-bottom: 2px">{{ tg }}</a-tag>
-          <span v-if="!record.tags.length" class="muted">—</span>
-        </template>
-        <template v-else-if="column.key === 'device'">
-          <template v-if="record.instance">
-            <router-link v-if="record.instance.accessible" :to="`/instances/${record.instance.id}`">{{ record.instance.name }}</router-link>
-            <a-tooltip v-else :title="t('social.noDeviceAccess')"><span class="muted">{{ record.instance.name }}</span></a-tooltip>
+      <a-table
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1790 }"
+        :pagination="pagination({ current: page.current, pageSize: page.pageSize, total, totalText: (n) => t('social.total', { n }) })"
+        :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
+        @change="onTableChange"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformName(record.platform)" /></template>
+          <template v-else-if="column.key === 'handle'">
+            <a v-if="record.profileUrl" :href="record.profileUrl" target="_blank" rel="noopener noreferrer">@{{ record.handle }}</a>
+            <span v-else>@{{ record.handle }}</span>
+            <div v-if="record.displayName" class="muted small">{{ record.displayName }}</div>
+            <div v-if="record.notes" class="muted small"><a-typography-text :ellipsis="{ tooltip: record.notes }" :content="record.notes" style="max-width: 180px" class="muted" /></div>
           </template>
-          <span v-else class="muted">{{ t('social.notLinked') }}</span>
-        </template>
-        <template v-else-if="column.key === 'proxy'">
-          <template v-if="record.proxy">
-            <div>{{ proxyLabel(record.proxy) }}</div>
-            <div class="muted small">{{ [record.proxy.country, record.proxy.city].filter(Boolean).join(' · ') || `${record.proxy.host}:${record.proxy.port}` }}</div>
+          <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+          <template v-else-if="column.key === 'group'">{{ record.groupName ?? '—' }}</template>
+          <template v-else-if="column.key === 'tags'">
+            <a-tag v-for="tg in record.tags" :key="tg" style="margin-bottom: 2px">{{ tg }}</a-tag>
+            <span v-if="!record.tags.length" class="muted">—</span>
           </template>
-          <a-tooltip v-else-if="record.instance" :title="t('social.proxyDirectHint')"><span class="muted">{{ t('social.proxyDirect') }}</span></a-tooltip>
-          <span v-else class="muted">—</span>
+          <template v-else-if="column.key === 'device'">
+            <template v-if="record.instance">
+              <router-link v-if="record.instance.accessible" :to="`/instances/${record.instance.id}`">{{ record.instance.name }}</router-link>
+              <a-tooltip v-else :title="t('social.noDeviceAccess')"><span class="muted">{{ record.instance.name }}</span></a-tooltip>
+            </template>
+            <span v-else class="muted">{{ t('social.notLinked') }}</span>
+          </template>
+          <template v-else-if="column.key === 'proxy'">
+            <template v-if="record.proxy">
+              <div>{{ proxyLabel(record.proxy) }}</div>
+              <div class="muted small">{{ [record.proxy.country, record.proxy.city].filter(Boolean).join(' · ') || `${record.proxy.host}:${record.proxy.port}` }}</div>
+            </template>
+            <a-tooltip v-else-if="record.instance" :title="t('social.proxyDirectHint')"><span class="muted">{{ t('social.proxyDirect') }}</span></a-tooltip>
+            <span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'login'">
+            <StatusTag kind="socialLogin" :status="record.loginStatus" />
+          </template>
+          <template v-else-if="column.key === 'account'">
+            <StatusTag kind="socialAccount" :status="record.accountStatus" />
+            <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'checked'">{{ fmt(record.lastCheckedAt) }}</template>
+          <template v-else-if="column.key === 'connection'">
+            <ConnectionCell
+              :account-id="record.id" :label="`${platformName(record.platform)} @${record.handle}`" :platform="conns.platforms.value.find((p) => p.id === record.platform)"
+              :connection="conns.byAccount.value.get(record.id)" @changed="load"
+            />
+          </template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">
+                <a-button type="link" size="small" :disabled="!record.instance?.accessible" @click="router.push(`/instances/${record.instance.id}`)">{{ t('social.openDevice') }}</a-button>
+              </a-tooltip>
+              <a-button type="link" size="small" @click="openCheck(record as SocialAccount)">{{ t('social.check') }}</a-button>
+              <a-dropdown>
+                <a-button type="link" size="small">{{ t('social.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
+                    <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
+                    <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
+          </template>
         </template>
-        <template v-else-if="column.key === 'login'">
-          <a-tag :color="SOCIAL_LOGIN_COLOR[record.loginStatus as SocialLoginStatus]">{{ loginText(record.loginStatus) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'account'">
-          <a-tag :color="SOCIAL_ACCOUNT_COLOR[record.accountStatus as SocialAccountStatus]">{{ accountText(record.accountStatus) }}</a-tag>
-          <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'checked'">{{ fmt(record.lastCheckedAt) }}</template>
-        <template v-else-if="column.key === 'connection'">
-          <ConnectionCell
-            :account-id="record.id" :label="`${platformName(record.platform)} @${record.handle}`" :platform="conns.platforms.value.find((p) => p.id === record.platform)"
-            :connection="conns.byAccount.value.get(record.id)" @changed="load"
-          />
-        </template>
-        <template v-else-if="column.key === 'ops'">
-          <a-space :size="0">
-            <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">
-              <a-button type="link" size="small" :disabled="!record.instance?.accessible" @click="router.push(`/instances/${record.instance.id}`)">{{ t('social.openDevice') }}</a-button>
-            </a-tooltip>
-            <a-button type="link" size="small" @click="openCheck(record as SocialAccount)">{{ t('social.check') }}</a-button>
-            <a-dropdown>
-              <a-button type="link" size="small">{{ t('social.more') }}</a-button>
-              <template #overlay>
-                <a-menu>
-                  <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
-                  <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
-                  <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 
   <!-- create / edit -->
-  <a-drawer v-model:open="editOpen" :title="editing ? t('social.edit') : t('social.add')" width="520" destroy-on-close>
+  <a-drawer v-model:open="editOpen" :title="editing ? t('social.edit') : t('social.add')" :width="DRAWER_WIDTH.md" destroy-on-close>
     <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
       <a-row :gutter="12">
         <a-col :span="12">
@@ -487,10 +485,8 @@ const groupColumns = computed(() => [
       <div class="muted small">{{ t('social.noPasswords') }}</div>
     </a-form>
     <template #footer>
-      <a-space style="float: right">
-        <a-button @click="editOpen = false">{{ t('common.cancel') }}</a-button>
-        <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
-      </a-space>
+      <a-button @click="editOpen = false">{{ t('common.cancel') }}</a-button>
+      <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
     </template>
   </a-drawer>
 
@@ -516,7 +512,7 @@ const groupColumns = computed(() => [
   </a-modal>
 
   <!-- logs -->
-  <a-drawer v-model:open="logOpen" :title="t('social.logsTitle', { name: logFor ? `${platformName(logFor.platform)} @${logFor.handle}` : '' })" width="480">
+  <a-drawer v-model:open="logOpen" :title="t('social.logsTitle', { name: logFor ? `${platformName(logFor.platform)} @${logFor.handle}` : '' })" :width="DRAWER_WIDTH.md">
     <a-spin :spinning="logLoading">
       <a-empty v-if="!logLoading && !logs.length" />
       <a-timeline>
@@ -537,7 +533,7 @@ const groupColumns = computed(() => [
   </a-drawer>
 
   <!-- groups -->
-  <a-modal v-model:open="groupsOpen" :title="t('social.groups')" :footer="null" :width="560">
+  <a-modal v-model:open="groupsOpen" :title="t('social.groups')" :footer="null" :width="MODAL_WIDTH.md">
     <a-space wrap style="margin-bottom: 12px">
       <a-input v-model:value="newGroup.name" :placeholder="t('social.groupName')" :maxlength="50" style="width: 200px" @press-enter="addGroup" />
       <a-select
@@ -546,7 +542,7 @@ const groupColumns = computed(() => [
       />
       <a-button type="primary" :disabled="!newGroup.name.trim()" @click="addGroup">{{ t('common.create') }}</a-button>
     </a-space>
-    <a-table :data-source="groups" :columns="groupColumns" row-key="id" size="small" :pagination="{ pageSize: 10, hideOnSinglePage: true, size: 'small' }">
+    <a-table :data-source="groups" :columns="groupColumns" row-key="id" size="small" :pagination="pagination({ defaultPageSize: 10, hideOnSinglePage: true, size: 'small' })">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <a-input v-if="renaming[record.id] !== undefined" v-model:value="renaming[record.id]" size="small" :maxlength="50" @press-enter="renameGroup(record as SocialGroup)" />
@@ -566,8 +562,6 @@ const groupColumns = computed(() => [
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
-.batch-bar { margin-bottom: 12px; padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
+.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
 </style>

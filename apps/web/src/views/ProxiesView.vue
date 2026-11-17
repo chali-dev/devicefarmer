@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { PlusOutlined, QuestionCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { dateLocale } from '../i18n'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -10,8 +10,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
-  PROXY_KINDS, PROXY_STATUS_COLOR, proxyLabel, type PoolProxy, type ProxyCheck, type ProxyImportResult, type ProxyKind, type ProxyStatus, type ProxyType,
+  PROXY_KINDS, proxyLabel, type PoolProxy, type ProxyCheck, type ProxyImportResult, type ProxyKind, type ProxyStatus, type ProxyType,
 } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -71,7 +75,7 @@ const columns = computed(() => [
   { title: t('proxies.colProvider'), key: 'provider', width: 120 },
   { title: t('proxies.colStatus'), key: 'status', width: 230 },
   { title: t('proxies.colDevice'), key: 'device', width: 140 },
-  { title: '', key: 'ops', width: 190, align: 'right' as const },
+  actionColumn(220),
 ])
 const statusText = (s: ProxyStatus) => t(`proxies.statusText.${s}`)
 const location = (p: PoolProxy) => [p.country, p.region, p.city].filter(Boolean).join(' · ') || '—'
@@ -177,9 +181,8 @@ async function save() {
 
 function remove(p: PoolProxy) {
   if (p.boundInstance) { message.warning(t('proxies.boundNoDelete', { name: p.boundInstance.name })); return }
-  Modal.confirm({
+  confirmDanger({
     title: t('proxies.confirmDelete', { name: proxyLabel(p) }),
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try {
         await api('DELETE', `/api/proxies/${p.id}`)
@@ -235,30 +238,24 @@ async function openUsage(p: PoolProxy) {
 </script>
 
 <template>
-  <div class="proxies-page">
-    <div class="page-head">
-      <div class="head-main">
-        <div class="title-row">
-          <h2 class="page-title">{{ t('proxies.title') }}</h2>
-          <a-popover trigger="click" placement="bottomLeft" :overlay-style="{ maxWidth: '440px' }">
-            <template #title>{{ t('proxies.guideTitle') }}</template>
-            <template #content>
-              <div class="guide">
-                <p v-for="k in PROXY_KINDS" :key="k"><b>{{ t(`proxies.kinds.${k}`) }}</b>：{{ t(`proxies.kindDesc.${k}`) }}</p>
-                <p><b>{{ t('proxies.guideBindTitle') }}</b>：{{ t('proxies.guideBind') }}</p>
-                <p class="muted">{{ t('proxies.checkHint') }}</p>
-              </div>
-            </template>
-            <a-button size="small" type="text" class="guide-btn"><template #icon><QuestionCircleOutlined /></template>{{ t('proxies.guide') }}</a-button>
-          </a-popover>
-        </div>
-        <div class="muted subtitle">{{ t(`proxies.kindDesc.${kind}`) }}</div>
-      </div>
-      <a-space wrap>
-        <a-button @click="openImport">{{ t('proxies.import') }}</a-button>
-        <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('proxies.add') }}</a-button>
-      </a-space>
-    </div>
+  <PageContainer :title="t('proxies.title')" :subtitle="t(`proxies.kindDesc.${kind}`)">
+    <template #title-suffix>
+      <a-popover trigger="click" placement="bottomLeft" :overlay-style="{ maxWidth: '440px' }">
+        <template #title>{{ t('proxies.guideTitle') }}</template>
+        <template #content>
+          <div class="guide">
+            <p v-for="k in PROXY_KINDS" :key="k"><b>{{ t(`proxies.kinds.${k}`) }}</b>：{{ t(`proxies.kindDesc.${k}`) }}</p>
+            <p><b>{{ t('proxies.guideBindTitle') }}</b>：{{ t('proxies.guideBind') }}</p>
+            <p class="muted">{{ t('proxies.checkHint') }}</p>
+          </div>
+        </template>
+        <a-button size="small" type="text" class="guide-btn"><template #icon><QuestionCircleOutlined /></template>{{ t('proxies.guide') }}</a-button>
+      </a-popover>
+    </template>
+    <template #extra>
+      <a-button @click="openImport">{{ t('proxies.import') }}</a-button>
+      <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('proxies.add') }}</a-button>
+    </template>
 
     <a-segmented v-model:value="kind" :options="kindOptions" class="kind-tabs" @change="switchKind">
       <template #label="{ value, payload }">
@@ -266,9 +263,9 @@ async function openUsage(p: PoolProxy) {
       </template>
     </a-segmented>
 
-    <a-card size="small">
-      <div class="toolbar">
-        <a-input-search v-model:value="filters.q" :placeholder="t('proxies.searchPlaceholder')" allow-clear class="search" @search="load" />
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @reset="reset" @refresh="load">
+        <a-input-search v-model:value="filters.q" :placeholder="t('proxies.searchPlaceholder')" allow-clear style="width: 280px" @search="load" />
         <a-select v-model:value="filters.status" :placeholder="t('proxies.filterStatus')" allow-clear style="width: 130px" @change="load">
           <a-select-option v-for="st in (['ok', 'failed', 'unchecked'] as const)" :key="st" :value="st">{{ statusText(st) }}</a-select-option>
         </a-select>
@@ -277,19 +274,19 @@ async function openUsage(p: PoolProxy) {
           <a-select-option value="bound">{{ t('proxies.bound') }}</a-select-option>
         </a-select>
         <a-input v-model:value="filters.country" :placeholder="t('proxies.filterCountry')" allow-clear style="width: 120px" @press-enter="load" />
-        <a-button @click="reset">{{ t('common.reset') }}</a-button>
-        <a-tooltip :title="t('common.refresh')"><a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template></a-button></a-tooltip>
-        <a-tooltip :title="t('proxies.checkBatchHint')">
-          <a-button :loading="batchChecking" :disabled="!items.length" @click="checkBatch">
-            {{ t('proxies.checkBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
-          </a-button>
-        </a-tooltip>
-        <span class="muted small summary">{{ t('proxies.summary', summary) }}</span>
-      </div>
+        <template #actions>
+          <span class="muted small">{{ t('proxies.summary', summary) }}</span>
+          <a-tooltip :title="t('proxies.checkBatchHint')">
+            <a-button :loading="batchChecking" :disabled="!items.length" @click="checkBatch">
+              {{ t('proxies.checkBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
+            </a-button>
+          </a-tooltip>
+        </template>
+      </SearchBar>
 
       <a-table
-        :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1310 }"
-        :pagination="{ pageSize: 50, size: 'small', hideOnSinglePage: true, showSizeChanger: false }"
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1340 }"
+        :pagination="pagination({ defaultPageSize: 50 })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
       >
         <template #emptyText>
@@ -312,7 +309,7 @@ async function openUsage(p: PoolProxy) {
           <template v-else-if="column.key === 'status'">
             <a-space :size="4" wrap>
               <a-tooltip :title="record.lastCheck?.error || undefined">
-                <a-tag :color="PROXY_STATUS_COLOR[record.status as ProxyStatus]">{{ statusText(record.status) }}</a-tag>
+                <StatusTag kind="proxy" :status="record.status" />
               </a-tooltip>
               <span v-if="record.lastCheck?.egressIp" class="mono small">{{ record.lastCheck.egressIp }}</span>
               <span v-if="record.lastCheck?.latencyMs != null" class="muted small">{{ record.lastCheck.latencyMs }} ms</span>
@@ -335,11 +332,11 @@ async function openUsage(p: PoolProxy) {
           </template>
         </template>
       </a-table>
-      <div class="faint small" style="margin-top: 8px">{{ t('proxies.checkHint') }}</div>
+      <div class="faint small">{{ t('proxies.checkHint') }}</div>
     </a-card>
-  </div>
+  </PageContainer>
 
-  <a-modal v-model:open="editOpen" :title="editing ? t('proxies.edit') : t('proxies.add')" :width="600">
+  <a-modal v-model:open="editOpen" :title="editing ? t('proxies.edit') : t('proxies.add')" :width="MODAL_WIDTH.md">
     <a-form ref="formRef" :model="form" :rules="rules" layout="vertical" class="proxy-form">
       <a-row :gutter="12">
         <a-col :xs="24" :sm="12">
@@ -409,7 +406,7 @@ async function openUsage(p: PoolProxy) {
     </template>
   </a-modal>
 
-  <a-modal v-model:open="importOpen" :title="t('proxies.importTitle')" :width="760" :footer="null">
+  <a-modal v-model:open="importOpen" :title="t('proxies.importTitle')" :width="MODAL_WIDTH.lg" :footer="null">
     <div class="muted small">{{ t('proxies.importFormats') }}</div>
     <ul class="formats mono small"><li v-for="f in IMPORT_FORMATS" :key="f">{{ f }}</li></ul>
     <a-textarea v-model:value="imp.text" :auto-size="{ minRows: 6, maxRows: 14 }" class="mono" spellcheck="false" autocomplete="off" @change="preview = null" />
@@ -443,7 +440,7 @@ async function openUsage(p: PoolProxy) {
     </a-space>
     <a-table
       v-if="preview" :data-source="preview.results" :columns="importColumns" row-key="line" size="small" style="margin-top: 12px"
-      :pagination="{ pageSize: 20, size: 'small', hideOnSinglePage: true }"
+      :pagination="pagination({ size: 'small', hideOnSinglePage: true })"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'input'"><span class="mono small">{{ record.input }}</span></template>
@@ -455,7 +452,7 @@ async function openUsage(p: PoolProxy) {
     </a-table>
   </a-modal>
 
-  <a-modal v-model:open="usageOpen" :title="usageFor ? `${t('proxies.usage')} · ${proxyLabel(usageFor)}` : ''" :footer="null" :width="640">
+  <a-modal v-model:open="usageOpen" :title="usageFor ? `${t('proxies.usage')} · ${proxyLabel(usageFor)}` : ''" :footer="null" :width="MODAL_WIDTH.md">
     <a-spin :spinning="!usage">
       <template v-if="usage">
         <p>
@@ -477,25 +474,13 @@ async function openUsage(p: PoolProxy) {
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.faint { color: var(--cp-text-quaternary); }
-.small { font-size: 12px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .formats { margin: 4px 0 8px; padding-left: 18px; color: var(--cp-text-secondary); }
-.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-.head-main { min-width: 0; }
-.title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.page-title { margin: 0; font-size: 20px; font-weight: 600; color: var(--cp-text); }
 .guide-btn { color: var(--cp-text-secondary); }
-.subtitle { margin-top: 2px; }
 .guide p { margin: 0 0 8px; }
 .guide p:last-child { margin-bottom: 0; }
-.kind-tabs { margin-bottom: 12px; max-width: 100%; overflow-x: auto; }
+.kind-tabs { align-self: flex-start; max-width: 100%; overflow-x: auto; }
 .kind-label { display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; }
 .kind-count { min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 12px; line-height: 18px; text-align: center; background: var(--cp-fill-alter); color: var(--cp-text-secondary); }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
-.toolbar .search { width: 300px; max-width: 100%; }
-.summary { margin-left: auto; }
 .more { margin: -8px 0 8px; }
 .more :deep(.ant-collapse-header) { padding-left: 0 !important; color: var(--cp-text-secondary); }
 .more :deep(.ant-collapse-content-box) { padding: 0 !important; }

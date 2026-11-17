@@ -14,7 +14,7 @@ import { dateLocale } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import DevicePlayer from './DevicePlayer.vue'
-import StatusTag from './StatusTag.vue'
+import StatusTag from './common/StatusTag.vue'
 
 /** Slide-in remote control for one cloud phone: screen + side tools on the left, info and actions on the right. */
 type MenuKey = 'start' | 'stop' | 'restart' | 'delete' | 'install' | 'uninstall'

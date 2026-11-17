@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { MobileOutlined, ReloadOutlined, ScheduleOutlined, SendOutlined, TeamOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import {
@@ -10,6 +10,9 @@ import {
 } from '../api/types'
 import { fmtSize } from '../components/media/media'
 import StatLink from '../components/dashboard/StatLink.vue'
+import PageContainer from '../components/common/PageContainer.vue'
+import StatCard from '../components/common/StatCard.vue'
+import { pagination } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import LineChart from '../components/tracked/LineChart.vue'
 import { useAuthStore } from '../stores/auth'
@@ -85,34 +88,50 @@ const userColumns = computed(() => [
   { title: t('dashboard.colAwaiting'), dataIndex: 'awaitingOperator', key: 'awaitingOperator', align: 'right' as const },
   { title: '', key: 'view', width: 90 },
 ])
+/** KPI row on top (Ant Design Pro analysis layout): one headline number per main module, linking to its list. */
+const kpis = computed(() => {
+  const x = w.value
+  const out: { key: string; title: string; value: number; suffix?: string; footer: string; to: string | { path: string; query: Record<string, string> }; icon: typeof MobileOutlined }[] = []
+  if (x.devices) out.push({ key: 'devices', title: t('dashboard.kpi.devices'), value: x.devices.running, suffix: `/ ${x.devices.total}`, icon: MobileOutlined,
+    footer: t('dashboard.devicesOnline', { n: x.devices.online, stopped: x.devices.stopped }), to: '/instances' })
+  if (x.social) out.push({ key: 'social', title: t('dashboard.w.social'), value: x.social.total, icon: TeamOutlined,
+    footer: `${t('dashboard.exceptions')} ${x.social.exceptions} · ${t('dashboard.connConnected')} ${x.social.connections.connected}`, to: '/social' })
+  if (x.publishing) out.push({ key: 'publishing', title: t('dashboard.published7d'), value: x.publishing.published7d, icon: SendOutlined,
+    footer: `${t('dashboard.failed7d')} ${x.publishing.failed7d} · ${t('dashboard.upcoming7d')} ${x.publishing.upcoming7d}`, to: { path: '/publish', query: { tab: 'history', status: 'published' } } })
+  if (x.tasks) out.push({ key: 'tasks', title: t('dashboard.kpi.tasks'), value: x.tasks.last24h.total, icon: ScheduleOutlined,
+    footer: `${taskStatusText('running')} ${x.tasks.last24h.running} · ${taskStatusText('failed')} ${x.tasks.last24h.failed}`, to: '/tasks' })
+  return out
+})
 const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({ top: 0, behavior: 'smooth' }) }
 </script>
 
 <template>
-  <div class="dash">
-    <div class="head">
-      <h2 class="title">{{ t('dashboard.title') }}</h2>
-      <a-space wrap>
-        <a-select
-          v-if="auth.isAdmin" v-model:value="asUser" allow-clear show-search option-filter-prop="label" style="width: 220px"
-          :placeholder="t('dashboard.allUsers')" :options="userOptions"
-        />
-        <span v-if="data" class="muted small">{{ t('dashboard.updatedAt', { at: new Date(data.generatedAt).toLocaleTimeString(dateLocale()) }) }}</span>
-        <a-button size="small" :loading="loading" @click="load"><ReloadOutlined /> {{ t('common.refresh') }}</a-button>
-      </a-space>
-    </div>
-    <a-alert v-if="asUser && data" type="info" show-icon style="margin-bottom: 12px" :message="t('dashboard.viewingAs', { name: data.scope.username })" />
-    <a-alert v-if="error" type="error" show-icon style="margin-bottom: 12px" :message="error" />
+  <PageContainer :title="t('dashboard.title')">
+    <template #extra>
+      <a-select
+        v-if="auth.isAdmin" v-model:value="asUser" allow-clear show-search option-filter-prop="label" style="width: 220px"
+        :placeholder="t('dashboard.allUsers')" :options="userOptions"
+      />
+      <span v-if="data" class="muted small">{{ t('dashboard.updatedAt', { at: new Date(data.generatedAt).toLocaleTimeString(dateLocale()) }) }}</span>
+      <a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}</a-button>
+    </template>
+    <a-alert v-if="asUser && data" type="info" show-icon :message="t('dashboard.viewingAs', { name: data.scope.username })" />
+    <a-alert v-if="error" type="error" show-icon :message="error" />
     <a-alert
-      v-for="(msg, k) in data?.errors ?? {}" :key="k" type="warning" show-icon style="margin-bottom: 12px"
+      v-for="(msg, k) in data?.errors ?? {}" :key="k" type="warning" show-icon
       :message="t('dashboard.widgetFailed', { name: t(`dashboard.w.${k}`) })" :description="msg"
     />
 
     <a-spin :spinning="loading && !data">
+      <a-row v-if="kpis.length" :gutter="[16, 16]" class="kpis">
+        <a-col v-for="k in kpis" :key="k.key" :xs="24" :sm="12" :xl="6">
+          <StatCard :title="k.title" :value="k.value" :suffix="k.suffix" :icon="k.icon" :footer="k.footer" :to="k.to" />
+        </a-col>
+      </a-row>
       <a-row :gutter="[16, 16]">
         <!-- devices -->
         <a-col v-if="w.devices" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.devices')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.devices')" class="card">
             <template #extra><router-link to="/instances">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('devices.total')" :value="w.devices.total" to="/instances" />
@@ -135,7 +154,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- proxy pool (admin) -->
         <a-col v-if="w.proxies" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.proxies')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.proxies')" class="card">
             <template #extra><router-link to="/proxies">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.proxyTotal')" :value="w.proxies.total" to="/proxies" />
@@ -149,7 +168,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- social accounts -->
         <a-col v-if="w.social" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.social')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.social')" class="card">
             <template #extra><router-link to="/social">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.accounts')" :value="w.social.total" to="/social" />
@@ -172,7 +191,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- tracked accounts -->
         <a-col v-if="w.tracked" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.tracked')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.tracked')" class="card">
             <template #extra><router-link to="/tracked">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.accounts')" :value="w.tracked.total" to="/tracked" />
@@ -193,7 +212,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- account analytics (账号分析) -->
         <a-col v-if="w.analytics" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.analytics')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.analytics')" class="card">
             <template #extra><router-link to="/analytics">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('analytics.metrics.followers')" :value="compactNumber(w.analytics.followers)" to="/analytics" />
@@ -213,7 +232,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- task centre -->
         <a-col v-if="w.tasks" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.tasks')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.tasks')" class="card">
             <template #extra><router-link to="/tasks">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="muted small">{{ t('dashboard.last24h', { n: w.tasks.last24h.total }) }}</div>
             <div class="grid3">
@@ -232,7 +251,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- comments & engagement -->
         <a-col v-if="w.comments" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.comments')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.comments')" class="card">
             <template #extra><router-link to="/comments">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.commentsUnread')" :value="w.comments.unread" :to="{ path: '/comments', query: { status: 'new' } }" />
@@ -246,7 +265,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- trending (public chart data) -->
         <a-col v-if="w.trending" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('trending.title')" class="card">
+          <a-card size="small" :bordered="false" :title="t('trending.title')" class="card">
             <template #extra><router-link to="/trending">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="muted small">{{ t('trending.widgetTop', { region: w.trending.region }) }} · {{ fmtTime(w.trending.capturedAt) }}</div>
             <a v-for="x in w.trending.top" :key="x.videoId" :href="x.url" target="_blank" rel="noopener noreferrer" class="row link-row">
@@ -259,7 +278,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- media -->
         <a-col v-if="w.media" :xs="24" :md="12" :xl="8">
-          <a-card size="small" :title="t('dashboard.w.media')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.media')" class="card">
             <template #extra><router-link to="/media">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.mediaPublic')" :value="w.media.public.count" :to="{ path: '/media', query: { tab: 'public' } }" />
@@ -276,7 +295,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- content + publishing -->
         <a-col v-if="w.publishing" :xs="24">
-          <a-card size="small" :title="t('dashboard.w.publishing')" class="card">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.publishing')" class="card">
             <template #extra>
               <a-space>
                 <router-link to="/content">{{ t('nav.content') }}</router-link>
@@ -319,8 +338,8 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
 
         <!-- per-user breakdown (admin) -->
         <a-col v-if="w.perUser && has('perUser')" :xs="24">
-          <a-card size="small" :title="t('dashboard.w.perUser')" class="card">
-            <a-table :data-source="w.perUser.users" :columns="userColumns" row-key="id" size="small" :pagination="w.perUser.users.length > 10 ? { pageSize: 10 } : false" :scroll="{ x: 900 }">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.perUser')" class="card">
+            <a-table :data-source="w.perUser.users" :columns="userColumns" row-key="id" size="small" :pagination="w.perUser.users.length > 10 ? pagination({ defaultPageSize: 10 }) : false" :scroll="{ x: 900 }">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'username'">
                   {{ record.username }}
@@ -336,27 +355,23 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         </a-col>
       </a-row>
     </a-spin>
-  </div>
+  </PageContainer>
 </template>
 
 <style scoped>
-.head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-.title { margin: 0; font-size: 18px; font-weight: 600; color: var(--cp-text); }
+.kpis { margin-bottom: var(--cp-gap); }
 .card { height: 100%; }
 .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 @media (max-width: 480px) { .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .sub { margin-top: 8px; font-size: 12px; }
 .fit { margin-left: 8px; }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
-.nowrap { white-space: nowrap; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .tag-link { color: inherit; }
 .list-title { margin: 12px 0 6px; font-weight: 600; color: var(--cp-text-secondary); font-size: 13px; }
 .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; color: inherit; }
 .link-row { border-radius: 4px; padding: 3px 4px; }
 .link-row:hover { background: var(--cp-bg-hover); }
-.ellipsis { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ellipsis { flex: 1; }
 .gain { color: var(--cp-success); font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>

@@ -11,7 +11,7 @@ import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, t
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
-import StatusTag from '../components/StatusTag.vue'
+import StatusTag from '../components/common/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 

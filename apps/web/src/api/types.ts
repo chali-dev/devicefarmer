@@ -351,7 +351,7 @@ export interface PlatformConnection {
   lastRefreshedAt: string | null
   lastCheckedAt: string | null
 }
-export const CONNECTION_COLOR: Record<PlatformConnectionStatus, string> = { connected: 'green', expired: 'orange', revoked: 'red', error: 'red' }
+export const CONNECTION_COLOR: Record<PlatformConnectionStatus, string> = { connected: 'success', expired: 'warning', revoked: 'error', error: 'error' }
 
 // ---------------------------------------------------------------- content (内容管理) + publish scheduler (定时发布)
 export type ContentStatus = 'draft' | 'ready' | 'scheduled' | 'partially_published' | 'published' | 'failed' | 'archived'
@@ -473,7 +473,7 @@ export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'sche
 export const COMMENT_STATUS_COLOR: Record<CommentStatus, string> = { new: 'blue', read: 'default', replied: 'success', hidden: 'default', ignored: 'default' }
 export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
-  sent: 'success', failed: 'error', rejected: 'red', cancelled: 'default',
+  sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default',
 }
 export interface CommentRules { requireApproval: boolean; duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
 export interface CommentAccount {

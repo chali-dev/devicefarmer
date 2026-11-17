@@ -51,6 +51,8 @@ const en: Messages = {
     skipped: 'Skipped {n}: {reasons}',
     listSep: ', ',
     reasonSep: '; ',
+    total: '{n} total',
+    more: 'More',
   },
   prefs: {
     language: 'Language',
@@ -85,6 +87,8 @@ const en: Messages = {
     profile: 'Profile',
     changePassword: 'Change password',
     logout: 'Log out',
+    collapseMenu: 'Collapse menu',
+    expandMenu: 'Expand menu',
   },
   profile: {
     displayName: 'Display name',
@@ -1550,6 +1554,7 @@ const en: Messages = {
     updatedAt: 'Updated {at}',
     viewAll: 'View all',
     widgetFailed: 'Could not load "{name}"',
+    kpi: { devices: 'Running cloud phones', tasks: 'Tasks in the last 24 h' },
     w: {
       devices: 'Devices',
       proxies: 'Proxy pool',

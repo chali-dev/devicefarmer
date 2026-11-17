@@ -8,7 +8,7 @@ import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type Insta
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
-import StatusTag from '../components/StatusTag.vue'
+import StatusTag from '../components/common/StatusTag.vue'
 import DeviceSocialCard from '../components/social/DeviceSocialCard.vue'
 import { useInstancesStore } from '../stores/instances'
 import { useAuthStore } from '../stores/auth'

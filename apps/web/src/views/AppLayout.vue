@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
-  AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
-  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined, ApiOutlined, DatabaseOutlined, BookOutlined, RiseOutlined,
-  CloudOutlined, ShareAltOutlined, ReadOutlined, FireOutlined,
+  CheckOutlined, CloudOutlined, DashboardOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined, WarningOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -17,6 +15,7 @@ import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
+import { MENU_GROUPS, useMenuLocation } from '../components/common/menu'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
@@ -24,41 +23,29 @@ const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 
-/** Flips the effective theme; until the first click the preference stays 'system' and follows the OS. */
+/** Flips the effective theme (light by default; a saved 'system' choice keeps following the OS until clicked). */
 const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('prefs.toDark')))
 function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
-/**
- * Sidebar: dashboard on top, then the product's four modules. An item key is also its route path
- * and its `nav.<key>` label; admin-only items follow the route's `meta.admin`.
- */
-const MENU_GROUPS: { key: 'devices' | 'matrix' | 'content' | 'system'; icon: Component; items: { key: string; icon: Component }[] }[] = [
-  { key: 'devices', icon: CloudOutlined, items: [
-    { key: 'instances', icon: MobileOutlined }, { key: 'connections', icon: ApiOutlined },
-    { key: 'library', icon: AppstoreOutlined }, { key: 'proxies', icon: ClusterOutlined },
-  ] },
-  { key: 'matrix', icon: ShareAltOutlined, items: [
-    { key: 'social', icon: TeamOutlined }, { key: 'analytics', icon: RiseOutlined },
-    { key: 'tracked', icon: EyeOutlined }, { key: 'comments', icon: CommentOutlined },
-  ] },
-  { key: 'content', icon: ReadOutlined, items: [
-    { key: 'media', icon: PictureOutlined }, { key: 'scripts', icon: BookOutlined }, { key: 'trending', icon: FireOutlined },
-    { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
-  ] },
-  { key: 'system', icon: ControlOutlined, items: [
-    { key: 'users', icon: UserOutlined }, { key: 'permissions', icon: SafetyOutlined }, { key: 'audit', icon: FileSearchOutlined },
-    { key: 'system', icon: DatabaseOutlined }, { key: 'settings', icon: SettingOutlined }, { key: 'tasks', icon: ScheduleOutlined },
-  ] },
-]
 /** Groups with only the items this user may open; a group left empty is dropped (no bare header). */
 const visibleGroups = computed(() => MENU_GROUPS
   .map((g) => ({ ...g, items: g.items.filter((it) => auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) }))
   .filter((g) => g.items.length > 0))
-const MENU_KEYS = ['dashboard', ...MENU_GROUPS.flatMap((g) => g.items.map((it) => it.key))]
-const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
+const loc = useMenuLocation()
+const selected = computed(() => [loc.itemKey.value])
 /** All module groups start open (sub-menu keys are prefixed: 'content' and 'system' are also item keys). */
 const openKeys = ref<string[]>(MENU_GROUPS.map((g) => `group-${g.key}`))
+
+/** Breadcrumb from the menu: module › page (› device name on a device's own page). */
+const crumbs = computed(() => {
+  const out: { label: string; to?: string }[] = []
+  if (loc.group.value) out.push({ label: t(`nav.group.${loc.group.value.key}`) })
+  const sub = route.name === 'instance' ? store.byId.get(String(route.params.id))?.name ?? String(route.params.id).slice(0, 8) : null
+  out.push({ label: loc.title.value, to: sub ? `/${loc.itemKey.value}` : undefined })
+  if (sub) out.push({ label: sub })
+  return out
+})
 
 onMounted(() => { store.connect(); void store.refresh() })
 onBeforeUnmount(() => store.disconnect())
@@ -151,10 +138,13 @@ async function savePassword() {
 </script>
 
 <template>
-  <a-layout style="min-height: 100vh">
-    <a-layout-sider v-model:collapsed="collapsed" collapsible breakpoint="lg" :collapsed-width="64" theme="dark">
-      <div class="brand">{{ collapsed ? t('app.short') : t('app.title') }}</div>
-      <a-menu v-model:open-keys="openKeys" theme="dark" mode="inline" :inline-indent="16" :selected-keys="selected">
+  <a-layout class="shell">
+    <a-layout-sider v-model:collapsed="collapsed" :trigger="null" collapsible breakpoint="lg" :collapsed-width="64" :width="220" theme="light" class="sider">
+      <div class="brand" :title="t('app.title')">
+        <span class="logo"><CloudOutlined /></span>
+        <span v-if="!collapsed" class="brand-name">{{ t('app.title') }}</span>
+      </div>
+      <a-menu v-model:open-keys="openKeys" mode="inline" :inline-indent="16" :selected-keys="selected" class="side-menu">
         <a-menu-item key="dashboard" @click="router.push('/dashboard')">
           <DashboardOutlined />
           <span>{{ t('nav.dashboard') }}</span>
@@ -169,8 +159,18 @@ async function savePassword() {
         </a-sub-menu>
       </a-menu>
     </a-layout-sider>
-    <a-layout>
+    <a-layout class="main">
       <a-layout-header class="header">
+        <a-button type="text" class="pref-btn" :aria-label="collapsed ? t('header.expandMenu') : t('header.collapseMenu')" @click="collapsed = !collapsed">
+          <MenuUnfoldOutlined v-if="collapsed" /><MenuFoldOutlined v-else />
+        </a-button>
+        <a-breadcrumb class="crumbs">
+          <a-breadcrumb-item v-for="(c, i) in crumbs" :key="i">
+            <router-link v-if="c.to" :to="c.to">{{ c.label }}</router-link>
+            <template v-else>{{ c.label }}</template>
+          </a-breadcrumb-item>
+        </a-breadcrumb>
+        <span class="spacer" />
         <a-tooltip v-if="!store.connected" :title="t('header.disconnected')">
           <WarningOutlined class="conn-lost" role="status" :aria-label="t('header.disconnected')" />
         </a-tooltip>
@@ -245,27 +245,38 @@ async function savePassword() {
 </template>
 
 <style scoped>
-.brand {
-  height: 64px; display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 600; font-size: 16px; white-space: nowrap; overflow: hidden; padding: 0 12px;
+.shell { min-height: 100vh; }
+/* Fixed sider and header (Ant Design Pro): only the content scrolls. */
+.sider { position: sticky; top: 0; height: 100vh; overflow: auto; scrollbar-width: thin; border-inline-end: 1px solid var(--cp-border-secondary); z-index: 11; }
+.sider :deep(.ant-menu-inline), .sider :deep(.ant-menu-vertical) { border-inline-end: none; }
+.brand { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 20px; overflow: hidden; white-space: nowrap; }
+.sider.ant-layout-sider-collapsed .brand { justify-content: center; padding: 0; }
+.logo {
+  flex: none; width: 28px; height: 28px; border-radius: var(--cp-radius); display: inline-flex; align-items: center; justify-content: center;
+  background: var(--cp-primary); color: var(--cp-bg-container); font-size: 16px;
 }
+.brand-name { font-weight: 600; font-size: 16px; color: var(--cp-text); overflow: hidden; text-overflow: ellipsis; }
+.main { min-width: 0; }
 .header {
-  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
-  padding: 0 24px; background: var(--cp-bg-container); white-space: nowrap;
+  position: sticky; top: 0; z-index: 10; height: 56px; line-height: 56px;
+  display: flex; align-items: center; gap: 8px; padding: 0 16px 0 8px; white-space: nowrap;
+  background: var(--cp-bg-container); border-bottom: 1px solid var(--cp-border-secondary);
 }
+.crumbs { min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }
+.spacer { flex: 1; }
 .user-trigger {
   display: inline-flex; align-items: center; gap: 8px; color: inherit; cursor: pointer;
-  padding: 0 8px; border-radius: 6px; line-height: 32px;
+  padding: 0 8px; border-radius: var(--cp-radius); line-height: 32px;
 }
 .user-trigger:hover { background: var(--cp-bg-hover); }
 .pref-btn { color: inherit; }
 .conn-lost { color: var(--cp-warning); font-size: 16px; }
 .avatar { background: var(--cp-primary); flex: none; }
 .who { font-size: 13px; }
-.content { padding: 24px; }
+.content { padding: var(--cp-page-padding); min-width: 0; }
 @media (max-width: 640px) {
-  .header { padding: 0 12px; }
+  .header { padding: 0 8px 0 4px; gap: 4px; }
   .who { display: none; }
-  .content { padding: 12px; }
+  .crumbs :deep(li:not(:last-child)) { display: none; }
 }
 </style>

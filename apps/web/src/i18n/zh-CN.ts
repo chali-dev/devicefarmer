@@ -52,6 +52,8 @@ const zhCN = {
     skipped: '跳过 {n} 个：{reasons}',
     listSep: '、',
     reasonSep: '，',
+    total: '共 {n} 条',
+    more: '更多',
   },
   prefs: {
     language: '语言',
@@ -86,6 +88,8 @@ const zhCN = {
     profile: '个人信息',
     changePassword: '修改密码',
     logout: '退出登录',
+    collapseMenu: '收起菜单',
+    expandMenu: '展开菜单',
   },
   profile: {
     displayName: '显示名称',
@@ -1552,6 +1556,7 @@ const zhCN = {
     updatedAt: '更新于 {at}',
     viewAll: '查看全部',
     widgetFailed: '「{name}」统计加载失败',
+    kpi: { devices: '运行中云机', tasks: '24 小时内任务' },
     w: {
       devices: '设备',
       proxies: '代理池',
