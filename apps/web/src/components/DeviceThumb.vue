@@ -75,7 +75,7 @@ watch(() => props.paused, (p) => { if (!p) schedule() })
 </template>
 
 <style scoped>
-.thumb { position: relative; width: 100%; background: var(--cp-fill-alter); border-radius: 10px; overflow: hidden; }
+.thumb { position: relative; width: 100%; background: var(--cp-fill-alter); border-radius: var(--cp-radius-lg); overflow: hidden; }
 img { width: 100%; height: 100%; object-fit: cover; display: block; user-select: none; }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; color: var(--cp-text-tertiary); font-size: 12px; padding: 8px; text-align: center; }
 </style>
