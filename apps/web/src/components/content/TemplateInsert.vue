@@ -22,8 +22,10 @@ const persona = ref<string | undefined>()
 const picked = ref<string | undefined>()
 const replace = ref(false)
 
-const personas = computed(() => [...new Set(templates.value.map((x) => x.persona).filter((p): p is string => !!p))].sort())
-const shown = computed(() => templates.value.filter((x) => !persona.value || x.persona === persona.value))
+/** Personas used by the visible post templates (the template list already carries them). */
+const personas = computed(() => [...new Map(templates.value.flatMap((x) => (x.persona ? [[x.persona.id, x.persona] as const] : []))).values()]
+  .sort((a, b) => a.name.localeCompare(b.name)))
+const shown = computed(() => templates.value.filter((x) => !persona.value || x.personaId === persona.value))
 const current = computed(() => templates.value.find((x) => x.id === picked.value))
 watch(persona, () => { if (current.value && !shown.value.includes(current.value)) picked.value = undefined })
 
@@ -47,13 +49,13 @@ function ok() {
       <a-row :gutter="12">
         <a-col :xs="24" :sm="10">
           <a-form-item :label="t('scripts.persona')">
-            <a-select v-model:value="persona" allow-clear :placeholder="t('common.all')" :options="personas.map((p) => ({ value: p, label: p }))" />
+            <a-select v-model:value="persona" allow-clear :placeholder="t('common.all')" :options="personas.map((p) => ({ value: p.id, label: p.name, title: p.description ?? undefined }))" />
           </a-form-item>
         </a-col>
         <a-col :xs="24" :sm="14">
           <a-form-item :label="t('scripts.pick')">
             <a-select v-model:value="picked" show-search option-filter-prop="label" :loading="loading" :not-found-content="t('scripts.noTemplates')"
-              :options="shown.map((x) => ({ value: x.id, label: x.persona ? `${x.name} · ${x.persona}` : x.name }))" />
+              :options="shown.map((x) => ({ value: x.id, label: x.persona ? `${x.name} · ${x.persona.name}` : x.name }))" />
           </a-form-item>
         </a-col>
       </a-row>

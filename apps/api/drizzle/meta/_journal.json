@@ -176,6 +176,13 @@
       "when": 1794917957394,
       "tag": "0024_publish_post_type",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794919626056,
+      "tag": "0025_personas",
+      "breakpoints": true
     }
   ]
 }

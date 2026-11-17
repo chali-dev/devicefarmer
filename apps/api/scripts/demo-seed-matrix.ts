@@ -5,7 +5,7 @@
  * - 社交号管理: 16 Instagram social accounts (admin + demo-user) in 5 groups, tags, notes, varied statuses.
  * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them.
  * - 追踪账号: 10 tracked Instagram accounts (categories, tags, favourites, weekly snapshots, posts).
- * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates.
+ * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
  * Then verifies filters, RBAC/isolation, logs, batch actions (throw-away `demotmp.*` accounts), exact
  * analytics numbers, tracked deltas, the reply review state machine and in-app notifications.
  * Nothing is sent to Instagram: manual comments always hand replies over to an operator (awaiting_operator).
@@ -194,10 +194,15 @@ function snapshots(t: TrackedSpec) {
 }
 const POST_TITLES = ['清晨的第一缕光 ☀️', '这周最受欢迎的一组', '幕后花絮 | Behind the scenes', '收藏级攻略，建议保存', '粉丝问答合集 Q&A', '新系列预告 Coming soon'];
 
+/** 人设 of the reply templates: shared templates may only use a public persona. */
+const PERSONAS = [
+  { name: 'demo · 品牌客服', owner: 'admin' as Owner, scope: 'public', description: '礼貌、简短，引导私信' },
+  { name: 'demo · 健身教练', owner: 'user' as Owner, scope: 'mine', description: null },
+];
 const TEMPLATES = [
-  { name: 'demo · 感谢支持', text: '谢谢你的喜欢！我们会继续分享更多内容 🙏', shared: true, tags: ['thanks'] },
-  { name: 'demo · 引导私信', text: '感谢关注～具体信息请私信我们，我们会尽快回复你。', shared: true, tags: ['dm'] },
-  { name: 'demo · 健身答疑', text: '好问题！建议从每周 3 次、每次 20 分钟开始，循序渐进。', shared: false, tags: ['fitness'] },
+  { name: 'demo · 感谢支持', text: '谢谢你的喜欢！我们会继续分享更多内容 🙏', shared: true, tags: ['thanks'], persona: 'demo · 品牌客服' },
+  { name: 'demo · 引导私信', text: '感谢关注～具体信息请私信我们，我们会尽快回复你。', shared: true, tags: ['dm'], persona: 'demo · 品牌客服' },
+  { name: 'demo · 健身答疑', text: '好问题！建议从每周 3 次、每次 20 分钟开始，循序渐进。', shared: false, tags: ['fitness'], persona: 'demo · 健身教练' },
 ];
 
 const COMMENTERS = ['Alice Chen', 'Marco Rossi', 'Yuki Tanaka', 'Sofia García', 'Liam O’Brien', 'Priya Nair', '王小雨', 'Jonas Müller', 'Chloé Martin', '李想'];
@@ -243,12 +248,16 @@ if (CLEAN) {
   const tpls = ((await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]).filter((t) => TEMPLATES.some((s) => s.name === t.name) || t.name.startsWith('demotmp'));
   for (const t of tpls) await must('DELETE', `/api/comment-templates/${t.id}`, ADMIN);
   console.log(`deleted ${tpls.length} comment templates`);
+  const pers = [...(await must('GET', '/api/personas?scope=public', ADMIN)).personas, ...(await must('GET', `/api/personas?scope=all-users&ownerId=${DU.id}`, ADMIN)).personas]
+    .filter((x: any) => PERSONAS.some((s) => s.name === x.name && (s.scope === 'public' ? x.ownerType === 'public' : x.ownerId === DU.id)));
+  for (const x of pers) await must('DELETE', `/api/personas/${x.id}`, ADMIN);
+  console.log(`deleted ${pers.length} personas`);
   console.log(`kept user ${DEMO_USER} (shared with the other demo seeders) and in-app notifications (no delete endpoint)`);
   process.exit(0);
 }
 
 // ---------------------------------------------------------------- seed: groups
-const counts = { groups: 0, accounts: 0, statDays: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0 };
+const counts = { groups: 0, accounts: 0, statDays: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0, personas: 0 };
 const groupId = new Map<string, string>();
 for (const o of ['admin', 'user'] as Owner[]) {
   const existing = (await must('GET', '/api/social/groups', tokenOf(o))).groups as any[];
@@ -325,12 +334,24 @@ for (const t of TRACKED) {
 }
 
 // ---------------------------------------------------------------- seed: templates
+const personaId = new Map<string, string>();
+for (const p of PERSONAS) {
+  const list = (await must('GET', `/api/personas?scope=${p.scope}`, tokenOf(p.owner))).personas as any[];
+  let row = list.find((x) => x.name === p.name);
+  if (!row) { row = (await must('POST', '/api/personas', tokenOf(p.owner), { scope: p.scope, name: p.name, description: p.description })).persona; counts.personas++; }
+  personaId.set(p.name, row.id);
+}
 const tplByName = new Map<string, any>();
 for (const t of (await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]) tplByName.set(t.name, t);
 for (const t of TEMPLATES) {
-  if (tplByName.has(t.name)) continue;
   const tok = t.shared ? ADMIN : DU.token;
-  tplByName.set(t.name, (await must('POST', '/api/comment-templates', tok, { name: t.name, text: t.text, kind: 'comment', tags: t.tags, ...(t.shared ? { shared: true } : {}) })).template);
+  const pid = personaId.get(t.persona)!;
+  const have = tplByName.get(t.name);
+  if (have) {
+    if (have.persona?.id !== pid) tplByName.set(t.name, (await must('PUT', `/api/comment-templates/${have.id}`, tok, { personaId: pid })).template);
+    continue;
+  }
+  tplByName.set(t.name, (await must('POST', '/api/comment-templates', tok, { name: t.name, text: t.text, kind: 'comment', tags: t.tags, personaId: pid, ...(t.shared ? { shared: true } : {}) })).template);
   counts.templates++;
 }
 
@@ -821,6 +842,10 @@ try {
     const tl = await must('GET', '/api/comment-templates', DU.token);
     check('templates: user sees shared + own, cannot edit shared or create shared (403)', ut.status === 403 && us.status === 403
       && (tl.templates as any[]).some((t) => t.name === 'demo · 感谢支持' && t.shared && !t.writable) && (tl.templates as any[]).some((t) => t.name === 'demo · 健身答疑' && t.writable));
+    check('templates: persona shown (public on shared, demo-user\'s on private)', (tl.templates as any[]).some((t) => t.name === 'demo · 感谢支持' && t.persona?.name === 'demo · 品牌客服' && t.persona.ownerType === 'public')
+      && (tl.templates as any[]).some((t) => t.name === 'demo · 健身答疑' && t.persona?.name === 'demo · 健身教练' && t.persona.ownerId === DU.id));
+    const badP = await http('PUT', `/api/comment-templates/${tplShared.id}`, ADMIN, { personaId: personaId.get('demo · 健身教练') });
+    check('templates: a shared template cannot use a personal persona (400 persona.not_allowed)', badP.status === 400 && codeOf(badP) === 'persona.not_allowed');
     const tlA = await must('GET', '/api/comment-templates?q=demo', ADMIN);
     check('templates: admin sees demo-user\'s private template too', (tlA.templates as any[]).some((t) => t.name === 'demo · 健身答疑' && t.userId === DU.id));
     const noReason = await http('POST', `/api/comment-replies/${r.id}/reject`, ADMIN, {});

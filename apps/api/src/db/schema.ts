@@ -808,21 +808,48 @@ export const commentLogs = pgTable('comment_logs', {
 ]);
 
 /**
+ * 人设 (personas) of the script library, scoped like media categories: public (owner_id null, admin-managed, usable by
+ * everyone) or personal (owner_id, private to that user; admins see all). Name unique per owner, case-insensitive.
+ */
+export const personas = pgTable('personas', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  /** Short tone/background note. */
+  description: text('description'),
+  sort: integer('sort').notNull().default(0),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('personas_owner_name').on(sql`coalesce(${t.ownerId}, '00000000-0000-0000-0000-000000000000'::uuid)`, sql`lower(${t.name})`),
+  ownerCheck('personas_owner_chk'),
+]);
+export type Persona = typeof personas.$inferSelect;
+
+/**
  * Saved templates (话术库): reply templates (`kind` comment) and post/caption templates (`kind` post), with an optional
- * persona (人设) category and lowercase tags. Private (user_id) or shared (user_id null, admin-managed). A person picks and edits one.
+ * persona (人设, `persona_id`) and lowercase tags. Private (user_id) or shared (user_id null, admin-managed). A person picks and edits one.
+ * A shared template may only use a public persona; a private one a public persona or one of its owner's.
  */
 export const commentTemplates = pgTable('comment_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   kind: text('kind', { enum: ['comment', 'post'] }).notNull().default('comment'),
+  /**
+   * Legacy free-text persona, replaced by `persona_id` (persona-data-migration.ts). No longer read; the code only clears it
+   * when it changes a template's persona (so the migration never re-links it). Drop in a later release.
+   */
   persona: text('persona'),
+  personaId: uuid('persona_id').references(() => personas.id, { onDelete: 'set null' }),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   name: text('name').notNull(),
   text: text('text').notNull(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.persona)]);
+}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.persona), index('comment_templates_persona_idx').on(t.personaId)]);
 
 /**
  * 趋势热点: one stored chart per (source, region, category, slot). Slots are `intervalHours` wide (UTC); the
