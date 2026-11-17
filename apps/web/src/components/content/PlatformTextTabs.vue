@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { platformIcon, platformName } from '../social/platformMeta'
+import PlatformIcon from '../social/PlatformIcon.vue'
+import { platformName } from '../social/platformMeta'
 
 /**
  * One text box per tab (平台文案): a tab per platform (or per target account), each with that platform's limit.
@@ -24,7 +25,7 @@ const active = defineModel<string>('active', { required: true })
   <a-tabs v-model:active-key="active" size="small" class="text-tabs">
     <a-tab-pane v-for="tb in tabs" :key="tb.key">
       <template #tab>
-        <span class="tab-label"><component :is="platformIcon(tb.platform ?? '')" v-if="tb.platform" />{{ tb.label ?? platformName(tb.platform ?? '') }}</span>
+        <span class="tab-label"><PlatformIcon v-if="tb.platform" :platform="tb.platform" />{{ tb.label ?? platformName(tb.platform ?? '') }}</span>
       </template>
       <a-textarea v-if="tb.text !== false" v-model:value="values[tb.key]" :rows="rows ?? 6" :maxlength="tb.max" show-count :placeholder="tb.placeholder" />
       <slot :tab="tb" />

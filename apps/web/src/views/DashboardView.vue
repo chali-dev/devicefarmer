@@ -202,7 +202,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             <div class="list-title">{{ t('dashboard.topGainers') }}</div>
             <div v-if="!w.tracked.topGainers.length" class="muted small">{{ t('dashboard.noGainers') }}</div>
             <div v-for="g in w.tracked.topGainers" :key="g.id" class="row">
-              <PlatformTag :platform="g.platform" />
+              <PlatformTag :platform="g.platform" icon-only />
               <span class="ellipsis">{{ g.displayName || trackedHandle(g) }}</span>
               <span class="gain">+{{ compactNumber(g.gain) }}</span>
               <span class="muted small">{{ compactNumber(g.followers) }}</span>
@@ -222,7 +222,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             </div>
             <LineChart :points="w.analytics.trend.map((d) => ({ t: dayTs(d.day), v: d.followersGained ?? 0 }))" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('analytics.perDay.followersGained')" />
             <div v-for="g in w.analytics.top" :key="g.id" class="row">
-              <PlatformTag :platform="g.platform" />
+              <PlatformTag :platform="g.platform" icon-only />
               <span class="ellipsis">{{ g.displayName || `@${g.handle}` }}</span>
               <span class="gain">+{{ compactNumber(g.gain) }}</span>
               <span class="muted small">{{ compactNumber(g.followers) }}</span>
@@ -321,7 +321,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
                 <div v-if="!w.publishing.next.length" class="muted small">{{ t('dashboard.nothingScheduled') }}</div>
                 <router-link v-for="x in w.publishing.next" :key="x.id" :to="{ path: '/publish', query: { tab: 'queue', task: x.id } }" class="row link-row">
                   <span class="muted small nowrap">{{ fmtTime(x.scheduledAt) }}</span>
-                  <PlatformTag :platform="x.platform" />
+                  <PlatformTag :platform="x.platform" icon-only />
                   <span class="ellipsis">{{ x.title || '—' }}<template v-if="x.handle"> · @{{ x.handle }}</template></span>
                 </router-link>
               </a-col>

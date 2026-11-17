@@ -18,6 +18,7 @@ import StatusTag from '../components/common/StatusTag.vue'
 import { statusColor } from '../components/common/status'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
+import { platformName } from '../components/social/platformMeta'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -283,8 +284,11 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
       </a-tabs>
 
       <SearchBar @reset="reset">
-        <a-select v-model:value="filters.accountId" :placeholder="t('comments.allAccounts')" allow-clear show-search option-filter-prop="label" style="width: 240px"
-          :options="accounts.map((a) => ({ value: a.id, label: `${a.platform} @${a.handle}${a.newCount ? ` (${a.newCount})` : ''}` }))" />
+        <a-select v-model:value="filters.accountId" :placeholder="t('comments.allAccounts')" allow-clear show-search option-filter-prop="label" style="width: 240px">
+          <a-select-option v-for="a in accounts" :key="a.id" :value="a.id" :label="`${platformName(a.platform)} @${a.handle}`">
+            <PlatformTag :platform="a.platform" :name="`@${a.handle}${a.newCount ? ` (${a.newCount})` : ''}`" />
+          </a-select-option>
+        </a-select>
         <a-select v-if="filters.accountId && tab === 'comments'" v-model:value="filters.postId" :placeholder="t('comments.allPosts')" allow-clear style="width: 220px" @change="search">
           <a-select-option v-for="p in posts" :key="p.postId" :value="p.postId">{{ p.title ?? p.postId }} ({{ p.n }})</a-select-option>
         </a-select>

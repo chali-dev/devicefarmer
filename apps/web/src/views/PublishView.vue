@@ -184,7 +184,7 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
       <SearchBar :loading="tab === 'calendar' ? calLoading : loading" @reset="reset" @refresh="load">
         <a-input-search v-model:value="filters.q" :placeholder="t('publish.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('publish.platform')" allow-clear style="width: 130px" @change="search">
-          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.name" /></a-select-option>
         </a-select>
         <a-select v-if="postTypes.length > 1" v-model:value="filters.postType" :placeholder="t('publish.postType')" allow-clear style="width: 120px" @change="search">
           <a-select-option v-for="x in postTypes" :key="x" :value="x">{{ typeText(x) }}</a-select-option>
@@ -215,7 +215,7 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
               <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="{ today: d.isSame(dayjs(), 'day') }">
                 <div class="day-head">{{ d.format('ddd MM-DD') }} <span v-if="dayItems(d).length" class="muted small">· {{ dayItems(d).length }}</span></div>
                 <div v-for="x in dayItems(d)" :key="x.id" class="ev" role="button" tabindex="0" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">
-                  <div class="ev-time">{{ when(x).format('HH:mm') }} <PlatformTag :platform="x.platform" /> <PostTypeTag :type="x.postType" /></div>
+                  <div class="ev-time">{{ when(x).format('HH:mm') }} <PlatformTag :platform="x.platform" icon-only /> <PostTypeTag :type="x.postType" /></div>
                   <div class="ellipsis">@{{ x.account?.handle }}</div>
                   <div class="ellipsis muted">{{ x.content?.title }}</div>
                   <StatusTag kind="publish" :status="x.status" />
