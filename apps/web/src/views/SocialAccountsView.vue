@@ -349,7 +349,7 @@ const groupColumns = computed(() => [
       <SearchBar :loading="loading" @reset="reset" @refresh="load">
         <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
-          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.name" /></a-select-option>
         </a-select>
         <a-select v-model:value="filters.groupId" :placeholder="t('social.colGroup')" allow-clear style="width: 150px" :options="groupOptions" @change="search" />
         <a-select v-model:value="filters.personaId" :placeholder="t('social.colPersona')" allow-clear show-search option-filter-prop="label" style="width: 150px"
@@ -473,7 +473,9 @@ const groupColumns = computed(() => [
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item :label="t('social.colPlatform')" name="platform">
-            <a-select v-model:value="form.platform" :disabled="!!editing" :options="platforms.map((p) => ({ value: p.id, label: p.name }))" />
+            <a-select v-model:value="form.platform" :disabled="!!editing">
+              <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.name" /></a-select-option>
+            </a-select>
           </a-form-item>
         </a-col>
         <a-col v-if="auth.isAdmin && !editing" :span="12">

@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { SocialAccount, SocialGroup } from '../../api/types'
 import { usePlatformsStore } from '../../stores/platforms'
-import { platformIcon } from '../social/platformMeta'
+import PlatformIcon from '../social/PlatformIcon.vue'
 
 /**
  * 发布目标 of a content: the owner's accounts on enabled platforms, picked one by one or added in bulk by 分组 or 人设.
@@ -65,7 +65,7 @@ const unknownIds = computed(() => ids.value.filter((id) => !accounts.value.some(
       option-filter-prop="search" allow-clear style="width: 100%">
       <a-select-option v-for="a in accounts" :key="a.id" :value="a.id" :label="`@${a.handle}`" :search="`${a.handle} ${a.displayName ?? ''} ${a.instance?.name ?? ''}`">
         <span class="opt">
-          <component :is="platformIcon(a.platform)" />
+          <PlatformIcon :platform="a.platform" labelled />
           <span><span :class="{ muted: !a.instance }">{{ a.instance?.name ?? t('content.targets.noDevice') }}</span> · @{{ a.handle }}</span>
           <span v-if="a.personaName" class="muted small">· {{ a.personaName }}</span>
         </span>

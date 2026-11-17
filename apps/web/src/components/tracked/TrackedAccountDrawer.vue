@@ -11,6 +11,7 @@ import {
 } from '../../api/types'
 import LineChart from './LineChart.vue'
 import StatusTag from '../common/StatusTag.vue'
+import PlatformTag from '../social/PlatformTag.vue'
 import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
 /** Detail of one tracked account: follower history chart + table, public posts, manual entry, refresh. */
@@ -171,7 +172,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
         <a-avatar v-else :size="56">{{ (acc.displayName || acc.handle).charAt(0).toUpperCase() }}</a-avatar>
         <div class="who">
           <a-space wrap :size="6">
-            <a-tag>{{ platform?.label ?? acc.platform }}</a-tag>
+            <PlatformTag :platform="acc.platform" :name="platform?.label" />
             <a :href="acc.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(acc) }}</a>
             <StatusTag kind="tracked" :status="acc.status" />
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>

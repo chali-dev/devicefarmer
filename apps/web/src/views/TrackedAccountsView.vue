@@ -17,6 +17,7 @@ import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
+import PlatformTag from '../components/social/PlatformTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 
 /** 追踪账号: external public accounts the user observes (official API or manual data only). */
@@ -240,7 +241,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
       <SearchBar :loading="loading" @reset="reset" @refresh="load()">
         <a-input-search v-model:value="filters.q" :placeholder="t('tracked.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
-          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.label }}</a-select-option>
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.label" /></a-select-option>
         </a-select>
         <a-select v-model:value="filters.category" :placeholder="t('tracked.colCategory')" allow-clear show-search style="width: 150px" @change="search">
           <a-select-option value="none">{{ t('tracked.uncategorized') }}</a-select-option>
@@ -284,7 +285,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
               </div>
             </div>
           </template>
-          <template v-else-if="column.key === 'platform'"><a-tag>{{ platformLabel(record.platform) }}</a-tag></template>
+          <template v-else-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformLabel(record.platform)" /></template>
           <template v-else-if="column.key === 'category'">
             <div>{{ record.category || '—' }}</div>
             <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
@@ -348,13 +349,13 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
       <a-form-item :label="t('tracked.input')" :validate-status="previewError ? 'error' : undefined" :help="previewError || undefined">
         <a-input-group compact style="display: flex">
           <a-select v-model:value="addForm.platform" :placeholder="t('tracked.autoPlatform')" allow-clear style="width: 140px" @change="parseInput">
-            <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.label }}</a-select-option>
+            <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.label" /></a-select-option>
           </a-select>
           <a-input v-model:value="addForm.input" :maxlength="500" :placeholder="ADD_HINT" style="flex: 1" @blur="parseInput" @press-enter="parseInput" />
         </a-input-group>
       </a-form-item>
       <div v-if="preview" class="preview small">
-        {{ t('tracked.willTrack') }} <a-tag>{{ platformLabel(preview.platform) }}</a-tag>
+        {{ t('tracked.willTrack') }} <PlatformTag :platform="preview.platform" :name="platformLabel(preview.platform)" />
         <a :href="preview.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(preview) }}</a>
       </div>
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="addForm.displayName" :maxlength="200" :placeholder="t('common.optional')" /></a-form-item>
