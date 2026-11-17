@@ -160,7 +160,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
     <template v-if="acc" #extra>
       <a-space>
         <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
-        <a-button type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
+        <a-button v-if="acc.dataMode !== 'manual_only'" type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
           :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
           {{ t('tracked.refreshNow') }}
         </a-button>

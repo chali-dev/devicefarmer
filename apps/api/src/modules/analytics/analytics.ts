@@ -6,7 +6,9 @@ import { ACCOUNT_REF_TYPE } from '../platforms/check.js';
 import { appOptions } from '../platforms/credentials.js';
 import { connectionFor } from '../platforms/connections.js';
 import { adapterById, enabledAdapters } from '../platforms/index.js';
-import { apiAccountStats } from '../platforms/service.js';
+import { apiAccountStats, apiOwnPosts, platformCapabilities } from '../platforms/service.js';
+import type { OwnPost } from '../platforms/types.js';
+import type { SocialAccount } from '../../db/schema.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 
 /**
@@ -94,11 +96,96 @@ export async function refreshAccountStats(accountId: string, ctx: Pick<TaskConte
     }
   });
   await ctx.log('info', 'stats stored', { day: today, followers: s.followers, activityDays: s.days.length });
+  const posts = await refreshPosts(account, ctx);
   if (s.missing.length) {
     await ctx.log('warn', 'scope missing: re-authorise the account to get these metrics', { missing: s.missing, scopes: s.missingScopes });
-    return { outcome: 'partial', code: 'analytics.scope_missing', day: today, missing: s.missing, missingScopes: s.missingScopes };
+    return { outcome: 'partial', code: 'analytics.scope_missing', day: today, missing: s.missing, missingScopes: s.missingScopes, posts };
   }
-  return { outcome: 'refreshed', day: today, activityDays: s.days.length };
+  return { outcome: 'refreshed', day: today, activityDays: s.days.length, posts };
+}
+
+/** Platform pages of own posts read per refresh (Instagram: 25 per page → the newest 100 posts). */
+export const POST_PAGES = 4;
+
+/**
+ * Own posts with per-post counters (capability accountPosts), after the account stats of the same run.
+ * A failure here is logged with its code and reported in the result; the stats already stored stay.
+ */
+async function refreshPosts(account: SocialAccount,ctx: Pick<TaskContext, 'signal' | 'log'>): Promise<Record<string, unknown> | null> {
+  if (!(await platformCapabilities(account.platform))?.accountPosts) return null;
+  try {
+    const posts = await apiOwnPosts(account, POST_PAGES, { signal: ctx.signal, log: (m, d) => ctx.log('info', m, d) });
+    const r = await upsertAccountPosts(account.id, account.platform, posts);
+    await ctx.log('info', 'posts stored', r);
+    return r;
+  } catch (err) {
+    if (ctx.signal.aborted) throw err;
+    const e = err as { code?: string; message?: string };
+    await ctx.log('warn', 'posts could not be fetched, stats kept', { code: e.code ?? 'analytics.posts_failed' });
+    return { error: e.code ?? 'analytics.posts_failed' };
+  }
+}
+
+const sp = schema.socialAccountPosts;
+/**
+ * Upserts own posts of an account: new ones are inserted (first_seen_at = now); existing ones get the
+ * current counters/caption/permalink (values the platform did not return keep what the row had) and
+ * fetched_at, first_seen_at stays. Idempotent.
+ */
+export async function upsertAccountPosts(accountId: string, platform: string, posts: OwnPost[], now = new Date()): Promise<{ fetched: number; inserted: number; updated: number }> {
+  let inserted = 0; let updated = 0;
+  for (const p of posts) {
+    const [row] = await db.insert(sp).values({
+      socialAccountId: accountId, platform, externalId: p.id, mediaType: p.mediaType, productType: p.productType, caption: p.caption,
+      permalink: p.permalink, publishedAt: p.publishedAt ? new Date(p.publishedAt) : null, likes: p.likes, comments: p.comments,
+      firstSeenAt: now, fetchedAt: now,
+    }).onConflictDoUpdate({
+      target: [sp.socialAccountId, sp.externalId],
+      set: {
+        mediaType: sql`coalesce(excluded.media_type, ${sp.mediaType})`, productType: sql`coalesce(excluded.product_type, ${sp.productType})`,
+        caption: sql`coalesce(excluded.caption, ${sp.caption})`, permalink: sql`coalesce(excluded.permalink, ${sp.permalink})`,
+        publishedAt: sql`coalesce(excluded.published_at, ${sp.publishedAt})`,
+        likes: sql`coalesce(excluded.likes, ${sp.likes})`, comments: sql`coalesce(excluded.comments, ${sp.comments})`, fetchedAt: sql`excluded.fetched_at`,
+      },
+    }).returning({ inserted: sql<boolean>`xmax = 0` });
+    if (row?.inserted) inserted++; else updated++;
+  }
+  return { fetched: posts.length, inserted, updated };
+}
+
+export const POST_SORTS = ['published', 'likes', 'comments'] as const;
+/**
+ * Stored own posts of one account (newest first, or by likes/comments), with the publish task that
+ * published it when one matches (same account + external id, status published).
+ */
+export async function accountPosts(accountId: string, o: { limit: number; offset: number; sort: typeof POST_SORTS[number] }) {
+  const order = o.sort === 'likes' ? sql`p.likes desc nulls last, p.published_at desc nulls last`
+    : o.sort === 'comments' ? sql`p.comments desc nulls last, p.published_at desc nulls last` : sql`p.published_at desc nulls last, p.first_seen_at desc`;
+  const [rows, [agg]] = await Promise.all([
+    db.execute<Record<string, unknown>>(sql`
+      select p.id, p.external_id, p.media_type, p.product_type, p.caption, p.permalink, p.published_at, p.likes, p.comments,
+        p.first_seen_at, p.fetched_at, pt.id as publish_task_id, pt.content_id, pt.title as publish_title
+      from social_account_posts p
+      left join lateral (select x.id, x.content_id, x.title from publish_tasks x
+        where x.account_id = p.social_account_id and x.external_id = p.external_id and x.status = 'published'
+        order by x.published_at desc nulls last limit 1) pt on true
+      where p.social_account_id = ${accountId}
+      order by ${order}
+      limit ${o.limit} offset ${o.offset}`),
+    db.execute<{ total: number; likes: number | null; comments: number | null; last: Date | null }>(sql`
+      select count(*)::int as total, sum(likes)::float8 as likes, sum(comments)::float8 as comments, max(fetched_at) as last
+      from social_account_posts where social_account_id = ${accountId}`),
+  ]);
+  const iso = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+  return {
+    total: agg?.total ?? 0, likes: numOrNull(agg?.likes), comments: numOrNull(agg?.comments), lastFetchedAt: iso(agg?.last),
+    posts: [...rows].map((r) => ({
+      id: String(r.id), externalId: String(r.external_id), mediaType: (r.media_type as string | null) ?? null, productType: (r.product_type as string | null) ?? null,
+      caption: (r.caption as string | null) ?? null, permalink: (r.permalink as string | null) ?? null, publishedAt: iso(r.published_at),
+      likes: numOrNull(r.likes), comments: numOrNull(r.comments), firstSeenAt: iso(r.first_seen_at)!, fetchedAt: iso(r.fetched_at)!,
+      publish: r.publish_task_id ? { taskId: String(r.publish_task_id), contentId: String(r.content_id), title: (r.publish_title as string | null) ?? null } : null,
+    })),
+  };
 }
 
 // Device-less, one attempt: the next daily run (or "refresh now") is the retry.
@@ -283,7 +370,8 @@ registerDashboardWidget('analytics', async (ctx) => {
   return {
     accounts: s.totals.accounts, withData: s.totals.withData, followers: s.totals.followers,
     followersGained7d: s.totals.followersGained, views7d: s.totals.views, shares7d: s.totals.shares,
-    trend: s.days.map((d) => ({ day: d.day, followersGained: d.followersGained, views: d.views, shares: d.shares })),
+    likes7d: s.totals.likes, comments7d: s.totals.comments,
+    trend: s.days.map((d) => ({ day: d.day, followersGained: d.followersGained, views: d.views, shares: d.shares, likes: d.likes, comments: d.comments })),
     top: s.accounts.filter((a) => (a.range.followersGained ?? 0) > 0)
       .sort((a, b) => b.range.followersGained! - a.range.followersGained! || a.handle.localeCompare(b.handle)).slice(0, 5)
       .map((a) => ({ id: a.id, platform: a.platform, handle: a.handle, displayName: a.displayName, followers: a.latest?.followers ?? null, gain: a.range.followersGained })),

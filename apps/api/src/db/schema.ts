@@ -702,6 +702,33 @@ export const publishTasks = pgTable('publish_tasks', {
   index('publish_tasks_media_idx').using('gin', t.mediaIds),
 ]);
 
+/**
+ * Posts of the operator's OWN social accounts as the official API lists them (账号分析 → 帖子): per-post
+ * likes/comments counters, refreshed by the account-stats task (capability `accountPosts`; Instagram
+ * /me/media today). Unique per account + platform post id; an upsert keeps first_seen_at and updates the
+ * mutable fields. Linked to publish_tasks at read time (account + external_id), no FK.
+ */
+export const socialAccountPosts = pgTable('social_account_posts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  socialAccountId: uuid('social_account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  platform: text('platform').notNull(),
+  externalId: text('external_id').notNull(),
+  /** Platform media type (Instagram IMAGE / VIDEO / CAROUSEL_ALBUM). */
+  mediaType: text('media_type'),
+  /** Platform surface (Instagram FEED / REELS / STORY). */
+  productType: text('product_type'),
+  caption: text('caption'),
+  permalink: text('permalink'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  likes: bigint('likes', { mode: 'number' }),
+  comments: bigint('comments', { mode: 'number' }),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('social_account_posts_account_external').on(t.socialAccountId, t.externalId),
+  index('social_account_posts_account_published_idx').on(t.socialAccountId, t.publishedAt),
+]);
+
 /** Business log of a publish task: distribution, every pre-run check, method hand-over, operator actions. */
 export const publishLogs = pgTable('publish_logs', {
   id: uuid('id').primaryKey().defaultRandom(),

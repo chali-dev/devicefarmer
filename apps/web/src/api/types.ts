@@ -620,10 +620,20 @@ export interface AnalyticsDay extends Partial<AnalyticsSums> {
   followers?: number | null; following?: number | null; posts?: number | null; totalViews?: number | null; totalLikes?: number | null
 }
 export interface AnalyticsSeries { account: AnalyticsAccount; apiStats: boolean; from: string; to: string; days: AnalyticsDay[] }
+/** One of the account's own posts (GET /api/analytics/accounts/:id/posts; Instagram /me/media via the stats refresh). */
+export interface AnalyticsPost {
+  id: string; externalId: string; mediaType: string | null; productType: string | null; caption: string | null; permalink: string | null
+  publishedAt: string | null; likes: number | null; comments: number | null; firstSeenAt: string; fetchedAt: string
+  /** The publish task that published it (same account + platform post id). */
+  publish: { taskId: string; contentId: string; title: string | null } | null
+}
+export interface AnalyticsPosts {
+  apiPosts: boolean; total: number; likes: number | null; comments: number | null; lastFetchedAt: string | null; posts: AnalyticsPost[]
+}
 export interface DashboardAnalytics {
   accounts: number; withData: number; followers: number
-  followersGained7d: number | null; views7d: number | null; shares7d: number | null
-  trend: { day: string; followersGained: number | null; views: number | null; shares: number | null }[]
+  followersGained7d: number | null; views7d: number | null; shares7d: number | null; likes7d: number | null; comments7d: number | null
+  trend: ({ day: string } & AnalyticsSums)[]
   top: { id: string; platform: string; handle: string; displayName: string | null; followers: number | null; gain: number | null }[]
 }
 /** Local-midnight timestamp of a YYYY-MM-DD day (chart x values; the day itself is UTC on the server). */

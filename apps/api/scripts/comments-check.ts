@@ -17,7 +17,8 @@ import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { sealSecret } from '../src/lib/secret-box.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
-import '../src/modules/comments/comments.js'; // registers comment-sync / comment-reply (idempotency check below)
+import { storeSyncedComments } from '../src/modules/comments/comments.js'; // also registers comment-sync / comment-reply (idempotency check below)
+import { collectComments, IG_SYNC_LIMITS } from '../src/modules/platforms/instagram.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -138,8 +139,60 @@ try {
   r = await http('GET', `/api/tasks?type=comment-sync`, A);
   check('user A sees the sync tasks in the task centre', r.status === 200 && r.body.tasks.filter((x: any) => [ya, ia].includes(x.refId)).length >= 2, r.text.slice(0, 200));
 
+  // ---------------------------------------------------------------- Instagram paging + like-count updates
+  // No real Instagram account exists here, so the Graph responses are recorded shapes from the official
+  // reference (IG User /media, IG Media /comments: data + paging.cursors.after + paging.next, newest first).
+  // The real collector (paging, cursor stop, caps) and the real store (DB upsert) run on them.
+  {
+    const ts = (hm: string) => `2026-11-16T${hm}:00+0000`;
+    const graph = (likes1: number, withNew: boolean): Record<string, any> => ({
+      'u/media:': { data: [{ id: 'm1', comments_count: 3 }, { id: 'm2', comments_count: 0 }], paging: { cursors: { after: 'mp2' }, next: 'https://graph.instagram.com/u/media?after=mp2&access_token=X' } },
+      'u/media:mp2': { data: [{ id: 'm3', comments_count: 1 }], paging: { cursors: { after: 'end' } } },
+      'm1/comments:': { data: [
+        ...(withNew ? [{ id: 'c0', text: 'new one', timestamp: ts('10:10'), username: 'z', like_count: 0 }] : []),
+        { id: 'c1', text: 'hello', timestamp: ts('10:05'), username: 'x', like_count: likes1, replies: { data: [{ id: 'r1', text: 'thanks', timestamp: ts('10:06'), username: 'me', like_count: 1 }] } },
+        { id: 'c2', text: 'second', timestamp: ts('10:03'), username: 'y', like_count: 0 },
+      ], paging: { cursors: { after: 'cp2' }, next: 'https://graph.instagram.com/m1/comments?after=cp2' } },
+      'm1/comments:cp2': { data: [{ id: 'c3', text: 'third', timestamp: ts('10:01'), username: 'y' }], paging: { cursors: { after: 'x' } } },
+      'm3/comments:': { data: [{ id: 'c4', text: 'on m3', timestamp: ts('09:00'), username: 'w', like_count: 5 }] },
+    });
+    const run = async (pages: Record<string, any>, cursor: string | null, limits = IG_SYNC_LIMITS) => {
+      const calls: string[] = [];
+      const get = async <X>(path: string, params: Record<string, string>) => { calls.push(`${path}:${params.after ?? ''}`); return (pages[`${path}:${params.after ?? ''}`] ?? {}) as X; };
+      return { ...(await collectComments(get, 'u', cursor, limits)), calls };
+    };
+    const first = await run(graph(2, false), null);
+    check('IG collect (no cursor): follows media + comment paging.next, skips posts without comments, returns replies, cursor = newest time',
+      first.calls.join(',') === 'u/media:,m1/comments:,m1/comments:cp2,u/media:mp2,m3/comments:' && first.comments.map((c) => c.id).join(',') === 'c1,r1,c2,c3,c4'
+        && first.comments[1]!.parentId === 'c1' && first.comments[0]!.replyCount === 1 && first.nextCursor === new Date(ts('10:06')).toISOString() && first.info?.truncated === false,
+      JSON.stringify({ calls: first.calls, ids: first.comments.map((c) => c.id), cur: first.nextCursor }));
+    const second = await run(graph(9, true), first.nextCursor);
+    check('IG collect (cursor): stops a post\'s comment pages at the page that reaches the cursor, returns already-known comments too (for counts), cursor advances',
+      !second.calls.includes('m1/comments:cp2') && second.comments.some((c) => c.id === 'c1' && c.likeCount === 9) && second.comments[0]!.id === 'c0'
+        && second.nextCursor === new Date(ts('10:10')).toISOString(), JSON.stringify({ calls: second.calls, cur: second.nextCursor }));
+    const capped = await run(graph(2, true), first.nextCursor, { ...IG_SYNC_LIMITS, MAX_CALLS: 2 });
+    check('IG collect: MAX_CALLS cap stops the run (truncated) and keeps the old cursor (no new comment skipped next time)',
+      capped.calls.length === 2 && capped.info?.truncated === true && capped.nextCursor === first.nextCursor, JSON.stringify({ calls: capped.calls, cur: capped.nextCursor }));
+    const backlog = await run(graph(2, false), null, { ...IG_SYNC_LIMITS, COMMENT_PAGES: 1 });
+    check('IG collect: per-post page cap leaves only the older backlog (backlog flag), cursor still advances',
+      !backlog.calls.includes('m1/comments:cp2') && backlog.info?.backlog === true && backlog.info?.truncated === false && backlog.nextCursor === first.nextCursor);
+
+    const [iaRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, ia));
+    const s1 = await storeSyncedComments(iaRow!, first.comments);
+    const s1b = await storeSyncedComments(iaRow!, first.comments);
+    const [c1Before] = await db.select().from(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.externalId, 'c1')));
+    const s2 = await storeSyncedComments(iaRow!, second.comments);
+    const [c1] = await db.select().from(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.externalId, 'c1')));
+    const igRows = await db.select().from(schema.comments).where(eq(schema.comments.accountId, ia));
+    check('store: 5 inserted, same again → 0 new / 0 updated (idempotent)', s1.inserted === 5 && s1.updated === 0 && s1b.inserted === 0 && s1b.updated === 0, JSON.stringify({ s1, s1b }));
+    check('store: next sync inserts the new comment and updates like_count of the stored one (2 → 9), no duplicates, fetched_at moves',
+      s2.inserted === 1 && s2.updated === 1 && c1?.likeCount === 9 && c1.replyCount === 1 && c1.id === c1Before!.id && c1.fetchedAt > c1Before!.fetchedAt
+        && igRows.length === 6 && igRows.every((c) => c.source === 'api' && c.platform === 'instagram'), JSON.stringify({ s2, likes: c1?.likeCount, n: igRows.length }));
+    await db.delete(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.source, 'api')));
+  }
+
   // ---------------------------------------------------------------- manual comment entry
-  const mc = async (token: string, accountId: string, i: number | string, extra: Record<string, unknown> = {}) =>
+  const mc =async (token: string, accountId: string, i: number | string, extra: Record<string, unknown> = {}) =>
     http('POST', '/api/comments', token, { accountId, text: `comment ${i} ${tag}`, authorName: `Viewer ${i}`, authorHandle: `@viewer${i}`, externalPostId: 'vid-1', ...extra });
   r = await http('POST', '/api/comments', A, { accountId: ta, text: 'x' });
   check('manual entry without author → 400', r.status === 400);

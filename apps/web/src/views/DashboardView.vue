@@ -214,13 +214,15 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         <a-col v-if="w.analytics" :xs="24" :md="12" :xl="8">
           <a-card size="small" :bordered="false" :title="t('dashboard.w.analytics')" class="card">
             <template #extra><router-link to="/analytics">{{ t('dashboard.viewAll') }}</router-link></template>
-            <div class="grid4">
+            <div class="grid3">
               <StatLink :label="t('analytics.metrics.followers')" :value="compactNumber(w.analytics.followers)" to="/analytics" />
               <StatLink :label="t('analytics.gained7d')" :value="w.analytics.followersGained7d === null ? '—' : `${w.analytics.followersGained7d > 0 ? '+' : ''}${compactNumber(w.analytics.followersGained7d)}`" to="/analytics" />
               <StatLink :label="t('analytics.views7d')" :value="compactNumber(w.analytics.views7d)" to="/analytics" />
+              <StatLink :label="t('analytics.likes7d')" :value="compactNumber(w.analytics.likes7d)" to="/analytics" />
+              <StatLink :label="t('analytics.comments7d')" :value="compactNumber(w.analytics.comments7d)" to="/analytics" />
               <StatLink :label="t('analytics.shares7d')" :value="compactNumber(w.analytics.shares7d)" to="/analytics" />
             </div>
-            <LineChart :points="w.analytics.trend.map((d) => ({ t: dayTs(d.day), v: d.followersGained ?? 0 }))" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('analytics.perDay.followersGained')" />
+            <LineChart :points="w.analytics.trend.map((d) => ({ t: dayTs(d.day), v: d.followersGained }))" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('analytics.perDay.followersGained')" />
             <div v-for="g in w.analytics.top" :key="g.id" class="row">
               <PlatformTag :platform="g.platform" icon-only />
               <span class="ellipsis">{{ g.displayName || `@${g.handle}` }}</span>

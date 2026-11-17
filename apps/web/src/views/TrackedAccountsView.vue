@@ -101,7 +101,7 @@ const columns = computed(() => [
   { title: t('tracked.colCategory'), key: 'category', width: 180 },
   { title: t('tracked.metrics.followers'), key: 'followers', width: 130, align: 'right' as const },
   { title: t('tracked.lastChecked'), key: 'checked', width: 170 },
-  { title: t('collect.schedule'), key: 'schedule', width: 170 },
+  ...(collectable.value.length ? [{ title: t('collect.schedule'), key: 'schedule', width: 170 }] : []),
   { title: t('common.status'), key: 'status', width: 150 },
   ...(auth.isAdmin ? [{ title: t('tracked.owner'), key: 'owner', width: 110 }] : []),
   actionColumn(230),
@@ -125,15 +125,23 @@ const replace = (a: TrackedAccount) => {
 async function toggleFavorite(a: TrackedAccount) {
   try { replace((await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${a.id}`, { favorite: !a.favorite })).account) } catch (e) { message.error(errorText(e)) }
 }
+/**
+ * Refresh / 定时采集 exist only for platforms with an official API source (YouTube). Manual-only platforms
+ * (Instagram, TikTok) get no refresh action and no schedule controls: their numbers are entered by hand.
+ */
+const canCollect = (a: TrackedAccount) => a.dataMode !== 'manual_only'
+const collectable = computed(() => items.value.filter(canCollect))
+const selectedCollectable = computed(() => collectable.value.filter((a) => selectedKeys.value.includes(a.id)).length)
 async function refreshOne(a: TrackedAccount) {
   try {
-    const r = await api<{ taskId: string; manualOnly: boolean }>('POST', `/api/tracked-accounts/${a.id}/refresh`)
-    message.info(r.manualOnly ? t('tracked.refreshManualOnly') : t('tracked.refreshQueued'))
+    await api('POST', `/api/tracked-accounts/${a.id}/refresh`)
+    message.info(t('tracked.refreshQueued'))
     await load(true)
   } catch (e) { message.error(errorText(e)) }
 }
 async function refreshBatch() {
-  const ids = selectedKeys.value.length ? [...selectedKeys.value] : items.value.map((a) => a.id)
+  const ok = new Set(collectable.value.map((a) => a.id))
+  const ids = selectedKeys.value.length ? selectedKeys.value.filter((k) => ok.has(k)) : [...ok]
   if (!ids.length) return
   try {
     const r = await api<{ queued: { id: string }[]; skipped: { id: string; code: string }[] }>('POST', '/api/tracked-accounts/refresh', { ids })
@@ -257,8 +265,8 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
         <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
         <template #actions>
-          <a-button :disabled="!items.length" @click="refreshBatch">
-            {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
+          <a-button v-if="collectable.length" @click="refreshBatch">
+            {{ t('tracked.refreshBatch') }}{{ selectedCollectable ? ` (${selectedCollectable})` : '' }}
           </a-button>
         </template>
       </SearchBar>
@@ -322,7 +330,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button size="small" type="link" @click="openDetail(record as TrackedAccount)">{{ t('common.view') }}</a-button>
-              <a-tooltip :title="record.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint') : record.status === 'paused' ? t('errors.tracked.paused') : undefined">
+              <a-tooltip v-if="canCollect(record as TrackedAccount)" :title="record.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint') : record.status === 'paused' ? t('errors.tracked.paused') : undefined">
                 <a-button size="small" type="link" :disabled="record.status === 'paused' || record.dataMode === 'api_unconfigured'" :loading="busy(record as TrackedAccount)"
                   @click="refreshOne(record as TrackedAccount)">{{ t('common.refresh') }}</a-button>
               </a-tooltip>
@@ -394,9 +402,9 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
             </a-radio-group>
           </a-form-item>
         </a-col>
-        <a-col :xs="24" :sm="12">
+        <a-col v-if="editing && canCollect(editing)" :xs="24" :sm="12">
           <a-form-item :label="t('collect.interval')">
-            <a-select v-model:value="editForm.interval" :options="scheduleOptions" :disabled="editing?.dataMode === 'manual_only'" />
+            <a-select v-model:value="editForm.interval" :options="scheduleOptions" />
           </a-form-item>
         </a-col>
       </a-row>

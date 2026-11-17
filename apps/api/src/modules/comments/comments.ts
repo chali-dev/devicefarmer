@@ -9,6 +9,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { connectionFor } from '../platforms/connections.js';
 import { isConfigured } from '../platforms/credentials.js';
 import { apiListComments, apiReplyToComment, platformCapabilities } from '../platforms/service.js';
+import type { PlatformComment } from '../platforms/types.js';
 import { visibleAccount, type Tx } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 
@@ -254,7 +255,7 @@ async function runSync(ctx: TaskContext<{ socialAccountId: string }>): Promise<u
   const [state] = await db.select().from(schema.commentSyncStates).where(eq(schema.commentSyncStates.accountId, acc.id));
   const since = SINCE_CURSOR.has(acc.platform);
   let cursor: string | null = since ? state?.cursor ?? null : null;
-  let fetched = 0; let inserted = 0; let pages = 0;
+  let fetched = 0; let inserted = 0; let updated = 0; let pages = 0;
   const opts = { signal: ctx.signal, log: (m: string, d?: Record<string, unknown>) => ctx.log('info', m, d) };
   try {
     for (;;) {
@@ -262,21 +263,11 @@ async function runSync(ctx: TaskContext<{ socialAccountId: string }>): Promise<u
       const page = await apiListComments(acc, cursor, opts);
       pages++;
       fetched += page.comments.length;
-      let fresh = 0;
-      for (const c of page.comments) {
-        const values = {
-          userId: acc.userId, accountId: acc.id, platform: acc.platform, source: 'api' as const, externalId: c.id, parentExternalId: c.parentId,
-          externalPostId: c.postId, authorName: c.authorName, text: c.text, likeCount: c.likeCount, replyCount: c.replyCount,
-          publishedAt: c.publishedAt ? new Date(c.publishedAt) : null, postUrl: postUrlOf(acc.platform, c.postId),
-        };
-        const [row] = await db.insert(C).values(values).onConflictDoNothing().returning({ id: C.id });
-        if (row) { fresh++; continue; }
-        await db.update(C).set({ text: c.text, likeCount: c.likeCount, replyCount: c.replyCount, fetchedAt: new Date() })
-          .where(and(eq(C.accountId, acc.id), eq(C.externalId, c.id)));
-      }
+      const { inserted: fresh, updated: changed } = await storeSyncedComments(acc, page.comments);
       inserted += fresh;
+      updated += changed;
       cursor = page.nextCursor;
-      await ctx.log('info', `page ${pages}: ${page.comments.length} comments, ${fresh} new`);
+      await ctx.log('info', `page ${pages}: ${page.comments.length} comments, ${fresh} new, ${changed} updated`, page.info);
       // Page tokens: stop at the first page with nothing new (older pages were seen before) or the page cap.
       if (since || !cursor || fresh === 0 || pages >= MAX_PAGES) break;
     }
@@ -290,8 +281,31 @@ async function runSync(ctx: TaskContext<{ socialAccountId: string }>): Promise<u
   await linkPublishTasks(acc.id);
   const set = { cursor, lastTaskId: ctx.task.id, lastSyncedAt: new Date(), lastFetched: fetched, lastNew: inserted, lastError: null, lastErrorCode: null };
   await db.insert(schema.commentSyncStates).values({ accountId: acc.id, ...set }).onConflictDoUpdate({ target: schema.commentSyncStates.accountId, set });
-  await commentLog({ accountId: acc.id, action: 'synced', message: `${fetched} fetched, ${inserted} new`, data: { pages, fetched, inserted }, taskId: ctx.task.id });
-  return { pages, fetched, inserted };
+  await commentLog({ accountId: acc.id, action: 'synced', message: `${fetched} fetched, ${inserted} new, ${updated} updated`, data: { pages, fetched, inserted, updated }, taskId: ctx.task.id });
+  return { pages, fetched, inserted, updated };
+}
+
+/**
+ * Stores synced API comments of `acc`: new ones are inserted; for ones already stored, the mutable fields
+ * (text, like and reply counts) are updated only when they changed (then fetched_at moves too). Idempotent:
+ * the same comments twice → { inserted: 0, updated: 0 }.
+ */
+export async function storeSyncedComments(acc: SocialAccount, comments: PlatformComment[]): Promise<{ inserted: number; updated: number }> {
+  let inserted = 0; let updated = 0;
+  for (const c of comments) {
+    const [row] = await db.insert(C).values({
+      userId: acc.userId, accountId: acc.id, platform: acc.platform, source: 'api', externalId: c.id, parentExternalId: c.parentId,
+      externalPostId: c.postId, authorName: c.authorName, text: c.text, likeCount: c.likeCount, replyCount: c.replyCount,
+      publishedAt: c.publishedAt ? new Date(c.publishedAt) : null, postUrl: postUrlOf(acc.platform, c.postId),
+    }).onConflictDoUpdate({
+      target: [C.accountId, C.externalId],
+      set: { text: sql`excluded.text`, likeCount: sql`excluded.like_count`, replyCount: sql`excluded.reply_count`, fetchedAt: sql`now()` },
+      setWhere: sql`(${C.text}, ${C.likeCount}, ${C.replyCount}) is distinct from (excluded.text, excluded.like_count, excluded.reply_count)`,
+    }).returning({ inserted: sql<boolean>`xmax = 0` });
+    if (!row) continue;
+    if (row.inserted) inserted++; else updated++;
+  }
+  return { inserted, updated };
 }
 
 function postUrlOf(platform: string, postId: string | null): string | null {

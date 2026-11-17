@@ -3,7 +3,7 @@ import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { appOptions, isConfigured } from './credentials.js';
 import { connectionFor, withConnection } from './connections.js';
 import { adapterById, requireAdapter } from './index.js';
-import type { AccountStats, Authed, CommentPage, PublishInput, PublishResult } from './types.js';
+import type { AccountStats, Authed, CommentPage, OwnPost, PublishInput, PublishResult } from './types.js';
 
 /**
  * Entry points for other modules (publish scheduler, comments). They take ids/rows, never tokens.
@@ -57,6 +57,14 @@ export async function apiReplyToComment(account: SocialAccount, commentId: strin
 export async function apiAccountStats(account: SocialAccount, days: string[], opts: CallOpts = {}): Promise<AccountStats> {
   const adapter = requireAdapter(account.platform);
   return withConnection(account.id, (a) => adapter.fetchAccountStats(a, days), opts);
+}
+
+/** The account's own recent posts with per-post counters (capability accountPosts), newest first. */
+export async function apiOwnPosts(account: SocialAccount, maxPages: number, opts: CallOpts = {}): Promise<OwnPost[]> {
+  const adapter = requireAdapter(account.platform);
+  const fetch = adapter.fetchOwnPosts;
+  if (!fetch) return [];
+  return withConnection(account.id, (a) => fetch(a, maxPages), opts);
 }
 
 /** Capabilities of the account's platform given the admin's app options (null = no adapter). */

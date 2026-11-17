@@ -6,9 +6,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
  * Minimal single-series time line chart (inline SVG, no chart library): recessive grid,
  * 2px line, point markers, crosshair + tooltip on hover. Colours come from --cp-* theme tokens.
  * The snapshot table next to it is the accessible table view.
+ * `v: null` = no data for that time: the line breaks there (a gap, not 0) and the point has no marker.
+ * When every value is ≥ 0 the y axis never goes below 0.
  */
 const props = withDefaults(defineProps<{
-  points: { t: number; v: number }[]
+  points: { t: number; v: number | null }[]
   height?: number
   format?: (v: number) => string
   formatTime?: (t: number) => string
@@ -32,18 +34,29 @@ const geo = computed(() => {
   const pts = [...props.points].sort((a, b) => a.t - b.t)
   const w = width.value, h = props.height
   const t0 = pts[0]?.t ?? 0, t1 = pts[pts.length - 1]?.t ?? 1
-  let lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v))
+  const vals = pts.map((p) => p.v).filter((v): v is number => v !== null)
+  let lo = Math.min(...vals), hi = Math.max(...vals)
   if (!Number.isFinite(lo)) { lo = 0; hi = 1 }
+  const nonNegative = lo >= 0
   if (lo === hi) { lo -= Math.max(1, Math.abs(lo) * 0.05); hi += Math.max(1, Math.abs(hi) * 0.05) }
   const pad = (hi - lo) * 0.1
   lo -= pad; hi += pad
+  if (nonNegative) lo = Math.max(0, lo)
   const x = (t: number) => (t1 === t0 ? (PAD.l + w - PAD.r) / 2 : PAD.l + ((t - t0) / (t1 - t0)) * (w - PAD.l - PAD.r))
   const y = (v: number) => PAD.t + (1 - (v - lo) / (hi - lo)) * (h - PAD.t - PAD.b)
   const ticks = [0, 1, 2, 3].map((i) => lo + ((hi - lo) * i) / 3)
-  const xy = pts.map((p) => ({ ...p, x: x(p.t), y: y(p.v) }))
+  const xy = pts.flatMap((p) => (p.v === null ? [] : [{ t: p.t, v: p.v, x: x(p.t), y: y(p.v) }]))
+  // A missing value starts a new segment (gap).
+  let path = ''
+  let prevNull = true
+  for (const p of pts) {
+    if (p.v === null) { prevNull = true; continue }
+    path += `${prevNull ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)} `
+    prevNull = false
+  }
   return {
     w, h, xy, ticks: ticks.map((v) => ({ v, y: y(v) })),
-    path: xy.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '),
+    path: path.trim(),
     xLabels: pts.length ? [{ x: x(t0), t: t0, anchor: 'start' }, ...(t1 !== t0 ? [{ x: x(t1), t: t1, anchor: 'end' }] : [])] : [],
   }
 })
