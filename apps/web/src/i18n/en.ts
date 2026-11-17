@@ -2213,6 +2213,7 @@ const en: Messages = {
     platform: {
       not_configured: '{platform} integration is not configured (admins: Platform Integrations page)',
       unsupported: 'Platform {platform} has no official API adapter',
+      disabled: 'Platform {platform} is not enabled',
       account_platform_mismatch: 'This is not a {platform} account',
       client_id_required: 'Enter the client ID first',
       bad_account_ids: 'Invalid account ids',
@@ -2322,6 +2323,7 @@ const en: Messages = {
     },
     trending: {
       no_regions: 'No trending regions configured',
+      unavailable: 'None of the enabled platforms provides trending topics',
       snapshot_not_found: 'Snapshot not found',
     },
     player: {

@@ -14,9 +14,11 @@ import DeviceThumb from '../components/DeviceThumb.vue'
 import StatusTag from '../components/StatusTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
+import { usePlatformsStore } from '../stores/platforms'
 
 const store = useInstancesStore()
 const auth = useAuthStore()
+const platforms = usePlatformsStore()
 const router = useRouter()
 const { t } = useI18n()
 const selectedKeys = ref<string[]>([])
@@ -208,7 +210,7 @@ const androidLabel = (p: Profile) => p.android ? `Android ${p.android}` : t('dev
 
 /*
  * Apps to install on the new devices, from the app library (official APKs imported from a device).
- * For now only these platforms are offered; each is greyed out until the library holds its package.
+ * Only these platforms are offered (when enabled); each is greyed out until the library holds its package.
  * Initially picked: the ones flagged for preinstall in the library.
  */
 const RECOMMENDED: { key: string; name: string; pkgs: string[]; icon: Component }[] = [
@@ -221,7 +223,7 @@ const pickedApps = ref<string[]>([])
 const appTiles = computed(() => {
   const latest = new Map<string, LibraryApp>() // the API lists newest first per package
   for (const a of libApps.value) if (!latest.has(a.package)) latest.set(a.package, a)
-  return RECOMMENDED.map((r) => {
+  return RECOMMENDED.filter((r) => platforms.isEnabled(r.key)).map((r) => {
     const pkg = r.pkgs.find((p) => latest.has(p))
     return { key: r.key, name: r.name, icon: r.icon, app: pkg ? latest.get(pkg)! : null }
   })

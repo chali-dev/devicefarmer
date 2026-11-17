@@ -16,9 +16,11 @@ import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
+import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
+const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -33,7 +35,7 @@ const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/$
 /** Sub-menus (cloud devices, administration) start open. */
 const openKeys = ref<string[]>(['devices', 'admin'])
 
-onMounted(() => { store.connect(); void store.refresh() })
+onMounted(() => { store.connect(); void store.refresh(); platforms.load().catch(() => undefined) })
 onBeforeUnmount(() => store.disconnect())
 
 function logout() {
@@ -184,7 +186,7 @@ async function savePassword() {
           <BookOutlined />
           <span>{{ t('nav.scripts') }}</span>
         </a-menu-item>
-        <a-menu-item key="trending" @click="router.push('/trending')">
+        <a-menu-item v-if="platforms.scope.features.trending" key="trending" @click="router.push('/trending')">
           <RiseOutlined />
           <span>{{ t('nav.trending') }}</span>
         </a-menu-item>

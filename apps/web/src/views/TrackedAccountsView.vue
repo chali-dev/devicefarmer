@@ -12,13 +12,15 @@ import {
   type ManagedUser, type TrackedAccount, type TrackedPlatform, type TrackedStatus,
 } from '../api/types'
 import { useAuthStore } from '../stores/auth'
+import { usePlatformsStore } from '../stores/platforms'
 import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue'
 
 /** 追踪账号: external public accounts the user observes (official API or manual data only). */
 const { t } = useI18n()
 const URL_HINT = 'https://'
-const ADD_HINT = 'https://www.youtube.com/@handle'
+const ADD_HINT = 'https://www.instagram.com/handle/'
 const auth = useAuthStore()
+const platformScope = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -223,7 +225,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
   <a-card :title="t('tracked.title')" size="small">
     <template #extra>
       <a-space wrap>
-        <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
+        <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
         <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
         <a-button :disabled="!items.length" @click="refreshBatch">
           {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}

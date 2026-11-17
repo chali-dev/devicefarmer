@@ -1,6 +1,8 @@
+import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
+
 /**
  * Social platform registry. `social_accounts.platform` stores these ids as plain text, so adding a
- * platform is a code change here (plus its name/icon in the web UI), never a DB enum migration.
+ * platform is a code change here (plus its name/icon in the web UI and ENABLED_PLATFORMS), never a DB enum migration.
  * `defaultLimit` is the default number of accounts of this platform one device may hold; admins
  * override it per platform (settings key `social.limits`, see social.ts).
  */
@@ -21,6 +23,9 @@ export const PLATFORMS: readonly SocialPlatform[] = [
 ];
 
 export const PLATFORM_IDS = PLATFORMS.map((p) => p.id) as [string, ...string[]];
+
+/** Platforms switched on by ENABLED_PLATFORMS (option lists, new accounts). */
+export const enabledPlatforms = () => PLATFORMS.filter((p) => isPlatformEnabled(p.id));
 
 export function platformById(id: string): SocialPlatform | undefined {
   return PLATFORMS.find((p) => p.id === id);

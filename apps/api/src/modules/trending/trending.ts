@@ -1,6 +1,7 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { HttpError } from '../../lib/errors.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { registerDashboardWidget } from '../dashboard/registry.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
 import { call as youtubeGet, youtubeSource } from '../tracked/youtube.js';
@@ -15,6 +16,10 @@ import { call as youtubeGet, youtubeSource } from '../tracked/youtube.js';
  * created by the hourly collection tick; a manual refresh replaces the snapshot of the current slot.
  */
 const KEY = 'trending';
+/** The only trending source so far; without it enabled trending is unavailable (trending.unavailable). */
+const SOURCE = 'youtube';
+export const trendingAvailable = () => isPlatformEnabled(SOURCE);
+export const assertTrendingAvailable = () => assertPlatformEnabled(SOURCE);
 export const TRENDING_TYPE = 'trending-refresh';
 export const REF_TYPE = 'trending';
 const HOUR = 3600_000;
@@ -64,8 +69,8 @@ export async function refreshTrending(region: string, categoryId: string | null,
   const S = schema.trendingSnapshots;
   const cat = categoryId ?? '';
   return db.transaction(async (tx) => {
-    await tx.delete(S).where(and(eq(S.source, 'youtube'), eq(S.region, region), eq(S.categoryId, cat), eq(S.slotAt, slot)));
-    const [snap] = await tx.insert(S).values({ source: 'youtube', region, categoryId: cat, slotAt: slot, itemCount: items.length, taskId }).returning();
+    await tx.delete(S).where(and(eq(S.source, SOURCE), eq(S.region, region), eq(S.categoryId, cat), eq(S.slotAt, slot)));
+    const [snap] = await tx.insert(S).values({ source: SOURCE, region, categoryId: cat, slotAt: slot, itemCount: items.length, taskId }).returning();
     if (items.length) {
       await tx.insert(schema.trendingItems).values(items.map((v, i) => ({
         snapshotId: snap!.id, rank: i + 1, videoId: v.id,
@@ -97,6 +102,7 @@ const label = (region: string, categoryId: string | null) => `YouTube ${region}$
 
 /** Scheduled: one task per region per slot (idempotent). Skips with a code when nothing is configured. */
 export async function scheduleTrending(now = new Date()): Promise<{ queued: number; duplicate: number; skipped?: string }> {
+  if (!trendingAvailable()) return { queued: 0, duplicate: 0, skipped: 'trending.unavailable' };
   const s = await getTrendingSettings();
   if (!s.regions.length) return { queued: 0, duplicate: 0, skipped: 'trending.no_regions' };
   if (!(await youtubeSource.isConfigured())) return { queued: 0, duplicate: 0, skipped: 'tracked.youtube_no_api_key' };
@@ -115,6 +121,7 @@ export async function scheduleTrending(now = new Date()): Promise<{ queued: numb
 
 /** Admin "refresh now": refreshes the current slot of every configured region. */
 export async function refreshTrendingNow(userId: string): Promise<string[]> {
+  assertTrendingAvailable();
   const s = await getTrendingSettings();
   if (!s.regions.length) throw new HttpError(400, '未配置趋势热点地区', 'trending.no_regions');
   await youtubeSource.requireConfigured();
@@ -172,6 +179,7 @@ export async function snapshotItems(snap: typeof schema.trendingSnapshots.$infer
 
 /** Public chart data, same for every user: regions collected, latest capture and the top 5 of the newest one. */
 registerDashboardWidget('trending', async () => {
+  if (!trendingAvailable()) return null;
   const latest = (await latestSnapshots()).sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
   if (!latest.length) return null;
   const top = await db.select({ rank: schema.trendingItems.rank, title: schema.trendingItems.title, videoId: schema.trendingItems.videoId, views: schema.trendingItems.views })

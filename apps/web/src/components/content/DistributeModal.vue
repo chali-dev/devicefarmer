@@ -55,7 +55,8 @@ function incompatible(platformId: string): string | null {
 }
 
 const groups = computed(() => {
-  const ids = [...new Set(accounts.value.map((a) => a.platform))]
+  // Only platforms the API lists (enabled ones); accounts of disabled platforms can't be targets.
+  const ids = [...new Set(accounts.value.map((a) => a.platform))].filter((id) => platforms.value.some((p) => p.id === id))
   return ids.map((id) => ({ id, name: platforms.value.find((p) => p.id === id)?.name ?? id, reason: incompatible(id), accounts: accounts.value.filter((a) => a.platform === id) }))
 })
 const accountById = (id: string) => accounts.value.find((a) => a.id === id)

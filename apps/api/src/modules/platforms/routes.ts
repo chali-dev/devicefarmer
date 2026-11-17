@@ -3,18 +3,22 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { recordAudit } from '../audit/audit.js';
+import { enabledPlatforms } from '../social/platforms.js';
 import { visibleAccount } from '../social/social.js';
 import { createTask } from '../tasks/core.js';
+import { trendingAvailable } from '../trending/trending.js';
 import { ACCOUNT_CHECK_TASK, ACCOUNT_REF_TYPE } from './check.js';
 import { disconnect, visibleConnections } from './connections.js';
 import { appOptions, getPlatformApps, savePlatformApp } from './credentials.js';
 import { platformError } from './http.js';
-import { ADAPTER_IDS, ADAPTERS, requireAdapter } from './index.js';
+import { enabledAdapters, requireAdapter } from './index.js';
 import { beginConnect, bindingCookieName, completeConnect, STATE_TTL_SEC } from './oauth.js';
 import './check.js'; // registers the social-account-check task handler
 
-const PlatformParam = z.object({ platform: z.enum(ADAPTER_IDS) });
+// Any id: requireAdapter answers platform.disabled / platform.unsupported.
+const PlatformParam = z.object({ platform: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/) });
 const Id = z.object({ id: z.string().uuid() });
 const base = () => (config.PUBLIC_BASE_URL ?? config.WEB_ORIGIN).replace(/\/+$/, '');
 const secureCookie = () => base().startsWith('https://');
@@ -35,21 +39,28 @@ const cookie = (name: string, value: string, maxAge: number) =>
  * connections (status only, never tokens), disconnect and the account check task.
  */
 export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
-  /** Adapters, whether they are configured, and what their official APIs can do. */
+  /**
+   * The web's single source for platforms (ENABLED_PLATFORMS): enabled adapters (configured, what their
+   * official APIs can do), every enabled social platform, and the features that depend on one.
+   */
   app.get('/api/platforms', { preHandler: app.authenticate }, async () => {
-    const apps = await getPlatformApps(ADAPTER_IDS);
+    const adapters = enabledAdapters();
+    const apps = await getPlatformApps(adapters.map((a) => a.id));
     return {
-      platforms: ADAPTERS.map((a) => {
+      platforms: adapters.map((a) => {
         const s = apps.find((x) => x.platform === a.id)!;
         return { id: a.id, name: a.name, configured: s.configured, capabilities: a.capabilities(s.options), scopes: a.oauth.scopes(s.options), pkce: a.oauth.pkce };
       }),
+      enabled: enabledPlatforms().map((p) => ({ id: p.id, name: p.name })),
+      features: { trending: trendingAvailable(), youtubeKey: isPlatformEnabled('youtube') },
     };
   });
 
   // ------------------------------------------------------------ credentials (admin)
   app.get('/api/settings/platforms', { preHandler: app.requireAdmin }, async () => {
-    const apps = await getPlatformApps(ADAPTER_IDS);
-    return { apps: apps.map((s) => ({ ...s, name: requireAdapter(s.platform).name, scopes: requireAdapter(s.platform).oauth.scopes(s.options) })) };
+    const adapters = enabledAdapters();
+    const apps = await getPlatformApps(adapters.map((a) => a.id));
+    return { apps: apps.map((s, i) => ({ ...s, name: adapters[i]!.name, scopes: adapters[i]!.oauth.scopes(s.options) })) };
   });
 
   /** clientSecret: string = set, null = clear, omitted = keep. clientId: null removes the whole entry. */
@@ -65,12 +76,12 @@ export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
     },
   }, async (req) => {
     const { platform } = req.params;
+    const a = requireAdapter(platform);
     const cur = (await getPlatformApps([platform]))[0]!;
     if (req.body.clientId !== null && !(req.body.clientId ?? cur.clientId)) {
       throw platformError(400, 'client_id_required', '请先填写 Client ID');
     }
     const saved = await savePlatformApp(platform, req.body);
-    const a = requireAdapter(platform);
     return { app: { ...saved, name: a.name, scopes: a.oauth.scopes(saved.options) } };
   });
 
@@ -138,6 +149,7 @@ export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
   /** Queues a social-account-check task (also for accounts without a connection: it records "manual only"). */
   app.post('/api/platforms/accounts/:id/check', { preHandler: app.authenticate, schema: { params: Id } }, async (req, reply) => {
     const acc = await visibleAccount(req.user, req.params.id);
+    assertPlatformEnabled(acc.platform);
     const [busy] = await db.select({ id: schema.tasks.id }).from(schema.tasks).where(and(
       eq(schema.tasks.type, ACCOUNT_CHECK_TASK), eq(schema.tasks.refId, acc.id), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']),
     ));

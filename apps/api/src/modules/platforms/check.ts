@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { HttpError } from '../../lib/errors.js';
 import { getRules } from '../notify/rules.js';
@@ -7,7 +7,7 @@ import { accountChecked, accountCheckFailed } from '../notify/triggers.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { writeLogs, type LogEntry } from '../social/social.js';
 import { connectionFor, withConnection } from './connections.js';
-import { requireAdapter } from './index.js';
+import { enabledAdapters, requireAdapter } from './index.js';
 
 /**
  * Task `social-account-check` (任务中心, device-less): checks a social account through its official
@@ -85,15 +85,17 @@ registerTaskHandler<{ socialAccountId: string }>(ACCOUNT_CHECK_TASK, {
  * its own fixed offset inside the period (hash of its id), so checks are spread out instead of all at once.
  * Runs hourly and creates the checks falling into the next ~hour as scheduled tasks; the idempotency key
  * `auto:<account>:<hours>h:<slot>` makes overlapping or concurrent runs create each check once.
- * Accounts without a connection are skipped (manual check only).
+ * Accounts without a connection and accounts of disabled platforms are skipped.
  */
 export async function scheduleAccountChecks(now = new Date(), windowMs = 65 * 60_000): Promise<{ hours: number | null; accounts: number; created: number }> {
   const { accountCheckHours: hours } = await getRules();
   if (!hours) return { hours, accounts: 0, created: 0 };
   const period = hours * 3600_000;
+  const platforms = enabledAdapters().map((a) => a.id);
+  if (!platforms.length) return { hours, accounts: 0, created: 0 };
   const rows = await db.select({ id: sa.id, userId: sa.userId, platform: sa.platform, handle: sa.handle })
     .from(schema.platformConnections).innerJoin(sa, eq(sa.id, schema.platformConnections.socialAccountId))
-    .where(inArray(schema.platformConnections.status, ['connected', 'error']));
+    .where(and(inArray(schema.platformConnections.status, ['connected', 'error']), inArray(sa.platform, platforms)));
   const from = now.getTime() - 5 * 60_000;
   let created = 0;
   for (const acc of rows) {

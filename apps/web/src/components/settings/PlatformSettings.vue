@@ -5,19 +5,18 @@ import { message, Modal } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import type { PlatformAppSettings, PlatformCapabilities, PlatformInfo } from '../../api/types'
+import type { PlatformAppSettings, PlatformCapabilities } from '../../api/types'
+import { usePlatformsStore } from '../../stores/platforms'
 import PlatformTag from '../social/PlatformTag.vue'
 
 /** Settings → 平台接入 (admin): official API app credentials per platform. The client secret is write-only. */
 const { t } = useI18n()
 const apps = ref<PlatformAppSettings[]>([])
-const infos = ref<PlatformInfo[]>([])
-const caps = (id: string) => infos.value.find((p) => p.id === id)?.capabilities
+const platforms = usePlatformsStore()
+const caps = (id: string) => platforms.scope.platforms.find((p) => p.id === id)?.capabilities
 const loading = ref(false)
 const saving = ref<string | null>(null)
 const forms = reactive<Record<string, { clientId: string; clientSecret: string; directPost: boolean; accountStats: boolean }>>({})
-/** Platforms whose adapter can collect own-account stats with an extra scope (账号分析). */
-const STATS_PLATFORMS = ['instagram', 'youtube', 'tiktok']
 
 const CAPS: (keyof PlatformCapabilities)[] = ['publishVideo', 'publishImage', 'publishCarousel', 'commentsRead', 'commentsReply', 'profileStats']
 
@@ -28,12 +27,8 @@ function fill(a: PlatformAppSettings) {
 async function load() {
   loading.value = true
   try {
-    const [a, p] = await Promise.all([
-      api<{ apps: PlatformAppSettings[] }>('GET', '/api/settings/platforms'),
-      api<{ platforms: PlatformInfo[] }>('GET', '/api/platforms'),
-    ])
+    const [a] = await Promise.all([api<{ apps: PlatformAppSettings[] }>('GET', '/api/settings/platforms'), platforms.load(true)])
     apps.value = a.apps
-    infos.value = p.platforms
     apps.value.forEach(fill)
   } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
@@ -46,7 +41,7 @@ async function put(a: PlatformAppSettings, body: Record<string, unknown>, done: 
     const r = await api<{ app: PlatformAppSettings }>('PUT', `/api/settings/platforms/${a.platform}`, body)
     apps.value = apps.value.map((x) => (x.platform === a.platform ? r.app : x))
     fill(r.app)
-    infos.value = (await api<{ platforms: PlatformInfo[] }>('GET', '/api/platforms')).platforms
+    await platforms.load(true)
     message.success(done)
   } catch (e) { message.error(errorText(e)) }
   finally { saving.value = null }
@@ -58,7 +53,7 @@ function save(a: PlatformAppSettings) {
   if (f.clientSecret.trim()) body.clientSecret = f.clientSecret.trim()
   const options: Record<string, boolean> = {}
   if (a.platform === 'tiktok') options.directPost = f.directPost
-  if (STATS_PLATFORMS.includes(a.platform)) options.accountStats = f.accountStats
+  if (platforms.statsPlatforms.includes(a.platform)) options.accountStats = f.accountStats
   if (Object.keys(options).length) body.options = options
   void put(a, body, t('common.saved'))
 }
@@ -114,7 +109,7 @@ async function copy(text: string) {
             <a-form-item v-if="a.platform === 'tiktok'" :extra="t('platforms.directPostHint')">
               <a-checkbox v-model:checked="forms[a.platform]!.directPost">{{ t('platforms.directPost') }}</a-checkbox>
             </a-form-item>
-            <a-form-item v-if="STATS_PLATFORMS.includes(a.platform)" :extra="t('platforms.accountStatsHint')">
+            <a-form-item v-if="platforms.statsPlatforms.includes(a.platform)" :extra="t('platforms.accountStatsHint')">
               <a-checkbox v-model:checked="forms[a.platform]!.accountStats">{{ t('platforms.accountStats') }}</a-checkbox>
             </a-form-item>
             <a-form-item :label="t('platforms.scopes')">

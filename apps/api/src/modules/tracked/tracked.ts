@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { TrackedAccount } from '../../db/schema.js';
 import { HttpError, notFound } from '../../lib/errors.js';
+import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { PLATFORMS, platformDef, registerSource, type PostData } from './platforms.js';
 import { youtubeSource } from './youtube.js';
@@ -35,7 +36,7 @@ export type DataMode = 'api' | 'api_unconfigured' | 'manual_only';
 export async function dataModes(): Promise<Map<string, DataMode>> {
   const out = new Map<string, DataMode>();
   for (const { id } of PLATFORMS) {
-    const src = platformDef(id).source;
+    const src = isPlatformEnabled(id) ? platformDef(id).source : undefined;
     out.set(id, !src ? 'manual_only' : (await src.isConfigured()) ? 'api' : 'api_unconfigured');
   }
   return out;
@@ -181,7 +182,8 @@ export async function pendingRefreshes(ids: string[]): Promise<Set<string>> {
  * Why an account can't be refreshed now, as an error code; null = OK. Manual-only accounts are fine here
  * (a manual refresh is a no-op task); the scheduler skips them separately. Shared by manual refresh and the scheduler.
  */
-export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Promise<{ code: string; message: string; status: number } | null> {
+export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Promise<{ code: string; message: string; status: number; params?: Record<string, string> } | null> {
+  if (!isPlatformEnabled(acc.platform)) return { code: 'platform.disabled', message: `平台 ${acc.platform} 未启用`, status: 400, params: { platform: acc.platform } };
   if (acc.status === 'paused') return { code: 'tracked.paused', message: '账号已暂停追踪', status: 409 };
   if (busy.has(acc.id)) return { code: 'tracked.refresh_in_progress', message: '该账号正在刷新', status: 409 };
   const src = platformDef(acc.platform).source;

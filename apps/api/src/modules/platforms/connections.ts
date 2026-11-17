@@ -8,7 +8,7 @@ import { connectionChanged } from '../notify/triggers.js';
 import { visibleAccount, writeLogs, type LogEntry } from '../social/social.js';
 import { platformApp } from './credentials.js';
 import { platformError } from './http.js';
-import { requireAdapter } from './index.js';
+import { ADAPTERS, requireAdapter } from './index.js';
 import type { Authed, OwnProfile, TokenSet } from './types.js';
 
 /**
@@ -178,9 +178,10 @@ export async function disconnect(user: AuthUser, socialAccountId: string): Promi
   const account = await visibleAccount(user, socialAccountId);
   const conn = await connectionFor(account.id);
   if (!conn) throw platformError(404, 'not_connected', '该账号未通过官方接口授权');
-  const adapter = requireAdapter(conn.platform);
+  // Also for a disabled platform: disconnecting only cleans up its stored tokens.
+  const adapter = ADAPTERS.find((a) => a.id === conn.platform);
   let revoked: boolean | null = null;
-  if (adapter.oauth.revoke) {
+  if (adapter?.oauth.revoke) {
     try {
       const app = await platformApp(conn.platform, adapter.name);
       await adapter.oauth.revoke(app, openSecret(conn.accessTokenEnc), conn.refreshTokenEnc ? openSecret(conn.refreshTokenEnc) : null);

@@ -11,12 +11,14 @@ import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vu
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import SystemInfo from '../components/settings/SystemInfo.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
+import { usePlatformsStore } from '../stores/platforms'
 
 /**
  * Settings (设置, admin): one page whose tabs reuse the existing settings APIs. The active tab is in the
  * URL (?tab=), so other pages link straight to their settings (e.g. /settings?tab=storage).
  */
 const { t } = useI18n()
+const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -37,7 +39,7 @@ const secs = (ms: number) => `${Math.round(ms / 1000)} s`
     <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
       <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
       <a-tab-pane key="platforms" :tab="t('settings.tabs.platforms')"><PlatformSettings /></a-tab-pane>
-      <a-tab-pane key="tracked" :tab="t('settings.tabs.tracked')"><YoutubeKeySettings /></a-tab-pane>
+      <a-tab-pane v-if="platforms.scope.features.youtubeKey" key="tracked" :tab="t('settings.tabs.tracked')"><YoutubeKeySettings /></a-tab-pane>
       <a-tab-pane key="social" :tab="t('settings.tabs.social')"><SocialLimitsSettings /></a-tab-pane>
       <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
         <div class="settings-pane">

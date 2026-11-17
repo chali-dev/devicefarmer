@@ -7,7 +7,7 @@ import { isAdmin } from '../auth/rbac.js';
 import { youtubeSource } from '../tracked/youtube.js';
 import { scheduleCollection } from './scheduler.js';
 import {
-  getTrendingSettings, latestSnapshots, refreshTrendingNow, saveTrendingSettings, slotOf, snapshotItems, TRENDING_TYPE,
+  assertTrendingAvailable, getTrendingSettings, latestSnapshots, refreshTrendingNow, saveTrendingSettings, slotOf, snapshotItems, trendingAvailable, TRENDING_TYPE,
 } from './trending.js';
 
 const S = schema.trendingSnapshots;
@@ -37,7 +37,8 @@ export const trendingRoutes: FastifyPluginAsyncZod = async (app) => {
     },
   }, async (req) => {
     const settings = await getTrendingSettings();
-    const configured = await youtubeSource.isConfigured();
+    const available = trendingAvailable();
+    const configured = available && await youtubeSource.isConfigured();
     const latest = await latestSnapshots();
     const cat = settings.categoryId ?? '';
     let snap: typeof S.$inferSelect | undefined;
@@ -59,7 +60,7 @@ export const trendingRoutes: FastifyPluginAsyncZod = async (app) => {
     const now = new Date();
     return {
       configured,
-      notice: !configured ? 'tracked.youtube_no_api_key' : !settings.regions.length ? 'trending.no_regions' : null,
+      notice: !available ? 'trending.unavailable' : !configured ? 'tracked.youtube_no_api_key' : !settings.regions.length ? 'trending.no_regions' : null,
       settings,
       nextSlotAt: settings.regions.length && configured ? new Date(slotOf(now, settings.intervalHours).getTime() + settings.intervalHours * 3600_000).toISOString() : null,
       regions: latest.map((s) => ({ id: s.id, region: s.region, categoryId: s.categoryId || null, capturedAt: s.capturedAt, itemCount: s.itemCount })),
@@ -70,7 +71,10 @@ export const trendingRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   });
 
-  app.put('/api/trending/settings', { preHandler: app.requireAdmin, schema: { body: SettingsBody } }, async (req) => ({ settings: await saveTrendingSettings(req.body) }));
+  app.put('/api/trending/settings', { preHandler: app.requireAdmin, schema: { body: SettingsBody } }, async (req) => {
+    assertTrendingAvailable();
+    return { settings: await saveTrendingSettings(req.body) };
+  });
 
   /** Refreshes the current slot of every configured region now (coded error without regions or API key). */
   app.post('/api/trending/refresh', { preHandler: app.requireAdmin }, async (req, reply) => {

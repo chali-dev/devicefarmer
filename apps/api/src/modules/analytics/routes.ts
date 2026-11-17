@@ -3,6 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin } from '../auth/rbac.js';
 import { ACCOUNT_REF_TYPE } from '../platforms/check.js';
 import { appOptions } from '../platforms/credentials.js';
@@ -87,6 +88,7 @@ export const analyticsRoutes: FastifyPluginAsyncZod = async (app) => {
   /** "Refresh now" through the official API (task account-stats). */
   app.post('/api/analytics/accounts/:id/refresh', { schema: { params: Id } }, async (req, reply) => {
     const acc = await visibleAccount(req.user, req.params.id);
+    assertPlatformEnabled(acc.platform);
     const adapter = adapterById(acc.platform);
     if (!adapter || !adapter.capabilities(await appOptions(acc.platform)).accountStats) {
       throw badRequest('该平台没有可用的官方数据接口，请手动录入', 'analytics.unsupported', { platform: acc.platform });

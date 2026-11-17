@@ -84,7 +84,7 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
 <template>
   <a-card :title="t('trending.title')" size="small">
     <template #extra>
-      <a-space v-if="auth.isAdmin" wrap>
+      <a-space v-if="auth.isAdmin && data?.notice !== 'trending.unavailable'" wrap>
         <a-button @click="openSettings">{{ t('trending.settings') }}</a-button>
         <a-button type="primary" :loading="refreshing" :disabled="!data?.configured || !data?.settings.regions.length" @click="refreshNow">{{ t('trending.refreshNow') }}</a-button>
       </a-space>
@@ -97,6 +97,7 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
     </a-alert>
     <a-alert v-else-if="data?.notice === 'trending.no_regions'" type="info" show-icon style="margin-bottom: 12px"
       :message="auth.isAdmin ? t('trending.emptyAdmin') : t('trending.noRegions')" />
+    <a-alert v-else-if="data?.notice" type="info" show-icon style="margin-bottom: 12px" :message="codeText(data.notice, undefined, data.notice)" />
 
     <a-space wrap style="margin-bottom: 12px">
       <a-radio-group v-if="regionOptions.length" :value="data?.snapshot?.region ?? filters.region" button-style="solid" @change="(e: any) => pickRegion(e.target.value)">

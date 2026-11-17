@@ -1,20 +1,22 @@
 import { message } from 'ant-design-vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../../api/client'
-import type { PlatformConnection, PlatformInfo } from '../../api/types'
+import type { PlatformConnection } from '../../api/types'
+import { usePlatformsStore } from '../../stores/platforms'
 
 /** Official-API connection state for the social accounts table (platforms + connections by account id). */
 export function usePlatformConnections() {
   const { t } = useI18n()
   const route = useRoute()
   const router = useRouter()
-  const platforms = ref<PlatformInfo[]>([])
+  const store = usePlatformsStore()
+  const platforms = computed(() => store.scope.platforms)
   const byAccount = ref(new Map<string, PlatformConnection>())
 
   async function loadPlatforms() {
-    try { platforms.value = (await api<{ platforms: PlatformInfo[] }>('GET', '/api/platforms')).platforms } catch (e) { message.error(errorText(e)) }
+    try { await store.load() } catch (e) { message.error(errorText(e)) }
   }
 
   async function load(accountIds: string[]) {

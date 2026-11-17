@@ -1,4 +1,5 @@
 import type { SocialAccount } from '../../db/schema.js';
+import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { appOptions, isConfigured } from './credentials.js';
 import { connectionFor, withConnection } from './connections.js';
 import { adapterById, requireAdapter } from './index.js';
@@ -15,6 +16,7 @@ type CallOpts = Pick<Authed, 'signal' | 'log' | 'commit'>;
 
 /** Null when `account` can publish `input` through its official API right now, else a coded reason. */
 export async function apiPublishUnavailableReason(account: SocialAccount, input: PublishInput): Promise<Reason | null> {
+  if (!isPlatformEnabled(account.platform)) return { code: 'platform.disabled', message: `平台 ${account.platform} 未启用` };
   const adapter = adapterById(account.platform);
   if (!adapter) return { code: 'platform.unsupported', message: `平台 ${account.platform} 没有官方接口适配` };
   if (!(await isConfigured(account.platform))) return { code: 'platform.not_configured', message: `未配置 ${adapter.name} 平台接入` };
