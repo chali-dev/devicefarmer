@@ -4,6 +4,7 @@ import { PUBLISH_UNFINISHED, type Content, type ContentStatus, type MediaAsset, 
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { canView } from '../media/media.js';
+import { translationLangs } from './languages.js';
 
 /**
  * Content management (内容管理). Rules:
@@ -147,7 +148,7 @@ const NONE = '00000000-0000-0000-0000-000000000000';
 export async function toContentItems(rows: Content[]) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [tagRows, mediaRows, owners, counts] = await Promise.all([
+  const [tagRows, mediaRows, owners, counts, langs] = await Promise.all([
     db.select({ contentId: schema.contentTagLinks.contentId, name: schema.contentTags.name }).from(schema.contentTagLinks)
       .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
       .where(inArray(schema.contentTagLinks.contentId, ids)).orderBy(asc(schema.contentTags.name)),
@@ -157,6 +158,7 @@ export async function toContentItems(rows: Content[]) {
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users)
       .where(inArray(schema.users.id, [...new Set(rows.map((r) => r.userId))].concat(NONE))),
     publishCounts(db, ids),
+    translationLangs(ids),
   ]);
   return rows.map((r) => ({
     ...r,
@@ -164,5 +166,7 @@ export async function toContentItems(rows: Content[]) {
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),
     media: mediaRows.filter((m) => m.contentId === r.id).map((m) => mediaItem(m.a)),
     publishCounts: counts.get(r.id) ?? {},
+    /** Languages with a translation (the source language is `lang`). */
+    translations: langs.get(r.id) ?? [],
   }));
 }

@@ -82,16 +82,24 @@ export const TEMPLATES: TemplateSpec[] = [
   { name: 'demo user 价格回复', owner: 'user', kind: 'comment', persona: null, tags: ['demo', 'faq'], text: '价格和购买方式请看主页置顶帖哦，谢谢关注！' },
 ];
 
-export interface ContentSpec { title: string; owner: 'admin' | 'user'; stage: 'draft' | 'ready' | 'archived'; media: string[]; tags: string[]; category: string | null; body: string; caption?: string }
+/** 多语言内容: human-written versions (the contents themselves are zh-CN). */
+export interface TranslationSpec { lang: string; title: string; body: string; caption?: string }
+export interface ContentSpec { title: string; owner: 'admin' | 'user'; stage: 'draft' | 'ready' | 'archived'; media: string[]; tags: string[]; category: string | null; body: string; caption?: string; translations?: TranslationSpec[] }
 export const CONTENTS: ContentSpec[] = [
-  { title: 'demo 新品咖啡上市', owner: 'admin', stage: 'ready', media: ['demo-咖啡新品-方图.jpg', 'demo-咖啡新品-竖图.jpg'], tags: ['demo', 'coffee', '新品'], category: '新品发布', body: '秋季限定拿铁上市，主推两张产品图轮播。', caption: '☕ 秋季限定新品上市！#新品 #咖啡' },
-  { title: 'demo 无线耳机开箱', owner: 'admin', stage: 'ready', media: ['demo-开箱短片.mp4', 'demo-耳机-横幅.png'], tags: ['demo', 'Tech'], category: '新品发布', body: '开箱短片 + 横幅，突出降噪和续航。', caption: '🎧 30 小时续航，开箱见真章 #unboxing' },
+  { title: 'demo 新品咖啡上市', owner: 'admin', stage: 'ready', media: ['demo-咖啡新品-方图.jpg', 'demo-咖啡新品-竖图.jpg'], tags: ['demo', 'coffee', '新品'], category: '新品发布', body: '秋季限定拿铁上市，主推两张产品图轮播。', caption: '☕ 秋季限定新品上市！#新品 #咖啡',
+    translations: [
+      { lang: 'en', title: 'New autumn coffee is here', body: 'Our limited autumn latte is out now. Two product photos in a carousel.', caption: '☕ Limited autumn latte, out now! #newarrival #coffee' },
+      { lang: 'hi', title: 'नई ऑटम कॉफ़ी आ गई है', body: 'हमारी सीमित ऑटम लाटे अब उपलब्ध है। कैरोसेल में दो प्रोडक्ट फ़ोटो।', caption: '☕ सीमित ऑटम लाटे, अभी उपलब्ध! #नया #कॉफ़ी' },
+    ] },
+  { title: 'demo 无线耳机开箱', owner: 'admin', stage: 'ready', media: ['demo-开箱短片.mp4', 'demo-耳机-横幅.png'], tags: ['demo', 'Tech'], category: '新品发布', body: '开箱短片 + 横幅，突出降噪和续航。', caption: '🎧 30 小时续航，开箱见真章 #unboxing',
+    translations: [{ lang: 'en', title: 'Wireless earbuds unboxing', body: 'Unboxing clip + banner: noise cancelling and battery life.', caption: '🎧 30 hours of battery, see for yourself #unboxing' }] },
   { title: 'demo 双十一预热', owner: 'admin', stage: 'draft', media: ['demo-双十一海报.jpg'], tags: ['demo', 'promo'], category: '活动', body: '满 199 减 50，预热期 3 天，文案待定。' },
   { title: 'demo 圣诞倒计时', owner: 'admin', stage: 'draft', media: ['demo-圣诞倒计时.mp4'], tags: ['demo', 'promo', 'christmas'], category: '活动', body: '圣诞倒计时短视频，12 月 1 日起每日一条。', caption: '🎄 Countdown starts now!' },
   { title: 'demo 夏日海边合集', owner: 'admin', stage: 'ready', media: ['demo-海边日落.jpg', 'demo-城市夜景.jpg', 'demo-早餐摆拍.png'], tags: ['demo', 'Summer', 'travel'], category: '生活方式', body: '三图合集：日落、夜景、早餐。', caption: '☀️ Summer memories #travel' },
   { title: 'demo 旧品清仓', owner: 'admin', stage: 'archived', media: ['demo-运动鞋-白底.jpg'], tags: ['demo', 'archive'], category: '活动', body: '上季运动鞋清仓，活动已结束（归档）。' },
   { title: 'demo 品牌故事草稿', owner: 'admin', stage: 'draft', media: [], tags: ['demo'], category: null, body: '十年前，我们在一间 20 平米的小店里烘焙第一批咖啡豆……（品牌故事长文草稿，待补充配图）' },
-  { title: 'demo 健身打卡第1天', owner: 'user', stage: 'ready', media: ['demo-user-健身打卡.jpg'], tags: ['demo', 'fitness'], category: '健身', body: '健身打卡系列第一天。', caption: '💪 Day 1 #fitness #gym' },
+  { title: 'demo 健身打卡第1天', owner: 'user', stage: 'ready', media: ['demo-user-健身打卡.jpg'], tags: ['demo', 'fitness'], category: '健身', body: '健身打卡系列第一天。', caption: '💪 Day 1 #fitness #gym',
+    translations: [{ lang: 'hi', title: 'फ़िटनेस चेक-इन, दिन 1', body: 'फ़िटनेस चेक-इन सीरीज़ का पहला दिन।', caption: '💪 दिन 1 #fitness #gym' }] },
   { title: 'demo 跑步vlog', owner: 'user', stage: 'draft', media: ['demo-user-跑步vlog.mp4'], tags: ['demo', 'Fitness', 'vlog'], category: '健身', body: '晨跑 5 公里 vlog，待剪辑字幕。' },
   { title: 'demo 周末午餐', owner: 'user', stage: 'ready', media: ['demo-user-午餐.png', 'demo-早餐摆拍.png'], tags: ['demo', 'food'], category: '美食', body: '周末午餐 + 早餐摆拍（公共素材）。', caption: '🍝 Weekend lunch #foodie' },
   { title: 'demo 自拍分享', owner: 'user', stage: 'draft', media: ['demo-user-自拍-01.jpg'], tags: ['demo', 'selfie'], category: null, body: '日常自拍。' },
@@ -284,17 +292,26 @@ async function seed() {
     if (!row) {
       row = must(await http('POST', '/api/contents', tok(c.owner), {
         title: c.title, body: c.body, category: c.category, tags: c.tags, mediaIds: c.media.map((f) => mediaIds.get(f)!),
-        platformHints: c.caption ? { instagram: { caption: c.caption } } : {}, stage: c.stage === 'archived' ? 'ready' : c.stage,
+        platformHints: c.caption ? { instagram: { caption: c.caption } } : {}, stage: c.stage === 'archived' ? 'ready' : c.stage, lang: 'zh-CN',
       }), `content ${c.title}`).content;
       if (c.stage === 'archived') row = must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { stage: 'archived' }), `archive ${c.title}`).content;
     }
     addId(st.contents, row.id);
+    // 多语言内容 (older seeds created the contents without a source language)
+    if (row.lang !== 'zh-CN' && !(c.translations ?? []).some((x) => x.lang === row.lang)) must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { lang: 'zh-CN' }), `lang ${c.title}`);
+    for (const tr of c.translations ?? []) {
+      if ((row.translations ?? []).includes(tr.lang)) continue;
+      note(true);
+      must(await http('PUT', `/api/contents/${row.id}/translations/${tr.lang}`, tok(c.owner), {
+        title: tr.title, body: tr.body, platformHints: tr.caption ? { instagram: { caption: tr.caption } } : {},
+      }), `translation ${tr.lang} ${c.title}`);
+    }
   }
   saveState(st);
 
   console.log(`\nseed done: ${counts.created} created, ${counts.existing} already present`);
   console.log(`  categories ${CATEGORIES.length} · media ${MEDIA.length} (public ${MEDIA.filter((m) => m.owner === 'public').length}, admin private ${MEDIA.filter((m) => m.owner === 'admin').length}, ${DEMO_USER} private ${MEDIA.filter((m) => m.owner === 'user').length})`);
-  console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length})`);
+  console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length}) · translations ${CONTENTS.reduce((n, c) => n + (c.translations?.length ?? 0), 0)}`);
   console.log(`  ${DEMO_USER} credentials: ${path.relative(process.cwd(), CRED_FILE)}`);
 }
 
