@@ -4,7 +4,8 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { canonicalLang, langName } from '../../api/lang'
+import { canonicalLang, COMMON_LANGS, langName } from '../../api/lang'
+import { confirmAction } from '../common/ui'
 import type { LanguageSettings } from '../../api/types'
 
 /** Settings → 多语言 (admin): languages offered in the content editor and the default original language. */
@@ -19,18 +20,37 @@ function fill(s: State) { state.value = s; languages.value = [...s.languages]; d
 onMounted(async () => {
   try { fill((await api<{ languages: State }>('GET', '/api/settings/languages')).languages) } catch (e) { message.error(errorText(e)) }
 })
-/** Tags mode: keep canonical codes only, reject invalid ones. */
+/** Codes typed in the last change that were not valid BCP-47 tags (shown inline, never saved). */
+const invalid = ref<string[]>([])
+/** Tags mode: built-in options or any typed code; keep canonical, deduped codes only. */
 function onLanguages(v: string[]) {
   const out: string[] = []
+  const bad: string[] = []
   for (const raw of v) {
     const c = canonicalLang(raw)
-    if (!c) { message.warning(t('settings.languages.invalid', { code: raw })); continue }
+    if (!c) { bad.push(raw); continue }
     if (!out.includes(c)) out.push(c)
   }
-  languages.value = out
-  if (defaultSource.value && !out.includes(defaultSource.value)) defaultSource.value = undefined
+  invalid.value = bad
+  const apply = () => {
+    languages.value = out
+    if (defaultSource.value && !out.includes(defaultSource.value)) defaultSource.value = undefined
+  }
+  if (defaultSource.value && languages.value.includes(defaultSource.value) && !out.includes(defaultSource.value)) {
+    confirmAction({
+      title: t('settings.languages.removeDefault', { lang: label(defaultSource.value) }),
+      onOk: apply,
+    })
+    return
+  }
+  apply()
 }
-const options = computed(() => languages.value.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
+const label = (l: string) => `${langName(l)} (${l})`
+/** Configured languages first, then the built-in list. */
+const allOptions = computed(() => [...new Set([...languages.value, ...COMMON_LANGS])].map((l) => ({ value: l, label: label(l) })))
+const options = computed(() => languages.value.map((l) => ({ value: l, label: label(l) })))
+const filterOption = (input: string, o?: { value: string; label: string }) =>
+  !!o && (o.label.toLowerCase().includes(input.trim().toLowerCase()) || o.value.toLowerCase().includes(input.trim().toLowerCase()))
 async function save() {
   saving.value = true
   try {
@@ -45,8 +65,15 @@ async function save() {
     <a-spin :spinning="!state">
       <a-typography-title :level="5">{{ t('settings.languages.title') }}</a-typography-title>
       <a-form layout="vertical">
-        <a-form-item :label="t('settings.languages.list')">
-          <a-select :value="languages" mode="tags" :options="options" :token-separators="[',', ' ']" :placeholder="t('settings.languages.listPlaceholder')" @change="(v: any) => onLanguages(v as string[])" />
+        <a-form-item
+          :label="t('settings.languages.list')"
+          :validate-status="invalid.length ? 'error' : undefined"
+          :help="invalid.length ? t('settings.languages.invalid', { code: invalid.join(', ') }) : undefined"
+        >
+          <a-select
+            :value="languages" mode="tags" :options="allOptions" :filter-option="filterOption" :token-separators="[',', ' ']"
+            :placeholder="t('settings.languages.listPlaceholder')" @change="(v: any) => onLanguages(v as string[])"
+          />
         </a-form-item>
         <a-form-item :label="t('settings.languages.defaultSource')">
           <a-select v-model:value="defaultSource" :options="options" allow-clear style="width: 240px" />
