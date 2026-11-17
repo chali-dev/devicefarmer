@@ -6,6 +6,7 @@ import type { Instance } from '../../db/schema.js';
 import { getProfile } from '../../profiles.js';
 import { adb, dockerHost, network, stf } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
+import { checkEgress } from '../instances/egress.js';
 import { updateInstance } from '../instances/repo.js';
 import { deviceStatusChanged, type DownReason } from '../notify/triggers.js';
 import { sourceOf } from '../sources/index.js';
@@ -157,7 +158,12 @@ function startExternalMonitor(log: FastifyBaseLogger): () => void {
         } else {
           try {
             await src.driver.openAdb(src.cfg, src.target);
-            await observeAdb(log, inst, adbStates, stfBySerial, patch);
+            const up = await observeAdb(log, inst, adbStates, stfBySerial, patch);
+            // Egress as the phone sees it (its source's proxy), every PROXY_CHECK_MS; in the background so a slow probe doesn't hold up the other phones.
+            const egressDue = !inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > PROXY_CHECK_MS;
+            if (up && egressDue && (patch.status ?? inst.status) === 'running') {
+              void checkEgress(inst).catch((err) => log.warn({ err, instance: inst.name }, 'external phone: egress check failed'));
+            }
           } catch (err) {
             log.warn({ err, instance: inst.name }, 'external phone: adb connection failed');
             if (inst.adbState !== 'offline') patch.adbState = 'offline';

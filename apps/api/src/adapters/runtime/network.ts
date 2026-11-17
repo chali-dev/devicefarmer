@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { ProxyConfig, ProxyStatus } from '../../db/schema.js';
 import { buildConfig, buildRules, START_SCRIPT } from '../../modules/network/singbox.js';
 import type { DockerHost } from './docker.js';
-import { parseKv } from '../../lib/kv.js';
+import { egressScript, parseEgress } from '../../lib/egress.js';
 
 const NET_LABEL = 'cloudphone.net';
 
@@ -68,35 +68,12 @@ export class NetworkSidecar {
 
   /** Egress probe from inside the instance's namespace: same path as Android's traffic. */
   async check(netContainerId: string): Promise<ProxyStatus> {
-    const script = [
-      't0=$(cut -d" " -f1 /proc/uptime)',
-      'ip=$(wget -qO- -T 12 https://api.ipify.org 2>/dev/null)',
-      't1=$(cut -d" " -f1 /proc/uptime)',
-      'nslookup -timeout=6 www.google.com >/dev/null 2>&1 && dns=1 || dns=0',
-      'echo "ip=$ip"; echo "t0=$t0"; echo "t1=$t1"; echo "dns=$dns"',
-      // Geo of the egress IP, best effort (rate limits must not fail the check); one line of JSON.
-      'if [ -n "$ip" ]; then echo "geo=$(wget -qO- -T 8 https://ipinfo.io/json 2>/dev/null | tr -d \'\\n\')"; fi',
-    ].join('; ');
     const checkedAt = new Date().toISOString();
     try {
-      const r = await this.host.helper(['sh', '-c', script], [], { netContainerId, timeoutMs: 40_000 });
-      const kv = parseKv(r.out);
-      const ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(kv.ip ?? '') ? kv.ip! : null;
-      const latencyMs = ip ? Math.round((Number(kv.t1) - Number(kv.t0)) * 1000) : null;
-      return { checkedAt, ok: Boolean(ip), egressIp: ip, latencyMs, dnsOk: kv.dns === '1', error: ip ? null : 'no egress through proxy (blocked or proxy unreachable)', ...geoOf(kv.geo, ip) };
+      const r = await this.host.helper(['sh', '-c', egressScript('busybox')], [], { netContainerId, timeoutMs: 40_000 });
+      return parseEgress(r.out, checkedAt, 'no egress through proxy (blocked or proxy unreachable)');
     } catch (err) {
       return { checkedAt, ok: false, egressIp: null, latencyMs: null, dnsOk: false, error: (err as Error).message };
     }
   }
-}
-
-/** country/region/city from ipinfo's JSON, only if it describes the IP we saw (ipinfo answers for the caller). */
-function geoOf(raw: string | undefined, ip: string | null): Pick<ProxyStatus, 'country' | 'region' | 'city'> {
-  if (!raw || !ip) return {};
-  try {
-    const g = JSON.parse(raw) as Record<string, unknown>;
-    if (g.ip !== ip) return {};
-    const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 80) : null);
-    return { country: str(g.country), region: str(g.region), city: str(g.city) };
-  } catch { return {}; }
 }

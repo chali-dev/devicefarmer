@@ -9,7 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, errorText } from '../api/client'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
-import { proxyLabel, type Instance } from '../api/types'
+import { egressGeo, proxyLabel, type Instance } from '../api/types'
 import { dateLocale } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -118,8 +118,8 @@ const macText = computed(() => actual.value?.mac ? `${actual.value.mac}${actual.
 /** Geo of the measured egress IP; before the first such check, the location configured on the proxy (marked). */
 const geoText = computed(() => {
   const i = inst.value
-  const s = i?.proxyStatus
-  if (s?.country) return [s.country, ...[s.region, s.city].filter((x, n, a) => x && a.indexOf(x) === n)].filter(Boolean).join(' · ')
+  const measured = egressGeo(i?.proxyStatus)
+  if (measured) return measured
   const conf = [i?.proxy?.country, i?.proxy?.city].filter(Boolean).join(' ')
   return conf ? t('cloud.locationConfigured', { where: conf }) : '—'
 })
@@ -136,10 +136,11 @@ const network = computed<Row[]>(() => {
   const i = inst.value
   if (!i) return []
   const mac: Row = [t('cloud.mac'), macText.value]
-  if (!i.proxy) return [[t('cloud.proxy'), i.sourceId ? t('devices.ext.proxyShort') : t('devices.direct')], mac]
+  if (!i.proxy && !i.sourceId) return [[t('cloud.proxy'), t('devices.direct')], mac]
   const s = i.proxyStatus
   return [
-    [t('cloud.proxy'), `${i.proxy.type.toUpperCase()} ${proxyLabel(i.proxy)}`],
+    // External phones: the proxy is set at their source; the egress below is measured on the phone itself.
+    [t('cloud.proxy'), i.proxy ? `${i.proxy.type.toUpperCase()} ${proxyLabel(i.proxy)}` : t('devices.ext.proxyShort')],
     mac,
     [t('cloud.location'), geoText.value, 'geo'],
     [t('cloud.egressIp'), dash(s?.egressIp)],
@@ -165,6 +166,9 @@ const other = computed(() => [
             <a-space :size="8" class="title">
               <strong>{{ inst.name }}</strong>
               <StatusTag :status="inst.status" />
+              <a-tooltip v-if="inst.proxyStatus?.country" :title="`${t('cloud.egressIp')} ${dash(inst.proxyStatus.egressIp)} · ${geoText}`">
+                <a-tag style="margin: 0">{{ inst.proxyStatus.country }}</a-tag>
+              </a-tooltip>
             </a-space>
             <a-space :size="2">
               <a-tooltip :title="t('cloud.rotate')"><a-button type="text" :disabled="!running" @click="rotate"><RotateRightOutlined /></a-button></a-tooltip>

@@ -1,5 +1,7 @@
 import { Adb, type Client } from '@devicefarmer/adbkit';
 import { config } from '../config.js';
+import type { ProxyStatus } from '../db/schema.js';
+import { egressScript, parseEgress } from '../lib/egress.js';
 
 /**
  * Talks to the adb server shared with STF. Attaching a device here
@@ -101,6 +103,20 @@ export class AdbAdapter {
       return await Promise.race([run(), new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('adb shell timeout')), timeoutMs); })]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Egress as the phone itself sees it (read-only: two small HTTPS requests from the phone's own
+   * network, so through whatever proxy its source binds). Needs curl on the device (BitBrowser
+   * phones have it); failures come back as ok:false, never thrown.
+   */
+  async egress(adbPort: number): Promise<ProxyStatus> {
+    const checkedAt = new Date().toISOString();
+    try {
+      return parseEgress(await this.shell(adbPort, egressScript('android'), 35_000), checkedAt, 'no egress from the device (offline or proxy unreachable)');
+    } catch (err) {
+      return { checkedAt, ok: false, egressIp: null, latencyMs: null, dnsOk: false, error: (err as Error).message.slice(0, 300) };
     }
   }
 

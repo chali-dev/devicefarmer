@@ -6,6 +6,7 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { db, schema } from '../../db/index.js';
 import type { PoolProxy, ProxyCheck, ProxyConfig } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
+import { geoOf } from '../../lib/egress.js';
 import { openSecret } from '../../lib/secret-box.js';
 
 /**
@@ -154,9 +155,8 @@ export async function probeProxy(p: ProxyConfig): Promise<ProxyCheck> {
     const ip = typeof ipr.ip === 'string' && IPV4_OR_6.test(ipr.ip) ? ipr.ip : null;
     if (!ip) return { at, ok: false, egressIp: null, latencyMs: null, country: null, city: null, error: 'no egress IP returned' };
     // Geo is best effort (rate limits must not fail a working proxy).
-    const geo = await getJson('https://ipinfo.io/json', agent).catch(() => null);
-    const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 80) : null);
-    return { at, ok: true, egressIp: ip, latencyMs, country: str(geo?.country), city: str(geo?.city), error: null };
+    const geo = geoOf(await getJson('https://ipinfo.io/json', agent).catch(() => null), ip);
+    return { at, ok: true, egressIp: ip, latencyMs, country: geo.country ?? null, city: geo.city ?? null, error: null };
   } catch (err) {
     return { at, ok: false, egressIp: null, latencyMs: null, country: null, city: null, error: (err as Error).message.slice(0, 300) || 'connection failed' };
   } finally {
