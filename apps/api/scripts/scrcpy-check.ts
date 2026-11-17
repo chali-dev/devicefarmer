@@ -23,6 +23,7 @@ import { config } from '../src/config.js';
 import { joinScrcpy, scrcpyActive, scrcpyInfo } from '../src/modules/control/scrcpy-hub.js';
 import { startRelayListener } from '../src/modules/control/scrcpy-relay.js';
 import { adb } from '../src/services.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const WS = API.replace(/^http/, 'ws');
@@ -159,7 +160,7 @@ const jar = path.resolve(config.SCRCPY_SERVER_PATH);
 const jarAside = `${jar}.aside`;
 const measurements: Record<string, unknown> = {};
 try {
-  const login = await http('POST', '/api/auth/login', undefined, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD });
+  const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
   check('admin login', login.status === 200);
   adminToken = login.body.token;
   check('scrcpy server present', fs.existsSync(jar), jar);
@@ -483,7 +484,7 @@ try {
     const u = await http('POST', '/api/users', adminToken, { username: uname, password: upass, role: 'user' });
     check('create user without a grant', u.status === 201);
     userId = u.body.user.id;
-    const ut = (await http('POST', '/api/auth/login', undefined, { username: uname, password: upass })).body.token;
+    const ut = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: uname, password: upass }))).body.token;
     const s = session(ut, inst.id);
     await waitFor('session refused', () => s.st.closeCode, 10_000);
     check('user without control access is refused', s.st.closeCode === 4003, `close ${s.st.closeCode}`);

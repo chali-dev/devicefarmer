@@ -17,6 +17,7 @@ import { HeadObjectCommand, S3Client, CreateBucketCommand } from '@aws-sdk/clien
 import { and, eq, gte, inArray, like as dlike, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const ASSET_DIR = path.resolve(process.env.ASSET_DIR ?? 'var/assets');
@@ -78,7 +79,7 @@ const onDisk = (key: string | null | undefined) => Boolean(key) && fs.existsSync
 const list = async (token: string, query: string) => (await http<{ items: any[]; total: number }>('GET', `/api/media?${query}`, token));
 const ids = (r: { body: { items: any[] } }) => (r.body?.items ?? []).map((i) => i.id as string);
 
-const login = async (username: string, password: string) => (await http<{ token: string }>('POST', '/api/auth/login', undefined, { username, password })).body?.token;
+const login = async (username: string, password: string) => (await http<{ token: string }>('POST', '/api/auth/login', undefined, await withCaptcha(API, { username, password }))).body?.token;
 
 // Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
 // (Docker Desktop VM drift): take the start time from the database.

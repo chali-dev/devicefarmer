@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
+import { withCaptcha } from './lib/login.js';
 
 const run = promisify(execFile);
 const FFMPEG = process.env.FFMPEG_PATH ?? 'ffmpeg';
@@ -102,7 +103,7 @@ const ownerFiles = (ownerId: string) => {
   return out.sort();
 };
 
-const login = await http<{ token: string; user: { id: string } }>('POST', '/api/auth/login', undefined, { username: process.env.ADMIN_USERNAME ?? 'admin', password: process.env.ADMIN_PASSWORD ?? '' });
+const login = await http<{ token: string; user: { id: string } }>('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME ?? 'admin', password: process.env.ADMIN_PASSWORD ?? '' }));
 const admin = login.body?.token;
 check('admin login', Boolean(admin));
 if (!admin) process.exit(1);

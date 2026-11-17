@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import PuzzleCaptcha, { type CaptchaAnswer } from '../components/auth/PuzzleCaptcha.vue'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -13,16 +14,26 @@ const { t } = useI18n()
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
 const error = ref('')
+const captcha = ref<CaptchaAnswer | null>(null)
+/** null until the first challenge is loaded; false = LOGIN_CAPTCHA=off on the server. */
+const captchaEnabled = ref<boolean | null>(null)
+const puzzle = ref<InstanceType<typeof PuzzleCaptcha> | null>(null)
 
 async function submit() {
+  if (captchaEnabled.value !== false && !captcha.value) {
+    error.value = t('errors.auth.captcha_required')
+    return
+  }
   loading.value = true
   error.value = ''
   try {
-    await auth.login(form.username, form.password)
+    await auth.login(form.username, form.password, captchaEnabled.value === false ? null : captcha.value)
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     await router.replace(redirect)
   } catch (e) {
     error.value = errorText(e)
+    // The login used the challenge up (right or wrong): the next try needs a new puzzle.
+    if (captchaEnabled.value !== false) void puzzle.value?.refresh()
   } finally {
     loading.value = false
   }
@@ -48,6 +59,7 @@ async function submit() {
               <template #prefix><LockOutlined class="muted" /></template>
             </a-input-password>
           </a-form-item>
+          <PuzzleCaptcha ref="puzzle" v-model="captcha" v-model:enabled="captchaEnabled" />
           <a-alert v-if="error" type="error" :message="error" show-icon class="error" />
           <a-button type="primary" html-type="submit" size="large" block :loading="loading">{{ t('auth.login') }}</a-button>
         </a-form>

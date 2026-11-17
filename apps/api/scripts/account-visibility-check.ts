@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -34,7 +35,7 @@ async function http<T = any>(method: string, path: string, token?: string, body?
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await http('POST', '/api/auth/login', undefined, { username, password });
+  const r = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username, password }));
   if (!r.body?.token) throw new Error(`login ${username} failed: ${r.status}`);
   return r.body.token;
 }

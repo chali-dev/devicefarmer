@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, unauthorized } from '../../lib/errors.js';
 import { auditRequest } from '../audit/audit.js';
+import { captchaEnabled, checkCaptcha, createChallenge, isCaptchaError } from './captcha.js';
 
 /** Public profile of a user (never includes passwordHash). */
 const profileColumns = {
@@ -26,9 +27,38 @@ async function loadProfile(id: string) {
 const emptyToNull = (v: string) => (v === '' ? null : v);
 
 export const authRoutes: FastifyPluginAsyncZod = async (app) => {
+  // Slider puzzle captcha (captcha.ts). Unauthenticated; `{ enabled: false }` when LOGIN_CAPTCHA=off.
+  app.get('/api/auth/captcha', async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    if (!captchaEnabled()) return { enabled: false };
+    return { enabled: true, ...(await createChallenge(req)) };
+  });
+
+  // Checked on release by the web; a correct answer stays usable once for the login (audit-excluded).
+  app.post('/api/auth/captcha/verify', async (req) => {
+    if (!captchaEnabled()) return { ok: true };
+    await checkCaptcha(req.body, { keepIfRight: true });
+    return { ok: true };
+  });
+
   app.post('/api/auth/login', {
-    schema: { body: z.object({ username: z.string().min(1), password: z.string().min(1) }) },
+    // `captcha` is validated by checkCaptcha so that a missing/malformed one gets its own code.
+    schema: { body: z.object({ username: z.string().min(1), password: z.string().min(1), captcha: z.unknown().optional() }) },
   }, async (req) => {
+    // Before the password and the user lookup: guards brute force and reveals nothing about the username.
+    if (captchaEnabled()) {
+      try {
+        await checkCaptcha(req.body.captcha);
+      } catch (e) {
+        if (isCaptchaError(e)) {
+          auditRequest(req, {
+            action: 'auth.login_failed', userId: null, username: req.body.username.slice(0, 64), target: req.body.username.slice(0, 64), status: 400,
+            detail: { reason: e.reason },
+          });
+        }
+        throw e;
+      }
+    }
     const [u] = await db.select().from(schema.users).where(eq(schema.users.username, req.body.username));
     // Compare even when the user is missing to keep timing similar.
     const ok = await bcrypt.compare(req.body.password, u?.passwordHash ?? '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv');

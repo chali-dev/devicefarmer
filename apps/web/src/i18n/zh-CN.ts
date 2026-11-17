@@ -116,6 +116,14 @@ const zhCN = {
     login: '登录',
     enterUsername: '请输入用户名',
     enterPassword: '请输入密码',
+    captcha: {
+      label: '拼图验证滑块',
+      hint: '向右拖动滑块完成拼图',
+      refresh: '换一张',
+      retry: '点击重试',
+      verified: '验证通过',
+      failed: '拼图未对齐，请重试',
+    },
   },
   roles: {
     admin: '管理员',
@@ -2190,6 +2198,10 @@ const zhCN = {
       admin_only: '仅管理员可以执行此操作',
       role_forbidden: '当前角色无权执行该设备操作',
       no_instance_access: '无权访问该设备',
+      captcha_required: '请先完成拼图验证',
+      captcha_invalid: '拼图验证未通过，请重试',
+      captcha_expired: '验证已失效，请重新验证',
+      captcha_rate_limited: '获取验证过于频繁，请稍后再试',
     },
     users: {
       not_found: '用户不存在',

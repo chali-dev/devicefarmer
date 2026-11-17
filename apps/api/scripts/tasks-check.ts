@@ -22,6 +22,7 @@ import '../src/modules/instances/queue.js';
 import { closeTaskQueues, createTask, type CreateTaskInput } from '../src/modules/tasks/core.js';
 import '../src/modules/tasks/test-handlers.js';
 import type { TestPayload } from '../src/modules/tasks/test-handlers.js';
+import { withCaptcha } from './lib/login.js';
 
 const PORT = Number(process.env.API_PORT ?? 3000);
 const API = `http://127.0.0.1:${PORT}`;
@@ -39,7 +40,7 @@ async function http<T = any>(method: string, p: string, token: string, body?: un
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username, password })) });
   return (await r.json()).token;
 }
 async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 30_000, every = 250): Promise<T> {

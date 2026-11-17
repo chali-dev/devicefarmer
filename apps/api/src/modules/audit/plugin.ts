@@ -15,7 +15,8 @@ import { recordAudit } from './audit.js';
 
 /**
  * Not recorded by the hook (method + route pattern):
- * - POST /api/auth/login: recorded explicitly by the login route (auth.login / auth.login_failed).
+ * - POST /api/auth/login: recorded explicitly by the login route (auth.login / auth.login_failed, incl. captcha refusals).
+ * - POST /api/auth/captcha/verify: the login page's puzzle check on release (unauthenticated, changes nothing).
  * - read-like POSTs that only query/probe and change nothing the user configured:
  *   proxy egress checks (device and pool, and the unsaved-config test), Google health check, storage connection test,
  *   tracked-account URL parsing (preview).
@@ -24,6 +25,7 @@ import { recordAudit } from './audit.js';
  */
 export const AUDIT_EXCLUDED = new Set([
   'POST /api/auth/login',
+  'POST /api/auth/captcha/verify',
   'POST /api/instances/:id/proxy/check',
   'POST /api/proxies/:id/check',
   'POST /api/proxies/check',

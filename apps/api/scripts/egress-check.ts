@@ -18,6 +18,7 @@ import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db/index.js';
 import { egressScript, geoOf, parseEgress } from '../src/lib/egress.js';
 import { adb } from '../src/services.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
@@ -72,7 +73,7 @@ try {
   check('geoOf: parsed object form (pool check)', geoOf({ ip: '1.2.3.4', country: 'DE', city: 'Berlin' }, '1.2.3.4').country === 'DE' && geoOf({ ip: '1.2.3.5', country: 'DE' }, '1.2.3.4').country === undefined);
   check('android script has no busybox-only commands', !egressScript('android').includes('nslookup') && egressScript('busybox').includes('nslookup'));
 
-  const login = await http('POST', '/api/auth/login', undefined, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD });
+  const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
   check('admin login', login.status === 200);
   adminToken = login.body.token;
 
@@ -105,7 +106,7 @@ try {
     const u = await http('POST', '/api/users', adminToken, { username: uname, password: upass, role: 'user' });
     check('create user', u.status === 201);
     userId = u.body.user.id;
-    const ut = (await http('POST', '/api/auth/login', undefined, { username: uname, password: upass })).body.token;
+    const ut = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: uname, password: upass }))).body.token;
     userToken = ut;
     const denied = await http('POST', `/api/instances/${createdId}/proxy/check`, ut);
     check('user without grant cannot recheck', denied.status === 403 || denied.status === 404, String(denied.status));

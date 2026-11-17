@@ -7,6 +7,7 @@
 import { zipSync } from 'fflate';
 import fs from 'node:fs';
 import WebSocket from 'ws';
+import { withCaptcha } from './lib/login.js';
 
 const API = 'http://127.0.0.1:3000';
 const apk = process.argv[2];
@@ -26,7 +27,7 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
   for (;;) { const v = await fn().catch(() => null); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${label}`); await new Promise((r) => setTimeout(r, 2000)); }
 }
 
-const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }) })).json()).token;
+const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD })) })).json()).token;
 const all = (await http('GET', '/api/instances', T)).body.instances;
 const g = all.filter((i: any) => i.name.startsWith('g13-')).sort((a: any, b: any) => a.name.localeCompare(b.name));
 if (g.length !== 2 || g.some((i: any) => i.status !== 'running')) throw new Error('need g13-1 and g13-2 running');

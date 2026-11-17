@@ -21,6 +21,7 @@ import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
+import { withCaptcha } from './lib/login.js';
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -48,7 +49,7 @@ const disabled = (r: { status: number; body: any }) => r.status === 400 && r.bod
 const ids = (list: any[] | undefined, key = 'id') => (list ?? []).map((x) => x[key]).sort().join(',');
 const tasksFor = (refId: string, type?: string) => db.select().from(schema.tasks).where(and(eq(schema.tasks.refId, refId), type ? eq(schema.tasks.type, type) : undefined));
 
-const login = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }) });
+const login = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD })) });
 const T: string = (await login.json()).token;
 const [me] = await db.select().from(schema.users).where(eq(schema.users.username, process.env.ADMIN_USERNAME!));
 const tag = randomBytes(3).toString('hex');

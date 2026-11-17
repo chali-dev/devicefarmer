@@ -7,6 +7,7 @@ import Docker from 'dockerode';
 import fs from 'node:fs';
 import WebSocket from 'ws';
 import { dockerFromEnv } from '../src/adapters/runtime/docker.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const WS = API.replace(/^http/, 'ws');
@@ -86,9 +87,9 @@ let adminToken = '';
 let viewerId: string | null = null;
 try {
   // ---- auth
-  const bad = await http('POST', '/api/auth/login', undefined, { username: 'admin', password: 'wrong-password' });
+  const bad = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: 'admin', password: 'wrong-password' }));
   check('login rejects wrong password', bad.status === 401);
-  const login = await http('POST', '/api/auth/login', undefined, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD });
+  const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
   check('admin login', login.status === 200 && !!login.body.token);
   adminToken = login.body.token;
   check('unauthenticated request rejected', (await http('GET', '/api/instances')).status === 401);
@@ -173,7 +174,7 @@ try {
   check('admin creates user', vu.status === 201);
   viewerId = vu.body.user.id;
   check('grant viewer one instance', (await http('PUT', `/api/users/${viewerId}/grants`, adminToken, { instanceIds: [a.id] })).status === 200);
-  const vt = (await http('POST', '/api/auth/login', undefined, { username: vname, password: vpass })).body.token;
+  const vt = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: vname, password: vpass }))).body.token;
   const vlist = await http('GET', '/api/instances', vt);
   check('viewer sees only granted instance', vlist.body.instances.length === 1 && vlist.body.instances[0].id === a.id);
   check('viewer cannot see other instance', (await http('GET', `/api/instances/${b.id}`, vt)).status === 403);

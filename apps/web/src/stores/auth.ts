@@ -9,8 +9,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAdmin = computed(() => user.value?.role === 'admin')
 
-  async function login(username: string, password: string) {
-    const r = await api<{ token: string; user: User }>('POST', '/api/auth/login', { username, password })
+  /** `captcha` = the verified puzzle answer (components/auth/PuzzleCaptcha.vue); omitted when the server has it off. */
+  async function login(username: string, password: string, captcha?: { id: string; x: number; trail: [number, number][] } | null) {
+    const r = await api<{ token: string; user: User }>('POST', '/api/auth/login', { username, password, ...(captcha ? { captcha } : {}) })
     token.value = r.token
     user.value = r.user
     setToken(r.token)

@@ -18,6 +18,7 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { scheduleTrackedRefreshes } from '../src/modules/tracked/schedule.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const REAL_KEY = process.env.YOUTUBE_TEST_API_KEY;
@@ -32,7 +33,7 @@ async function http<T = any>(method: string, path: string, token: string, body?:
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username, password })) });
   return (await r.json()).token;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
