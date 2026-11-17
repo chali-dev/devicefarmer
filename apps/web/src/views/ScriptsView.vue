@@ -96,16 +96,13 @@ async function save() {
     else { void load(); void loadFacets() }
   } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
 }
-/** "Save as personal": a private copy the user can edit (e.g. of a public template). */
-async function duplicate(x: CommentTemplate) {
+/** 另存为个人 / 建立副本: a new private copy owned by the current user (of a public, another user's or an own template). */
+async function duplicate(x: CommentTemplate, done = 'scripts.duplicated') {
   try {
     await api('POST', '/api/comment-templates', { kind: x.kind, name: `${x.name}${t('scripts.copySuffix')}`.slice(0, 100), persona: x.persona, tags: x.tags, text: x.text })
-    message.success(t('scripts.duplicated'))
+    message.success(t(done))
     void load()
   } catch (e) { message.error(errorText(e)) }
-}
-async function copyText(x: CommentTemplate) {
-  try { await navigator.clipboard.writeText(x.text); message.success(t('scripts.copied')) } catch (e) { message.error(errorText(e)) }
 }
 function remove(x: CommentTemplate) {
   confirmDanger({
@@ -155,9 +152,9 @@ function remove(x: CommentTemplate) {
           <template v-else-if="column.key === 'updated'">{{ new Date(record.updatedAt).toLocaleString(dateLocale()) }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-button type="link" size="small" @click="copyText(record as CommentTemplate)">{{ t('scripts.copy') }}</a-button>
               <a-button v-if="record.writable" type="link" size="small" @click="openForm(record as CommentTemplate)">{{ t('common.edit') }}</a-button>
               <a-button v-else-if="!isOwn(record as CommentTemplate)" type="link" size="small" @click="duplicate(record as CommentTemplate)">{{ t('scripts.duplicate') }}</a-button>
+              <a-button v-if="tab === 'mine' && isOwn(record as CommentTemplate)" type="link" size="small" @click="duplicate(record as CommentTemplate, 'scripts.copyMade')">{{ t('scripts.makeCopy') }}</a-button>
               <a-button v-if="record.writable && isOwn(record as CommentTemplate)" type="link" size="small" danger @click="remove(record as CommentTemplate)">{{ t('common.delete') }}</a-button>
               <a-dropdown v-else-if="record.writable">
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
