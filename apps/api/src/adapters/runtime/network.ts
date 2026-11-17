@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { ProxyConfig, ProxyStatus } from '../../db/schema.js';
 import { buildConfig, buildRules, START_SCRIPT } from '../../modules/network/singbox.js';
 import type { DockerHost } from './docker.js';
+import { parseKv } from '../../lib/kv.js';
 
 const NET_LABEL = 'cloudphone.net';
 
@@ -79,8 +80,7 @@ export class NetworkSidecar {
     const checkedAt = new Date().toISOString();
     try {
       const r = await this.host.helper(['sh', '-c', script], [], { netContainerId, timeoutMs: 40_000 });
-      const kv: Record<string, string> = {};
-      for (const l of r.out.split(/\r?\n/)) { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+      const kv = parseKv(r.out);
       const ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(kv.ip ?? '') ? kv.ip! : null;
       const latencyMs = ip ? Math.round((Number(kv.t1) - Number(kv.t0)) * 1000) : null;
       return { checkedAt, ok: Boolean(ip), egressIp: ip, latencyMs, dnsOk: kv.dns === '1', error: ip ? null : 'no egress through proxy (blocked or proxy unreachable)', ...geoOf(kv.geo, ip) };
@@ -91,7 +91,7 @@ export class NetworkSidecar {
 }
 
 /** country/region/city from ipinfo's JSON, only if it describes the IP we saw (ipinfo answers for the caller). */
-function geoOf(raw: string | undefined, ip: string | null): { country: string | null; region: string | null; city: string | null } | Record<string, never> {
+function geoOf(raw: string | undefined, ip: string | null): Pick<ProxyStatus, 'country' | 'region' | 'city'> {
   if (!raw || !ip) return {};
   try {
     const g = JSON.parse(raw) as Record<string, unknown>;

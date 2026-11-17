@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { MediaAsset, MediaCategory } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
-import { assertInstanceAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
+import { assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { maxBytes, mediaLimits } from './formats.js';
 import {
@@ -348,7 +348,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req, reply) => {
     const assetIds = [...new Set(req.body.assetIds)];
     const instanceIds = [...new Set(req.body.instanceIds)];
-    for (const id of instanceIds) await assertInstanceAccess(req.user, id, 'operate');
+    await assertInstancesAccess(req.user, instanceIds, 'operate');
     const assets: MediaAsset[] = [];
     for (const id of assetIds) {
       const a = await getVisibleMedia(req.user, id);

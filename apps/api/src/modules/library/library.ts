@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../../config.js';
@@ -36,31 +36,33 @@ export async function importFromDevice(adbPort: number, pkg: string, sourceInsta
         set: { files, versionName: version.versionName, sourceInstance, createdAt: new Date() },
       })
       .returning();
-    // A newer version takes over the preinstall flag from older ones of the same package.
-    const older = await db.select().from(schema.libraryApps).where(and(eq(schema.libraryApps.package, pkg), eq(schema.libraryApps.preinstall, true)));
-    if (older.some((o) => o.id !== row!.id)) {
-      await db.update(schema.libraryApps).set({ preinstall: false }).where(eq(schema.libraryApps.package, pkg));
-      await db.update(schema.libraryApps).set({ preinstall: true }).where(eq(schema.libraryApps.id, row!.id));
-    }
-    return (await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, row!.id)))[0]!;
+    // A newer version takes over the preinstall flag from older ones of the same package (one statement).
+    const la = schema.libraryApps;
+    const moved = await db.update(la).set({ preinstall: sql`${la.id} = ${row!.id}` })
+      .where(and(eq(la.package, pkg), sql`exists (select 1 from library_apps o where o.package = ${pkg} and o.preinstall and o.id <> ${row!.id})`))
+      .returning();
+    return moved.find((r) => r.id === row!.id) ?? row!;
   } finally {
     await fs.promises.rm(tmp, { recursive: true, force: true });
   }
 }
 
-/** Latest preinstall-flagged version per package. */
-export async function preinstallApps(): Promise<LibraryApp[]> {
-  const rows = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.preinstall, true)).orderBy(desc(schema.libraryApps.createdAt));
+/** Keeps the first entry per package (callers order by preference). */
+function onePerPackage(apps: LibraryApp[]): LibraryApp[] {
   const seen = new Set<string>();
-  return rows.filter((r) => (seen.has(r.package) ? false : (seen.add(r.package), true)));
+  return apps.filter((a) => !seen.has(a.package) && !!seen.add(a.package));
 }
 
-/** Library entries by id, one per package (a later id of the same package is skipped). Missing ids are ignored. */
+/** Latest preinstall-flagged version per package. */
+export async function preinstallApps(): Promise<LibraryApp[]> {
+  return onePerPackage(await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.preinstall, true)).orderBy(desc(schema.libraryApps.createdAt)));
+}
+
+/** Library entries by id, in the given order, one per package. Missing ids are ignored. */
 export async function libraryAppsByIds(ids: string[]): Promise<LibraryApp[]> {
   if (!ids.length) return [];
-  const rows = await db.select().from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids));
-  const seen = new Set<string>();
-  return ids.map((id) => rows.find((r) => r.id === id)).filter((r): r is LibraryApp => !!r && (seen.has(r.package) ? false : (seen.add(r.package), true)));
+  const byId = new Map((await db.select().from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids))).map((r) => [r.id, r]));
+  return onePerPackage(ids.flatMap((id) => byId.get(id) ?? []));
 }
 
 export async function removeLibraryApp(app: LibraryApp): Promise<void> {

@@ -7,7 +7,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
-  assertLinkable, EXCEPTION_SQL, getLimits, groupForOwner, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
+  assertLinkable, EXCEPTION_SQL, getLimits, groupForOwner, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
   setAccountTags, tagsOf, toItems, visibleAccount, writeLogs, type LogEntry, type Tx,
 } from './social.js';
 
@@ -70,10 +70,12 @@ async function resolveOwner(user: AuthUser, ownerId?: string): Promise<string> {
   return u.id;
 }
 
-async function groupName(tx: Tx, id: string | null): Promise<string | null> {
-  if (!id) return null;
-  const [g] = await tx.select({ name: sg.name }).from(sg).where(eq(sg.id, id));
-  return g?.name ?? null;
+/** Group names for the given ids in one query; the returned lookup maps null/unknown ids to null. */
+async function groupNames(tx: Tx, ids: (string | null)[]): Promise<(id: string | null) => string | null> {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  const rows = want.length ? await tx.select({ id: sg.id, name: sg.name }).from(sg).where(inArray(sg.id, want)) : [];
+  const byId = new Map(rows.map((g) => [g.id, g.name]));
+  return (id) => (id && byId.get(id)) || null;
 }
 
 const FIELDS = ['handle', 'displayName', 'profileUrl', 'externalId', 'notes'] as const;
@@ -193,7 +195,8 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
       if (b.groupId !== undefined && b.groupId !== cur.groupId) {
         if (b.groupId) await groupForOwner(tx, req.user, b.groupId, cur.userId);
         set.groupId = b.groupId;
-        logs.push({ accountId, action: 'update', field: 'group', fromValue: await groupName(tx, cur.groupId), toValue: await groupName(tx, b.groupId) });
+        const names = await groupNames(tx, [cur.groupId, b.groupId ?? null]);
+        logs.push({ accountId, action: 'update', field: 'group', fromValue: names(cur.groupId), toValue: names(b.groupId) });
       }
       if (b.instanceId !== undefined && b.instanceId !== cur.instanceId) {
         if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, cur.platform, cur.id);
@@ -286,16 +289,19 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
       }
       if (action === 'unlink') {
         const linked = visible.filter((r) => r.instanceId);
-        for (const r of linked) logs.push(...await linkLogs(tx, r.id, r.instanceId, null));
+        const names = await instanceNames(tx, linked.map((r) => r.instanceId));
+        for (const r of linked) logs.push({ accountId: r.id, action: 'unlink', field: 'device', fromValue: names.get(r.instanceId!)!, toValue: null });
         if (linked.length) await tx.update(sa).set({ instanceId: null }).where(inArray(sa.id, linked.map((r) => r.id)));
         n = linked.length;
       }
       if (action === 'move-group') {
         const gid = req.body.groupId ?? null;
-        if (gid) for (const r of visible) await groupForOwner(tx, req.user, gid, r.userId);
+        // one group lookup; every account must belong to the group's owner
+        if (gid) await groupForOwner(tx, req.user, gid, visible[0]!.userId);
+        if (gid && visible.some((r) => r.userId !== visible[0]!.userId)) throw conflict('分组属于其他用户', 'social.group_owner_mismatch');
         const moving = visible.filter((r) => r.groupId !== gid);
-        const to = await groupName(tx, gid);
-        for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'group', fromValue: await groupName(tx, r.groupId), toValue: to });
+        const names = await groupNames(tx, [gid, ...moving.map((r) => r.groupId)]);
+        for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'group', fromValue: names(r.groupId), toValue: names(gid) });
         if (moving.length) await tx.update(sa).set({ groupId: gid }).where(inArray(sa.id, moving.map((r) => r.id)));
         n = moving.length;
       }

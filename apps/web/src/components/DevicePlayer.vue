@@ -93,7 +93,7 @@ const latencyColor = computed(() => {
 })
 /** Tooltip lines: latency breakdown (or "measuring") + fps. */
 const latencyTipLines = computed(() => {
-  if (state.value !== 'live') return []
+  if (state.value !== 'live') return [t('player.latencyPending')]
   const l = latency.value
   return [
     l ? t('player.latencyTip', { ws: l.ws, device: l.device ?? '-', buffer: l.buffer }) : t('player.latencyPending'),
@@ -529,10 +529,7 @@ watch(() => props.instanceId, connect)
         </div>
       </div>
     </div>
-    <slot
-      name="side" :latency="state === 'live' ? latencyTotal : null" :detail="latency" :fps="fps" :live="state === 'live'"
-      :color="latencyColor" :tip="latencyTipLines"
-    />
+    <slot name="side" :latency="state === 'live' ? latencyTotal : null" :color="latencyColor" :tip="latencyTipLines" />
     </div>
     <div class="nav">
       <a-tooltip :title="t('player.back')"><a-button shape="circle" @click="key('back')">◁</a-button></a-tooltip>

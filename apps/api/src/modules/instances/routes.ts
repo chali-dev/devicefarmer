@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -10,7 +10,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { accessibleInstanceIds, assertInstanceAccess, isAdmin } from '../auth/rbac.js';
+import { accessibleInstanceIds, assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue, type DeviceOpName } from './queue.js';
 import { getInstance, publicInstance, publicInstances, publishInstance, updateInstance } from './repo.js';
 import { assignFreeProxies, countFreeUsable, isUniqueViolation, lockFreeProxies } from '../proxies/pool.js';
@@ -155,10 +155,10 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       const free = await countFreeUsable();
       if (free < b.count) throw conflict(`空闲可用代理不足：需要 ${b.count} 个，当前 ${free} 个`, 'proxy.not_enough_free', { need: b.count, free });
     }
-    if (b.appIds?.length) {
-      const ids = [...new Set(b.appIds)];
-      const found = await db.select({ id: schema.libraryApps.id }).from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids));
-      if (found.length !== ids.length) throw badRequest('应用库中找不到所选应用', 'library.not_found');
+    const appIds = b.appIds && [...new Set(b.appIds)];
+    if (appIds?.length) {
+      const [{ n } = { n: 0 }] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.libraryApps).where(inArray(schema.libraryApps.id, appIds));
+      if (n !== appIds.length) throw badRequest('应用库中找不到所选应用', 'library.not_found');
     }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
     if (!b.force) {
@@ -194,7 +194,6 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     });
     if (b.proxyMode !== 'none' && req.audit) req.audit.extra = { proxyIds: rows.map((r) => r.proxyId) };
     const taskIds = [];
-    const appIds = b.appIds ? [...new Set(b.appIds)] : undefined;
     for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id, appIds ? { appIds } : {}));
     reply.code(202);
     return { instances: await publicInstances(rows), taskIds };
@@ -211,7 +210,7 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req, reply) => {
     if (req.body.action === 'delete' && !isAdmin(req.user)) throw forbidden('仅管理员可以删除设备', 'instances.delete_admin_only');
     const ids = [...new Set(req.body.ids)];
-    for (const id of ids) await assertInstanceAccess(req.user, id, 'operate');
+    await assertInstancesAccess(req.user, ids, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
     const accepted: { instanceId: string; taskId: string }[] = [];
     const skipped: { instanceId: string; reason: string }[] = [];

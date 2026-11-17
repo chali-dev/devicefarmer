@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Role } from '../../db/schema.js';
 import { forbidden } from '../../lib/errors.js';
@@ -38,9 +38,15 @@ export async function accessibleInstanceIds(user: AuthUser): Promise<Set<string>
 }
 
 export async function assertInstanceAccess(user: AuthUser, instanceId: string, action: InstanceAction): Promise<void> {
+  return assertInstancesAccess(user, [instanceId], action);
+}
+
+/** Batch form of assertInstanceAccess: one grant query for all ids (duplicates allowed). */
+export async function assertInstancesAccess(user: AuthUser, instanceIds: readonly string[], action: InstanceAction): Promise<void> {
   if (!roleAllows(user.role, action)) throw forbidden(`role "${user.role}" cannot ${action} instances`, 'auth.role_forbidden', { role: user.role, action });
-  if (isAdmin(user)) return;
-  const [grant] = await db.select().from(schema.instanceGrants)
-    .where(and(eq(schema.instanceGrants.userId, user.id), eq(schema.instanceGrants.instanceId, instanceId)));
-  if (!grant) throw forbidden('no access to this instance', 'auth.no_instance_access');
+  if (isAdmin(user) || !instanceIds.length) return;
+  const ids = [...new Set(instanceIds)];
+  const grants = await db.select({ id: schema.instanceGrants.instanceId }).from(schema.instanceGrants)
+    .where(and(eq(schema.instanceGrants.userId, user.id), inArray(schema.instanceGrants.instanceId, ids)));
+  if (grants.length !== ids.length) throw forbidden('no access to this instance', 'auth.no_instance_access');
 }

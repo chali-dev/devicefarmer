@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { InstanceSpec } from '../../db/schema.js';
 import { adb } from '../../services.js';
+import { parseKv } from '../../lib/kv.js';
 
 /**
  * Device parameters limited to what Android itself exposes as user/system settings.
@@ -65,7 +66,6 @@ export async function readDeviceSettings(adbPort: number) {
     // `ip -o link` dump is not. wlan0 first (real phones), else eth0 (redroid has no Wi-Fi interface).
     'l=$(ip -o link 2>/dev/null); for i in wlan0 eth0; do m=$(echo "$l" | grep -E "^[0-9]+: $i[:@]" | grep -o "link/ether [0-9a-f:]*" | cut -d" " -f2); if [ -n "$m" ]; then echo "mac=$m"; echo "macIf=$i"; break; fi; done',
   ].join('; '));
-  const kv: Record<string, string> = {};
-  for (const l of out.split(/\r?\n/)) { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1).trim(); }
+  const kv = parseKv(out);
   return kv;
 }

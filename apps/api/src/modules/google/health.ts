@@ -1,5 +1,6 @@
 import type { GoogleHealth } from '../../db/schema.js';
 import { adb } from '../../services.js';
+import { parseKv } from '../../lib/kv.js';
 
 const PKG = {
   gms: 'com.google.android.gms',
@@ -32,19 +33,15 @@ const SCRIPT = [
 
 export async function checkGoogleHealth(adbPort: number): Promise<GoogleHealth> {
   const out = await adb.shell(adbPort, SCRIPT, 20_000);
-  const kv = new Map<string, string>();
-  for (const line of out.split(/\r?\n/)) {
-    const i = line.indexOf('=');
-    if (i > 0) kv.set(line.slice(0, i).trim(), line.slice(i + 1).trim());
-  }
-  const installed = (k: string) => (kv.get(`${k}.path`) ?? '').startsWith('package:');
-  const version = (k: string) => (installed(k) && kv.get(`${k}.version`)) || null;
+  const kv = parseKv(out);
+  const installed = (k: string) => (kv[`${k}.path`] ?? '').startsWith('package:');
+  const version = (k: string) => (installed(k) && kv[`${k}.version`]) || null;
   return {
     checkedAt: new Date().toISOString(),
-    gms: { installed: installed('gms'), version: version('gms'), running: Boolean(kv.get('gms.pid')) },
-    gsf: { installed: installed('gsf'), gsfId: kv.get('gsfid') || null },
+    gms: { installed: installed('gms'), version: version('gms'), running: Boolean(kv['gms.pid']) },
+    gsf: { installed: installed('gsf'), gsfId: kv.gsfid || null },
     playStore: { installed: installed('playStore'), version: version('playStore') },
-    youtube: { installed: installed('youtube'), version: version('youtube'), playing: Number(kv.get('yt.playing') ?? 0) > 0 },
-    googleAccounts: Number(kv.get('accounts') ?? 0) || 0,
+    youtube: { installed: installed('youtube'), version: version('youtube'), playing: Number(kv['yt.playing'] ?? 0) > 0 },
+    googleAccounts: Number(kv.accounts ?? 0) || 0,
   };
 }

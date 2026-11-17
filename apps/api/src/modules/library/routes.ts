@@ -3,7 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { conflict, forbidden, notFound } from '../../lib/errors.js';
-import { assertInstanceAccess, isAdmin } from '../auth/rbac.js';
+import { assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { libraryApks, removeLibraryApp } from './library.js';
@@ -45,7 +45,7 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req, reply) => {
     const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!lib) throw notFound('library app not found', 'library.not_found');
-    for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
+    await assertInstancesAccess(req.user, req.body.instanceIds, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
     const accepted: { instanceId: string; taskId: string }[] = [];
     const skipped: { instanceId: string; reason: string }[] = [];

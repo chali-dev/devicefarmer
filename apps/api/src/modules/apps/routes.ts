@@ -5,7 +5,7 @@ import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { isProtectedPackage, mediaTarget } from '../../adapters/adb.js';
 import { adb } from '../../services.js';
-import { assertInstanceAccess } from '../auth/rbac.js';
+import { assertInstanceAccess, assertInstancesAccess } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from './package.js';
@@ -39,7 +39,7 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     const rawIds = (file.fields.instanceIds as { value?: string } | undefined)?.value;
     let ids: string[];
     try { ids = Ids.parse(JSON.parse(rawIds ?? '[]')); } catch { file.file.resume(); throw badRequest('instanceIds must be a JSON array of ids, sent before the file'); }
-    for (const id of ids) await assertInstanceAccess(req.user, id, 'operate');
+    await assertInstancesAccess(req.user, ids, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
     const prepared = await prepareUpload(file.file, file.filename);
     const accepted: { instanceId: string; taskId: string }[] = [];
@@ -82,7 +82,7 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
   }, async (req, reply) => {
     if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`, 'apps.protected_package', { package: req.body.package });
-    for (const id of req.body.instanceIds) await assertInstanceAccess(req.user, id, 'operate');
+    await assertInstancesAccess(req.user, req.body.instanceIds, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
     const accepted: { instanceId: string; taskId: string }[] = [];
     const skipped: { instanceId: string; reason: string }[] = [];

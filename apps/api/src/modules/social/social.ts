@@ -139,18 +139,20 @@ export async function writeLogs(exec: Exec, actor: AuthUser | null, entries: Log
   })));
 }
 
-async function instanceName(exec: Exec, id: string | null): Promise<string | null> {
-  if (!id) return null;
-  const [r] = await exec.select({ name: schema.instances.name }).from(schema.instances).where(eq(schema.instances.id, id));
-  return r?.name ?? id;
+/** Device names by id in one query (a missing device falls back to its id). */
+export async function instanceNames(exec: Exec, ids: (string | null)[]): Promise<Map<string, string>> {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  const rows = want.length ? await exec.select({ id: schema.instances.id, name: schema.instances.name }).from(schema.instances).where(inArray(schema.instances.id, want)) : [];
+  return new Map(want.map((id) => [id, rows.find((r) => r.id === id)?.name ?? id]));
 }
 
 /** Link/unlink log rows for a device change (`from` → `to`, either may be null). */
 export async function linkLogs(exec: Exec, accountId: string, from: string | null, to: string | null, message?: string): Promise<LogEntry[]> {
   const out: LogEntry[] = [];
   if (from === to) return out;
-  if (from) out.push({ accountId, action: 'unlink', field: 'device', fromValue: await instanceName(exec, from), toValue: null, message });
-  if (to) out.push({ accountId, action: 'link', field: 'device', fromValue: null, toValue: await instanceName(exec, to), message });
+  const names = await instanceNames(exec, [from, to]);
+  if (from) out.push({ accountId, action: 'unlink', field: 'device', fromValue: names.get(from)!, toValue: null, message });
+  if (to) out.push({ accountId, action: 'link', field: 'device', fromValue: null, toValue: names.get(to)!, message });
   return out;
 }
 

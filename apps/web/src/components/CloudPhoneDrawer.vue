@@ -181,15 +181,12 @@ const other = computed(() => [
               :instance-id="inst.id" :width="inst.spec.width" :height="inst.spec.height" :size="size" :rotation="rotation"
               :title="inst.name" :subtitle="inst.externalId ?? inst.id" @exit="open = false"
             >
-              <template #side="{ latency, live, color, tip }">
+              <template #side="{ latency, color, tip }">
                 <div class="tools">
                   <a-tooltip placement="left">
-                    <template #title>
-                      <div v-for="(line, i) in tip" :key="i">{{ line }}</div>
-                      <div v-if="!tip.length">{{ t('player.latencyPending') }}</div>
-                    </template>
-                    <div class="tool tool-static net" :class="{ idle: !live || latency == null }" :style="{ color }">
-                      <WifiOutlined /><span>{{ live && latency != null ? t('player.latencyShort', { ms: latency }) : '—' }}</span>
+                    <template #title><div v-for="(line, i) in tip" :key="i">{{ line }}</div></template>
+                    <div class="tool tool-static net" :class="{ idle: latency == null }" :style="{ color }">
+                      <WifiOutlined /><span>{{ latency != null ? t('player.latencyShort', { ms: latency }) : '—' }}</span>
                     </div>
                   </a-tooltip>
                   <a-tooltip :title="t('cloud.volUp')" placement="left"><button class="tool" @click="key('volume_up')"><SoundOutlined /><span>{{ t('cloud.volUpShort') }}</span></button></a-tooltip>
