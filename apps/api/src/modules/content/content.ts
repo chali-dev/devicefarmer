@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { canView } from '../media/media.js';
+import { categoriesByIds, categoryRef } from './categories.js';
 import { translationLangs } from './languages.js';
 
 /**
@@ -179,7 +180,7 @@ const NONE = '00000000-0000-0000-0000-000000000000';
 export async function toContentItems(rows: Content[]) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [tagRows, mediaRows, owners, counts, langs, targetRows] = await Promise.all([
+  const [tagRows, mediaRows, owners, counts, langs, targetRows, cats] = await Promise.all([
     db.select({ contentId: schema.contentTagLinks.contentId, name: schema.contentTags.name }).from(schema.contentTagLinks)
       .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
       .where(inArray(schema.contentTagLinks.contentId, ids)).orderBy(asc(schema.contentTags.name)),
@@ -196,9 +197,12 @@ export async function toContentItems(rows: Content[]) {
     }).from(schema.contentTargets).innerJoin(sa, eq(sa.id, schema.contentTargets.accountId))
       .leftJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
       .where(inArray(schema.contentTargets.contentId, ids)).orderBy(asc(schema.contentTargets.position)),
+    categoriesByIds(rows.flatMap((r) => (r.categoryId ? [r.categoryId] : []))),
   ]);
-  return rows.map((r) => ({
+  return rows.map(({ category: _legacy, ...r }) => ({
     ...r,
+    /** 内容分类 (the legacy text column is not returned). */
+    category: r.categoryId && cats.has(r.categoryId) ? categoryRef(cats.get(r.categoryId)!) : null,
     ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),
     media: mediaRows.filter((m) => m.contentId === r.id).map((m) => mediaItem(m.a)),

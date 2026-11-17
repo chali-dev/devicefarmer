@@ -4,6 +4,8 @@
  * - Logs in as ADMIN_USERNAME / ADMIN_PASSWORD from the env (never printed).
  * - Ensures the normal user `demo-user`; its password is random and written ONLY to var/demo-credentials.txt
  *   (gitignored), never to stdout. If the user exists but the file is missing, the password is reset and rewritten.
+ * - 内容分类: public content categories (活动 / 新品发布 / 生活方式, used by admin's contents) + personal ones of demo-user;
+ *   an empty admin personal category with the name of a public one (left by the legacy-text data migration) is removed.
  * - 人设: public personas + personal ones of admin and demo-user; templates reference them by id (shared → public only).
  * - Media are generated locally (sharp for JPEG/PNG, ffmpeg for MP4) into var/demo-media/ and uploaded.
  * - Publish tasks (定时发布 demo): when the 媒体矩阵 demo accounts exist (scripts/demo-seed-matrix.ts), distributes
@@ -73,6 +75,17 @@ export const FAVORITES: Record<'admin' | 'user', string[]> = {
   user: ['demo-咖啡新品-方图.jpg', 'demo-海边日落.jpg', 'demo-双十一海报.jpg', 'demo-圣诞倒计时.mp4'],
   admin: ['demo-耳机-横幅.png', 'demo-开箱短片.mp4'],
 };
+
+/** 内容分类: public ones for every user's contents, personal ones only for their owner's. */
+export interface ContentCategorySpec { name: string; owner: 'public' | 'user'; description: string | null }
+export const CONTENT_CATEGORIES: ContentCategorySpec[] = [
+  { name: '新品发布', owner: 'public', description: '新品上市、开箱' },
+  { name: '活动', owner: 'public', description: '节日与促销活动' },
+  { name: '生活方式', owner: 'public', description: null },
+  { name: '健身', owner: 'user', description: '打卡与训练 vlog' },
+  { name: '美食', owner: 'user', description: null },
+  { name: '旅行', owner: 'user', description: null },
+];
 
 /** 人设: public ones may be used by every template, personal ones only by their owner's templates. */
 export interface PersonaSpec { name: string; owner: Owner; description: string | null }
@@ -194,8 +207,8 @@ export function readCredentials(): { username: string; password: string } | null
   const u = /^username:\s*(\S+)/m.exec(txt)?.[1]; const p = /^password:\s*(\S+)/m.exec(txt)?.[1];
   return u && p ? { username: u, password: p } : null;
 }
-interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; personas: string[]; templates: string[]; contents: string[]; publishTasks: string[] }
-const EMPTY: State = { userCreated: false, media: [], categories: [], personas: [], templates: [], contents: [], publishTasks: [] };
+interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; contentCategories?: string[]; personas: string[]; templates: string[]; contents: string[]; publishTasks: string[] }
+const EMPTY: State = { userCreated: false, media: [], categories: [], contentCategories: [], personas: [], templates: [], contents: [], publishTasks: [] };
 const loadState = (): State => ({ ...EMPTY, ...(fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}) });
 const saveState = (s: State) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 const addId = (arr: string[], id: string) => { if (!arr.includes(id)) arr.push(id); };
@@ -357,6 +370,22 @@ async function seed() {
   }
   saveState(st);
 
+  // 内容分类 (before the contents that use them). Only categories created here are remembered for --clean.
+  const ccIds = new Map<string, string>();
+  st.contentCategories ??= [];
+  for (const cc of CONTENT_CATEGORIES) {
+    const scope = cc.owner === 'public' ? 'public' : 'mine';
+    const list = must(await http('GET', `/api/content-categories?scope=${scope}`, tok(cc.owner === 'user' ? 'user' : 'admin')), 'list content categories').categories as any[];
+    let row = list.find((x) => x.name === cc.name);
+    note(!row);
+    if (!row) {
+      row = must(await http('POST', '/api/content-categories', tok(cc.owner === 'user' ? 'user' : 'admin'), { scope, name: cc.name, description: cc.description }), `content category ${cc.name}`).category;
+      addId(st.contentCategories, row.id);
+    }
+    ccIds.set(cc.name, row.id);
+  }
+  saveState(st);
+
   // contents
   const contentLists = { admin: await listAll(T, '/api/contents?q=demo'), user: await listAll(U.token, '/api/contents?q=demo') };
   const contentIds = new Map<string, string>();
@@ -366,13 +395,15 @@ async function seed() {
     note(!row);
     if (!row) {
       row = must(await http('POST', '/api/contents', tok(c.owner), {
-        title: c.title, body: c.body, category: c.category, tags: c.tags, mediaIds: c.media.map((f) => mediaIds.get(f)!),
+        title: c.title, body: c.body, categoryId: c.category ? ccIds.get(c.category)! : null, tags: c.tags, mediaIds: c.media.map((f) => mediaIds.get(f)!),
         platformHints: c.caption ? { instagram: { caption: c.caption } } : {}, stage: c.stage === 'archived' ? 'ready' : c.stage, lang: 'zh-CN',
       }), `content ${c.title}`).content;
       if (c.stage === 'archived') row = must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { stage: 'archived' }), `archive ${c.title}`).content;
     }
     addId(st.contents, row.id);
     contentIds.set(c.title, row.id);
+    const wantCat = c.category ? ccIds.get(c.category)! : null;
+    if ((row.category?.id ?? null) !== wantCat) { note(true); must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { categoryId: wantCat }), `category ${c.title}`); }
     // 多语言内容 (older seeds created the contents without a source language)
     if (row.lang !== 'zh-CN' && !(c.translations ?? []).some((x) => x.lang === row.lang)) must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { lang: 'zh-CN' }), `lang ${c.title}`);
     for (const tr of c.translations ?? []) {
@@ -384,6 +415,14 @@ async function seed() {
     }
   }
   saveState(st);
+  // Admin's demo contents seeded before 内容分类 got admin personal categories from the legacy-text data migration; they
+  // now use the public ones, so such a personal category with a public demo name is removed once it is empty.
+  const adminOwn = must(await http('GET', '/api/content-categories?scope=mine', T), 'content categories').categories as any[];
+  for (const x of adminOwn) {
+    if (x.count === 0 && CONTENT_CATEGORIES.some((cc) => cc.owner === 'public' && cc.name.toLowerCase() === x.name.toLowerCase())) {
+      note(true); must(await http('DELETE', `/api/content-categories/${x.id}`, T), `empty personal category ${x.name}`);
+    }
+  }
 
   // publish tasks (定时发布 demo)
   const accs = { admin: await listAll(T, '/api/social/accounts?q=demo.'), user: await listAll(U.token, '/api/social/accounts?q=demo.') };
@@ -430,6 +469,7 @@ async function seed() {
 
   console.log(`\nseed done: ${counts.created} created, ${counts.existing} already present`);
   console.log(`  categories ${CATEGORIES.length} · media ${MEDIA.length} (public ${MEDIA.filter((m) => m.owner === 'public').length}, admin private ${MEDIA.filter((m) => m.owner === 'admin').length}, ${DEMO_USER} private ${MEDIA.filter((m) => m.owner === 'user').length})`);
+  console.log(`  content categories ${CONTENT_CATEGORIES.length} (public ${CONTENT_CATEGORIES.filter((x) => x.owner === 'public').length}, ${DEMO_USER} ${CONTENT_CATEGORIES.filter((x) => x.owner === 'user').length})`);
   console.log(`  personas ${PERSONAS.length} (public ${PERSONAS.filter((x) => x.owner === 'public').length}, admin ${PERSONAS.filter((x) => x.owner === 'admin').length}, ${DEMO_USER} ${PERSONAS.filter((x) => x.owner === 'user').length})`);
   console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length}) · translations ${CONTENTS.reduce((n, c) => n + (c.translations?.length ?? 0), 0)}`);
   console.log(`  publish targets on ${targeted}/${Object.keys(TARGETS).length} contents`);
@@ -444,6 +484,8 @@ async function clean() {
   const st = loadState();
   const titles = new Set(CONTENTS.map((c) => c.title)); const tnames = new Set(TEMPLATES.map((t) => t.name));
   const mnames = new Set(MEDIA.map(mediaName)); const cnames = new Set(CATEGORIES.map((c) => c.name));
+  // demo-user may have been created by another demo seed (then st.userId is unset): its personal rows are still ours by id.
+  const demoUserId: string | undefined = st.userId ?? (must(await http('GET', '/api/users', T), 'users').users as any[]).find((u) => u.username === DEMO_USER)?.id;
   let n = 0;
   // Unfinished publish tasks block deleting their content: cancel the demo ones first (their history goes with the content).
   for (const id of st.publishTasks) {
@@ -468,9 +510,16 @@ async function clean() {
   const personas = [
     ...must(await http('GET', '/api/personas?scope=public', T), 'personas').personas,
     ...must(await http('GET', '/api/personas?scope=mine', T), 'personas').personas,
-    ...(st.userId ? must(await http('GET', `/api/personas?scope=all-users&ownerId=${st.userId}`, T), 'personas').personas : []),
+    ...(demoUserId ? must(await http('GET', `/api/personas?scope=all-users&ownerId=${demoUserId}`, T), 'personas').personas : []),
   ] as any[];
   for (const id of st.personas ?? []) if (personas.some((x) => x.id === id && pnames.has(x.name))) await del(`/api/personas/${id}`, `persona ${id}`);
+  // Content categories this script created (matched by id and name); the demo contents are gone by now.
+  const ccnames = new Set(CONTENT_CATEGORIES.map((x) => x.name));
+  const ccs = [
+    ...must(await http('GET', '/api/content-categories?scope=public', T), 'content categories').categories,
+    ...(demoUserId ? must(await http('GET', `/api/content-categories?scope=all-users&ownerId=${demoUserId}`, T), 'content categories').categories : []),
+  ] as any[];
+  for (const id of st.contentCategories ?? []) if (ccs.some((x) => x.id === id && ccnames.has(x.name))) await del(`/api/content-categories/${id}`, `content category ${id}`);
   for (const id of st.media) {
     const r = await http('GET', `/api/media/${id}`, T);
     if (r.status === 200 && mnames.has(r.body.item.name)) await del(`/api/media/${id}`, `media ${id}`);
@@ -478,7 +527,7 @@ async function clean() {
   const cats = [
     ...must(await http('GET', '/api/media/categories?scope=public', T), 'cats').categories,
     ...must(await http('GET', '/api/media/categories?scope=mine', T), 'cats').categories,
-    ...(st.userId ? must(await http('GET', `/api/media/categories?scope=mine&ownerId=${st.userId}`, T), 'cats').categories : []),
+    ...(demoUserId ? must(await http('GET', `/api/media/categories?scope=mine&ownerId=${demoUserId}`, T), 'cats').categories : []),
   ] as any[];
   for (const id of st.categories) if (cats.some((c) => c.id === id && cnames.has(c.name))) await del(`/api/media/categories/${id}`, `category ${id}`);
   // demo-user may also own other agents'/scripts' demo data (deleting a user cascades it), so it is only removed on request.

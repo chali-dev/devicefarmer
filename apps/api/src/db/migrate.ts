@@ -5,6 +5,7 @@ import { finishInlineProxies, stashInlineProxies } from './proxy-data-migration.
 import { migrateTaskStatuses } from './task-data-migration.js';
 import { migrateTelegramSettings } from './alert-channel-migration.js';
 import { migratePersonaTexts } from './persona-data-migration.js';
+import { migrateContentCategoryTexts } from './content-category-data-migration.js';
 
 // Data migration around the schema migrations (see proxy-data-migration.ts); both steps are idempotent.
 const stashed = await stashInlineProxies(sqlClient);
@@ -15,5 +16,6 @@ const renamed = await migrateTaskStatuses(sqlClient);
 if (renamed) console.log(`task centre: renamed the status of ${renamed} tasks (queued→pending, succeeded→success)`);
 await migrateTelegramSettings(sqlClient);
 await migratePersonaTexts(sqlClient);
+await migrateContentCategoryTexts(sqlClient);
 console.log('migrations applied');
 await sqlClient.end();

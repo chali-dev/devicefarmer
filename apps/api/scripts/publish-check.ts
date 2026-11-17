@@ -135,24 +135,26 @@ try {
   check("user cannot attach another user's private media (404 media.not_found)", r.status === 404 && r.body.code === 'media.not_found', r.text.slice(0, 120));
   r = await http('POST', '/api/contents', T, { title: 'x', ownerId: uA, mediaIds: [imgB] });
   check("admin cannot attach B's private media to A's content (400 content.media_not_usable)", r.status === 400 && r.body.code === 'content.media_not_usable', r.text.slice(0, 120));
+  const catLaunch = (await http('POST', '/api/content-categories', A, { scope: 'mine', name: 'Launch' })).body.category;
+  const catVideo = (await http('POST', '/api/content-categories', A, { scope: 'mine', name: 'Video' })).body.category;
   r = await http('POST', '/api/contents', A, {
-    title: `pc-${tag} carousel`, body: 'Base caption', category: 'Launch', tags: ['Promo', 'promo', '#Spring'], mediaIds: [imgA1, imgPub, imgA2, imgA1],
+    title: `pc-${tag} carousel`, body: 'Base caption', categoryId: catLaunch.id, tags: ['Promo', 'promo', '#Spring'], mediaIds: [imgA1, imgPub, imgA2, imgA1],
     platformHints: { instagram: { caption: 'IG caption' } },
   });
   const cImg = r.body.content;
   check('create content: 201, draft, tags deduped case-insensitively, media deduped in order',
     r.status === 201 && cImg.status === 'draft' && cImg.tags.join(',') === 'Promo,Spring' && cImg.media.map((m: any) => m.id).join() === [imgA1, imgPub, imgA2].join(), r.text.slice(0, 200));
-  r = await http('PUT', `/api/contents/${cImg.id}`, A, { mediaIds: [imgA2, imgA1], tags: ['spring', 'New'], category: 'Launch' });
+  r = await http('PUT', `/api/contents/${cImg.id}`, A, { mediaIds: [imgA2, imgA1], tags: ['spring', 'New'], categoryId: catLaunch.id });
   check('update: media reordered, tags replaced (stored spelling kept)', r.status === 200 && r.body.content.media.map((m: any) => m.id).join() === [imgA2, imgA1].join()
     && r.body.content.tags.join(',') === 'New,Spring', r.text.slice(0, 200));
-  r = await http('POST', '/api/contents', A, { title: `pc-${tag} video`, body: 'Video description', category: 'Video', tags: ['clip'], mediaIds: [vidA], platformHints: { youtube: { title: 'YT title', privacy: 'unlisted' } } });
+  r = await http('POST', '/api/contents', A, { title: `pc-${tag} video`, body: 'Video description', categoryId: catVideo.id, tags: ['clip'], mediaIds: [vidA], platformHints: { youtube: { title: 'YT title', privacy: 'unlisted' } } });
   const cVid = r.body.content;
-  r = await http('GET', `/api/contents?category=Launch&q=pc-${tag}`, A);
+  r = await http('GET', `/api/contents?categoryId=${catLaunch.id}&q=pc-${tag}`, A);
   check('list filter by category + search', r.status === 200 && r.body.total === 1 && r.body.items[0].id === cImg.id);
   r = await http('GET', '/api/contents?tag=SPRING', A);
   check('list filter by tag (case-insensitive)', r.body.items.length === 1 && r.body.items[0].id === cImg.id);
   r = await http('GET', '/api/contents/facets', A);
-  check('facets: categories + tags', r.body.categories.join() === 'Launch,Video' && r.body.tags.includes('clip') && r.body.tags.includes('Spring'), JSON.stringify(r.body));
+  check('facets: tags (categories come from /api/content-categories)', !('categories' in r.body) && r.body.tags.includes('clip') && r.body.tags.includes('Spring'), JSON.stringify(r.body));
   r = await http('GET', `/api/contents/${cImg.id}`, B);
   check("B cannot read A's content (404)", r.status === 404 && r.body.code === 'content.not_found');
   r = await http('GET', `/api/contents?ownerId=${uA}`, B);

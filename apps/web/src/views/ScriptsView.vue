@@ -2,14 +2,15 @@
 import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
-import { computed, defineComponent, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import type { CommentTemplate, Persona, TemplateKind } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import PersonaManager from '../components/content/PersonaManager.vue'
+import ScopedListManager from '../components/common/ScopedListManager.vue'
+import VNodes from '../components/common/VNodes'
 import SearchBar from '../components/common/SearchBar.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
@@ -126,7 +127,6 @@ async function openForm(x?: CommentTemplate) {
 watch(() => form.shared, (v) => { if (v && form.personaId && !publicPersonas.value.some((p) => p.id === form.personaId)) form.personaId = undefined })
 /** 新建人设 from the persona select: public for a shared template, else a personal one of the template's owner. */
 const newPersona = ref('')
-const VNodes = defineComponent({ props: { vnodes: { type: Object, required: true } }, render() { return this.vnodes } })
 async function addPersona() {
   const name = newPersona.value.trim()
   if (!name) return
@@ -277,7 +277,7 @@ function remove(x: CommentTemplate) {
         </a-form-item>
       </a-form>
     </a-modal>
-    <PersonaManager v-model:open="managerOpen" @changed="personasChanged" />
+    <ScopedListManager v-model:open="managerOpen" path="/api/personas" list-key="personas" texts="scripts.personas" @changed="personasChanged" />
   </PageContainer>
 </template>
 
