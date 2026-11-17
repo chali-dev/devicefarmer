@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, h, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
@@ -13,9 +13,12 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
 
 /**
  * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
- * device + login status), optional per-account title/caption/hashtags/privacy/time, and the schedule.
+ * device + login status), the schedule, and per-account fine-tuning: each account's title/caption/hashtags/privacy/time
+ * start as the values the task would get anyway (content texts for its platform, the unified time) and follow them
+ * until edited; only edited fields are sent as overrides, so an untouched account publishes exactly as without them.
  * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
- * The content's 发布目标 (default target accounts) are preselected; the person can still add or remove accounts.
+ * The content's 发布目标 (default target accounts) are preselected, except accounts this content was already
+ * published to (tagged 已发布); checking one of those re-publishes (`republish` is sent only then).
  */
 const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
@@ -29,15 +32,24 @@ const saving = ref(false)
 const selected = ref<string[]>([])
 interface Override { title: string; hashtags: string[]; privacy: string | undefined; at: Dayjs | null }
 const overrides = reactive<Record<string, Override>>({})
-/** Per-account caption (empty = the content's text for that platform); one tab per selected account. */
+/** Per-account caption (starts as the content's text for that platform); one tab per selected account. */
 const captions = reactive<Record<string, string>>({})
 const accountTab = ref('')
 /** How many of the content's targets were preselected (of how many). */
 const prefilled = ref({ n: 0, of: 0 })
-const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, maxAttempts: 3, republish: false, postType: 'feed' as PostType })
+/** Accounts this content was already published to (checking one = re-publish). */
+const published = ref(new Set<string>())
+const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, postType: 'feed' as PostType })
 const defaultAt = () => dayjs().add(90, 'minute').startOf('hour')
 const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
 function onWhen() { if (form.when === 'at' && !form.at) form.at = defaultAt() }
+/** The unified time (null = now). */
+const commonAt = computed(() => (form.when === 'at' ? form.at : null))
+const sameAt = (a: Dayjs | null, b: Dayjs | null) => (a && b ? a.isSame(b, 'minute') : a === b)
+// Accounts whose time still follows the unified one move with it; edited ones keep theirs.
+watch(commonAt, (now, before) => {
+  for (const id of selected.value) { const o = overrides[id]; if (o && sameAt(o.at, before)) o.at = now }
+})
 
 watch(() => props.open, async (o) => {
   if (!o || !props.content) return
@@ -45,21 +57,24 @@ watch(() => props.open, async (o) => {
   for (const k of Object.keys(overrides)) delete overrides[k]
   for (const k of Object.keys(captions)) delete captions[k]
   const when = props.mode ?? 'now'
-  Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, maxAttempts: 3, republish: false, postType: 'feed' })
+  Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, postType: 'feed' })
+  published.value = new Set()
   loading.value = true
   try {
     const owner = props.content.userId
-    const [a, p] = await Promise.all([
+    const [a, p, done] = await Promise.all([
       api<{ items: SocialAccount[] }>('GET', `/api/social/accounts?pageSize=200&ownerId=${owner}`),
       api<{ platforms: PublishPlatform[] }>('GET', '/api/publish/platforms'),
+      api<{ items: PublishTaskItem[] }>('GET', `/api/publish/tasks?contentId=${props.content.id}&status=published&limit=500`),
     ])
     accounts.value = a.items
     platforms.value = p.platforms
+    published.value = new Set(done.items.map((x) => x.accountId))
     // 发布目标: preselect the content's targets that can take this post (enabled platform, media fit)
     const targetIds = (props.content.targets ?? []).map((x) => x.id)
     for (const id of targetIds) {
       const acc = accountById(id)
-      if (acc && groups.value.some((g) => g.id === acc.platform && !g.reason)) toggle(id, true)
+      if (acc && !published.value.has(id) && groups.value.some((g) => g.id === acc.platform && !g.reason)) toggle(id, true)
     }
     prefilled.value = { n: selected.value.length, of: targetIds.length }
     if (selected.value.length) accountTab.value = selected.value[0]!
@@ -113,22 +128,57 @@ function online(a: SocialAccount): boolean {
 function toggle(id: string, on: boolean) {
   if (on && !selected.value.includes(id)) {
     selected.value = [...selected.value, id]
-    overrides[id] ??= { title: '', hashtags: [], privacy: undefined, at: null }
-    captions[id] ??= ''
+    const platform = accountById(id)?.platform ?? ''
+    overrides[id] ??= { title: defaultTitle(platform), hashtags: [], privacy: defaultPrivacy(platform), at: commonAt.value }
+    captions[id] ??= defaultCaption(platform)
     accountTab.value = id
   } else if (!on) selected.value = selected.value.filter((x) => x !== id)
 }
 watch(selected, (ids) => { if (!ids.includes(accountTab.value)) accountTab.value = ids[0] ?? '' })
 const accountTabs = computed<TextTab[]>(() => selected.value.map((id) => {
   const platform = accountById(id)?.platform ?? ''
-  return { key: id, platform, label: `@${accountById(id)?.handle ?? ''}`, max: capOf(platform)?.captionMax ?? 5000, placeholder: defaultCaption(platform), text: hasCaption(id) }
+  return { key: id, platform, label: `@${accountById(id)?.handle ?? ''}`, max: capOf(platform)?.captionMax ?? 5000, text: hasCaption(id) }
 }))
 
-const defaultCaption = (platform: string) => {
-  const h = (props.content?.platformHints ?? {}) as Record<string, Record<string, string> | undefined>
-  return h[platform]?.description || h[platform]?.caption || props.content?.body || ''
+// Inherited values, mirroring the API's postFor(): platform hint (if not blank), else the content's text. The content
+// has no hashtag list of its own (hashtags written in the text stay in the caption), so inherited hashtags are none.
+const hintOf = (platform: string, key: string) => {
+  const v = (props.content?.platformHints as Record<string, Record<string, unknown> | undefined> | undefined)?.[platform]?.[key]
+  return typeof v === 'string' && v.trim() ? v : undefined
 }
-const defaultTitle = (platform: string) => (props.content?.platformHints as Record<string, Record<string, string> | undefined>)?.[platform]?.title || props.content?.title || ''
+const defaultCaption = (platform: string) => hintOf(platform, 'description') ?? hintOf(platform, 'caption') ?? props.content?.body ?? ''
+const defaultTitle = (platform: string) => (capOf(platform)?.title ? hintOf(platform, 'title') ?? props.content?.title ?? '' : '')
+const defaultPrivacy = (platform: string) => (capOf(platform)?.privacy ? hintOf(platform, 'privacy') ?? 'private' : undefined)
+
+type Field = 'title' | 'caption' | 'hashtags' | 'privacy' | 'at'
+/** Which fields of an account differ from what it inherits (only those are sent). */
+function edited(id: string): Record<Field, boolean> {
+  const o = overrides[id]!
+  const platform = accountById(id)?.platform ?? ''
+  return {
+    title: !!o.title.trim() && o.title.trim() !== defaultTitle(platform).trim(),
+    caption: (captions[id] ?? '') !== defaultCaption(platform),
+    hashtags: o.hashtags.length > 0,
+    privacy: o.privacy !== defaultPrivacy(platform),
+    at: !sameAt(o.at, commonAt.value),
+  }
+}
+function restore(id: string, field: Field) {
+  const o = overrides[id]!
+  const platform = accountById(id)?.platform ?? ''
+  if (field === 'title') o.title = defaultTitle(platform)
+  else if (field === 'caption') captions[id] = defaultCaption(platform)
+  else if (field === 'hashtags') o.hashtags = []
+  else if (field === 'privacy') o.privacy = defaultPrivacy(platform)
+  else o.at = commonAt.value
+}
+/** 已修改 · 恢复 next to an edited field. */
+const EditedMark = (p: { show: boolean; onRestore?: () => void }) => (p.show
+  ? h('span', { class: 'small', style: 'margin-left: 8px; font-weight: normal; color: var(--cp-warning)' }, [
+    t('distribute.edited'), ' · ',
+    h('a', { onClick: (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); p.onRestore?.() } }, t('distribute.restore')),
+  ])
+  : null)
 
 async function submit() {
   if (!props.content || !selected.value.length) return
@@ -137,20 +187,22 @@ async function submit() {
   try {
     const targets = selected.value.map((id) => {
       const o = overrides[id]!
-      const at = o.at ?? (form.when === 'at' ? form.at : null)
+      const at = o.at ?? commonAt.value
       const text = hasCaption(id)
+      const e = edited(id)
       return {
         accountId: id,
-        ...(o.title.trim() ? { title: o.title.trim() } : {}),
-        ...(text && captions[id]?.trim() ? { caption: captions[id] } : {}),
-        ...(text && o.hashtags.length ? { hashtags: o.hashtags } : {}),
-        ...(o.privacy ? { options: { privacy: o.privacy } } : {}),
+        ...(e.title ? { title: o.title.trim() } : {}),
+        ...(text && e.caption ? { caption: captions[id] } : {}),
+        ...(text && e.hashtags ? { hashtags: o.hashtags } : {}),
+        ...(e.privacy && o.privacy ? { options: { privacy: o.privacy } } : {}),
         scheduledAt: at ? at.toISOString() : null,
         ...(form.postType !== 'feed' ? { postType: form.postType } : {}),
       }
     })
     const r = await api<{ created: PublishTaskItem[]; existing: PublishTaskItem[] }>('POST', `/api/contents/${props.content.id}/distribute`, {
-      targets, maxAttempts: form.maxAttempts, republish: form.republish || undefined,
+      // Re-publish only when the person checked an account that already has this content (else a 409, never a silent duplicate).
+      targets, republish: selected.value.some((id) => published.value.has(id)) || undefined,
     })
     message.success(t('distribute.created', { n: r.created.length }))
     if (r.existing.length) message.info(t('distribute.existing', { n: r.existing.length }))
@@ -172,11 +224,6 @@ async function submit() {
           <a-radio value="at">{{ t('distribute.at') }}</a-radio>
         </a-radio-group>
         <a-date-picker v-if="form.when === 'at'" v-model:value="form.at" show-time format="YYYY-MM-DD HH:mm" :disabled-date="pastDay" />
-        <span>{{ t('distribute.maxAttempts') }}</span>
-        <a-input-number v-model:value="form.maxAttempts" :min="1" :max="10" style="width: 70px" />
-        <a-checkbox v-model:checked="form.republish">
-          <a-tooltip :title="t('distribute.republishHint')">{{ t('distribute.republish') }}</a-tooltip>
-        </a-checkbox>
       </a-space>
 
       <template v-if="postTypes.length > 1">
@@ -202,6 +249,7 @@ async function submit() {
           <a-space :size="4" wrap>
             <StatusTag kind="socialLogin" :status="a.loginStatus" />
             <StatusTag v-if="a.accountStatus !== 'active'" kind="socialAccount" :status="a.accountStatus" />
+            <a-tooltip v-if="published.has(a.id)" :title="t('distribute.publishedHint')"><a-tag color="success">{{ t('distribute.published') }}</a-tag></a-tooltip>
             <a-badge v-if="a.instance" :status="online(a) ? 'success' : 'default'" :text="`${a.instance.name} · ${online(a) ? t('distribute.online') : t('distribute.offline')}`" />
             <span v-else class="muted">{{ t('distribute.noDevice') }}</span>
           </a-space>
@@ -210,25 +258,35 @@ async function submit() {
 
       <template v-if="selected.length">
         <a-divider orientation="left" plain>{{ t('distribute.overrides') }}</a-divider>
+        <div class="muted small prefill">{{ t('distribute.overridesHint') }}</div>
         <PlatformTextTabs v-model:active="accountTab" :tabs="accountTabs" :values="captions" :rows="4">
           <template #default="{ tab }">
+            <div v-if="tab.text !== false && edited(tab.key).caption" class="small caption-mark">
+              {{ t('distribute.caption') }}<EditedMark :show="true" @restore="restore(tab.key, 'caption')" />
+            </div>
             <a-form layout="vertical" class="tab-form">
-              <a-form-item v-if="capOf(tab.platform ?? '')?.title" :label="t('distribute.titleOverride')">
+              <a-form-item v-if="capOf(tab.platform ?? '')?.title">
+                <template #label>{{ t('distribute.titleOverride') }}<EditedMark :show="edited(tab.key).title" @restore="restore(tab.key, 'title')" /></template>
                 <a-input v-model:value="overrides[tab.key]!.title" :maxlength="capOf(tab.platform ?? '')!.title!.max" :placeholder="defaultTitle(tab.platform ?? '')" />
               </a-form-item>
-              <a-form-item v-if="tab.text !== false" :label="t('distribute.hashtags')">
+              <a-form-item v-if="tab.text !== false">
+                <template #label>{{ t('distribute.hashtags') }}<EditedMark :show="edited(tab.key).hashtags" @restore="restore(tab.key, 'hashtags')" /></template>
                 <a-select v-model:value="overrides[tab.key]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
               </a-form-item>
               <a-row :gutter="12">
                 <a-col v-if="capOf(tab.platform ?? '')?.privacy" :xs="24" :sm="12">
-                  <a-form-item :label="t('distribute.privacy')">
-                    <a-select v-model:value="overrides[tab.key]!.privacy" allow-clear :placeholder="t('common.default')"
+                  <a-form-item>
+                    <template #label>{{ t('distribute.privacy') }}<EditedMark :show="edited(tab.key).privacy" @restore="restore(tab.key, 'privacy')" /></template>
+                    <a-select v-model:value="overrides[tab.key]!.privacy"
                       :options="capOf(tab.platform ?? '')!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
                   </a-form-item>
                 </a-col>
                 <a-col :xs="24" :sm="12">
-                  <a-form-item :label="t('distribute.timeOverride')">
-                    <a-date-picker v-model:value="overrides[tab.key]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.useCommonTime')" style="width: 100%" />
+                  <a-form-item>
+                    <template #label>{{ t('distribute.timeOverride') }}<EditedMark :show="edited(tab.key).at" @restore="restore(tab.key, 'at')" /></template>
+                    <!-- Clearing goes back to the unified time (shown as 立即 when that is "now"). -->
+                    <a-date-picker :value="overrides[tab.key]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.now')" style="width: 100%"
+                      @update:value="(v: Dayjs | null) => { overrides[tab.key]!.at = v ?? commonAt }" />
                   </a-form-item>
                 </a-col>
               </a-row>
@@ -247,4 +305,5 @@ async function submit() {
 .acc:hover { background: var(--cp-bg-hover); }
 .tab-form { margin-top: 16px; }
 .prefill { margin-bottom: 8px; }
+.caption-mark { margin-top: 4px; }
 </style>
