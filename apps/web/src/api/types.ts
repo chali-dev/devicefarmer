@@ -536,10 +536,17 @@ export interface CommentLog {
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
 }
 export type TemplateKind = 'comment' | 'post'
+/** 人设 as embedded in a template. Public ones are usable by every template, personal ones only by their owner's. */
+export interface PersonaRef { id: string; name: string; description: string | null; ownerType: 'public' | 'user'; ownerId: string | null }
+export interface Persona extends PersonaRef {
+  sort: number; createdAt: string; updatedAt: string
+  /** templates using it that the viewer can see */
+  count: number; writable: boolean; ownerName: string | null
+}
 export interface CommentTemplate {
   id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string
   /** 话术库: reply (comment) or post/caption template, optional persona (人设) and lowercase tags. */
-  kind: TemplateKind; persona: string | null; tags: string[]
+  kind: TemplateKind; personaId: string | null; persona: PersonaRef | null; tags: string[]
 }
 
 /** Intervals offered for 定时采集 (hours; the API accepts exactly these). */

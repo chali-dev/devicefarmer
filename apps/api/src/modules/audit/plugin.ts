@@ -339,9 +339,14 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),
     detail: ({ body }) => ({ result: body.result, externalReplyId: body.externalReplyId }),
   },
-  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment', persona: body.persona }) },
-  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind, persona: body.persona }) },
+  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment' }) },
+  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
+  // 人设: names only (no descriptions); the route adds the persona name of a template and the merge target.
+  'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
+  'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
+  'DELETE /api/personas/:id': { action: 'persona.delete' },
+  'POST /api/personas/:id/merge': { action: 'persona.merge' },
   // account analytics (账号分析)
   'POST /api/analytics/accounts/:id/stats': {
     action: 'analytics.stats_add', detail: ({ body }) => ({ day: body.day, fields: Object.keys(body).filter((k) => k !== 'day' && body[k] !== undefined) }),
@@ -462,6 +467,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
       .from(schema.commentTasks).leftJoin(schema.socialAccounts, eq(schema.socialAccounts.id, schema.commentTasks.accountId))
       .leftJoin(schema.comments, eq(schema.comments.id, schema.commentTasks.commentId)).where(eq(schema.commentTasks.id, id));
     return r ? `${r.platform} @${r.handle ?? '?'} → ${r.author ?? '?'}` : null;
+  }
+  if (pattern.startsWith('/api/personas/:id')) {
+    const [r] = await db.select({ name: schema.personas.name }).from(schema.personas).where(eq(schema.personas.id, id));
+    return r?.name ?? null;
   }
   if (pattern.startsWith('/api/comment-templates/:id')) {
     const [r] = await db.select({ name: schema.commentTemplates.name }).from(schema.commentTemplates).where(eq(schema.commentTemplates.id, id));

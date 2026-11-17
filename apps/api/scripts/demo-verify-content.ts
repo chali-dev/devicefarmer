@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { CATEGORIES, CONTENTS, FAVORITES, MEDIA, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
+import { CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
 
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); };
@@ -249,10 +249,18 @@ try {
   check('default list (reply composer) = comment templates only', eqSet(tplNames(uDefault), TEMPLATES.filter((t) => t.owner !== 'admin' && t.kind === 'comment').map((t) => t.name)));
   const uPost = await tl(U, 'kind=post&q=demo');
   check('kind=post for demo-user → 3 shared + 3 own', eqSet(tplNames(uPost), TEMPLATES.filter((t) => t.owner !== 'admin' && t.kind === 'post').map((t) => t.name)));
-  const pers = await tl(U, `kind=all&persona=${encodeURIComponent('健身教练Max')}`);
+  const uPub = (await http('GET', '/api/personas?scope=public', U)).body.personas as any[];
+  const uMine = (await http('GET', '/api/personas?scope=mine', U)).body.personas as any[];
+  const pid = (xs: any[], name: string) => xs.find((x) => x.name === name)?.id as string | undefined;
+  check('personas: demo-user sees the public ones (read-only) + own, not admin\'s 客服主管',
+    PERSONAS.filter((x) => x.owner === 'public').every((x) => uPub.some((y) => y.name === x.name && y.writable === false))
+      && eqSet(uMine.map((x) => x.name).filter((n: string) => PERSONAS.some((x) => x.name === n)), PERSONAS.filter((x) => x.owner === 'user').map((x) => x.name))
+      && ![...uPub, ...uMine].some((x) => x.name === '客服主管'));
+  check('persona counts (demo-user view): 客服小助手 2, 健身教练Max 2', uPub.find((x) => x.name === '客服小助手')?.count === 2 && uMine.find((x) => x.name === '健身教练Max')?.count === 2);
+  const pers = await tl(U, `kind=all&personaId=${pid(uMine, '健身教练Max')}`);
   check('persona filter', eqSet(tplNames(pers), ['demo user 健身日常', 'demo user 粉丝互动']));
-  const pNone = await tl(U, 'kind=all&persona=none&q=demo');
-  check('persona=none', eqSet(tplNames(pNone), ['demo user 价格回复']));
+  const pNone = await tl(U, 'kind=all&personaId=none&q=demo');
+  check('personaId=none', eqSet(tplNames(pNone), ['demo user 价格回复']));
   const tagF = await tl(U, 'kind=all&tag=FAQ');
   check('tag filter case-insensitive (FAQ)', eqSet(tplNames(tagF), ['demo 物流咨询回复', 'demo user 价格回复']));
   const sh = await tl(U, 'kind=all&scope=shared&q=demo'); const own = await tl(U, 'kind=all&scope=own&q=demo');
@@ -260,7 +268,7 @@ try {
   const qt = await tl(U, `kind=all&q=${encodeURIComponent('48 小时')}`);
   check('q searches the text', eqSet(tplNames(qt), ['demo 物流咨询回复']));
   const fac = (await http('GET', '/api/comment-templates/facets?kind=all', U)).body;
-  check('facets: personas of visible templates only (no 客服主管 of admin)', fac.personas.includes('健身教练Max') && fac.personas.includes('品牌官方') && !fac.personas.includes('客服主管'));
+  check('facets: tags of visible templates only (no admin-only "complaint")', fac.tags.includes('fitness') && !fac.tags.includes('complaint') && !('personas' in fac));
   const shTpl = aAll.find((x) => x.name === 'demo 新品上市文案'); const adTpl = aAll.find((x) => x.name === 'demo admin 测试草稿');
   check('writable flag: user false on shared, true on own', uAll.find((x) => x.id === shTpl.id)?.writable === false && own.every((x) => x.writable === true));
   r = await http('PUT', `/api/comment-templates/${shTpl.id}`, U, { text: 'x' });
@@ -271,13 +279,13 @@ try {
   r = await http('POST', '/api/comment-templates', U, { name: `${tmp} s`, text: 'x', shared: true });
   check('demo-user create shared → 403 comment.admin_only', r.status === 403 && r.body.code === 'comment.admin_only');
   // duplicate (the UI's "save as mine" = POST with the same fields)
-  r = await http('POST', '/api/comment-templates', U, { kind: shTpl.kind, name: `${tmp} ${shTpl.name}（副本）`, persona: shTpl.persona, tags: shTpl.tags, text: shTpl.text });
+  r = await http('POST', '/api/comment-templates', U, { kind: shTpl.kind, name: `${tmp} ${shTpl.name}（副本）`, personaId: shTpl.persona?.id ?? null, tags: shTpl.tags, text: shTpl.text });
   const cp = r.body.template;
   if (cp?.id) cleanup.push(() => http('DELETE', `/api/comment-templates/${cp.id}`, T));
-  check('duplicate a shared template → private copy owned by demo-user, same text/persona/tags', r.status === 201 && cp.shared === false && cp.userId === userId && cp.text === shTpl.text && cp.persona === shTpl.persona && eqSet(cp.tags, shTpl.tags));
-  r = await http('PUT', `/api/comment-templates/${cp.id}`, U, { text: '改过的文案', persona: '', tags: ['New', 'NEW'], kind: 'comment' });
+  check('duplicate a shared template → private copy owned by demo-user, same text/persona/tags', r.status === 201 && cp.shared === false && cp.userId === userId && cp.text === shTpl.text && cp.persona?.id === shTpl.persona?.id && !!cp.persona && eqSet(cp.tags, shTpl.tags));
+  r = await http('PUT', `/api/comment-templates/${cp.id}`, U, { text: '改过的文案', personaId: null, tags: ['New', 'NEW'], kind: 'comment' });
   const cpAfter = (await tl(U, `kind=all&q=${encodeURIComponent(tmp)}`)).find((x) => x.id === cp.id);
-  check('edit copy persists (persona "" → null, tags lowercased+deduped, kind changed)', r.status === 200 && cpAfter?.text === '改过的文案' && cpAfter.persona === null && JSON.stringify(cpAfter.tags) === '["new"]' && cpAfter.kind === 'comment');
+  check('edit copy persists (personaId null clears, tags lowercased+deduped, kind changed)', r.status === 200 && cpAfter?.text === '改过的文案' && cpAfter.persona === null && JSON.stringify(cpAfter.tags) === '["new"]' && cpAfter.kind === 'comment');
   check('shared original unchanged', (await tl(U, 'kind=all&scope=shared&q=demo')).find((x) => x.id === shTpl.id)?.text === TEMPLATES[0]!.text);
   r = await http('DELETE', `/api/comment-templates/${cp.id}`, U);
   check('delete own copy → 204, gone from list', r.status === 204 && !(await tl(U, `kind=all&q=${encodeURIComponent(tmp)}`)).some((x) => x.id === cp.id));

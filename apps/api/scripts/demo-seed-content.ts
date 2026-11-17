@@ -4,6 +4,7 @@
  * - Logs in as ADMIN_USERNAME / ADMIN_PASSWORD from the env (never printed).
  * - Ensures the normal user `demo-user`; its password is random and written ONLY to var/demo-credentials.txt
  *   (gitignored), never to stdout. If the user exists but the file is missing, the password is reset and rewritten.
+ * - 人设: public personas + personal ones of admin and demo-user; templates reference them by id (shared → public only).
  * - Media are generated locally (sharp for JPEG/PNG, ffmpeg for MP4) into var/demo-media/ and uploaded.
  * - Publish tasks (定时发布 demo): when the 媒体矩阵 demo accounts exist (scripts/demo-seed-matrix.ts), distributes
  *   demo contents to them as 帖子 / Reels / 限动, several scheduled over the coming days and a few for today
@@ -70,6 +71,17 @@ export const FAVORITES: Record<'admin' | 'user', string[]> = {
   user: ['demo-咖啡新品-方图.jpg', 'demo-海边日落.jpg', 'demo-双十一海报.jpg', 'demo-圣诞倒计时.mp4'],
   admin: ['demo-耳机-横幅.png', 'demo-开箱短片.mp4'],
 };
+
+/** 人设: public ones may be used by every template, personal ones only by their owner's templates. */
+export interface PersonaSpec { name: string; owner: Owner; description: string | null }
+export const PERSONAS: PersonaSpec[] = [
+  { name: '品牌官方', owner: 'public', description: '官方口吻，简洁、有活动信息' },
+  { name: 'Barista Lily', owner: 'public', description: 'Friendly barista, casual English' },
+  { name: '客服小助手', owner: 'public', description: '耐心礼貌，先致谢再解答' },
+  { name: '客服主管', owner: 'admin', description: null },
+  { name: '健身教练Max', owner: 'user', description: '积极、短句、带 emoji' },
+  { name: '旅行博主', owner: 'user', description: null },
+];
 
 export interface TemplateSpec { name: string; owner: 'shared' | 'admin' | 'user'; kind: 'post' | 'comment'; persona: string | null; tags: string[]; text: string }
 export const TEMPLATES: TemplateSpec[] = [
@@ -169,8 +181,8 @@ export function readCredentials(): { username: string; password: string } | null
   const u = /^username:\s*(\S+)/m.exec(txt)?.[1]; const p = /^password:\s*(\S+)/m.exec(txt)?.[1];
   return u && p ? { username: u, password: p } : null;
 }
-interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; templates: string[]; contents: string[]; publishTasks: string[] }
-const EMPTY: State = { userCreated: false, media: [], categories: [], templates: [], contents: [], publishTasks: [] };
+interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; personas: string[]; templates: string[]; contents: string[]; publishTasks: string[] }
+const EMPTY: State = { userCreated: false, media: [], categories: [], personas: [], templates: [], contents: [], publishTasks: [] };
 const loadState = (): State => ({ ...EMPTY, ...(fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}) });
 const saveState = (s: State) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 const addId = (arr: string[], id: string) => { if (!arr.includes(id)) arr.push(id); };
@@ -307,13 +319,27 @@ async function seed() {
     for (const f of files) must(await http('POST', `/api/media/${mediaIds.get(f)}/favorite`, tok(who)), `favorite ${f}`);
   }
 
+  // personas (before the templates that use them)
+  const personaIds = new Map<string, string>();
+  for (const pr of PERSONAS) {
+    const scope = pr.owner === 'public' ? 'public' : 'mine';
+    const list = must(await http('GET', `/api/personas?scope=${scope}`, tok(pr.owner)), 'list personas').personas as any[];
+    let row = list.find((x) => x.name === pr.name);
+    note(!row);
+    if (!row) row = must(await http('POST', '/api/personas', tok(pr.owner), { scope, name: pr.name, description: pr.description }), `persona ${pr.name}`).persona;
+    addId(st.personas, row.id); personaIds.set(pr.name, row.id);
+  }
+  saveState(st);
+
   // templates
   const tplLists = { admin: must(await http('GET', '/api/comment-templates?kind=all&q=demo', T), 'templates').templates as any[], user: must(await http('GET', '/api/comment-templates?kind=all&scope=own&q=demo', U.token), 'templates').templates as any[] };
   for (const t of TEMPLATES) {
     const pool = t.owner === 'user' ? tplLists.user : tplLists.admin;
     let row = pool.find((x) => x.name === t.name && (t.owner === 'shared' ? x.shared : t.owner === 'admin' ? !x.shared && x.userId !== U.id : x.userId === U.id));
     note(!row);
-    if (!row) row = must(await http('POST', '/api/comment-templates', tok(t.owner), { name: t.name, text: t.text, kind: t.kind, persona: t.persona, tags: t.tags, shared: t.owner === 'shared' || undefined }), `template ${t.name}`).template;
+    const personaId = t.persona ? personaIds.get(t.persona)! : null;
+    if (!row) row = must(await http('POST', '/api/comment-templates', tok(t.owner), { name: t.name, text: t.text, kind: t.kind, personaId, tags: t.tags, shared: t.owner === 'shared' || undefined }), `template ${t.name}`).template;
+    else if ((row.persona?.id ?? null) !== personaId) must(await http('PUT', `/api/comment-templates/${row.id}`, tok(t.owner), { personaId }), `template persona ${t.name}`);
     addId(st.templates, row.id);
   }
   saveState(st);
@@ -370,6 +396,7 @@ async function seed() {
 
   console.log(`\nseed done: ${counts.created} created, ${counts.existing} already present`);
   console.log(`  categories ${CATEGORIES.length} · media ${MEDIA.length} (public ${MEDIA.filter((m) => m.owner === 'public').length}, admin private ${MEDIA.filter((m) => m.owner === 'admin').length}, ${DEMO_USER} private ${MEDIA.filter((m) => m.owner === 'user').length})`);
+  console.log(`  personas ${PERSONAS.length} (public ${PERSONAS.filter((x) => x.owner === 'public').length}, admin ${PERSONAS.filter((x) => x.owner === 'admin').length}, ${DEMO_USER} ${PERSONAS.filter((x) => x.owner === 'user').length})`);
   console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length}) · translations ${CONTENTS.reduce((n, c) => n + (c.translations?.length ?? 0), 0)}`);
   console.log(`  publish tasks ${PUBLISHES.length - skipped}/${PUBLISHES.length} (${published} created now; manual method, no device → they fail publish.no_device when due, nothing is posted)`);
   console.log(`  ${DEMO_USER} credentials: ${path.relative(process.cwd(), CRED_FILE)}`);
@@ -401,6 +428,14 @@ async function clean() {
     const t = all.find((x) => x.id === id);
     if (t && tnames.has(t.name)) await del(`/api/comment-templates/${id}`, `template ${id}`);
   }
+  // Templates using a persona become 未设人设 on delete; the demo templates are gone by now anyway.
+  const pnames = new Set(PERSONAS.map((x) => x.name));
+  const personas = [
+    ...must(await http('GET', '/api/personas?scope=public', T), 'personas').personas,
+    ...must(await http('GET', '/api/personas?scope=mine', T), 'personas').personas,
+    ...(st.userId ? must(await http('GET', `/api/personas?scope=all-users&ownerId=${st.userId}`, T), 'personas').personas : []),
+  ] as any[];
+  for (const id of st.personas ?? []) if (personas.some((x) => x.id === id && pnames.has(x.name))) await del(`/api/personas/${id}`, `persona ${id}`);
   for (const id of st.media) {
     const r = await http('GET', `/api/media/${id}`, T);
     if (r.status === 200 && mnames.has(r.body.item.name)) await del(`/api/media/${id}`, `media ${id}`);

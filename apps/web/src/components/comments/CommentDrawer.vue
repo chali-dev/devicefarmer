@@ -141,7 +141,7 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
           <a-form layout="vertical">
             <a-form-item :label="t('comments.template')">
               <a-select v-model:value="form.templateId" allow-clear :placeholder="t('comments.noTemplate')" @change="(v: any) => pickTemplate(v as string | undefined)">
-                <a-select-option v-for="x in templates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.shared" class="muted small"> · {{ t('scripts.public') }}</span></a-select-option>
+                <a-select-option v-for="x in templates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.persona" class="muted small"> · {{ x.persona.name }}</span><span v-if="x.shared" class="muted small"> · {{ t('scripts.public') }}</span></a-select-option>
               </a-select>
             </a-form-item>
             <a-form-item :label="t('comments.replyText')" required>
