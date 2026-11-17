@@ -129,6 +129,8 @@ const Env = z.object({
   /** API log files (one per UTC day, retention in settings) and the in-memory ring of recent lines. */
   LOG_DIR: z.string().default('var/logs'),
   LOG_RING_SIZE: z.coerce.number().int().min(100).max(100_000).default(5000),
+  /** Alerts: Telegram Bot API base URL (override only for a compatible test endpoint). Token and chat id live in settings. */
+  TELEGRAM_API_BASE: z.string().url().default('https://api.telegram.org'),
   /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
   TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });

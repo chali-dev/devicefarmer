@@ -4,6 +4,7 @@ import type { PlatformConnection, SocialAccount } from '../../db/schema.js';
 import { HttpError } from '../../lib/errors.js';
 import { openSecret, sealSecret } from '../../lib/secret-box.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { connectionChanged } from '../notify/triggers.js';
 import { visibleAccount, writeLogs, type LogEntry } from '../social/social.js';
 import { platformApp } from './credentials.js';
 import { platformError } from './http.js';
@@ -55,7 +56,7 @@ export async function visibleConnections(user: AuthUser, accountIds?: string[]):
 
 /** Creates or replaces the account's connection after a successful OAuth callback. */
 export async function storeConnection(account: SocialAccount, tokens: TokenSet, profile: OwnProfile, actor: AuthUser): Promise<PlatformConnection> {
-  return db.transaction(async (tx) => {
+  const row = await db.transaction(async (tx) => {
     const now = new Date();
     const values = {
       socialAccountId: account.id, userId: account.userId, platform: account.platform,
@@ -78,6 +79,8 @@ export async function storeConnection(account: SocialAccount, tokens: TokenSet, 
     await writeLogs(tx, actor, logs);
     return row!;
   });
+  await connectionChanged(row, 'connected');
+  return row;
 }
 
 const HARD_REFRESH_FAILURES = new Set(['platform.auth_expired', 'platform.oauth_invalid_grant', 'platform.oauth_invalid_client']);
@@ -85,8 +88,10 @@ const codeOf = (err: unknown) => (err instanceof HttpError ? err.code ?? null : 
 const authExpired = (platform: string, cause?: string) =>
   platformError(401, 'auth_expired', `${platform} 授权已失效，请重新授权`, { platform, error: cause ?? '' });
 
-async function setState(id: string, status: PlatformConnection['status'], err: unknown): Promise<void> {
-  await db.update(pc).set({ status, lastError: (err as Error).message.slice(0, 500), lastErrorCode: codeOf(err) }).where(eq(pc.id, id));
+/** The only place a connection becomes expired/error (alerts: connection.expired). */
+async function setState(conn: PlatformConnection, status: PlatformConnection['status'], err: unknown): Promise<void> {
+  await db.update(pc).set({ status, lastError: (err as Error).message.slice(0, 500), lastErrorCode: codeOf(err) }).where(eq(pc.id, conn.id));
+  await connectionChanged(conn, status, codeOf(err));
 }
 
 /**
@@ -126,7 +131,7 @@ export async function authed(conn: PlatformConnection, opts: Pick<Authed, 'signa
     if (failure) {
       const expired = row.expiresAt !== null && row.expiresAt.getTime() <= Date.now();
       if (HARD_REFRESH_FAILURES.has(codeOf(failure) ?? '') || expired) {
-        await setState(row.id, 'expired', failure);
+        await setState(row, 'expired', failure);
         throw authExpired(adapter.name, (failure as Error).message.slice(0, 200));
       }
       await opts.log?.('token refresh failed, the current token is still valid', { code: codeOf(failure) });
@@ -141,8 +146,8 @@ export async function authed(conn: PlatformConnection, opts: Pick<Authed, 'signa
 /** Records the outcome of a platform call on the connection (auth failures → expired). */
 async function recordCallError(conn: PlatformConnection, err: unknown): Promise<void> {
   const code = codeOf(err);
-  if (code === 'platform.auth_expired') await setState(conn.id, 'expired', err);
-  else if (code === 'platform.permission_missing') await setState(conn.id, 'error', err);
+  if (code === 'platform.auth_expired') await setState(conn, 'expired', err);
+  else if (code === 'platform.permission_missing') await setState(conn, 'error', err);
   else if (code?.startsWith('platform.')) await db.update(pc).set({ lastError: (err as Error).message.slice(0, 500), lastErrorCode: code }).where(eq(pc.id, conn.id));
 }
 
@@ -156,6 +161,7 @@ export async function withConnection<T>(socialAccountId: string, fn: (a: Authed)
     const [fresh] = await db.select({ status: pc.status, lastError: pc.lastError }).from(pc).where(eq(pc.id, conn.id));
     if (fresh && (fresh.status !== 'connected' || fresh.lastError)) {
       await db.update(pc).set({ status: 'connected', lastError: null, lastErrorCode: null }).where(eq(pc.id, conn.id));
+      if (fresh.status !== 'connected') await connectionChanged(conn, 'connected');
     }
     return out;
   } catch (err) {

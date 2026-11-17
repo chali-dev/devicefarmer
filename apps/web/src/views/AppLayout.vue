@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
+import NotificationBell from '../components/notify/NotificationBell.vue'
 import { roleText } from '../api/types'
 import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { isDark, setThemeMode } from '../theme'
@@ -224,6 +225,7 @@ async function savePassword() {
         <a-tooltip v-if="!store.connected" :title="t('header.disconnected')">
           <WarningOutlined class="conn-lost" role="status" :aria-label="t('header.disconnected')" />
         </a-tooltip>
+        <NotificationBell />
         <a-tooltip :title="themeToggleLabel">
           <a-button type="text" class="pref-btn" :aria-label="themeToggleLabel" @click="toggleTheme">
             <span class="anticon" aria-hidden="true">

@@ -1,7 +1,7 @@
 import { Redis } from 'ioredis';
 import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
-import type { Task, TaskLog } from '../db/schema.js';
+import type { Notification, Task, TaskLog } from '../db/schema.js';
 import type { PublicInstance } from '../modules/instances/repo.js';
 
 export type PlatformEvent =
@@ -11,7 +11,9 @@ export type PlatformEvent =
   /** A handler/transition log line; carries the task's RBAC keys so /api/events can filter it. */
   | { type: 'task.log'; taskId: string; instanceId: string | null; createdBy: string | null; log: TaskLog }
   /** Internal (never forwarded to browsers): ask whichever worker runs the task to abort its signal. */
-  | { type: 'task.cancel'; taskId: string };
+  | { type: 'task.cancel'; taskId: string }
+  /** In-app alert (modules/notify): forwarded only to `userId`. */
+  | { type: 'notification.created'; userId: string; notification: Notification };
 
 /** Task row as broadcast and listed: payload/result only come with GET /api/tasks/:id. */
 export type PublicTask = Omit<Task, 'payload' | 'result'>;

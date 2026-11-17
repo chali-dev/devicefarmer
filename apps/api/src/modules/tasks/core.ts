@@ -201,7 +201,12 @@ async function notifyFailure(row: Task): Promise<void> {
   try { await handlers.get(row.type)?.onFailure?.(row); } catch (err) {
     await taskLog(row, 'warn', `failure hook error: ${(err as Error).message}`).catch(() => undefined);
   }
+  if (row.status === 'failed') for (const fn of failedListeners) await fn(row).catch(() => undefined);
 }
+
+/** Called once for every task that ends `failed` (after its handler's onFailure), e.g. by alerts (modules/notify). */
+const failedListeners: ((task: Task) => Promise<void>)[] = [];
+export function onTaskFailed(fn: (task: Task) => Promise<void>): void { failedListeners.push(fn); }
 
 /**
  * Cancels a task: pending/scheduled → cancelled (job removed); running → cancel_requested and the

@@ -31,6 +31,9 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
   'POST /api/tracked-accounts/parse',
+  // Marking one's own notifications read is per-user UI state, not a configuration change.
+  'POST /api/notifications/:id/read',
+  'POST /api/notifications/read-all',
 ]);
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -343,6 +346,16 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
+  // alerts (告警通知); the bot token itself is never stored in the log
+  'PUT /api/settings/alerts': {
+    action: 'settings.alerts',
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), accountCheckHours: body.accountCheckHours, cooldownMinutes: body.cooldownMinutes }),
+  },
+  'PUT /api/settings/telegram': {
+    action: 'settings.telegram',
+    detail: ({ body }) => ({ enabled: body.enabled, chatId: body.chatId, language: body.language, bot: body.token === null ? 'cleared' : typeof body.token === 'string' ? 'replaced' : 'unchanged' }),
+  },
+  'POST /api/settings/telegram/test': { action: 'settings.telegram_test' },
   'PUT /api/settings/storage': {
     action: 'storage.update',
     detail: ({ body }) => {

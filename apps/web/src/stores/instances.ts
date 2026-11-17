@@ -49,6 +49,13 @@ export const useInstancesStore = defineStore('instances', () => {
       else tasks.value = [ev.task, ...tasks.value].slice(0, 100)
     }
     if (ev.type === 'task.updated' || ev.type === 'task.log') taskListeners.forEach((fn) => fn(ev))
+    if (ev.type === 'notification.created') notificationListeners.forEach((fn) => fn(ev))
+  }
+  /** Alerts (notification bell) subscribe to their events on the shared socket. */
+  const notificationListeners = new Set<(ev: Extract<PlatformEvent, { type: 'notification.created' }>) => void>()
+  function onNotification(fn: (ev: Extract<PlatformEvent, { type: 'notification.created' }>) => void) {
+    notificationListeners.add(fn)
+    return () => { notificationListeners.delete(fn) }
   }
 
   function connect() {
@@ -125,5 +132,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return r.google
   }
 
-  return { onTaskEvent, googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
+  return { onTaskEvent, onNotification, googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
 })

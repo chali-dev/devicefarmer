@@ -1,7 +1,10 @@
-import { eq } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { HttpError } from '../../lib/errors.js';
-import { registerTaskHandler, type TaskContext } from '../tasks/core.js';
+import { getRules } from '../notify/rules.js';
+import { accountChecked, accountCheckFailed } from '../notify/triggers.js';
+import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { writeLogs, type LogEntry } from '../social/social.js';
 import { connectionFor, withConnection } from './connections.js';
 import { requireAdapter } from './index.js';
@@ -49,6 +52,7 @@ export async function checkSocialAccount(accountId: string, ctx: Pick<TaskContex
     await db.update(schema.platformConnections).set({ lastCheckedAt: now, externalAccountName: profile.name ?? profile.handle })
       .where(eq(schema.platformConnections.socialAccountId, account.id));
     await record({ loginStatus: 'logged_in' }, `${adapter.name} API: authorised`);
+    await accountChecked({ ...account, loginStatus: 'logged_in' });
     await ctx.log('info', 'authorised', { externalAccountId: profile.externalAccountId, followers: profile.followers, posts: profile.posts });
     return { outcome: 'authorised', externalAccountId: profile.externalAccountId, followers: profile.followers, posts: profile.posts, views: profile.views };
   } catch (err) {
@@ -57,6 +61,7 @@ export async function checkSocialAccount(accountId: string, ctx: Pick<TaskContex
       await db.update(schema.platformConnections).set({ lastCheckedAt: now }).where(eq(schema.platformConnections.socialAccountId, account.id));
       await record({ loginStatus: 'logged_out', lastError: (err as Error).message.slice(0, 500) }, `${adapter.name} API: ${code}`);
       await ctx.log('warn', 'authorisation invalid', { code });
+      await accountChecked({ ...account, loginStatus: 'logged_out' }, code);
       return { outcome: 'authorisation_invalid', code };
     }
     throw err;
@@ -68,4 +73,38 @@ registerTaskHandler<{ socialAccountId: string }>(ACCOUNT_CHECK_TASK, {
   timeoutMs: 2 * 60_000,
   maxAttempts: 1,
   run: (ctx) => checkSocialAccount(ctx.payload.socialAccountId ?? ctx.task.refId!, ctx),
+  async onFailure(task) {
+    const id = (task.payload as { socialAccountId?: string } | null)?.socialAccountId ?? task.refId;
+    if (task.status === 'failed' && id) await accountCheckFailed(id, task.errorCode);
+  },
 });
+
+/**
+ * 号状态监控: periodic checks (rule `accountCheckHours`, null = off). Every account with a usable connection
+ * (connected / error; expired or revoked ones need a reconnect, not a check) is checked once per period at
+ * its own fixed offset inside the period (hash of its id), so checks are spread out instead of all at once.
+ * Runs hourly and creates the checks falling into the next ~hour as scheduled tasks; the idempotency key
+ * `auto:<account>:<hours>h:<slot>` makes overlapping or concurrent runs create each check once.
+ * Accounts without a connection are skipped (manual check only).
+ */
+export async function scheduleAccountChecks(now = new Date(), windowMs = 65 * 60_000): Promise<{ hours: number | null; accounts: number; created: number }> {
+  const { accountCheckHours: hours } = await getRules();
+  if (!hours) return { hours, accounts: 0, created: 0 };
+  const period = hours * 3600_000;
+  const rows = await db.select({ id: sa.id, userId: sa.userId, platform: sa.platform, handle: sa.handle })
+    .from(schema.platformConnections).innerJoin(sa, eq(sa.id, schema.platformConnections.socialAccountId))
+    .where(inArray(schema.platformConnections.status, ['connected', 'error']));
+  const from = now.getTime() - 5 * 60_000;
+  let created = 0;
+  for (const acc of rows) {
+    const offset = createHash('sha256').update(acc.id).digest().readUInt32BE(0) % period;
+    for (let slot = Math.ceil((from - offset) / period); slot * period + offset < now.getTime() + windowMs; slot++) {
+      const r = await createTask({
+        type: ACCOUNT_CHECK_TASK, userId: acc.userId, label: `${acc.platform} @${acc.handle}`, refType: ACCOUNT_REF_TYPE, refId: acc.id,
+        payload: { socialAccountId: acc.id, scheduled: true }, runAt: new Date(slot * period + offset), idempotencyKey: `auto:${acc.id}:${hours}h:${slot}`,
+      });
+      if (r.created) created++;
+    }
+  }
+  return { hours, accounts: rows.length, created };
+}

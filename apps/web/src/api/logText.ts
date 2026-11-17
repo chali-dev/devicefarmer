@@ -75,6 +75,8 @@ const EXACT: Record<string, string> = {
   'no official API connection: manual entry only, nothing changed': 'statsNoConnection',
   'stats stored': 'statsStored',
   'scope missing: re-authorise the account to get these metrics': 'statsScopeMissing',
+  'telegram disabled: not sent': 'telegramDisabled',
+  'telegram message sent': 'telegramSent',
 }
 
 const RULES: Rule[] = [
@@ -106,6 +108,7 @@ const RULES: Rule[] = [
   [/^stored (\d+) trending videos for (\w+)$/, 'trendingStored', (m) => ({ n: m[1]!, region: m[2]! })],
   [/^collection: (\d+) tracked refreshes queued, (\d+) skipped; (\d+) trending refreshes queued; (\d+) old trending snapshots deleted$/, 'collectionTick',
     (m) => ({ queued: m[1]!, skipped: m[2]!, trending: m[3]!, purged: m[4]! })],
+  [/^deleted (\d+) read and (\d+) unread notifications, (\d+) alert states$/, 'notificationsDeleted', (m) => ({ read: m[1]!, unread: m[2]!, states: m[3]! })],
   [/^(\w+) → (\w+)$/, 'commentStatus', (m) => ({ from: status('comments', m[1]!), to: status('comments', m[2]!) })],
 ]
 

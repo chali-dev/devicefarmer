@@ -143,6 +143,7 @@ export type PlatformEvent =
   | { type: 'instance.deleted'; instanceId: string }
   | { type: 'task.updated'; task: Task }
   | { type: 'task.log'; taskId: string; instanceId: string | null; createdBy: string | null; log: TaskLog }
+  | { type: 'notification.created'; userId: string; notification: AppNotification }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
 
@@ -567,3 +568,9 @@ export interface DashboardAnalytics {
 }
 /** Local-midnight timestamp of a YYYY-MM-DD day (chart x values; the day itself is UTC on the server). */
 export const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y!, m! - 1, dd!).getTime() }
+
+/** In-app alert (告警通知, GET /api/notifications); rendered by api/alerts.ts. */
+export interface AppNotification {
+  id: string; userId: string; kind: string; severity: 'info' | 'warning' | 'error'; recovered: boolean
+  params: Record<string, string | number>; refType: string | null; refId: string | null; readAt: string | null; createdAt: string
+}

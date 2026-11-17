@@ -919,6 +919,43 @@ export const instanceStatusEvents = pgTable('instance_status_events', {
 }, (t) => [index('instance_status_events_instance_at_idx').on(t.instanceId, t.at), index('instance_status_events_at_idx').on(t.at)]);
 export type InstanceStatusEvent = typeof instanceStatusEvents.$inferSelect;
 
+/**
+ * Alerts (告警通知, modules/notify). One in-app notification row per recipient. `kind` + `params` are
+ * rendered by the UI (i18n `alerts.kinds.<kind>`); params are short identifiers/codes only (names, handles,
+ * status and error codes), never free-form texts from external systems or secrets. `recovered` = the
+ * "back to normal" notice of a recoverable kind. Rows cascade with the user; old ones are purged hourly.
+ */
+export const NOTIFICATION_SEVERITIES = ['info', 'warning', 'error'] as const;
+export const notifications = pgTable('notifications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull(),
+  severity: text('severity', { enum: NOTIFICATION_SEVERITIES }).notNull(),
+  recovered: boolean('recovered').notNull().default(false),
+  params: jsonb('params').$type<Record<string, string | number>>().notNull().default({}),
+  refType: text('ref_type'),
+  refId: uuid('ref_id'),
+  readAt: timestamp('read_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index('notifications_user_idx').on(t.userId, t.createdAt),
+  index('notifications_unread_idx').on(t.userId).where(sql`read_at is null`),
+  index('notifications_created_at_idx').on(t.createdAt),
+]);
+
+/**
+ * De-duplication state per alert (kind + key; key = the referenced object's id or a finer key): an alert is
+ * delivered when its state is not active or its last delivery is older than the cooldown; a recovery
+ * deactivates it (and may send a "recovered" notice). No FKs: rows of deleted objects age out (hourly cleanup).
+ */
+export const alertStates = pgTable('alert_states', {
+  kind: text('kind').notNull(),
+  key: text('key').notNull(),
+  active: boolean('active').notNull().default(true),
+  lastAlertAt: timestamp('last_alert_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [primaryKey({ columns: [t.kind, t.key] }), index('alert_states_updated_idx').on(t.updatedAt)]);
+
 export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
@@ -945,3 +982,4 @@ export type CommentTemplate = typeof commentTemplates.$inferSelect;
 export type TrendingSnapshot = typeof trendingSnapshots.$inferSelect;
 export type TrendingItem = typeof trendingItems.$inferSelect;
 export type Role = User['role'];
+export type Notification = typeof notifications.$inferSelect;
