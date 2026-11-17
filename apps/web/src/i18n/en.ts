@@ -1103,6 +1103,7 @@ const en: Messages = {
     distribute: 'Distribute',
     publishNow: 'Publish now',
     publishLater: 'Schedule',
+    publish: 'Publish',
     archive: 'Archive',
     unarchive: 'Unarchive',
     archived: 'Archived',

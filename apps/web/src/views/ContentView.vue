@@ -391,8 +391,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
             <a-space :size="0">
               <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
               <template v-if="record.stage !== 'archived'">
-                <a-button type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publishNow') }}</a-button>
-                <a-button type="link" size="small" @click="openDistribute(record, 'at')">{{ t('content.publishLater') }}</a-button>
+                <a-button type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publish') }}</a-button>
               </template>
               <a-button v-else type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
               <a-dropdown>

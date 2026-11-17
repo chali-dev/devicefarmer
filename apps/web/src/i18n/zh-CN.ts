@@ -1102,6 +1102,7 @@ const zhCN = {
     },
     publishSummary: '{published}/{total} 已发布',
     distribute: '分发',
+    publish: '发布',
     publishNow: '立即发布',
     publishLater: '定时发布',
     archive: '归档',
