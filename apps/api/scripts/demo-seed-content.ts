@@ -5,12 +5,17 @@
  * - Ensures the normal user `demo-user`; its password is random and written ONLY to var/demo-credentials.txt
  *   (gitignored), never to stdout. If the user exists but the file is missing, the password is reset and rewritten.
  * - Media are generated locally (sharp for JPEG/PNG, ffmpeg for MP4) into var/demo-media/ and uploaded.
+ * - Publish tasks (定时发布 demo): when the 媒体矩阵 demo accounts exist (scripts/demo-seed-matrix.ts), distributes
+ *   demo contents to them as 帖子 / Reels / 限动, several scheduled over the coming days and a few for today
+ *   (two "立即" ones). The demo accounts have no device and no platform connection, so the publish method is
+ *   manual and every run fails the "account linked to a device" precheck (publish.no_device) when it fires:
+ *   no platform API is called and nothing is posted. One (content, account) pair is created once (any status).
  * - var/demo-content-state.json remembers what this script created; --clean removes exactly that
  *   (matched by id AND the exact demo name); demo-user is kept unless --drop-user is also given (and only if this
  *   script created it), because other demo seeds may use demo-user too and deleting a user cascades its data.
  * Usage (from apps/api, API running):
  *   npx tsx --env-file=../../.env scripts/demo-seed-content.ts           # seed (idempotent)
- *   npx tsx --env-file=../../.env scripts/demo-seed-content.ts --clean   # remove the demo data (keeps demo-user)
+ *   npx tsx --env-file=../../.env scripts/demo-seed-content.ts --clean   # remove the demo data (keeps demo-user); run before demo-seed-matrix --clean
  *   npx tsx --env-file=../../.env scripts/demo-seed-content.ts --clean --drop-user   # also delete demo-user
  */
 import { execFile } from 'node:child_process';
@@ -107,6 +112,35 @@ export const CONTENTS: ContentSpec[] = [
   { title: 'demo 早餐灵感', owner: 'user', stage: 'draft', media: ['demo-早餐摆拍.png', 'demo-咖啡新品-方图.jpg'], tags: ['demo', 'food', 'coffee'], category: '美食', body: '早餐灵感合集，使用两张公共素材。' },
 ];
 
+/**
+ * Demo publish tasks: content title → 媒体矩阵 demo account, post type, when. `day` = days from today (local
+ * time of the seeding host) at `at` (HH:mm); `inMin` = minutes from now ('now' tasks run at once).
+ */
+export interface PublishSpec { content: string; account: string; postType: 'feed' | 'reel' | 'story'; day?: number; at?: string; inMin?: number }
+export const PUBLISHES: PublishSpec[] = [
+  { content: 'demo 新品咖啡上市', account: 'demo.wanderlust.lena', postType: 'feed', day: 1, at: '10:00' },
+  { content: 'demo 双十一预热', account: 'demo.wanderlust.lena', postType: 'story', day: 1, at: '20:30' },
+  { content: 'demo 圣诞倒计时', account: 'demo.tokyo.bites', postType: 'reel', day: 2, at: '18:00' },
+  { content: 'demo 夏日海边合集', account: 'demo.minimal.closet', postType: 'feed', day: 4, at: '12:00' },
+  { content: 'demo 圣诞倒计时', account: 'demo.minimal.closet', postType: 'story', day: 5, at: '09:00' },
+  { content: 'demo 无线耳机开箱', account: 'demo.tokyo.bites', postType: 'feed', inMin: 180 },
+  { content: 'demo 双十一预热', account: 'demo.minimal.closet', postType: 'story', inMin: 120 },
+  { content: 'demo 圣诞倒计时', account: 'demo.wanderlust.lena', postType: 'story', inMin: 0 },
+  { content: 'demo 跑步vlog', account: 'demo.fit.with.mia', postType: 'reel', day: 3, at: '08:00' },
+  { content: 'demo 健身打卡第1天', account: 'demo.fit.with.mia', postType: 'story', day: 1, at: '07:30' },
+  { content: 'demo 周末午餐', account: 'demo.cozy.home', postType: 'feed', day: 2, at: '12:30' },
+  { content: 'demo 自拍分享', account: 'demo.cozy.home', postType: 'story', inMin: 90 },
+  { content: 'demo 健身打卡第1天', account: 'demo.cozy.home', postType: 'feed', inMin: 0 },
+];
+function publishAt(p: PublishSpec): Date | null {
+  if (p.inMin !== undefined) return p.inMin > 0 ? new Date(Date.now() + p.inMin * 60_000) : null;
+  const d = new Date();
+  d.setDate(d.getDate() + (p.day ?? 0));
+  const [h, m] = (p.at ?? '12:00').split(':').map(Number);
+  d.setHours(h!, m!, 0, 0);
+  return d;
+}
+
 // ---------------------------------------------------------------- http helpers
 
 export async function http<T = any>(method: string, p: string, token?: string, body?: unknown) {
@@ -135,8 +169,9 @@ export function readCredentials(): { username: string; password: string } | null
   const u = /^username:\s*(\S+)/m.exec(txt)?.[1]; const p = /^password:\s*(\S+)/m.exec(txt)?.[1];
   return u && p ? { username: u, password: p } : null;
 }
-interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; templates: string[]; contents: string[] }
-const loadState = (): State => (fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : { userCreated: false, media: [], categories: [], templates: [], contents: [] });
+interface State { userCreated: boolean; userId?: string; media: string[]; categories: string[]; templates: string[]; contents: string[]; publishTasks: string[] }
+const EMPTY: State = { userCreated: false, media: [], categories: [], templates: [], contents: [], publishTasks: [] };
+const loadState = (): State => ({ ...EMPTY, ...(fs.existsSync(STATE_FILE) ? JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) : {}) });
 const saveState = (s: State) => fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
 const addId = (arr: string[], id: string) => { if (!arr.includes(id)) arr.push(id); };
 
@@ -285,6 +320,7 @@ async function seed() {
 
   // contents
   const contentLists = { admin: await listAll(T, '/api/contents?q=demo'), user: await listAll(U.token, '/api/contents?q=demo') };
+  const contentIds = new Map<string, string>();
   for (const c of CONTENTS) {
     const pool = c.owner === 'user' ? contentLists.user : contentLists.admin.filter((x) => x.userId !== U.id);
     let row = pool.find((x) => x.title === c.title);
@@ -297,6 +333,7 @@ async function seed() {
       if (c.stage === 'archived') row = must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { stage: 'archived' }), `archive ${c.title}`).content;
     }
     addId(st.contents, row.id);
+    contentIds.set(c.title, row.id);
     // 多语言内容 (older seeds created the contents without a source language)
     if (row.lang !== 'zh-CN' && !(c.translations ?? []).some((x) => x.lang === row.lang)) must(await http('PUT', `/api/contents/${row.id}`, tok(c.owner), { lang: 'zh-CN' }), `lang ${c.title}`);
     for (const tr of c.translations ?? []) {
@@ -309,9 +346,32 @@ async function seed() {
   }
   saveState(st);
 
+  // publish tasks (定时发布 demo)
+  const accs = { admin: await listAll(T, '/api/social/accounts?q=demo.'), user: await listAll(U.token, '/api/social/accounts?q=demo.') };
+  let published = 0;
+  let skipped = 0;
+  for (const p of PUBLISHES) {
+    const spec = CONTENTS.find((c) => c.title === p.content)!;
+    const tk = tok(spec.owner);
+    const acc = accs[spec.owner].find((a) => a.handle === p.account && a.platform === 'instagram' && (spec.owner === 'user' || a.userId !== U.id));
+    const contentId = contentIds.get(p.content);
+    if (!acc || !contentId) { skipped++; continue; }
+    const prior = must(await http('GET', `/api/publish/tasks?contentId=${contentId}&accountId=${acc.id}&limit=1`, tk), 'publish tasks').items as any[];
+    note(!prior.length);
+    if (prior.length) { addId(st.publishTasks, prior[0].id); continue; }
+    const at = publishAt(p);
+    const r = must(await http('POST', `/api/contents/${contentId}/distribute`, tk, { targets: [{ accountId: acc.id, postType: p.postType, scheduledAt: at ? at.toISOString() : null }], maxAttempts: 1 }),
+      `publish ${p.content} → @${p.account}`);
+    for (const x of [...r.created, ...r.existing]) addId(st.publishTasks, x.id);
+    published += r.created.length;
+  }
+  saveState(st);
+  if (skipped) console.log(`! ${skipped} demo publish tasks skipped: the 媒体矩阵 demo accounts are missing (run scripts/demo-seed-matrix.ts first)`);
+
   console.log(`\nseed done: ${counts.created} created, ${counts.existing} already present`);
   console.log(`  categories ${CATEGORIES.length} · media ${MEDIA.length} (public ${MEDIA.filter((m) => m.owner === 'public').length}, admin private ${MEDIA.filter((m) => m.owner === 'admin').length}, ${DEMO_USER} private ${MEDIA.filter((m) => m.owner === 'user').length})`);
   console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length}) · translations ${CONTENTS.reduce((n, c) => n + (c.translations?.length ?? 0), 0)}`);
+  console.log(`  publish tasks ${PUBLISHES.length - skipped}/${PUBLISHES.length} (${published} created now; manual method, no device → they fail publish.no_device when due, nothing is posted)`);
   console.log(`  ${DEMO_USER} credentials: ${path.relative(process.cwd(), CRED_FILE)}`);
 }
 
@@ -323,6 +383,14 @@ async function clean() {
   const titles = new Set(CONTENTS.map((c) => c.title)); const tnames = new Set(TEMPLATES.map((t) => t.name));
   const mnames = new Set(MEDIA.map(mediaName)); const cnames = new Set(CATEGORIES.map((c) => c.name));
   let n = 0;
+  // Unfinished publish tasks block deleting their content: cancel the demo ones first (their history goes with the content).
+  for (const id of st.publishTasks) {
+    const r = await http('GET', `/api/publish/tasks/${id}`, T);
+    if (r.status === 200 && ['pending', 'scheduled', 'awaiting_operator'].includes(r.body.task.status) && titles.has(r.body.task.content?.title)) {
+      const c = await http('POST', `/api/publish/tasks/${id}/cancel`, T);
+      if (c.status !== 200) console.log(`! cancel publish task ${id}: HTTP ${c.status} ${c.text.slice(0, 200)}`);
+    }
+  }
   const del = async (p: string, what: string) => { const r = await http('DELETE', p, T); if (r.status === 204) n++; else if (r.status !== 404) console.log(`! ${what}: HTTP ${r.status} ${r.text.slice(0, 200)}`); };
   for (const id of st.contents) {
     const r = await http('GET', `/api/contents/${id}`, T);
@@ -351,7 +419,7 @@ async function clean() {
     fs.rmSync(CRED_FILE, { force: true });
   } else if (!st.userCreated) console.log(`= ${DEMO_USER} was not created by this script; left in place`);
   if (process.argv.includes('--drop-user') || !st.userCreated) fs.rmSync(STATE_FILE, { force: true });
-  else saveState({ userCreated: true, userId: st.userId, media: [], categories: [], templates: [], contents: [] });
+  else saveState({ ...EMPTY, userCreated: true, userId: st.userId });
   fs.rmSync(MEDIA_DIR, { recursive: true, force: true });
   console.log(`clean done: ${n} objects deleted`);
 }

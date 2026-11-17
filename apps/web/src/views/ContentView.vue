@@ -20,6 +20,7 @@ import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
 import TemplateInsert, { type InsertTarget } from '../components/content/TemplateInsert.vue'
+import PostTypeTag from '../components/publish/PostTypeTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
@@ -73,7 +74,7 @@ const columns = computed(() => [
   { title: t('content.colPublish'), key: 'publish', width: 160 },
   ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 110 }] : []),
   { title: t('content.colUpdated'), key: 'updated', width: 170 },
-  actionColumn(170),
+  actionColumn(250),
 ])
 const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 function onTableChange(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void load() }
@@ -210,7 +211,8 @@ async function save(stage: 'draft' | 'ready') {
 // ---------------------------------------------------------------- actions
 const distributeOpen = ref(false)
 const distributing = ref<Content | null>(null)
-function openDistribute(c: Content) { distributing.value = c; distributeOpen.value = true }
+const distributeMode = ref<'now' | 'at'>('now')
+function openDistribute(c: Content, mode: 'now' | 'at') { distributing.value = c; distributeMode.value = mode; distributeOpen.value = true }
 
 async function setArchived(c: Content, archived: boolean) {
   try {
@@ -278,7 +280,10 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
-              <a-button v-if="record.stage !== 'archived'" type="link" size="small" @click="openDistribute(record)">{{ t('content.distribute') }}</a-button>
+              <template v-if="record.stage !== 'archived'">
+                <a-button type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publishNow') }}</a-button>
+                <a-button type="link" size="small" @click="openDistribute(record, 'at')">{{ t('content.publishLater') }}</a-button>
+              </template>
               <a-button v-else type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
@@ -413,6 +418,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           <a-list-item>
             <a-space wrap>
               <PlatformTag :platform="item.platform" />
+              <PostTypeTag :type="item.postType" />
               <span>@{{ item.account?.handle ?? '—' }}</span>
               <StatusTag kind="publish" :status="item.status" />
               <span class="muted small">{{ fmt(item.scheduledAt) }}</span>
@@ -436,7 +442,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
   </a-drawer>
 
   <MediaPicker v-model:open="pickerOpen" :exclude="form.media.map((m) => m.id)" @pick="onPick" />
-  <DistributeModal v-model:open="distributeOpen" :content="distributing" @done="load" />
+  <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" @done="load" />
 </template>
 
 

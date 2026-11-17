@@ -165,6 +165,25 @@ registerDashboardWidget('publishing', async (ctx) => {
   };
 }, { order: 50 });
 
+// ---------------------------------------------------------------- today's publishing per post type
+// Same day rule as GET /api/publish/tasks?from&to: published_at when published, else scheduled_at, in the viewer's time zone.
+registerDashboardWidget('publishToday', async (ctx) => {
+  const day = sql`(date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}) at time zone ${ctx.tz})`;
+  const when = sql`coalesce(${pt.publishedAt}, ${pt.scheduledAt})`;
+  const rows = await db.select({ t: pt.postType, s: pt.status, n: count() }).from(pt)
+    .where(and(own(ctx, pt.userId), sql`${when} >= ${day}`, sql`${when} < ${day} + interval '1 day'`, sql`${pt.status} <> 'cancelled'`))
+    .groupBy(pt.postType, pt.status);
+  const byType = { feed: 0, reel: 0, story: 0 } as Record<string, number>;
+  const published = { feed: 0, reel: 0, story: 0 } as Record<string, number>;
+  const byStatus: Record<string, number> = {};
+  for (const r of rows) {
+    byType[r.t] = (byType[r.t] ?? 0) + n(r.n);
+    byStatus[r.s] = (byStatus[r.s] ?? 0) + n(r.n);
+    if (r.s === 'published') published[r.t] = (published[r.t] ?? 0) + n(r.n);
+  }
+  return { total: rows.reduce((s, r) => s + n(r.n), 0), byType, published, byStatus };
+}, { order: 55 });
+
 // ---------------------------------------------------------------- task centre
 registerDashboardWidget('tasks', async (ctx) => {
   const since = new Date(ctx.now.getTime() - DAY);

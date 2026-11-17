@@ -1,20 +1,21 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import type { Dayjs } from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import type { Content, PublishPlatform, PublishTaskItem, SocialAccount } from '../../api/types'
+import { POST_TYPES, type Content, type MediaRule, type PostType, type PublishPlatform, type PublishTaskItem, type SocialAccount } from '../../api/types'
 import { useInstancesStore } from '../../stores/instances'
 import StatusTag from '../common/StatusTag.vue'
 import { MODAL_WIDTH } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
 
 /**
- * Distribution step (分发): pick target accounts (grouped by platform, with device + login status),
- * optional per-account title/caption/hashtags/privacy/time, and the schedule (now or a time).
+ * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
+ * device + login status), optional per-account title/caption/hashtags/privacy/time, and the schedule.
+ * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
  */
-const props = defineProps<{ open: boolean; content: Content | null }>()
+const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
 const { t } = useI18n()
 const store = useInstancesStore()
@@ -26,13 +27,17 @@ const saving = ref(false)
 const selected = ref<string[]>([])
 interface Override { title: string; caption: string; hashtags: string[]; privacy: string | undefined; at: Dayjs | null }
 const overrides = reactive<Record<string, Override>>({})
-const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, maxAttempts: 3, republish: false })
+const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, maxAttempts: 3, republish: false, postType: 'feed' as PostType })
+const defaultAt = () => dayjs().add(90, 'minute').startOf('hour')
+const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
+function onWhen() { if (form.when === 'at' && !form.at) form.at = defaultAt() }
 
 watch(() => props.open, async (o) => {
   if (!o || !props.content) return
   selected.value = []
   for (const k of Object.keys(overrides)) delete overrides[k]
-  Object.assign(form, { when: 'now', at: null, maxAttempts: 3, republish: false })
+  const when = props.mode ?? 'now'
+  Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, maxAttempts: 3, republish: false, postType: 'feed' })
   loading.value = true
   try {
     const owner = props.content.userId
@@ -45,13 +50,25 @@ watch(() => props.open, async (o) => {
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 })
 
+/** Rule of the chosen post type on a platform (null: the platform has no such type). */
+function ruleOf(platformId: string): { media: MediaRule; caption: boolean } | null {
+  const cap = platforms.value.find((p) => p.id === platformId)?.capability
+  if (!cap) return null
+  return form.postType === 'feed' ? { media: cap.media, caption: true } : cap.postTypes?.[form.postType] ?? null
+}
+const hasCaption = (accountId: string) => ruleOf(accountById(accountId)?.platform ?? '')?.caption !== false
+
 /** Client-side pre-check against the capability table (the API checks again). */
 function incompatible(platformId: string): string | null {
-  const cap = platforms.value.find((p) => p.id === platformId)?.capability
+  if (!platforms.value.some((p) => p.id === platformId)) return null
   const media = props.content?.media ?? []
-  if (!cap) return null
-  if (media.length < cap.media.min || media.length > cap.media.max) return t('distribute.needCount', { min: cap.media.min, max: cap.media.max, n: media.length })
-  if (media.some((m) => !cap.media.kinds.includes(m.fileType))) return t('distribute.needKinds', { kinds: cap.media.kinds.map((k) => t(`media.${k}`)).join(' / ') })
+  const rule = ruleOf(platformId)
+  if (!rule) return t('distribute.typeNotSupported', { type: t(`publish.type.${form.postType}`) })
+  const r = rule.media
+  if (media.length < r.min || media.length > r.max) return t('distribute.needCount', { min: r.min, max: r.max, n: media.length })
+  if (media.some((m) => !r.kinds.includes(m.fileType))) return t('distribute.needKinds', { kinds: r.kinds.map((k) => t(`media.${k}`)).join(' / ') })
+  if (!r.mixed && new Set(media.map((m) => m.fileType)).size > 1) return t('errors.publish.media_mixed')
+  if (r.maxVideoSec && media.some((m) => m.fileType === 'video' && (m.duration ?? 0) > r.maxVideoSec!)) return t('distribute.needVideoMax', { max: r.maxVideoSec })
   if (media.some((m) => m.status !== 'ready')) return t('distribute.notReady')
   return null
 }
@@ -61,7 +78,15 @@ const groups = computed(() => {
   const ids = [...new Set(accounts.value.map((a) => a.platform))].filter((id) => platforms.value.some((p) => p.id === id))
   return ids.map((id) => ({ id, name: platforms.value.find((p) => p.id === id)?.name ?? id, reason: incompatible(id), accounts: accounts.value.filter((a) => a.platform === id) }))
 })
+/** Post types offered: those of the platforms the owner has accounts on. */
+const postTypes = computed(() => {
+  const ids = new Set(accounts.value.map((a) => a.platform))
+  return POST_TYPES.filter((pt) => platforms.value.some((p) => ids.has(p.id) && p.postTypes.includes(pt)))
+})
 const accountById = (id: string) => accounts.value.find((a) => a.id === id)
+const noCaption = computed(() => selected.value.some((id) => !hasCaption(id)))
+// Changing the type drops accounts whose platform no longer fits.
+watch(() => form.postType, () => { selected.value = selected.value.filter((id) => !incompatible(accountById(id)?.platform ?? '')) })
 const capOf = (platform: string) => platforms.value.find((p) => p.id === platform)?.capability
 function online(a: SocialAccount): boolean {
   if (!a.instance) return false
@@ -90,13 +115,15 @@ async function submit() {
     const targets = selected.value.map((id) => {
       const o = overrides[id]!
       const at = o.at ?? (form.when === 'at' ? form.at : null)
+      const text = hasCaption(id)
       return {
         accountId: id,
         ...(o.title.trim() ? { title: o.title.trim() } : {}),
-        ...(o.caption.trim() ? { caption: o.caption } : {}),
-        ...(o.hashtags.length ? { hashtags: o.hashtags } : {}),
+        ...(text && o.caption.trim() ? { caption: o.caption } : {}),
+        ...(text && o.hashtags.length ? { hashtags: o.hashtags } : {}),
         ...(o.privacy ? { options: { privacy: o.privacy } } : {}),
         scheduledAt: at ? at.toISOString() : null,
+        ...(form.postType !== 'feed' ? { postType: form.postType } : {}),
       }
     })
     const r = await api<{ created: PublishTaskItem[]; existing: PublishTaskItem[] }>('POST', `/api/contents/${props.content.id}/distribute`, {
@@ -111,10 +138,33 @@ async function submit() {
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('distribute.title', { title: content?.title ?? '' })" :width="MODAL_WIDTH.lg" :confirm-loading="saving"
+  <a-modal :open="open" :title="t(form.when === 'at' ? 'distribute.titleLater' : 'distribute.titleNow', { title: content?.title ?? '' })" :width="MODAL_WIDTH.lg" :confirm-loading="saving"
     :ok-text="t('distribute.submit', { n: selected.length })" :ok-button-props="{ disabled: !selected.length }" :cancel-text="t('common.cancel')"
     @ok="submit" @cancel="emit('update:open', false)">
     <a-spin :spinning="loading">
+      <a-divider orientation="left" plain>{{ t('distribute.schedule') }}</a-divider>
+      <a-space wrap>
+        <a-radio-group v-model:value="form.when" @change="onWhen">
+          <a-radio value="now">{{ t('distribute.now') }}</a-radio>
+          <a-radio value="at">{{ t('distribute.at') }}</a-radio>
+        </a-radio-group>
+        <a-date-picker v-if="form.when === 'at'" v-model:value="form.at" show-time format="YYYY-MM-DD HH:mm" :disabled-date="pastDay" />
+        <span>{{ t('distribute.maxAttempts') }}</span>
+        <a-input-number v-model:value="form.maxAttempts" :min="1" :max="10" style="width: 70px" />
+        <a-checkbox v-model:checked="form.republish">
+          <a-tooltip :title="t('distribute.republishHint')">{{ t('distribute.republish') }}</a-tooltip>
+        </a-checkbox>
+      </a-space>
+
+      <template v-if="postTypes.length > 1">
+        <a-divider orientation="left" plain>{{ t('distribute.postType') }}</a-divider>
+        <a-radio-group v-model:value="form.postType" button-style="solid">
+          <a-radio-button v-for="pt in postTypes" :key="pt" :value="pt">{{ t(`publish.type.${pt}`) }}</a-radio-button>
+        </a-radio-group>
+        <a-alert v-if="form.postType === 'story' || noCaption" type="info" show-icon :message="t('distribute.storyNoCaption')" style="margin-top: 8px" />
+      </template>
+
+      <a-divider orientation="left" plain>{{ t('publish.colAccount') }}</a-divider>
       <a-empty v-if="!loading && !accounts.length" :description="t('distribute.noAccounts')" />
       <div v-for="g in groups" :key="g.id" class="group">
         <div class="group-head">
@@ -145,38 +195,26 @@ async function submit() {
               <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.title" :label="t('distribute.titleOverride')">
                 <a-input v-model:value="overrides[id]!.title" :maxlength="capOf(accountById(id)!.platform)!.title!.max" :placeholder="defaultTitle(accountById(id)!.platform)" />
               </a-form-item>
-              <a-form-item :label="t('distribute.captionOverride')">
-                <a-textarea v-model:value="overrides[id]!.caption" :rows="3" :maxlength="capOf(accountById(id)?.platform ?? '')?.captionMax" show-count
-                  :placeholder="defaultCaption(accountById(id)?.platform ?? '')" />
-              </a-form-item>
-              <a-form-item :label="t('distribute.hashtags')">
-                <a-select v-model:value="overrides[id]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
-              </a-form-item>
+              <template v-if="hasCaption(id)">
+                <a-form-item :label="t('distribute.captionOverride')">
+                  <a-textarea v-model:value="overrides[id]!.caption" :rows="3" :maxlength="capOf(accountById(id)?.platform ?? '')?.captionMax" show-count
+                    :placeholder="defaultCaption(accountById(id)?.platform ?? '')" />
+                </a-form-item>
+                <a-form-item :label="t('distribute.hashtags')">
+                  <a-select v-model:value="overrides[id]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
+                </a-form-item>
+              </template>
               <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.privacy" :label="t('distribute.privacy')">
                 <a-select v-model:value="overrides[id]!.privacy" allow-clear :placeholder="t('common.default')" style="width: 200px; max-width: 100%"
                   :options="capOf(accountById(id)!.platform)!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
               </a-form-item>
               <a-form-item :label="t('distribute.timeOverride')">
-                <a-date-picker v-model:value="overrides[id]!.at" show-time allow-clear :placeholder="t('distribute.useCommonTime')" />
+                <a-date-picker v-model:value="overrides[id]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.useCommonTime')" />
               </a-form-item>
             </a-form>
           </a-collapse-panel>
         </a-collapse>
       </template>
-
-      <a-divider orientation="left" plain>{{ t('distribute.schedule') }}</a-divider>
-      <a-space wrap>
-        <a-radio-group v-model:value="form.when">
-          <a-radio value="now">{{ t('distribute.now') }}</a-radio>
-          <a-radio value="at">{{ t('distribute.at') }}</a-radio>
-        </a-radio-group>
-        <a-date-picker v-if="form.when === 'at'" v-model:value="form.at" show-time />
-        <span>{{ t('distribute.maxAttempts') }}</span>
-        <a-input-number v-model:value="form.maxAttempts" :min="1" :max="10" style="width: 70px" />
-        <a-checkbox v-model:checked="form.republish">
-          <a-tooltip :title="t('distribute.republishHint')">{{ t('distribute.republish') }}</a-tooltip>
-        </a-checkbox>
-      </a-space>
     </a-spin>
   </a-modal>
 </template>

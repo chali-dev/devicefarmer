@@ -1,4 +1,4 @@
-import type { MediaAsset, PlatformConnection } from '../../db/schema.js';
+import type { MediaAsset, PlatformConnection, PostType } from '../../db/schema.js';
 
 /**
  * Official platform adapters (PlatformAdapter). Each platform declares what its official API can do
@@ -19,6 +19,8 @@ export interface PlatformCapabilities {
   profileStats: boolean;
   /** fetchAccountStats returns counters and/or day activity for 账号分析. */
   accountStats: boolean;
+  /** Post types besides feed the API can publish (absent = feed only); others fall back to the manual method. */
+  postTypes?: PostType[];
 }
 
 /** Admin-configured app credentials of one platform (decrypted; only ever used server-side). */
@@ -107,6 +109,8 @@ export interface PublishInput {
   privacy?: 'public' | 'unlisted' | 'private';
   /** Ready media assets in post order (one video, one image, or several images = carousel). */
   media: MediaAsset[];
+  /** Default feed. */
+  postType?: PostType;
 }
 
 export interface PublishResult {

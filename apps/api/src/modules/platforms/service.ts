@@ -24,6 +24,10 @@ export async function apiPublishUnavailableReason(account: SocialAccount, input:
   if (!conn) return { code: 'platform.not_connected', message: '该账号未通过官方接口授权' };
   if (conn.status === 'expired' || conn.status === 'revoked') return { code: 'platform.auth_expired', message: `${adapter.name} 授权已失效，请重新授权` };
   const caps = adapter.capabilities(await appOptions(account.platform));
+  const postType = input.postType ?? 'feed';
+  if (postType !== 'feed' && !caps.postTypes?.includes(postType)) {
+    return { code: 'platform.post_type_unsupported', message: `${adapter.name} 官方接口不支持该发布类型（${postType}）` };
+  }
   const videos = input.media.filter((m) => m.fileType === 'video').length;
   if (!input.media.length) return { code: 'platform.media_unsupported', message: '没有素材' };
   if (input.media.some((m) => m.status !== 'ready' || m.deletedAt)) return { code: 'platform.media_not_ready', message: '素材未就绪' };

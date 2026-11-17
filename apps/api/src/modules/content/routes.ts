@@ -2,7 +2,7 @@ import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { CONTENT_STATUSES } from '../../db/schema.js';
+import { CONTENT_STATUSES, POST_TYPES } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { distribute } from '../publish/publish.js';
@@ -70,6 +70,7 @@ const Target = z.object({
   hashtags: z.array(z.string().trim().min(1).max(100)).max(30).optional(),
   options: z.object({ privacy: z.string().max(20).optional() }).strict().optional(),
   scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
+  postType: z.enum(POST_TYPES).optional(),
 });
 const DistributeBody = z.object({
   targets: z.array(Target).min(1).max(50),

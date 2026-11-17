@@ -169,6 +169,13 @@
       "when": 1794917315003,
       "tag": "0023_content_translations",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794917957394,
+      "tag": "0024_publish_post_type",
+      "breakpoints": true
     }
   ]
 }
