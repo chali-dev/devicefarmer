@@ -342,6 +342,14 @@ export const ACTIONS: Record<string, ActionSpec> = {
       return { type: body.type, s3: s3 ? { endpoint: s3.endpoint, region: s3.region, bucket: s3.bucket, forcePathStyle: s3.forcePathStyle, prefix: s3.prefix } : undefined };
     },
   },
+  // system management (系统管理)
+  'PUT /api/system/settings': {
+    action: 'system.settings',
+    detail: ({ body }) => ({ backup: body.backup, logRetentionDays: body.logRetentionDays, historyRetentionDays: body.historyRetentionDays }),
+  },
+  'POST /api/system/maintenance': { action: 'system.maintenance' },
+  'POST /api/system/backups': { action: 'system.backup_create' },
+  'DELETE /api/system/backups/:id': { action: 'system.backup_delete' },
 };
 
 /** Cheap `:id` → name lookups, by route prefix. */

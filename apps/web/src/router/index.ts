@@ -29,6 +29,8 @@ const router = createRouter({
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
+        { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue') },
+        { path: 'system', name: 'system', component: () => import('../views/SystemView.vue'), meta: { admin: true } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },

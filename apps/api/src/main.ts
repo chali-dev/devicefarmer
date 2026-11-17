@@ -44,8 +44,11 @@ import { analyticsRoutes } from './modules/analytics/routes.js';
 import { scheduleDailyAccountStats } from './modules/analytics/analytics.js'; // account-stats task handler + dashboard widget
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
+import { logSink } from './modules/system/logs.js';
+import { systemRoutes } from './modules/system/routes.js'; // also registers the db-backup task handler
+import { systemHourly } from './modules/system/maintenance.js';
 
-const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug' } });
+const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug', stream: logSink } });
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 
@@ -89,6 +92,7 @@ await app.register(analyticsRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(dashboardRoutes);
+await app.register(systemRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
@@ -108,11 +112,13 @@ const hourly = () => {
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
   void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
+  void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
 };
 setTimeout(() => {
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
   void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
+  void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
 }, 10_000).unref();
 const cleanupTimer = setInterval(hourly, 3600_000);
 

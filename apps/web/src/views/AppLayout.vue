@@ -7,6 +7,7 @@ import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
   SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined,
+  ApiOutlined, DatabaseOutlined,
 } from '@ant-design/icons-vue'
 import { RiseOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -28,7 +29,7 @@ const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('
 function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
-const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics'] as const
+const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics', 'connections', 'system'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
 /** Sub-menus (cloud devices, administration) start open. */
 const openKeys = ref<string[]>(['devices', 'admin'])
@@ -143,6 +144,10 @@ async function savePassword() {
             <AppstoreOutlined />
             <span>{{ t('nav.library') }}</span>
           </a-menu-item>
+          <a-menu-item key="connections" @click="router.push('/connections')">
+            <ApiOutlined />
+            <span>{{ t('nav.connections') }}</span>
+          </a-menu-item>
         </a-sub-menu>
         <a-menu-item v-if="auth.isAdmin" key="proxies" @click="router.push('/proxies')">
           <ClusterOutlined />
@@ -199,6 +204,10 @@ async function savePassword() {
             <a-menu-item key="audit" @click="router.push('/audit')">
               <FileSearchOutlined />
               <span>{{ t('nav.audit') }}</span>
+            </a-menu-item>
+            <a-menu-item key="system" @click="router.push('/system')">
+              <DatabaseOutlined />
+              <span>{{ t('nav.system') }}</span>
             </a-menu-item>
           </a-sub-menu>
         </template>

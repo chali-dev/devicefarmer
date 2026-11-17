@@ -206,6 +206,12 @@ export function scrcpyActive(adbPort: number): boolean {
   return shares.has(adbPort);
 }
 
+/** Connection monitoring: the device's scrcpy stream in this process (link = how the video reaches the API), or null. */
+export function scrcpyInfo(adbPort: number): { viewers: number; link: 'relay' | 'adb' } | null {
+  const s = shares.get(adbPort);
+  return s && !s.server.closed ? { viewers: s.viewers.size, link: s.server.via } : null;
+}
+
 /** Joins (starting if needed) the device's scrcpy session. Rejects if the server can't be started. */
 export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external = false): Promise<ScrcpyHandle> {
   let share = shares.get(adbPort);

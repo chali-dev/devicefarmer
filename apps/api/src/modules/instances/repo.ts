@@ -5,6 +5,7 @@ import type { Instance, Task } from '../../db/schema.js';
 import { events, type PublicTask } from '../../lib/events.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
 import { unlinkInstanceAccounts } from '../social/social.js';
+import { recordTransitions } from '../system/history.js';
 
 /**
  * Instance as exposed to clients: the bound pool proxy's non-secret fields only
@@ -28,7 +29,16 @@ export async function publishInstance(row: Instance): Promise<void> {
 
 /** All instance/task writes go through here so every change is broadcast. */
 export async function updateInstance(id: string, set: Partial<typeof schema.instances.$inferInsert>): Promise<Instance | undefined> {
-  const [row] = await db.update(schema.instances).set(set).where(eq(schema.instances.id, id)).returning();
+  const I = schema.instances;
+  // Status / adb changes are also written to the connection history (modules/system/history.ts).
+  const [row] = set.status === undefined && set.adbState === undefined
+    ? await db.update(I).set(set).where(eq(I.id, id)).returning()
+    : await db.transaction(async (tx) => {
+      const [before] = await tx.select({ status: I.status, adbState: I.adbState }).from(I).where(eq(I.id, id)).for('update');
+      const rows = await tx.update(I).set(set).where(eq(I.id, id)).returning();
+      if (before && rows[0]) await recordTransitions(tx, id, before, rows[0]);
+      return rows;
+    });
   if (row) await publishInstance(row);
   return row;
 }
