@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type ContentStatus, type MediaAsset, type PublishStatus } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { canView } from '../media/media.js';
 import { translationLangs } from './languages.js';
@@ -18,6 +19,7 @@ export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Exec = typeof db | Tx;
 const c = schema.contents;
 const pt = schema.publishTasks;
+const sa = schema.socialAccounts;
 
 export async function visibleContent(user: AuthUser, id: string, exec: Exec = db, lock = false): Promise<Content> {
   const q = exec.select().from(c).where(eq(c.id, id));
@@ -64,6 +66,35 @@ export async function contentMediaOf(exec: Exec, contentId: string): Promise<Med
     .where(and(eq(schema.contentMedia.contentId, contentId), isNull(schema.mediaAssets.deletedAt)))
     .orderBy(asc(schema.contentMedia.position));
   return rows.map((r) => r.a);
+}
+
+// ---------------------------------------------------------------- publish targets (发布目标)
+
+/**
+ * Validates a content's default target accounts (dedupes, keeps order): accounts the actor can see (others' are 404),
+ * owned by the content's owner (also when an admin edits a user's content) and on an enabled platform.
+ */
+export async function assertTargetAccounts(actor: AuthUser, ownerId: string, ids: string[]): Promise<string[]> {
+  const uniq = [...new Set(ids)];
+  if (!uniq.length) return [];
+  const rows = await db.select({ id: sa.id, userId: sa.userId, platform: sa.platform, handle: sa.handle }).from(sa).where(inArray(sa.id, uniq));
+  return uniq.map((id) => {
+    const a = rows.find((r) => r.id === id);
+    if (!a || (!isAdmin(actor) && a.userId !== actor.id)) throw notFound('账号不存在', 'social.not_found');
+    if (a.userId !== ownerId) throw badRequest(`账号 @${a.handle} 不属于内容所有者`, 'content.target_not_owner', { account: a.handle });
+    assertPlatformEnabled(a.platform);
+    return a.id;
+  });
+}
+
+export async function setContentTargets(tx: Tx, contentId: string, accountIds: string[]): Promise<void> {
+  await tx.delete(schema.contentTargets).where(eq(schema.contentTargets.contentId, contentId));
+  if (accountIds.length) await tx.insert(schema.contentTargets).values(accountIds.map((accountId, position) => ({ contentId, accountId, position })));
+}
+
+export interface ContentTargetItem {
+  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null; groupId: string | null;
+  instance: { id: string; name: string } | null;
 }
 
 // ---------------------------------------------------------------- tags (case-insensitive, first spelling wins)
@@ -148,7 +179,7 @@ const NONE = '00000000-0000-0000-0000-000000000000';
 export async function toContentItems(rows: Content[]) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [tagRows, mediaRows, owners, counts, langs] = await Promise.all([
+  const [tagRows, mediaRows, owners, counts, langs, targetRows] = await Promise.all([
     db.select({ contentId: schema.contentTagLinks.contentId, name: schema.contentTags.name }).from(schema.contentTagLinks)
       .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
       .where(inArray(schema.contentTagLinks.contentId, ids)).orderBy(asc(schema.contentTags.name)),
@@ -159,6 +190,12 @@ export async function toContentItems(rows: Content[]) {
       .where(inArray(schema.users.id, [...new Set(rows.map((r) => r.userId))].concat(NONE))),
     publishCounts(db, ids),
     translationLangs(ids),
+    db.select({
+      contentId: schema.contentTargets.contentId, id: sa.id, platform: sa.platform, handle: sa.handle, displayName: sa.displayName,
+      personaId: sa.personaId, groupId: sa.groupId, instanceId: schema.instances.id, instanceName: schema.instances.name,
+    }).from(schema.contentTargets).innerJoin(sa, eq(sa.id, schema.contentTargets.accountId))
+      .leftJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
+      .where(inArray(schema.contentTargets.contentId, ids)).orderBy(asc(schema.contentTargets.position)),
   ]);
   return rows.map((r) => ({
     ...r,
@@ -168,5 +205,9 @@ export async function toContentItems(rows: Content[]) {
     publishCounts: counts.get(r.id) ?? {},
     /** Languages with a translation (the source language is `lang`). */
     translations: langs.get(r.id) ?? [],
+    /** 发布目标: default target accounts, in order (DistributeModal starts from them). */
+    targets: targetRows.filter((x) => x.contentId === r.id).map(({ contentId: _c, instanceId, instanceName, ...x }): ContentTargetItem => ({
+      ...x, instance: instanceId ? { id: instanceId, name: instanceName! } : null,
+    })),
   }));
 }

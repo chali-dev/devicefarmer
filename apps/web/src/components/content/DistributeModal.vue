@@ -15,6 +15,7 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
  * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
  * device + login status), optional per-account title/caption/hashtags/privacy/time, and the schedule.
  * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
+ * The content's 发布目标 (default target accounts) are preselected; the person can still add or remove accounts.
  */
 const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
@@ -31,6 +32,8 @@ const overrides = reactive<Record<string, Override>>({})
 /** Per-account caption (empty = the content's text for that platform); one tab per selected account. */
 const captions = reactive<Record<string, string>>({})
 const accountTab = ref('')
+/** How many of the content's targets were preselected (of how many). */
+const prefilled = ref({ n: 0, of: 0 })
 const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, maxAttempts: 3, republish: false, postType: 'feed' as PostType })
 const defaultAt = () => dayjs().add(90, 'minute').startOf('hour')
 const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
@@ -52,6 +55,14 @@ watch(() => props.open, async (o) => {
     ])
     accounts.value = a.items
     platforms.value = p.platforms
+    // 发布目标: preselect the content's targets that can take this post (enabled platform, media fit)
+    const targetIds = (props.content.targets ?? []).map((x) => x.id)
+    for (const id of targetIds) {
+      const acc = accountById(id)
+      if (acc && groups.value.some((g) => g.id === acc.platform && !g.reason)) toggle(id, true)
+    }
+    prefilled.value = { n: selected.value.length, of: targetIds.length }
+    if (selected.value.length) accountTab.value = selected.value[0]!
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 })
 
@@ -177,6 +188,7 @@ async function submit() {
       </template>
 
       <a-divider orientation="left" plain>{{ t('publish.colAccount') }}</a-divider>
+      <div v-if="prefilled.of" class="muted small prefill">{{ t('distribute.prefilled', prefilled) }}</div>
       <a-empty v-if="!loading && !accounts.length" :description="t('distribute.noAccounts')" />
       <div v-for="g in groups" :key="g.id" class="group">
         <div class="group-head">
@@ -234,4 +246,5 @@ async function submit() {
 .acc { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-radius: var(--cp-radius); }
 .acc:hover { background: var(--cp-bg-hover); }
 .tab-form { margin-top: 16px; }
+.prefill { margin-bottom: 8px; }
 </style>

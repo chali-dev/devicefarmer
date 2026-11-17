@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
+import { CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TARGETS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
 
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); };
@@ -388,6 +388,21 @@ try {
   r = await http('DELETE', `/api/media/${ref.id}`, U);
   const afterRef = (await http('GET', `/api/contents/${nc.id}`, U)).body.content;
   console.log(`  (info) deleting media used by a content without publish tasks → HTTP ${r.status}; content now has ${afterRef.media.length} media`);
+  // 发布目标 of the demo contents (only when the 媒体矩阵 demo accounts exist)
+  const userAccs = await listAll(U, '/api/social/accounts?q=demo.');
+  if (userAccs.some((a) => a.handle === 'demo.fit.with.mia')) {
+    const want = (title: string) => TARGETS[title]!.join();
+    const got = (list: any[], title: string) => (list.find((x) => x.title === title)?.targets ?? []).map((x: any) => x.handle).join();
+    check('demo 发布目标: contents carry their default targets in order (admin + demo-user)',
+      Object.keys(TARGETS).every((title) => got(CONTENTS.find((c) => c.title === title)!.owner === 'user' ? uC : aC, title) === want(title)),
+      Object.keys(TARGETS).map((title) => `${title}: ${got(aC, title)}`).join(' | '));
+    const adminAcc = (await listAll(T, '/api/social/accounts?q=demo.wanderlust')).find((a) => a.handle === 'demo.wanderlust.lena');
+    r = await http('PUT', `/api/contents/${nc.id}`, U, { targetIds: [adminAcc.id] });
+    check('demo-user cannot target an admin account → 404', r.status === 404 && r.body.code === 'social.not_found', `${r.status} ${r.body?.code}`);
+    const mia = userAccs.find((a) => a.handle === 'demo.fit.with.mia');
+    r = await http('PUT', `/api/contents/${nc.id}`, U, { targetIds: [mia.id] });
+    check('demo-user targets an own account (no device → still allowed)', r.status === 200 && r.body.content.targets[0]?.id === mia.id && r.body.content.targets[0]?.instance === null);
+  } else console.log('  (skip) 发布目标 checks: 媒体矩阵 demo accounts missing (run scripts/demo-seed-matrix.ts)');
   r = await http('DELETE', `/api/contents/${nc.id}`, U);
   const cg = await http('GET', `/api/contents/${nc.id}`, U);
   check('delete own content → 204, then 404', r.status === 204 && cg.status === 404);

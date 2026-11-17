@@ -430,6 +430,8 @@ export const socialAccounts = pgTable('social_accounts', {
   externalId: text('external_id'),
   groupId: uuid('group_id').references(() => socialAccountGroups.id, { onDelete: 'set null' }),
   instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
+  /** 账号人设: a public persona or one of the account owner's personal personas (assertPersonaFor). */
+  personaId: uuid('persona_id').references((): AnyPgColumn => personas.id, { onDelete: 'set null' }),
   loginStatus: text('login_status', { enum: ['unknown', 'logged_in', 'logged_out', 'needs_verification'] }).notNull().default('unknown'),
   accountStatus: text('account_status', { enum: ['active', 'limited', 'suspended', 'disabled'] }).notNull().default('active'),
   notes: text('notes'),
@@ -445,6 +447,7 @@ export const socialAccounts = pgTable('social_accounts', {
   index('social_accounts_instance_platform_idx').on(t.instanceId, t.platform),
   index('social_accounts_status_idx').on(t.loginStatus, t.accountStatus),
   index('social_accounts_created_at_idx').on(t.createdAt),
+  index('social_accounts_persona_idx').on(t.personaId),
 ]);
 
 /** Tag names are unique case-insensitively; the first spelling wins (same rule as media tags). */
@@ -572,6 +575,16 @@ export const contentMedia = pgTable('content_media', {
   assetId: uuid('asset_id').notNull().references(() => mediaAssets.id, { onDelete: 'cascade' }),
   position: integer('position').notNull(),
 }, (t) => [primaryKey({ columns: [t.contentId, t.assetId] }), index('content_media_asset_idx').on(t.assetId)]);
+
+/**
+ * 发布目标: a content's default target accounts (ordered). Concrete account ids only (a group/persona pick is expanded
+ * when chosen). Deleting the content or the account drops the row. Distributing still takes its own target list.
+ */
+export const contentTargets = pgTable('content_targets', {
+  contentId: uuid('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  position: integer('position').notNull(),
+}, (t) => [primaryKey({ columns: [t.contentId, t.accountId] }), index('content_targets_account_idx').on(t.accountId)]);
 
 /**
  * 多语言内容: human-written versions of a content in another language (the content itself is the source,

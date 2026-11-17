@@ -11,6 +11,7 @@ import { MODAL_WIDTH } from '../common/ui'
  * "Insert template" for the content editor: picks a post template (话术库, kind post) and hands its text to the
  * editor's current text tab. The person edits the result before saving; nothing is generated or posted.
  */
+const props = defineProps<{ /** Default persona filter (e.g. the first publish target's 账号人设); the person can clear it. */ defaultPersonaId?: string | null }>()
 const emit = defineEmits<{ insert: [text: string, replace: boolean] }>()
 const { t } = useI18n()
 const router = useRouter()
@@ -32,7 +33,11 @@ watch(persona, () => { if (current.value && !shown.value.includes(current.value)
 async function show() {
   open.value = true
   loading.value = true
-  try { templates.value = (await api<{ templates: CommentTemplate[] }>('GET', '/api/comment-templates?kind=post')).templates } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
+  try {
+    templates.value = (await api<{ templates: CommentTemplate[] }>('GET', '/api/comment-templates?kind=post')).templates
+    const pid = props.defaultPersonaId
+    persona.value = pid && personas.value.some((p) => p.id === pid) ? pid : undefined
+  } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
 function ok() {
   if (!current.value) { message.warning(t('scripts.pick')); return }

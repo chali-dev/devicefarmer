@@ -12,7 +12,7 @@ import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
-  type ManagedUser, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialGroup, type SocialLoginStatus, type SocialPlatform,
+  type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialGroup, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
@@ -34,6 +34,8 @@ const conns = usePlatformConnections()
 const platforms = ref<SocialPlatform[]>([])
 const groups = ref<SocialGroup[]>([])
 const allTags = ref<string[]>([])
+/** 账号人设 options: public personas + personal ones (own; admins: every user's). */
+const personas = ref<Persona[]>([])
 const users = ref<ManagedUser[]>([])
 const items = ref<SocialAccount[]>([])
 const total = ref(0)
@@ -45,6 +47,7 @@ const filters = reactive({
   q: queryParam(route.query, 'q') ?? '',
   platform: queryParam(route.query, 'platform'),
   groupId: undefined as string | undefined,
+  personaId: undefined as string | undefined,
   loginStatus: queryParam<SocialLoginStatus>(route.query, 'loginStatus', ['unknown', 'logged_in', 'logged_out', 'needs_verification']),
   accountStatus: queryParam<SocialAccountStatus>(route.query, 'accountStatus', ['active', 'limited', 'suspended', 'disabled']),
   exception: queryParam(route.query, 'exception') === '1',
@@ -60,14 +63,17 @@ const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) 
 
 async function loadMeta() {
   try {
-    const [p, g, tg] = await Promise.all([
+    const [p, g, tg, pub, own] = await Promise.all([
       api<{ platforms: SocialPlatform[] }>('GET', '/api/social/platforms'),
       api<{ groups: SocialGroup[] }>('GET', '/api/social/groups'),
       api<{ tags: string[] }>('GET', '/api/social/tags'),
+      api<{ personas: Persona[] }>('GET', '/api/personas?scope=public'),
+      api<{ personas: Persona[] }>('GET', `/api/personas?scope=${auth.isAdmin ? 'all-users' : 'mine'}`),
     ])
     platforms.value = p.platforms
     groups.value = g.groups
     allTags.value = tg.tags
+    personas.value = [...pub.personas, ...own.personas]
     if (auth.isAdmin && !users.value.length) users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users
   } catch (e) { message.error(errorText(e)) }
 }
@@ -77,7 +83,7 @@ async function load() {
   try {
     const p = new URLSearchParams({ page: String(page.current), pageSize: String(page.pageSize) })
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    for (const k of ['platform', 'groupId', 'loginStatus', 'accountStatus', 'ownerId', 'instanceId'] as const) if (filters[k]) p.set(k, filters[k]!)
+    for (const k of ['platform', 'groupId', 'personaId', 'loginStatus', 'accountStatus', 'ownerId', 'instanceId'] as const) if (filters[k]) p.set(k, filters[k]!)
     if (filters.exception) p.set('exception', 'true')
     if (filters.tags.length) p.set('tags', filters.tags.join(','))
     const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
@@ -91,7 +97,7 @@ async function load() {
 }
 function search() { page.current = 1; void load() }
 function reset() {
-  Object.assign(filters, { q: '', platform: undefined, groupId: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, tags: [], ownerId: undefined, instanceId: undefined })
+  Object.assign(filters, { q: '', platform: undefined, groupId: undefined, personaId: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, tags: [], ownerId: undefined, instanceId: undefined })
   if (route.query.instanceId) void router.replace({ query: {} })
   search()
 }
@@ -110,6 +116,7 @@ const columns = computed(() => [
   { title: t('social.colHandle'), key: 'handle', width: 200 },
   ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 110 }] : []),
   { title: t('social.colGroup'), key: 'group', width: 110 },
+  { title: t('social.colPersona'), key: 'persona', width: 120 },
   { title: t('social.colTags'), key: 'tags', width: 160 },
   { title: t('social.colDevice'), key: 'device', width: 140 },
   { title: t('social.colCountry'), key: 'proxy', width: 140 },
@@ -124,6 +131,14 @@ const groupOptions = computed(() => [
   { value: 'none', label: t('social.ungrouped') },
   ...groups.value.map((g) => ({ value: g.id, label: auth.isAdmin ? `${g.name} · ${g.ownerName}` : g.name })),
 ])
+/** Persona label: personal ones are marked (admins also see the owner). */
+const personaLabel = (p: Persona) => (p.ownerType === 'public' ? p.name : `${p.name} · ${auth.isAdmin ? p.ownerName ?? t('scripts.personal') : t('scripts.personal')}`)
+/** Personas that fit an account of `owner`: public ones and that owner's personal ones. */
+const personasFor = (owner: string | null | undefined) => personas.value.filter((p) => p.ownerType === 'public' || (!!owner && p.ownerId === owner))
+const personaFilterOptions = computed(() => [
+  { value: 'none', label: t('social.noPersona') },
+  ...personas.value.map((p) => ({ value: p.id, label: personaLabel(p) })),
+])
 const deviceName = computed(() => (filters.instanceId ? store.byId.get(filters.instanceId)?.name ?? filters.instanceId.slice(0, 8) : ''))
 
 // ---------------------------------------------------------------- create / edit
@@ -133,7 +148,7 @@ const editing = ref<SocialAccount | null>(null)
 const formRef = ref<FormInstance>()
 const blank = () => ({
   platform: undefined as string | undefined, ownerId: undefined as string | undefined, handle: '', displayName: '', profileUrl: '', externalId: '',
-  groupId: undefined as string | undefined, tags: [] as string[], instanceId: undefined as string | undefined,
+  groupId: undefined as string | undefined, personaId: undefined as string | undefined, tags: [] as string[], instanceId: undefined as string | undefined,
   loginStatus: 'unknown' as SocialLoginStatus, accountStatus: 'active' as SocialAccountStatus, lastError: '', notes: '',
 })
 const form = reactive(blank())
@@ -146,6 +161,7 @@ const rules = computed<Record<string, Rule[]>>(() => ({
 /** Groups that may hold the account: those of its owner. */
 const formOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth.user?.id)
 const formGroups = computed(() => groups.value.filter((g) => g.userId === formOwner.value))
+const formPersonas = computed(() => personasFor(formOwner.value))
 const deviceOptions = computed(() => store.list.map((i) => ({ value: i.id, label: i.name })))
 const formLimit = computed(() => platforms.value.find((p) => p.id === (editing.value?.platform ?? form.platform))?.limit)
 
@@ -159,20 +175,24 @@ function openEdit(a: SocialAccount) {
   editing.value = a
   Object.assign(form, {
     ...blank(), platform: a.platform, handle: a.handle, displayName: a.displayName ?? '', profileUrl: a.profileUrl ?? '', externalId: a.externalId ?? '',
-    groupId: a.groupId ?? undefined, tags: [...a.tags], instanceId: a.instanceId ?? undefined,
+    groupId: a.groupId ?? undefined, personaId: a.personaId ?? undefined, tags: [...a.tags], instanceId: a.instanceId ?? undefined,
     loginStatus: a.loginStatus, accountStatus: a.accountStatus, lastError: a.lastError ?? '', notes: a.notes ?? '',
   })
   formRef.value?.clearValidate()
   editOpen.value = true
 }
-watch(() => form.ownerId, () => { if (!editing.value) form.groupId = undefined })
+watch(() => form.ownerId, () => {
+  if (editing.value) return
+  form.groupId = undefined
+  if (!formPersonas.value.some((p) => p.id === form.personaId)) form.personaId = undefined
+})
 
 async function save() {
   try { await formRef.value?.validate() } catch { return }
   saving.value = true
   const body: Record<string, unknown> = {
     handle: form.handle.trim(), displayName: form.displayName, profileUrl: form.profileUrl, externalId: form.externalId,
-    groupId: form.groupId ?? null, tags: form.tags, instanceId: form.instanceId ?? null,
+    groupId: form.groupId ?? null, personaId: form.personaId ?? null, tags: form.tags, instanceId: form.instanceId ?? null,
     loginStatus: form.loginStatus, accountStatus: form.accountStatus, lastError: form.lastError, notes: form.notes,
   }
   try {
@@ -237,11 +257,15 @@ function logValue(l: SocialAccountLog, v: string | null) {
   return v
 }
 const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue', connect: 'cyan', disconnect: 'gray' }
+const LOG_MSG: Record<string, string> = {
+  'device deleted': 'social.msgDeviceDeleted', 'group deleted': 'social.msgGroupDeleted', 'persona deleted': 'social.msgPersonaDeleted', 'persona merged': 'social.msgPersonaMerged',
+}
 const fieldText = (f: string | null) => (f ? t(`social.field.${f}`) : '')
 
 // ---------------------------------------------------------------- batch
 const batchGroup = ref<string | undefined>(undefined)
 const batchTags = ref<string[]>([])
+const batchPersona = ref<string | undefined>(undefined)
 const selectedRows = computed(() => items.value.filter((i) => selectedKeys.value.includes(i.id)))
 /** move-group needs every selected account to share one owner (groups are per owner). */
 const batchOwner = computed(() => { const o = new Set(selectedRows.value.map((r) => r.userId)); return o.size === 1 ? [...o][0] : null })
@@ -249,13 +273,19 @@ const batchGroupOptions = computed(() => [
   { value: 'none', label: t('social.ungrouped') },
   ...groups.value.filter((g) => g.userId === batchOwner.value).map((g) => ({ value: g.id, label: g.name })),
 ])
-async function batch(action: 'move-group' | 'add-tags' | 'remove-tags' | 'unlink' | 'delete') {
+/** set-persona: public personas fit every selection; personal ones only accounts of their owner. */
+const batchPersonaOptions = computed(() => [
+  { value: 'none', label: t('social.noPersona') },
+  ...personasFor(batchOwner.value).map((p) => ({ value: p.id, label: personaLabel(p) })),
+])
+async function batch(action: 'move-group' | 'set-persona' | 'add-tags' | 'remove-tags' | 'unlink' | 'delete') {
   const ids = [...selectedKeys.value]
   if (!ids.length) return
   const run = async () => {
     try {
       const body: Record<string, unknown> = { ids, action }
       if (action === 'move-group') body.groupId = batchGroup.value === 'none' ? null : batchGroup.value
+      if (action === 'set-persona') body.personaId = batchPersona.value === 'none' ? null : batchPersona.value
       if (action === 'add-tags' || action === 'remove-tags') body.tags = batchTags.value
       const r = await api<{ changed: number; count: number }>('POST', '/api/social/accounts/batch', body)
       message.success(t('social.batchDone', { n: action === 'delete' ? r.count : r.changed }))
@@ -322,6 +352,8 @@ const groupColumns = computed(() => [
           <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
         </a-select>
         <a-select v-model:value="filters.groupId" :placeholder="t('social.colGroup')" allow-clear style="width: 150px" :options="groupOptions" @change="search" />
+        <a-select v-model:value="filters.personaId" :placeholder="t('social.colPersona')" allow-clear show-search option-filter-prop="label" style="width: 150px"
+          :options="personaFilterOptions" @change="search" />
         <a-select v-model:value="filters.loginStatus" :placeholder="t('social.colLogin')" allow-clear style="width: 130px" @change="search">
           <a-select-option v-for="s in SOCIAL_LOGIN_STATUSES" :key="s" :value="s">{{ loginText(s) }}</a-select-option>
         </a-select>
@@ -347,6 +379,10 @@ const groupColumns = computed(() => [
           <a-select v-model:value="batchGroup" :disabled="!batchOwner" :placeholder="t('social.moveTo')" size="small" style="width: 140px" :options="batchGroupOptions" />
         </a-tooltip>
         <a-button size="small" :disabled="!batchGroup" @click="batch('move-group')">{{ t('social.moveGroup') }}</a-button>
+        <a-tooltip :title="batchOwner ? undefined : t('social.batchPersonaPublicOnly')">
+          <a-select v-model:value="batchPersona" :placeholder="t('social.colPersona')" size="small" show-search option-filter-prop="label" style="width: 140px" :options="batchPersonaOptions" />
+        </a-tooltip>
+        <a-button size="small" :disabled="!batchPersona" @click="batch('set-persona')">{{ t('social.setPersona') }}</a-button>
         <a-select
           v-model:value="batchTags" mode="tags" size="small" :placeholder="t('social.colTags')" style="min-width: 160px"
           :options="allTags.map((x) => ({ value: x, label: x }))"
@@ -358,7 +394,7 @@ const groupColumns = computed(() => [
       </a-space>
 
       <a-table
-        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1790 }"
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1910 }"
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total, totalText: (n) => t('social.total', { n }) })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         @change="onTableChange"
@@ -373,6 +409,7 @@ const groupColumns = computed(() => [
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'group'">{{ record.groupName ?? '—' }}</template>
+          <template v-else-if="column.key === 'persona'"><span v-if="record.personaName">{{ record.personaName }}</span><span v-else class="muted">—</span></template>
           <template v-else-if="column.key === 'tags'">
             <a-tag v-for="tg in record.tags" :key="tg" style="margin-bottom: 2px">{{ tg }}</a-tag>
             <span v-if="!record.tags.length" class="muted">—</span>
@@ -462,11 +499,15 @@ const groupColumns = computed(() => [
           </a-form-item>
         </a-col>
         <a-col :span="12">
-          <a-form-item :label="t('social.colTags')" name="tags">
-            <a-select v-model:value="form.tags" mode="tags" :options="allTags.map((x) => ({ value: x, label: x }))" />
+          <a-form-item :label="t('social.colPersona')" name="personaId">
+            <a-select v-model:value="form.personaId" allow-clear show-search option-filter-prop="label" :placeholder="t('social.noPersona')"
+              :options="formPersonas.map((p) => ({ value: p.id, label: personaLabel(p) }))" />
           </a-form-item>
         </a-col>
       </a-row>
+      <a-form-item :label="t('social.colTags')" name="tags">
+        <a-select v-model:value="form.tags" mode="tags" :options="allTags.map((x) => ({ value: x, label: x }))" />
+      </a-form-item>
       <a-form-item :label="t('social.colDevice')" name="instanceId" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
         <a-select v-model:value="form.instanceId" allow-clear show-search option-filter-prop="label" :options="deviceOptions" :placeholder="t('social.notLinked')" />
       </a-form-item>
@@ -527,7 +568,7 @@ const groupColumns = computed(() => [
           <div v-else-if="l.action === 'link'">{{ l.toValue }}</div>
           <div v-else-if="l.action === 'unlink'">{{ l.fromValue }}</div>
           <div v-else-if="l.action === 'create' && l.toValue">{{ l.toValue }}</div>
-          <div v-if="l.message" class="muted">{{ l.message === 'device deleted' ? t('social.msgDeviceDeleted') : l.message === 'group deleted' ? t('social.msgGroupDeleted') : l.message }}</div>
+          <div v-if="l.message" class="muted">{{ LOG_MSG[l.message] ? t(LOG_MSG[l.message]!) : l.message }}</div>
           <div class="muted small">{{ fmt(l.at) }} · {{ l.actorName ?? t('common.system') }}</div>
         </a-timeline-item>
       </a-timeline>

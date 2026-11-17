@@ -6,6 +6,7 @@
  * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them.
  * - 追踪账号: 10 tracked Instagram accounts (categories, tags, favourites, weekly snapshots, posts).
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
+ * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public).
  * Then verifies filters, RBAC/isolation, logs, batch actions (throw-away `demotmp.*` accounts), exact
  * analytics numbers, tracked deltas, the reply review state machine and in-app notifications.
  * Nothing is sent to Instagram: manual comments always hand replies over to an operator (awaiting_operator).
@@ -199,6 +200,11 @@ const PERSONAS = [
   { name: 'demo · 品牌客服', owner: 'admin' as Owner, scope: 'public', description: '礼貌、简短，引导私信' },
   { name: 'demo · 健身教练', owner: 'user' as Owner, scope: 'mine', description: null },
 ];
+/** 账号人设: accounts → persona name (personal personas only on their owner's accounts). */
+const ACCOUNT_PERSONAS: Record<string, string> = {
+  'demo.fit.with.mia': 'demo · 健身教练', 'demo.yoga.daily': 'demo · 健身教练', 'demo.run.club.sh': 'demo · 健身教练',
+  'demo.minimal.closet': 'demo · 品牌客服', 'demo.brand.backup': 'demo · 品牌客服',
+};
 const TEMPLATES = [
   { name: 'demo · 感谢支持', text: '谢谢你的喜欢！我们会继续分享更多内容 🙏', shared: true, tags: ['thanks'], persona: 'demo · 品牌客服' },
   { name: 'demo · 引导私信', text: '感谢关注～具体信息请私信我们，我们会尽快回复你。', shared: true, tags: ['dm'], persona: 'demo · 品牌客服' },
@@ -355,6 +361,15 @@ for (const t of TEMPLATES) {
   counts.templates++;
 }
 
+// ---------------------------------------------------------------- seed: account personas (账号人设)
+for (const [handle, name] of Object.entries(ACCOUNT_PERSONAS)) {
+  const acc = accByHandle.get(handle)!;
+  const pid = personaId.get(name)!;
+  if (acc.personaId === pid) continue;
+  const owner = ACCOUNTS.find((x) => x.handle === handle)!.owner;
+  accByHandle.set(handle, (await must('PUT', `/api/social/accounts/${acc.id}`, tokenOf(owner), { personaId: pid })).account);
+}
+
 // ---------------------------------------------------------------- seed: comments + threads
 const commentsOf = async (accId: string, tok: string) => {
   const b = await must('GET', `/api/comments?accountId=${accId}&limit=200`, tok);
@@ -470,6 +485,9 @@ try {
         && a.tags.map((t: string) => t.toLowerCase()).sort().join() === [...s.tags].sort().join() && a.profileUrl === `https://www.instagram.com/${s.handle}/`;
     });
     check('seeded accounts: owner, group, statuses, notes, tags, profile URL as specified', okSpec);
+    check('account personas (账号人设) as specified', Object.entries(ACCOUNT_PERSONAS).every(([h, name]) => all.find((x) => x.handle === h)?.personaName === name));
+    const coach = await listAll(`/api/social/accounts?personaId=${personaId.get('demo · 健身教练')}`, DU.token);
+    check('persona filter (demo-user, 健身教练): the 3 fitness accounts', coach.map((a) => a.handle).sort().join() === ['demo.fit.with.mia', 'demo.run.club.sh', 'demo.yoga.daily'].join(), coach.map((a) => a.handle).join());
     const du = await listAll('/api/social/accounts', DU.token);
     check('demo-user list: only own accounts', du.length > 0 && du.every((a) => a.userId === DU.id) && ACCOUNTS.filter((s) => s.owner === 'user').every((s) => du.some((a) => a.handle === s.handle)), `${du.length}`);
     const own = await http('GET', `/api/social/accounts?ownerId=${DU.id}&pageSize=200`, ADMIN);

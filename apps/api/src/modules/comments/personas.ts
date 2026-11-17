@@ -5,6 +5,7 @@ import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { writeLogs } from '../social/social.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
@@ -14,6 +15,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
  */
 const P = schema.personas;
 const TPL = schema.commentTemplates;
+const SA = schema.socialAccounts;
 const Id = z.object({ id: z.string().uuid() });
 const Name = z.string().trim().min(1).max(50);
 const Description = z.string().trim().max(200).nullable().optional().transform((v) => (v === '' ? null : v));
@@ -22,13 +24,28 @@ const Sort = z.number().int().min(-100000).max(100000);
 /** Template visibility for the per-persona counts (same rule as the template list). */
 const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, user.id)));
 
-/** Throws 400 persona.not_allowed unless the persona exists and fits a template owned by `templateUserId` (null = shared). */
-export async function assertPersonaFor(templateUserId: string | null, personaId: string): Promise<Persona> {
-  const [p] = await db.select().from(P).where(eq(P.id, personaId));
-  if (!p || (p.ownerType === 'user' && (templateUserId === null || p.ownerId !== templateUserId))) {
-    throw badRequest('人设不存在或不能用于这条话术', 'persona.not_allowed');
+type Exec = Pick<typeof db, 'select'>;
+
+/** A public persona fits everything; a personal one only things owned by its owner (`ownerUserId`, null = shared). */
+export const personaFits = (p: Persona, ownerUserId: string | null) => p.ownerType === 'public' || (ownerUserId !== null && p.ownerId === ownerUserId);
+
+/**
+ * Throws 400 unless the persona exists and fits something owned by `ownerUserId` (null = shared): a template
+ * (`persona.not_allowed`) or a social account (账号人设, `persona.account_not_allowed`).
+ */
+export async function assertPersonaFor(ownerUserId: string | null, personaId: string, target: 'template' | 'account' = 'template', exec: Exec = db): Promise<Persona> {
+  const [p] = await exec.select().from(P).where(eq(P.id, personaId));
+  if (!p || !personaFits(p, ownerUserId)) {
+    throw target === 'account'
+      ? badRequest('人设不存在或不能用于这个账号', 'persona.account_not_allowed')
+      : badRequest('人设不存在或不能用于这条话术', 'persona.not_allowed');
   }
   return p;
+}
+
+/** Account log rows for a persona change on the given accounts (names, from → to). */
+async function logAccountPersona(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], user: AuthUser, accountIds: string[], from: string, to: string | null, message: string) {
+  await writeLogs(tx, user, accountIds.map((accountId) => ({ accountId, action: 'update' as const, field: 'persona', fromValue: from, toValue: to, message })));
 }
 
 /** Persona the user may see (public: everyone; personal: owner or admin). 404 otherwise. */
@@ -114,20 +131,22 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     return { persona: row };
   });
 
-  /** Templates using it become 未设人设 (their legacy text is cleared too, see persona-data-migration.ts). */
+  /** Templates and accounts using it become 未设人设 (templates' legacy text is cleared too, see persona-data-migration.ts). */
   app.delete('/api/personas/:id', { schema: { params: Id } }, async (req, reply) => {
     const p = await manageablePersona(req.user, req.params.id);
     await db.transaction(async (tx) => {
       const moved = await tx.update(TPL).set({ personaId: null, persona: null }).where(eq(TPL.personaId, p.id)).returning({ id: TPL.id });
+      const accounts = await tx.update(SA).set({ personaId: null }).where(eq(SA.personaId, p.id)).returning({ id: SA.id });
+      await logAccountPersona(tx, req.user, accounts.map((a) => a.id), p.name, null, 'persona deleted');
       await tx.delete(P).where(eq(P.id, p.id));
-      if (req.audit) req.audit.extra = { templates: moved.length };
+      if (req.audit) req.audit.extra = { templates: moved.length, accounts: accounts.length };
     });
     reply.code(204);
   });
 
   /**
-   * Moves the templates to `into`, then deletes the source. Allowed: public → public (admin), personal → the same
-   * owner's personal persona or a public one (every template using a personal persona belongs to its owner).
+   * Moves the templates and accounts to `into`, then deletes the source. Allowed: public → public (admin), personal → the same
+   * owner's personal persona or a public one (every template/account using a personal persona belongs to its owner).
    */
   app.post('/api/personas/:id/merge', { schema: { params: Id, body: z.object({ into: z.string().uuid() }) } }, async (req) => {
     const src = await manageablePersona(req.user, req.params.id);
@@ -138,10 +157,12 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!ok) throw badRequest('只能合并到同一范围的人设（个人人设可以合并到公共人设）', 'persona.merge_scope');
     const moved = await db.transaction(async (tx) => {
       const rows = await tx.update(TPL).set({ personaId: dst.id, persona: null }).where(eq(TPL.personaId, src.id)).returning({ id: TPL.id });
+      const accounts = await tx.update(SA).set({ personaId: dst.id }).where(eq(SA.personaId, src.id)).returning({ id: SA.id });
+      await logAccountPersona(tx, req.user, accounts.map((a) => a.id), src.name, dst.name, 'persona merged');
       await tx.delete(P).where(eq(P.id, src.id));
-      return rows.length;
+      return { templates: rows.length, accounts: accounts.length };
     });
-    if (req.audit) req.audit.extra = { into: dst.name, templates: moved };
-    return { persona: dst, moved };
+    if (req.audit) req.audit.extra = { into: dst.name, ...moved };
+    return { persona: dst, moved: moved.templates, movedAccounts: moved.accounts };
   });
 };

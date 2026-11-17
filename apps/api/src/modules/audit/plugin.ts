@@ -220,12 +220,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
-    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, groupId: body.groupId, instanceId: body.instanceId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, groupId: body.groupId, instanceId: body.instanceId, personaId: body.personaId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
   },
   'PUT /api/social/accounts/:id': {
     action: 'social.account_update',
     detail: ({ body }) => ({
-      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, groupId: body.groupId,
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, groupId: body.groupId, personaId: body.personaId,
       loginStatus: body.loginStatus, accountStatus: body.accountStatus,
     }),
   },
@@ -235,7 +235,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
-    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, groupId: body.groupId, tags: body.tags }),
+    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, groupId: body.groupId, personaId: body.personaId, tags: body.tags }),
   },
   'POST /api/social/groups': { action: 'social.group_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ name: body.name, ownerId: body.ownerId }) },
   'PUT /api/social/groups/:id': { action: 'social.group_update', detail: ({ body }) => ({ name: body.name }) },
@@ -287,11 +287,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
   'POST /api/contents': {
     action: 'content.create', target: ({ body }) => body.title as string,
-    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), stage: body.stage, lang: body.lang }),
+    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), targetIds: body.targetIds ? ids(body.targetIds) : undefined, stage: body.stage, lang: body.lang }),
   },
   'PUT /api/contents/:id': {
     action: ({ body }) => (body.stage === 'archived' ? 'content.archive' : 'content.update'),
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, lang: body.lang }),
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, targetIds: body.targetIds ? ids(body.targetIds) : undefined, lang: body.lang }),
   },
   'DELETE /api/contents/:id': { action: 'content.delete' },
   // 多语言内容: only the language is recorded, never the translated texts.

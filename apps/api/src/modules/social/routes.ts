@@ -7,6 +7,7 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { accountChecked } from '../notify/triggers.js';
+import { assertPersonaFor } from '../comments/personas.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
   assertLinkable, EXCEPTION_SQL, getLimits, groupForOwner, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
@@ -33,6 +34,8 @@ const Editable = {
   groupId: z.string().uuid().nullable().optional(),
   tags: Tags.optional(),
   instanceId: z.string().uuid().nullable().optional(),
+  /** 账号人设: public persona or one of the account owner's; null clears. */
+  personaId: z.string().uuid().nullable().optional(),
   loginStatus: z.enum(LOGIN).optional(),
   accountStatus: z.enum(ACCOUNT).optional(),
   notes: opt(2000),
@@ -48,6 +51,8 @@ const ListQuery = z.object({
   groupId: z.union([z.string().uuid(), z.literal('none')]).optional(),
   /** uuid, or 'none' = not linked to a device */
   instanceId: z.union([z.string().uuid(), z.literal('none')]).optional(),
+  /** uuid, or 'none' = no persona */
+  personaId: z.union([z.string().uuid(), z.literal('none')]).optional(),
   loginStatus: z.enum(LOGIN).optional(),
   accountStatus: z.enum(ACCOUNT).optional(),
   exception: z.enum(['true', 'false']).optional(),
@@ -77,6 +82,14 @@ async function groupNames(tx: Tx, ids: (string | null)[]): Promise<(id: string |
   const want = [...new Set(ids.filter((x): x is string => !!x))];
   const rows = want.length ? await tx.select({ id: sg.id, name: sg.name }).from(sg).where(inArray(sg.id, want)) : [];
   const byId = new Map(rows.map((g) => [g.id, g.name]));
+  return (id) => (id && byId.get(id)) || null;
+}
+
+/** Persona names for the given ids in one query (same lookup shape as groupNames). */
+async function personaNames(tx: Tx, ids: (string | null)[]): Promise<(id: string | null) => string | null> {
+  const want = [...new Set(ids.filter((x): x is string => !!x))];
+  const rows = want.length ? await tx.select({ id: schema.personas.id, name: schema.personas.name }).from(schema.personas).where(inArray(schema.personas.id, want)) : [];
+  const byId = new Map(rows.map((p) => [p.id, p.name]));
   return (id) => (id && byId.get(id)) || null;
 }
 
@@ -115,6 +128,8 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     else if (qy.groupId) where.push(eq(sa.groupId, qy.groupId));
     if (qy.instanceId === 'none') where.push(isNull(sa.instanceId));
     else if (qy.instanceId) where.push(eq(sa.instanceId, qy.instanceId));
+    if (qy.personaId === 'none') where.push(isNull(sa.personaId));
+    else if (qy.personaId) where.push(eq(sa.personaId, qy.personaId));
     if (qy.loginStatus) where.push(eq(sa.loginStatus, qy.loginStatus));
     if (qy.accountStatus) where.push(eq(sa.accountStatus, qy.accountStatus));
     if (qy.exception === 'true') where.push(EXCEPTION_SQL);
@@ -157,11 +172,12 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const platform = platformById(b.platform)!;
     const id = await db.transaction(async (tx) => {
       if (b.groupId) await groupForOwner(tx, req.user, b.groupId, ownerId);
+      if (b.personaId) await assertPersonaFor(ownerId, b.personaId, 'account', tx);
       if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, b.platform);
       const [row] = await tx.insert(sa).values({
         userId: ownerId, platform: b.platform, handle: b.handle,
         displayName: blank(b.displayName) ?? null, profileUrl: blank(b.profileUrl) ?? platform.profileUrl(b.handle),
-        externalId: blank(b.externalId) ?? null, groupId: b.groupId ?? null, instanceId: b.instanceId ?? null,
+        externalId: blank(b.externalId) ?? null, groupId: b.groupId ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null,
         loginStatus: b.loginStatus ?? 'unknown', accountStatus: b.accountStatus ?? 'active',
         notes: blank(b.notes) ?? null, lastError: blank(b.lastError) ?? null, createdBy: req.user.id,
       }).returning().catch((err) => { throw isUniqueViolation(err, 'social_accounts_platform_handle') ? handleTaken(b.platform, b.handle) : err; });
@@ -201,6 +217,12 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         set.groupId = b.groupId;
         const names = await groupNames(tx, [cur.groupId, b.groupId ?? null]);
         logs.push({ accountId, action: 'update', field: 'group', fromValue: names(cur.groupId), toValue: names(b.groupId) });
+      }
+      if (b.personaId !== undefined && b.personaId !== cur.personaId) {
+        if (b.personaId) await assertPersonaFor(cur.userId, b.personaId, 'account', tx);
+        set.personaId = b.personaId;
+        const names = await personaNames(tx, [cur.personaId, b.personaId ?? null]);
+        logs.push({ accountId, action: 'update', field: 'persona', fromValue: names(cur.personaId), toValue: names(b.personaId) });
       }
       if (b.instanceId !== undefined && b.instanceId !== cur.instanceId) {
         if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, cur.platform, cur.id);
@@ -273,8 +295,10 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: {
       body: z.object({
         ids: z.array(z.string().uuid()).min(1).max(500),
-        action: z.enum(['move-group', 'add-tags', 'remove-tags', 'unlink', 'delete']),
+        action: z.enum(['move-group', 'set-persona', 'add-tags', 'remove-tags', 'unlink', 'delete']),
         groupId: z.string().uuid().nullable().optional(),
+        /** set-persona: null clears */
+        personaId: z.string().uuid().nullable().optional(),
         tags: Tags.optional(),
       }),
     },
@@ -282,6 +306,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const { action } = req.body;
     const ids = [...new Set(req.body.ids)];
     if (action === 'move-group' && req.body.groupId === undefined) throw badRequest('groupId is required', 'social.batch_group_required');
+    if (action === 'set-persona' && req.body.personaId === undefined) throw badRequest('personaId is required', 'social.batch_persona_required');
     if ((action === 'add-tags' || action === 'remove-tags') && !req.body.tags?.length) throw badRequest('tags are required', 'social.batch_tags_required');
     const changed = await db.transaction(async (tx) => {
       const rows = await tx.select().from(sa).where(inArray(sa.id, ids)).orderBy(asc(sa.id)).for('update');
@@ -309,6 +334,19 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         const names = await groupNames(tx, [gid, ...moving.map((r) => r.groupId)]);
         for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'group', fromValue: names(r.groupId), toValue: names(gid) });
         if (moving.length) await tx.update(sa).set({ groupId: gid }).where(inArray(sa.id, moving.map((r) => r.id)));
+        n = moving.length;
+      }
+      if (action === 'set-persona') {
+        const pid = req.body.personaId ?? null;
+        // one lookup; a personal persona must belong to every selected account's owner
+        if (pid) {
+          const p = await assertPersonaFor(visible[0]!.userId, pid, 'account', tx);
+          if (p.ownerType === 'user' && visible.some((r) => r.userId !== p.ownerId)) throw badRequest('人设不存在或不能用于这个账号', 'persona.account_not_allowed');
+        }
+        const moving = visible.filter((r) => r.personaId !== pid);
+        const names = await personaNames(tx, [pid, ...moving.map((r) => r.personaId)]);
+        for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'persona', fromValue: names(r.personaId), toValue: names(pid) });
+        if (moving.length) await tx.update(sa).set({ personaId: pid }).where(inArray(sa.id, moving.map((r) => r.id)));
         n = moving.length;
       }
       if (action === 'add-tags' || action === 'remove-tags') {

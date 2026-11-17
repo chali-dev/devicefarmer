@@ -78,7 +78,7 @@ const replySummary = (r: CommentTask | undefined) => (r ? {
 } : null);
 
 async function toCommentItems(rows: Comment[]) {
-  const accs = rows.length ? await db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, platform: schema.socialAccounts.platform })
+  const accs = rows.length ? await db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, platform: schema.socialAccounts.platform, personaId: schema.socialAccounts.personaId })
     .from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))) : [];
   const pubs = rows.some((r) => r.publishTaskId)
     ? await db.select({ id: schema.publishTasks.id, url: schema.publishTasks.url, title: schema.contents.title }).from(schema.publishTasks)

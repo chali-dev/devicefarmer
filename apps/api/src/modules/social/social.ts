@@ -180,6 +180,8 @@ export const isException = (a: SocialAccount) =>
 export interface SocialAccountItem extends SocialAccount {
   ownerName: string | null;
   groupName: string | null;
+  /** 账号人设 name (personaId is on the row). */
+  personaName: string | null;
   tags: string[];
   /** Linked device. `accessible` = the viewer has a grant (otherwise no proxy is shown). */
   instance: { id: string; name: string; status: string; accessible: boolean } | null;
@@ -195,7 +197,7 @@ const idsOf = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string 
 
 export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<SocialAccountItem[]> {
   if (!rows.length) return [];
-  const [tags, owners, groups, insts, access] = await Promise.all([
+  const [tags, owners, groups, insts, access, personas] = await Promise.all([
     tagsOf(db, rows.map((r) => r.id)),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
     db.select({ id: schema.socialAccountGroups.id, name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups)
@@ -203,6 +205,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
     db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId, proxyStatus: schema.instances.proxyStatus })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(rows.map((r) => r.instanceId)))),
     accessibleInstanceIds(user),
+    db.select({ id: schema.personas.id, name: schema.personas.name }).from(schema.personas).where(inArray(schema.personas.id, idsOf(rows.map((r) => r.personaId)))),
   ]);
   const canSee = (id: string) => access === 'all' || access.has(id);
   const proxies = await proxyViews(insts.filter((i) => i.proxyId && canSee(i.id)).map((i) => i.proxyId!));
@@ -212,6 +215,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
       ...r,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       groupName: groups.find((g) => g.id === r.groupId)?.name ?? null,
+      personaName: personas.find((p) => p.id === r.personaId)?.name ?? null,
       tags: tags.get(r.id) ?? [],
       instance: inst ? { id: inst.id, name: inst.name, status: inst.status, accessible: canSee(inst.id) } : null,
       proxy: inst?.proxyId && canSee(inst.id) ? proxies.get(inst.proxyId) ?? null : null,
