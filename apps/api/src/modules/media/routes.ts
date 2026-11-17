@@ -3,7 +3,7 @@ import type { FastifyReply } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import type { MediaAsset, MediaCategory } from '../../db/schema.js';
+import type { MediaAsset, MediaCategory, MediaProcessOptions } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
 import { assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
@@ -11,6 +11,7 @@ import { maxBytes, mediaLimits } from './formats.js';
 import {
   assertCanManage, assertCategoryFor, canManage, createMedia, deleteMedia, getVisibleMedia, openMedia, ownerForScope, setTags, type Owner,
 } from './media.js';
+import { normalizeOptions, ProcessOptionsSchema } from './transform.js';
 
 const Id = z.object({ id: z.string().uuid() });
 const Tag = z.string().trim().min(1).max(32);
@@ -227,7 +228,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   // ------------------------------------------------------------ upload
   /**
    * multipart, one file per request. Text fields BEFORE the file: scope=public|mine (public: admin),
-   * optional categoryId. Returns 201 with status 'processing'; a media-process task does the rest.
+   * optional categoryId, optional process (JSON, ProcessOptionsSchema: crop/compress in the job). Returns 201 with status 'processing'; a media-process task does the rest.
    */
   app.post('/api/media/upload', async (req, reply) => {
     const file = await req.file({ limits: { fileSize: Math.max(maxBytes('image'), maxBytes('video')), files: 1, fields: 10 } });
@@ -242,7 +243,19 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     try { owner = ownerForScope(req.user, scope); } catch (e) { file.file.resume(); throw e; }
     const categoryId = field('categoryId') || null;
     if (categoryId && !z.string().uuid().safeParse(categoryId).success) { file.file.resume(); throw badRequest('invalid categoryId', 'media.category_mismatch'); }
-    const asset = await createMedia({ stream: file.file, filename: file.filename || '', mimetype: file.mimetype || '', owner, categoryId, userId: req.user.id });
+    const processRaw = field('process');
+    let processOpts: MediaProcessOptions | null = null;
+    if (processRaw) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(processRaw); } catch { parsed = undefined; }
+      const r = ProcessOptionsSchema.safeParse(parsed);
+      if (!r.success) {
+        file.file.resume();
+        throw badRequest(`invalid process options: ${r.error?.issues.map((i) => `${i.path.join('.') || 'process'} ${i.message}`).join('; ') ?? 'not JSON'}`, 'media.bad_process_options');
+      }
+      processOpts = normalizeOptions(r.data);
+    }
+    const asset = await createMedia({ stream: file.file, filename: file.filename || '', mimetype: file.mimetype || '', owner, categoryId, userId: req.user.id, process: processOpts });
     reply.code(201);
     return { item: (await toItems(req.user, [asset]))[0] };
   });

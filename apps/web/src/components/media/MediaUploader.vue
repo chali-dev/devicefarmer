@@ -3,23 +3,65 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { CloudUploadOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../../api/client'
-import type { MediaCategory, MediaLimits } from '../../api/types'
+import type { MediaCategory, MediaCropAspect, MediaLimits, MediaProcessOptions } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
-import { acceptAttr, allExts, fmtSize, precheck, xhrUpload } from './media'
+import MediaCropper from './MediaCropper.vue'
+import { acceptAttr, allExts, fmtSize, isProcessable, isVideoFile, outputSize, precheck, xhrUpload } from './media'
 
-/** Multi-file upload: drag & drop, client pre-check, 2 parallel XHRs with progress, retry. */
+/**
+ * Multi-file upload: drag & drop, client pre-check, 2 parallel XHRs with progress, retry.
+ * Optional crop/compress (done by the server): one set of options for the batch, crop position
+ * per file. With options set, files wait for "start upload" so the crop can be positioned.
+ */
 const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[] }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ uploaded: [] }>()
 const { t } = useI18n()
 
-interface Entry { uid: number; file: File; state: 'waiting' | 'uploading' | 'done' | 'error'; pct: number; error: string; abort?: () => void }
+interface Entry {
+  uid: number; file: File; state: 'ready' | 'waiting' | 'uploading' | 'done' | 'error'; pct: number; error: string; abort?: () => void
+  pos: { x: number; y: number }; dims: { w: number; h: number } | null
+}
 const entries = ref<Entry[]>([])
 const categoryId = ref<string | undefined>(undefined)
 let uid = 0
 const CONCURRENCY = 2
 
-watch(open, (v) => { if (v && !entries.value.some((e) => e.state === 'uploading' || e.state === 'waiting')) entries.value = [] })
+const aspect = ref<MediaCropAspect>('original')
+const maxSize = ref<'original' | 1080 | 720>('original')
+const quality = ref<'original' | 'high' | 'medium' | 'low'>('original')
+const processing = computed(() => aspect.value !== 'original' || maxSize.value !== 'original' || quality.value !== 'original')
+const aspectOptions = computed(() => ([
+  ['original', 'aspectOriginal'], ['1:1', 'aspect11'], ['4:5', 'aspect45'], ['9:16', 'aspect916'], ['16:9', 'aspect169'], ['1.91:1', 'aspect191'],
+] as const).map(([value, key]) => ({ value, label: t(`media.${key}`) })))
+const sizeOptions = computed(() => [{ value: 'original', label: t('media.sizeOriginal') }, { value: 1080, label: '1080p' }, { value: 720, label: '720p' }])
+const qualityOptions = computed(() => (['original', 'high', 'medium', 'low'] as const).map((q) => ({ value: q, label: t(`media.quality_${q}`) })))
+const canProcess = (e: Entry) => isProcessable(e.file, props.limits)
+
+function processOptions(e: Entry): MediaProcessOptions | null {
+  if (!processing.value || !canProcess(e)) return null
+  const o: MediaProcessOptions = {}
+  if (aspect.value !== 'original') o.crop = { aspect: aspect.value, x: e.pos.x, y: e.pos.y }
+  if (maxSize.value !== 'original') o.maxSize = maxSize.value
+  if (quality.value !== 'original') o.quality = quality.value
+  return o
+}
+
+const selectedUid = ref<number | null>(null)
+const selected = computed(() => entries.value.find((e) => e.uid === selectedUid.value && e.state === 'ready') ?? entries.value.find((e) => e.state === 'ready') ?? null)
+const resultHint = computed(() => {
+  const e = selected.value
+  if (!e?.dims || !processing.value) return ''
+  const o = outputSize(e.dims.w, e.dims.h, aspect.value, maxSize.value === 'original' ? null : maxSize.value, isVideoFile(e.file, props.limits))
+  return t('media.processHint', { from: `${e.dims.w}×${e.dims.h}`, to: `${o.w}×${o.h}` })
+})
+const readyCount = computed(() => entries.value.filter((e) => e.state === 'ready').length)
+function startReady() {
+  for (const e of entries.value) if (e.state === 'ready') e.state = 'waiting'
+  pump()
+}
+
+watch(open, (v) => { if (v && !entries.value.some((e) => e.state === 'uploading' || e.state === 'waiting' || e.state === 'ready')) entries.value = [] })
 
 const stats = computed(() => ({
   total: entries.value.length,
@@ -29,7 +71,7 @@ const stats = computed(() => ({
 }))
 
 function add(file: File) {
-  const e = reactive<Entry>({ uid: ++uid, file, state: 'waiting', pct: 0, error: '' })
+  const e = reactive<Entry>({ uid: ++uid, file, state: processing.value ? 'ready' : 'waiting', pct: 0, error: '', pos: { x: 0.5, y: 0.5 }, dims: null })
   if (props.limits) {
     const bad = precheck(file, props.limits)
     if (bad) { e.state = 'error'; e.error = t(bad.key, bad.params) }
@@ -51,6 +93,8 @@ async function start(e: Entry) {
   e.error = ''
   const fields: Record<string, string> = { scope: props.scope }
   if (categoryId.value) fields.categoryId = categoryId.value
+  const proc = processOptions(e)
+  if (proc) fields.process = JSON.stringify(proc)
   const up = xhrUpload(fields, e.file, (p) => { e.pct = p })
   e.abort = up.abort
   try {
@@ -94,11 +138,29 @@ onBeforeUnmount(() => { for (const e of entries.value) e.abort?.() })
         :options="categories.map((c) => ({ value: c.id, label: c.name }))"
       />
     </a-form-item>
+    <a-form layout="vertical">
+      <a-row :gutter="12">
+        <a-col :xs="24" :sm="8"><a-form-item :label="t('media.processCrop')"><a-select v-model:value="aspect" :options="aspectOptions" /></a-form-item></a-col>
+        <a-col :xs="12" :sm="8"><a-form-item :label="t('media.processSize')"><a-select v-model:value="maxSize" :options="sizeOptions" /></a-form-item></a-col>
+        <a-col :xs="12" :sm="8"><a-form-item :label="t('media.processQuality')"><a-select v-model:value="quality" :options="qualityOptions" /></a-form-item></a-col>
+      </a-row>
+    </a-form>
     <a-upload-dragger :multiple="true" :show-upload-list="false" :before-upload="add" :accept="accept">
       <p style="margin: 8px 0"><CloudUploadOutlined class="upload-icon" /></p>
       <p style="margin: 0">{{ t('media.drop') }}</p>
       <p class="muted small" style="margin: 4px 8px 8px">{{ hint }}</p>
     </a-upload-dragger>
+
+    <div v-if="selected" class="crop">
+      <MediaCropper
+        v-if="canProcess(selected)" :key="selected.uid" v-model:pos="selected.pos" v-model:dims="selected.dims"
+        :file="selected.file" :video="isVideoFile(selected.file, limits)" :aspect="aspect"
+      />
+      <div class="crop-foot">
+        <span class="muted small">{{ canProcess(selected) ? resultHint : t('media.processUnsupported') }}</span>
+        <a-button type="primary" size="small" @click="startReady">{{ t('media.startUpload', { n: readyCount }) }}</a-button>
+      </div>
+    </div>
 
     <div v-if="entries.length" class="files">
       <div class="files-head">
@@ -108,17 +170,21 @@ onBeforeUnmount(() => { for (const e of entries.value) e.abort?.() })
           <a-button v-if="stats.done" size="small" @click="clearDone">{{ t('media.clearDone') }}</a-button>
         </a-space>
       </div>
-      <div v-for="e in entries" :key="e.uid" class="file">
+      <div
+        v-for="e in entries" :key="e.uid" class="file"
+        :class="{ pickable: e.state === 'ready', active: e.state === 'ready' && selected?.uid === e.uid }" @click="selectedUid = e.uid"
+      >
         <div class="file-row">
           <a-typography-text class="file-name" :content="e.file.name" :ellipsis="{ tooltip: e.file.name }" />
           <span class="muted small nowrap">{{ fmtSize(e.file.size) }}</span>
           <a-tooltip v-if="e.state === 'error'" :title="t('media.retry')">
-            <a-button type="text" size="small" :aria-label="t('media.retry')" @click="retry(e)"><ReloadOutlined /></a-button>
+            <a-button type="text" size="small" :aria-label="t('media.retry')" @click.stop="retry(e)"><ReloadOutlined /></a-button>
           </a-tooltip>
-          <a-button v-if="e.state !== 'done'" type="text" size="small" :aria-label="t('common.delete')" @click="remove(e)"><DeleteOutlined /></a-button>
+          <a-button v-if="e.state !== 'done'" type="text" size="small" :aria-label="t('common.delete')" @click.stop="remove(e)"><DeleteOutlined /></a-button>
         </div>
+        <div v-if="e.state === 'ready'" class="muted small">{{ t('media.pendingStart') }}</div>
         <a-progress
-          v-if="e.state !== 'error'" :percent="e.pct" size="small"
+          v-else-if="e.state !== 'error'" :percent="e.pct" size="small"
           :status="e.state === 'done' ? 'success' : e.state === 'uploading' ? 'active' : 'normal'"
           :format="e.state === 'waiting' ? () => t('media.waiting') : undefined"
         />
@@ -136,4 +202,8 @@ onBeforeUnmount(() => { for (const e of entries.value) e.abort?.() })
 .file-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .file-name { flex: 1; min-width: 0; }
 .err { color: var(--cp-error); font-size: 12px; }
+.crop { margin-top: var(--cp-gap); }
+.crop-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.file.pickable { cursor: pointer; border-radius: var(--cp-radius); padding: 4px 6px; }
+.file.active { background: var(--cp-primary-bg); }
 </style>

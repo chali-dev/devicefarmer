@@ -10,6 +10,9 @@ const run = promisify(execFile);
 /** Longest side of generated thumbnails / video covers. */
 export const THUMB_SIZE = 480;
 
+/** Large decode limit is fine: the upload size is capped (MEDIA_IMAGE_MAX_MB). */
+export const SHARP_INPUT = { failOn: 'error', limitInputPixels: 268_402_689 } as const;
+
 export interface MediaInfo { width: number | null; height: number | null; duration: number | null }
 
 /**
@@ -21,13 +24,12 @@ export async function analyzeMedia(kind: MediaKind, file: string, thumbOut: stri
 }
 
 async function analyzeImage(file: string, thumbOut: string): Promise<MediaInfo> {
-  // Large decode limit is fine: the upload size is capped (MEDIA_IMAGE_MAX_MB).
-  const img = sharp(file, { failOn: 'error', limitInputPixels: 268_402_689 });
+  const img = sharp(file, SHARP_INPUT);
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error('image has no dimensions');
   // EXIF orientations 5..8 are rotated by 90°: report the displayed size.
   const swap = (meta.orientation ?? 1) >= 5;
-  await sharp(file, { failOn: 'error', limitInputPixels: 268_402_689 })
+  await sharp(file, SHARP_INPUT)
     .rotate()
     .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'inside', withoutEnlargement: true })
     .flatten({ background: '#ffffff' })
@@ -37,11 +39,12 @@ async function analyzeImage(file: string, thumbOut: string): Promise<MediaInfo> 
 }
 
 interface Probe {
-  streams?: { codec_type?: string; width?: number; height?: number; duration?: string; tags?: { rotate?: string }; side_data_list?: { rotation?: number }[] }[];
+  streams?: { codec_type?: string; codec_name?: string; width?: number; height?: number; duration?: string; tags?: { rotate?: string }; side_data_list?: { rotation?: number }[] }[];
   format?: { duration?: string };
 }
 
-async function analyzeVideo(file: string, thumbOut: string): Promise<MediaInfo> {
+/** Displayed (rotation-corrected) size, duration and the first audio stream's codec. */
+export async function probeVideo(file: string): Promise<{ width: number; height: number; duration: number | null; audioCodec: string | null }> {
   let probe: Probe;
   try {
     const { stdout } = await run(config.FFPROBE_PATH, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
@@ -54,6 +57,12 @@ async function analyzeVideo(file: string, thumbOut: string): Promise<MediaInfo> 
   const rotation = Math.abs(Number(v.side_data_list?.find((d) => d.rotation !== undefined)?.rotation ?? v.tags?.rotate ?? 0)) % 180;
   const durRaw = Number(probe.format?.duration ?? v.duration);
   const duration = Number.isFinite(durRaw) && durRaw > 0 ? Math.round(durRaw * 1000) / 1000 : null;
+  const audioCodec = probe.streams?.find((s) => s.codec_type === 'audio')?.codec_name ?? null;
+  return { width: rotation === 90 ? v.height : v.width, height: rotation === 90 ? v.width : v.height, duration, audioCodec };
+}
+
+async function analyzeVideo(file: string, thumbOut: string): Promise<MediaInfo> {
+  const { width, height, duration } = await probeVideo(file);
   // Cover frame: 1 s in (or 10 % of short clips), falling back to the first frame.
   const at = duration ? Math.min(1, duration * 0.1) : 0;
   for (const seek of at > 0 ? [at, 0] : [0]) {
@@ -72,10 +81,10 @@ async function analyzeVideo(file: string, thumbOut: string): Promise<MediaInfo> 
     if (st && st.size > 0) break;
     if (seek === 0) throw new Error('ffmpeg produced no cover frame');
   }
-  return { width: rotation === 90 ? v.height : v.width, height: rotation === 90 ? v.width : v.height, duration };
+  return { width, height, duration };
 }
 
-function stderrOf(err: unknown): string {
+export function stderrOf(err: unknown): string {
   const e = err as { stderr?: string; message?: string; code?: string };
   if (e.code === 'ENOENT') return `${e.message} (set FFMPEG_PATH / FFPROBE_PATH)`;
   return (e.stderr || e.message || String(err)).trim().split('\n').slice(-3).join(' ').slice(0, 300);

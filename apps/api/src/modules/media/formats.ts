@@ -52,6 +52,9 @@ export const FORMATS: MediaFormat[] = [
   },
 ];
 
+/** Formats that can be cropped/compressed at upload: GIF (animation) and HEIC (no HEVC decoder in sharp) can't. */
+export const PROCESSABLE = new Set(['jpeg', 'png', 'webp', 'mp4', 'mov', 'webm']);
+
 /** Bytes needed to decide magic numbers. */
 export const MAGIC_BYTES = 64;
 
@@ -89,7 +92,7 @@ export function mediaLimits() {
   const fmts = allowedFormats();
   const of = (kind: MediaKind) => ({
     maxMb: maxMb(kind),
-    formats: fmts.filter((f) => f.kind === kind).map((f) => ({ id: f.id, mime: f.mime, mimes: [f.mime, ...f.mimeAliases], exts: f.exts })),
+    formats: fmts.filter((f) => f.kind === kind).map((f) => ({ id: f.id, mime: f.mime, mimes: [f.mime, ...f.mimeAliases], exts: f.exts, processable: PROCESSABLE.has(f.id) })),
   });
   return { image: of('image'), video: of('video') };
 }

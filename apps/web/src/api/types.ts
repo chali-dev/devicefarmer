@@ -171,6 +171,8 @@ export interface MediaItem {
   checksum: string
   status: MediaStatus
   error: string | null
+  /** Crop/compress requested at upload; `result` once processed (kept = re-encode wasn't smaller, original kept). */
+  processing: MediaProcessing | null
   createdBy: string | null
   createdAt: string
   updatedAt: string
@@ -184,7 +186,11 @@ export interface MediaItem {
 export interface MediaCategory {
   id: string; ownerType: 'public' | 'user'; ownerId: string | null; name: string; sort: number; count: number; createdAt: string; updatedAt: string
 }
-export interface MediaFormatLimit { id: string; mime: string; mimes: string[]; exts: string[] }
+export interface MediaFormatLimit { id: string; mime: string; mimes: string[]; exts: string[]; processable: boolean }
+export type MediaCropAspect = 'original' | '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1'
+export interface MediaProcessOptions { crop?: { aspect: MediaCropAspect; x: number; y: number }; maxSize?: 1080 | 720; quality?: 'high' | 'medium' | 'low' }
+export interface MediaFileFacts { size: number; width: number | null; height: number | null; mime: string; duration?: number | null }
+export interface MediaProcessing { options: MediaProcessOptions; result?: { before: MediaFileFacts; after: MediaFileFacts; kept?: boolean } }
 export interface MediaLimits {
   image: { maxMb: number; formats: MediaFormatLimit[] }
   video: { maxMb: number; formats: MediaFormatLimit[] }
