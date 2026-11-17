@@ -1,0 +1,48 @@
+# One colour (blue or green) = api + web of one version. Project "${PROJECT}-<colour>" (deploy.sh sets
+# every variable below; see deploy.env.example). Host networking: the API needs the host's loopback
+# (BitBrowser client tunnel 127.0.0.1:54345, STF on 127.0.0.1) and binds the BitBrowser adb tunnels on
+# EXTERNAL_ADB_BIND (docker0), so device serials (ADB_DEVICE_HOST:<port>) are the same for both colours.
+# Per-colour ports avoid clashes during the overlap; only the leader runs background work (BACKGROUND_WORK=leader).
+services:
+  api:
+    image: ${API_IMAGE:?}:${VERSION:?}
+    network_mode: host
+    env_file:
+      - ${APP_ENV_FILE:?}
+    environment:
+      NODE_ENV: production
+      API_HOST: 127.0.0.1
+      API_PORT: ${API_PORT:?}
+      SCRCPY_RELAY_PORT: ${RELAY_PORT:?}
+      BACKGROUND_WORK: leader
+      APP_VERSION: ${VERSION}
+      DEPLOY_COLOR: ${COLOR:?}
+    volumes:
+      # uploads, app library, local media, logs, BitBrowser known_hosts: shared by both colours
+      - ${DATA_DIR:?}:/app/apps/api/var
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-0}"
+    # SIGTERM → finish in-flight requests, close WebSockets, wait for running tasks; then SIGKILL
+    # (a task cut off there fails as task.interrupted on the next leader, it is never rerun).
+    stop_grace_period: ${STOP_GRACE:-120s}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${API_PORT}/api/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  web:
+    image: ${WEB_IMAGE:?}:${VERSION:?}
+    network_mode: host
+    environment:
+      WEB_PORT: ${WEB_PORT:?}
+      WEB_BIND: 127.0.0.1
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${WEB_PORT}/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped

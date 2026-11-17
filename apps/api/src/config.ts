@@ -3,6 +3,17 @@ import { z } from 'zod';
 const Env = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   API_PORT: z.coerce.number().int().default(3000),
+  /** Listen address. Production containers use host networking and keep it on loopback behind the reverse proxy. */
+  API_HOST: z.string().default('127.0.0.1'),
+  /**
+   * Background work (task workers, monitor + BitBrowser tunnels, schedulers): `always` = this process runs it
+   * (dev, single process); `leader` = only the process holding the Redis leader lease runs it (blue-green
+   * deploys, see lib/leader.ts and docs/10-deployment.md).
+   */
+  BACKGROUND_WORK: z.enum(['always', 'leader']).default('always'),
+  /** Set by the deployment (deploy/): shown by /api/ready and in the leader lease. */
+  APP_VERSION: z.string().optional(),
+  DEPLOY_COLOR: z.string().optional(),
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   JWT_SECRET: z.string().min(16),

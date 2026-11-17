@@ -1,0 +1,15 @@
+# Shared reverse proxy: the only public entry point (web, /api incl. WebSockets, optional /scrcpy-relay).
+# SITE_ADDRESS = your domain in production (automatic HTTPS via Let's Encrypt; ports 80+443 must be
+# reachable), or ":<port>" for plain HTTP (local test). The upstreams of the active colour come from
+# active/upstream.caddy, written by deploy.sh and applied with `caddy reload` (graceful: in-flight HTTP
+# requests finish on the old config; proxied WebSockets are closed and the clients reconnect).
+{
+	admin {$CADDY_ADMIN}
+	http_port {$PROXY_HTTP_PORT}
+	https_port {$PROXY_HTTPS_PORT}
+	grace_period 60s
+}
+
+{$SITE_ADDRESS} {
+	import /etc/caddy/active/upstream.caddy
+}

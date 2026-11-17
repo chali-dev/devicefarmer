@@ -8,6 +8,8 @@ import { sqlClient } from './db/index.js';
 import { checkHealth } from './health.js';
 import { events } from './lib/events.js';
 import { HttpError } from './lib/errors.js';
+import { startLeaderElection } from './lib/leader.js';
+import { closeAllTunnels } from './adapters/bitbrowser-tunnel.js';
 import { authPlugin } from './modules/auth/plugin.js';
 import { authRoutes } from './modules/auth/routes.js';
 import { startAuditRetention } from './modules/audit/audit.js';
@@ -18,7 +20,7 @@ import { startRelayListener } from './modules/control/scrcpy-relay.js';
 import { eventsRoutes } from './modules/control/events-ws.js';
 import { instanceRoutes } from './modules/instances/routes.js';
 import './modules/instances/queue.js'; // registers the device-op task handlers
-import { reconcileTasks, startTaskWorkers } from './modules/tasks/core.js';
+import { closeTaskQueues, reconcileTasks, startTaskWorkers } from './modules/tasks/core.js';
 import { taskRoutes } from './modules/tasks/routes.js';
 import { scheduleTaskCleanup } from './modules/tasks/retention.js'; // registers the tasks-cleanup handler
 import { dashboardRoutes } from './modules/dashboard/routes.js';
@@ -106,38 +108,86 @@ app.get('/api/health', async (_req, reply) => {
   return h;
 });
 
+/**
+ * Readiness of this process (blue-green switching, container health): the API itself plus its own
+ * stores. Unlike /api/health it does not depend on STF, adb or Docker, so a deploy is not blocked by a
+ * device-side outage. Never secrets.
+ */
+app.get('/api/ready', async (_req, reply) => {
+  const checks = await Promise.all([
+    ['postgres', () => sqlClient`select 1`],
+    ['redis', () => events.ping()],
+  ].map(async ([name, fn]) => {
+    try { await (fn as () => Promise<unknown>)(); return [name, 'ok'] as const; }
+    catch (err) { return [name, (err as Error).message] as const; }
+  }));
+  const ok = checks.every(([, v]) => v === 'ok');
+  reply.code(ok ? 200 : 503);
+  return {
+    ok, checks: Object.fromEntries(checks),
+    version: config.APP_VERSION ?? null, color: config.DEPLOY_COLOR ?? null,
+    background: config.BACKGROUND_WORK === 'always' ? 'always' : leadership?.isLeader() ? 'leader' : 'standby',
+  };
+});
+
 await events.start();
 if (config.TASKS_TEST_HANDLERS) await import('./modules/tasks/test-handlers.js');
-await reconcileTasks(app.log);
-const workers = startTaskWorkers();
-const stopMonitor = startMonitor(app.log);
-const stopAuditRetention = startAuditRetention(app.log);
-const hourly = () => {
-  void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
-  void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
-  void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
-  void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
-  void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
-  void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
-  alertsHourly(app.log);
-};
-setTimeout(() => {
-  void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
-  void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
-  void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
-  void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
-  void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
-  alertsHourly(app.log);
-}, 10_000).unref();
-const cleanupTimer = setInterval(hourly, 3600_000);
+
+/**
+ * Background work: task workers, the monitor (which also opens the BitBrowser tunnels), retention and the
+ * hourly schedulers. With BACKGROUND_WORK=leader only the leader process runs it (lib/leader.ts).
+ */
+let background: { stop(): Promise<void> } | null = null;
+let stopping = false;
+async function startBackground(): Promise<void> {
+  if (background || stopping) return;
+  await reconcileTasks(app.log);
+  if (stopping) return;
+  const workers = startTaskWorkers();
+  const stopMonitor = startMonitor(app.log);
+  const stopAuditRetention = startAuditRetention(app.log);
+  const hourly = () => {
+    void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
+    void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
+    void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+    void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
+    void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
+    void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    alertsHourly(app.log);
+  };
+  const firstRun = setTimeout(() => {
+    void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
+    void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+    void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
+    void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
+    void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    alertsHourly(app.log);
+  }, 10_000);
+  firstRun.unref();
+  const cleanupTimer = setInterval(hourly, 3600_000);
+  app.log.info('background work started');
+  background = {
+    async stop() {
+      stopMonitor();
+      clearTimeout(firstRun);
+      clearInterval(cleanupTimer);
+      stopAuditRetention();
+      await workers.close(); // waits for running jobs
+      closeAllTunnels();
+    },
+  };
+}
+
+const leadership = config.BACKGROUND_WORK === 'leader' ? startLeaderElection(app.log, startBackground) : null;
+if (!leadership) await startBackground();
 
 const shutdown = async () => {
+  if (stopping) return;
+  stopping = true;
   app.log.info('shutting down');
-  stopMonitor();
-  clearInterval(cleanupTimer);
-  stopAuditRetention();
-  await app.close();
-  await workers.close();
+  await app.close(); // stops accepting connections, finishes in-flight requests, closes WebSockets
+  if (background) await background.stop(); else await closeTaskQueues();
+  await leadership?.release(); // only after the workers and tunnels are gone: the next leader may start now
   stf.close();
   await events.close();
   await sqlClient.end();
@@ -146,5 +196,5 @@ const shutdown = async () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-await app.listen({ port: config.API_PORT, host: '127.0.0.1' });
+await app.listen({ port: config.API_PORT, host: config.API_HOST });
 startRelayListener(app.log);

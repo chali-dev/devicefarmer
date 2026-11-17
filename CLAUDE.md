@@ -53,6 +53,21 @@ S3_TEST_ENDPOINT=... S3_TEST_BUCKET=... S3_TEST_ACCESS_KEY=... S3_TEST_SECRET_KE
 
 Scripts that create devices are refused by the capacity check when the 4 GiB VM is full. `phone-*` devices belong to the owner: never start/stop/restart/delete/install on them; tests only touch devices they created (read-only calls are fine). For S3 tests, MinIO no longer publishes images; use SeaweedFS (`chrislusf/seaweedfs`, tested 4.52) on Docker Desktop (prefix commands with `DOCKER_HOST=`).
 
+## Production deployment (docs/10-deployment.md)
+
+Blue-green on one Linux host with Docker Compose: shared Postgres/Redis/Caddy (`deploy/compose.shared.yml`) + STF (`infra/stf` + `deploy/stf.override.yml`); each colour = api + web of one version (`deploy/compose.app.yml`, host networking, per-colour loopback ports). Images `ghcr.io/<owner>/<repo>-{api,web}:<version>` from `deploy/docker/*.Dockerfile` (context = repo root). GitHub: Actions → Deploy (`.github/workflows/deploy.yml`, manual; branch via "Use workflow from", `action` deploy|rollback, `version`, `rollback_steps` 1|2, `environment`).
+
+```bash
+/srv/cloudphone/deploy/deploy.sh <version>   # migrate once → start idle colour → /api/ready → caddy reload → drain → stop old
+/srv/cloudphone/deploy/rollback.sh <1|2>     # re-deploys a recorded older version the same way
+/srv/cloudphone/deploy/status.sh
+DOCKER_HOST= docker buildx build -f deploy/docker/api.Dockerfile -t cp-api:test --load .   # local image build (DEX_HELPERS=0 skips the SDK download)
+```
+
+- **Migrations must stay backward compatible (expand/contract)**: the old colour runs on the new schema until the switch, and a rollback runs old code on it (migrations are never undone). Only add (tables, nullable/defaulted columns, indexes) in a release; drop/rename/NOT NULL only in a later release once no rollback target uses the old shape.
+- Background work (task workers, monitor + BitBrowser tunnels, retention, hourly schedulers) runs only in the Redis-lease leader when `BACKGROUND_WORK=leader` (`lib/leader.ts`; dev default `always`). The old colour releases the lease last in its SIGTERM shutdown, after its running tasks. `/api/ready` (API + Postgres + Redis, with version/colour/background role) gates the switch; `/api/health` stays the full dependency check.
+- New task types on an existing queue can be failed as `task.unknown_type` by the old leader during the few drain seconds; prefer a new queue for a new type.
+
 ## Environment facts that are not obvious
 
 - **redroid cannot run in Docker Desktop**: its kernel has no binder. Android runs in the Lima VM `redroid` (`infra/lima/redroid-host.yaml`, Ubuntu arm64, `binder_linux`, nftables modules). The API talks to the VM's Docker through the forwarded socket `~/.lima/redroid/sock/docker.sock` (`DOCKER_HOST` in `.env`). Sourcing `.env` in a shell therefore redirects the `docker` CLI to the VM, not to Docker Desktop.
@@ -61,7 +76,7 @@ Scripts that create devices are refused by the capacity check when the 4 GiB VM 
 - **Android 16 does not boot on this host**: redroid 16's gralloc needs ashmem, which Linux ≥5.18 (here Ubuntu 6.8) lacks. The `redroid-16-gapps` profile carries a `blockedReason`. Details and options: `docs/06-android-upgrade-plan.md`.
 - GApps images are built locally from official, signature-verified MindTheGapps: `infra/redroid-gapps/build.sh` (`ANDROID=13|16`; `verify_jar.py` for JAR-signed 13 packages, `verify_ota.py` for OTA whole-file-signed 16 packages, then `stage.py` and the Dockerfile template). Never use third-party GApps rebuilds.
 - scrcpy-server (`infra/device-tools/scrcpy/`, official Genymobile release v5.0.1, SHA-256 pinned in `fetch.sh` and the README): `fetch.sh` downloads it into the gitignored `out/` (`SCRCPY_SERVER_PATH`). Rerun it on a fresh checkout; without it the 高速 source falls back to STF.
-- The app_process helpers (`infra/device-tools/capture/` → `out/cpcapture.dex`, `infra/device-tools/relay/` → `out/cprelay.dex`) are built by their `build.sh` via the shared `build-dex.sh` in a throwaway JDK container from official SDK packages (`SDK_DL` dir with `platform-33-ext3_r03.zip` and `build-tools_r34-linux.zip`, sha1 from `dl.google.com/android/repository/repository2-3.xml`). No lambdas (android.jar has no LambdaMetafactory). `out/` is gitignored, so rebuild on a fresh checkout.
+- The app_process helpers (`infra/device-tools/capture/` → `out/cpcapture.dex`, `infra/device-tools/relay/` → `out/cprelay.dex`) are built by their `build.sh` via the shared `build-dex.sh` in a throwaway JDK container from official SDK packages (`SDK_DL` dir with `platform-33-ext3_r03.zip` and `build-tools_r34-linux.zip`, sha1 from `dl.google.com/android/repository/repository2-3.xml`; `infra/device-tools/fetch-sdk.sh` downloads and verifies them, `compile-dex.sh` is shared with the API image). No lambdas (android.jar has no LambdaMetafactory). `out/` is gitignored, so rebuild on a fresh checkout.
 - **scrcpy relay (experimental, external phones)**: set `SCRCPY_RELAY_URL=wss://<public host>/scrcpy-relay` and expose only `127.0.0.1:SCRCPY_RELAY_PORT` (3010), e.g. `ngrok http 3010` in dev (the free ngrok dev domain is fixed; free plans cap monthly data; use `--region eu`: measured from this Mac the `in` region was ~80 ms worse); in production a TLS reverse proxy routes `/scrcpy-relay` to it (no ngrok). Never expose the API port, always wss. The relay connection leaves through the phone's bound proxy like any app (BitBrowser applies it below Android). Restarting the API also restarts the BitBrowser SSH tunnels; the first session after a restart may time out on `ready`.
 
 ## Architecture
@@ -120,4 +135,4 @@ The API is the only thing browsers talk to. It enforces RBAC and relays STF; STF
 - Do not implement device-identity spoofing (model/IMEI/fingerprint), Play Integrity bypass, or Google/platform risk-control evasion. Device settings are limited to Android system settings (locale, timezone, device name). Never store Google passwords.
 - Downloading system images or GApps, and production/environment changes (VM resources, kernel modules, stopping the owner's devices), need explicit confirmation first.
 - Keep the existing stack (KISS/DRY, no extra microservices). STF is used as an independent service through its REST and websocket APIs; don't modify STF source.
-- Open work (see `docs/04-architecture-review.md`, `docs/06-android-upgrade-plan.md`): device groups/templates, CPU limits, multi-host scheduling for 20–50 devices, compose packaging, STF production auth, JWT revocation on password change, `trustProxy` for real client IPs in the audit log, Android 16 (needs an ashmem-capable kernel), emulator engine on an x86_64 KVM host.
+- Open work (see `docs/04-architecture-review.md`, `docs/06-android-upgrade-plan.md`): device groups/templates, CPU limits, multi-host scheduling for 20–50 devices, STF production auth, JWT revocation on password change, `trustProxy` for real client IPs in the audit log, Android 16 (needs an ashmem-capable kernel), emulator engine on an x86_64 KVM host.

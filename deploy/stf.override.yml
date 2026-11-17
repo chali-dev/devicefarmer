@@ -1,0 +1,26 @@
+# Production override for infra/stf/docker-compose.yml on a Linux host (docs/10-deployment.md):
+#   docker compose -f infra/stf/docker-compose.yml -f deploy/stf.override.yml up -d --build
+# - every STF port on loopback only: browsers never talk to STF, the API (host network) does.
+# - host.docker.internal for the adb server: Linux Docker has no such name by default. Device serials are
+#   host.docker.internal:<port> (ADB_DEVICE_HOST) for redroid (5555–5604, published by the sidecars) and
+#   BitBrowser phones (5700–5799, ssh forwards bound to EXTERNAL_ADB_BIND=172.17.0.1 by the leading API),
+#   identical for both colours.
+# Set STF_AUTH_SECRET in the environment or infra/stf/.env. STF_PUBLIC_IP defaults to 127.0.0.1 here (screen
+# URLs the API opens itself; "localhost" may resolve to ::1 where nothing listens).
+services:
+  adb:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  stf:
+    command: >
+      stf local
+      --public-ip ${STF_PUBLIC_IP:-127.0.0.1}
+      --port 7100
+      --adb-host adb --adb-port 5037
+      --allow-remote
+      --provider-min-port 7400 --provider-max-port 7420
+      --auth-secret ${STF_AUTH_SECRET:?set STF_AUTH_SECRET}
+    ports: !override
+      - "127.0.0.1:7100:7100"
+      - "127.0.0.1:7110:7110"
+      - "127.0.0.1:7400-7420:7400-7420"
