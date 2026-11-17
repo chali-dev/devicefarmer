@@ -1087,7 +1087,6 @@ const en: Messages = {
     useText: 'Leave empty to use the {name} text',
     tasksOf: 'Publish tasks',
     saveDraft: 'Save draft',
-    saveReady: 'Save as ready',
     moveUp: 'Move earlier',
     moveDown: 'Move later',
     removeMedia: 'Remove',

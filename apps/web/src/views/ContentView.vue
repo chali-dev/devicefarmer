@@ -2,7 +2,7 @@
 import { dateLocale } from '../i18n'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { PlusOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
@@ -223,10 +223,11 @@ function insertTemplate(text: string, replace: boolean) {
 }
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
-async function save(stage: 'draft' | 'ready') {
-  if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return }
+/** Saves the editor; resolves to the saved content, or null when validation or a request failed (already shown). */
+async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
+  if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return null }
   const untitled = trs.value.find((f) => !f.title.trim())
-  if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return }
+  if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return null }
   saving.value = true
   try {
     const { body: text, platformHints } = joinTexts(form.texts, form.hints)
@@ -234,12 +235,14 @@ async function save(stage: 'draft' | 'ready') {
       title: form.title.trim(), body: text, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
       lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
-    let id = editing.value?.id
-    if (id) {
+    let saved: Content
+    const editId = editing.value?.id
+    if (editId) {
       // Removed versions first, so the original language may move to a language whose version was just removed.
-      for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${id}/translations/${lang}`)
-      await api('PUT', `/api/contents/${id}`, body)
-    } else id = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })).content.id
+      for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${editId}/translations/${lang}`)
+      saved = (await api<{ content: Content }>('PUT', `/api/contents/${editId}`, body)).content
+    } else saved = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })).content
+    const id = saved.id
     for (const f of trs.value) {
       const b = trBody(f)
       if (trOrig.value[f.lang] !== stable(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
@@ -247,7 +250,13 @@ async function save(stage: 'draft' | 'ready') {
     message.success(t('common.saved'))
     editorOpen.value = false
     void load(); void loadFacets()
-  } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
+    return saved
+  } catch (e) { message.error(errorText(e)); return null } finally { saving.value = false }
+}
+/** 定时发布 / 立即发布 in the editor: save as ready (closes the editor), then the publishing step for that content. */
+async function saveAndPublish(mode: 'now' | 'at') {
+  const c = await save('ready')
+  if (c) openDistribute(c, mode)
 }
 // ---------------------------------------------------------------- actions
 const distributeOpen = ref(false)
@@ -449,7 +458,15 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       <a-button v-if="editing?.stage === 'archived'" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
       <template v-else>
         <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
-        <a-button type="primary" :loading="saving" @click="save('ready')">{{ t('content.saveReady') }}</a-button>
+        <a-dropdown-button type="primary" :loading="saving" :trigger="['click']" @click="saveAndPublish('at')">
+          {{ t('content.publishLater') }}
+          <template #icon><DownOutlined /></template>
+          <template #overlay>
+            <a-menu @click="saveAndPublish('now')">
+              <a-menu-item key="now">{{ t('content.publishNow') }}</a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown-button>
       </template>
     </template>
   </a-drawer>
