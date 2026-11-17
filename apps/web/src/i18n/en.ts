@@ -7,6 +7,7 @@ const en: Messages = {
     short: 'CP',
   },
   common: {
+    required: 'Please fill in the required fields',
     save: 'Save',
     saved: 'Saved',
     cancel: 'Cancel',
@@ -991,6 +992,8 @@ const en: Messages = {
     copied: 'Copied',
     directPost: "App passed TikTok's direct post audit (video.publish)",
     directPostHint: "Without the audit, videos are only sent to the creator's TikTok inbox and the creator finishes the post in the app.",
+    accountStats: 'Request the account analytics permission',
+    accountStatsHint: 'Daily views/likes/shares for Account analytics (Instagram insights, YouTube Analytics, TikTok user.info.stats). Enable the permission in the platform\'s developer console first, or the platform refuses the authorisation; connected accounts must reconnect for it to take effect. When off, only basic numbers such as followers are collected.',
     tiktokInbox: "Current: sent to the creator's inbox (draft), the creator finishes the post in the app; comments have no official API (manual).",
     tiktokDirect: 'Current: direct post (unaudited apps can only post as private); comments have no official API (manual).',
     instagramMedia: 'The platform fetches media by URL: media must be on internet-reachable S3 storage (time-limited signed URL); media on local storage cannot be published through the API. Images must be JPEG.',

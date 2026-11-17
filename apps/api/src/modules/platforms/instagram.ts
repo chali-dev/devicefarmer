@@ -3,7 +3,7 @@ import { config } from '../../config.js';
 import type { HttpError } from '../../lib/errors.js';
 import { mediaUrlProblem, publicMediaUrl } from './media-url.js';
 import { dayStartSec, expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
-import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet } from './types.js';
+import type { Authed, PlatformAdapter, PlatformAppOptions, PlatformComment, PublishInput, TokenSet } from './types.js';
 
 /**
  * Instagram: "Instagram API with Instagram Login" (business login for Instagram, 2024+). Chosen over
@@ -21,7 +21,8 @@ import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet }
 const NAME = 'Instagram';
 /** Account insights (账号分析: views/likes/comments/shares per day). Connections made without it still work (scope missing). */
 const INSIGHTS_SCOPE = 'instagram_business_manage_insights';
-const SCOPES = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_comments', INSIGHTS_SCOPE];
+const SCOPES = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_comments'];
+const scopes = (o: PlatformAppOptions) => [...SCOPES, ...(o.accountStats ? [INSIGHTS_SCOPE] : [])];
 const INSIGHT_METRICS = ['views', 'likes', 'comments', 'shares'] as const;
 const POLL_MS = 5000;
 const POLL_MAX_MS = 10 * 60_000;
@@ -94,9 +95,9 @@ export const instagramAdapter: PlatformAdapter = {
 
   oauth: {
     pkce: false,
-    scopes: () => SCOPES,
+    scopes,
     authorizeUrl(app, state) {
-      const q = new URLSearchParams({ client_id: app.clientId, redirect_uri: app.redirectUri, response_type: 'code', scope: SCOPES.join(','), state });
+      const q = new URLSearchParams({ client_id: app.clientId, redirect_uri: app.redirectUri, response_type: 'code', scope: scopes(app.options).join(','), state });
       return `${config.INSTAGRAM_AUTH_URL}?${q}`;
     },
     async exchangeCode(app, code) {

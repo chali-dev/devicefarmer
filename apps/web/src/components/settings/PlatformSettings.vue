@@ -15,12 +15,14 @@ const infos = ref<PlatformInfo[]>([])
 const caps = (id: string) => infos.value.find((p) => p.id === id)?.capabilities
 const loading = ref(false)
 const saving = ref<string | null>(null)
-const forms = reactive<Record<string, { clientId: string; clientSecret: string; directPost: boolean }>>({})
+const forms = reactive<Record<string, { clientId: string; clientSecret: string; directPost: boolean; accountStats: boolean }>>({})
+/** Platforms whose adapter can collect own-account stats with an extra scope (账号分析). */
+const STATS_PLATFORMS = ['instagram', 'youtube', 'tiktok']
 
 const CAPS: (keyof PlatformCapabilities)[] = ['publishVideo', 'publishImage', 'publishCarousel', 'commentsRead', 'commentsReply', 'profileStats']
 
 function fill(a: PlatformAppSettings) {
-  forms[a.platform] = { clientId: a.clientId ?? '', clientSecret: '', directPost: Boolean(a.options.directPost) }
+  forms[a.platform] = { clientId: a.clientId ?? '', clientSecret: '', directPost: Boolean(a.options.directPost), accountStats: Boolean(a.options.accountStats) }
 }
 
 async function load() {
@@ -54,7 +56,10 @@ function save(a: PlatformAppSettings) {
   const f = forms[a.platform]!
   const body: Record<string, unknown> = { clientId: f.clientId.trim() }
   if (f.clientSecret.trim()) body.clientSecret = f.clientSecret.trim()
-  if (a.platform === 'tiktok') body.options = { directPost: f.directPost }
+  const options: Record<string, boolean> = {}
+  if (a.platform === 'tiktok') options.directPost = f.directPost
+  if (STATS_PLATFORMS.includes(a.platform)) options.accountStats = f.accountStats
+  if (Object.keys(options).length) body.options = options
   void put(a, body, t('common.saved'))
 }
 
@@ -108,6 +113,9 @@ async function copy(text: string) {
             </a-form-item>
             <a-form-item v-if="a.platform === 'tiktok'" :extra="t('platforms.directPostHint')">
               <a-checkbox v-model:checked="forms[a.platform]!.directPost">{{ t('platforms.directPost') }}</a-checkbox>
+            </a-form-item>
+            <a-form-item v-if="STATS_PLATFORMS.includes(a.platform)" :extra="t('platforms.accountStatsHint')">
+              <a-checkbox v-model:checked="forms[a.platform]!.accountStats">{{ t('platforms.accountStats') }}</a-checkbox>
             </a-form-item>
             <a-form-item :label="t('platforms.scopes')">
               <a-tag v-for="s in a.scopes" :key="s" class="scope">{{ s.replace('https://www.googleapis.com/auth/', '') }}</a-tag>

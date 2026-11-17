@@ -328,7 +328,7 @@ export interface PlatformAppSettings {
   clientSecretSet: boolean
   configured: boolean
   redirectUri: string
-  options: { directPost?: boolean }
+  options: { directPost?: boolean; accountStats?: boolean }
   scopes: string[]
   updatedAt: string | null
 }

@@ -32,6 +32,12 @@ export interface PlatformApp {
 export interface PlatformAppOptions {
   /** TikTok: the app passed the Content Posting API audit (direct post with video.publish). */
   directPost?: boolean;
+  /**
+   * 账号分析: also request the extra stats scope (Instagram instagram_business_manage_insights, YouTube
+   * yt-analytics.readonly, TikTok user.info.stats). Off by default: the developer app must have it enabled
+   * first, or the platform refuses the whole authorisation. Without it analytics use the basic scopes only.
+   */
+  accountStats?: boolean;
 }
 
 export interface TokenSet {

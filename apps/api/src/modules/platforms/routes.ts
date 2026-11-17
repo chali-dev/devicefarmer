@@ -60,7 +60,7 @@ export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
       body: z.object({
         clientId: z.string().trim().min(3).max(300).regex(/^[\x21-\x7e]+$/, 'invalid client id').nullable().optional(),
         clientSecret: z.string().trim().min(8).max(500).regex(/^[\x21-\x7e]+$/, 'invalid client secret').nullable().optional(),
-        options: z.object({ directPost: z.boolean().optional() }).strict().optional(),
+        options: z.object({ directPost: z.boolean().optional(), accountStats: z.boolean().optional() }).strict().optional(),
       }).refine((b) => b.clientId !== undefined || b.clientSecret !== undefined || b.options !== undefined, 'nothing to update'),
     },
   }, async (req) => {

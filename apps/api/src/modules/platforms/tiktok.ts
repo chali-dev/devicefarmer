@@ -29,7 +29,7 @@ const CHUNK = 10 * 1024 * 1024;
 
 /** 账号分析: follower/following/likes/video counts. Connections made without it still work (scope missing). */
 const STATS_SCOPE = 'user.info.stats';
-const scopes = (o: PlatformAppOptions) => ['user.info.basic', STATS_SCOPE, 'video.upload', ...(o.directPost ? ['video.publish'] : [])];
+const scopes = (o: PlatformAppOptions) => ['user.info.basic', ...(o.accountStats ? [STATS_SCOPE] : []), 'video.upload', ...(o.directPost ? ['video.publish'] : [])];
 
 interface TtError { error?: { code?: string; message?: string; log_id?: string } }
 

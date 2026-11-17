@@ -147,6 +147,16 @@ try {
   tt = (await http('GET', '/api/platforms', A)).body.platforms.find((p: any) => p.id === 'tiktok');
   check('TikTok directPost option: not draft-only, requests video.publish', r.status === 200 && tt.capabilities.draftOnly === false && tt.scopes.includes('video.publish'));
   r = await http('PUT', '/api/settings/platforms/tiktok', T, { options: { directPost: false } });
+  // 账号分析 stats scopes are an admin option (default off: an app without the permission is refused by the platform)
+  const scopesOf = async () => Object.fromEntries((await http('GET', '/api/platforms', A)).body.platforms.map((p: any) => [p.id, p.scopes as string[]]));
+  let sc = await scopesOf();
+  check('accountStats off by default: no insights / yt-analytics / user.info.stats scopes',
+    !sc.instagram.includes('instagram_business_manage_insights') && !sc.youtube.some((s: string) => s.endsWith('yt-analytics.readonly')) && !sc.tiktok.includes('user.info.stats'));
+  for (const p of ['instagram', 'youtube', 'tiktok']) await http('PUT', `/api/settings/platforms/${p}`, T, { options: { accountStats: true } });
+  sc = await scopesOf();
+  check('accountStats on: each platform requests its stats scope (other options kept)',
+    sc.instagram.includes('instagram_business_manage_insights') && sc.youtube.some((s: string) => s.endsWith('yt-analytics.readonly')) && sc.tiktok.includes('user.info.stats') && !sc.tiktok.includes('video.publish'));
+  for (const p of ['instagram', 'youtube', 'tiktok']) await http('PUT', `/api/settings/platforms/${p}`, T, { options: { accountStats: false } });
   r = await http('PUT', '/api/settings/platforms/tiktok', T, { clientSecret: null });
   check('admin: clearing the secret makes the platform unconfigured', r.status === 200 && r.body.app.configured === false && r.body.app.clientSecretSet === false);
   await http('PUT', '/api/settings/platforms/tiktok', T, { clientSecret: SECRET });
@@ -173,7 +183,7 @@ try {
     !ci.url.searchParams.has('code_challenge') && ci.url.searchParams.get('redirect_uri') === `${config.WEB_ORIGIN}/api/platforms/instagram/callback`, ci.r.text);
   const ct = await connect(A, 'tiktok', ta);
   check('TikTok connect → Login Kit URL with client_key and user.info.basic,video.upload',
-    ct.url?.origin === 'https://www.tiktok.com' && ct.url.searchParams.get('client_key') === `aw${tag}dummykey` && ct.url.searchParams.get('scope') === 'user.info.basic,user.info.stats,video.upload', ct.r.text);
+    ct.url?.origin === 'https://www.tiktok.com' && ct.url.searchParams.get('client_key') === `aw${tag}dummykey` && ct.url.searchParams.get('scope') === 'user.info.basic,video.upload', ct.r.text);
   r = (await connect(A, 'youtube', yb)).r;
   check('user A: connect B\'s account → 404', r.status === 404 && r.body.code === 'social.not_found', r.text);
   r = (await connect(A, 'youtube', ia)).r;

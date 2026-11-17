@@ -19,7 +19,7 @@ export const SystemSettings = z.object({
 });
 export type SystemSettingsT = z.infer<typeof SystemSettings>;
 
-export const SYSTEM_DEFAULTS: SystemSettingsT = { backup: { enabled: true, hour: 3, keep: 7 }, logRetentionDays: 14, historyRetentionDays: 7 };
+export const SYSTEM_DEFAULTS: SystemSettingsT = { backup: { enabled: false, hour: 3, keep: 7 }, logRetentionDays: 14, historyRetentionDays: 7 };
 
 export async function getSystemSettings(): Promise<SystemSettingsT & { updatedAt: string | null }> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));

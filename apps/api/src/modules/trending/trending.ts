@@ -28,7 +28,8 @@ export interface TrendingSettings {
   maxResults: number;
   retentionDays: number;
 }
-export const TRENDING_DEFAULTS: TrendingSettings = { regions: [], categoryId: null, intervalHours: 24, maxResults: 50, retentionDays: 30 };
+// Default region IN (owner's choice); 1 YouTube quota unit per region per refresh.
+export const TRENDING_DEFAULTS: TrendingSettings = { regions: ['IN'], categoryId: null, intervalHours: 24, maxResults: 50, retentionDays: 30 };
 
 export async function getTrendingSettings(): Promise<TrendingSettings & { updatedAt: string | null }> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));

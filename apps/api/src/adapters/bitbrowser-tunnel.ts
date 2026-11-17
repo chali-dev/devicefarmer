@@ -43,7 +43,8 @@ function portOpen(port: number): Promise<boolean> {
 
 /** Kills an ssh left over from an earlier API process that still holds this forward. */
 function killStale(localPort: number): void {
-  spawnSync('pkill', ['-f', `-L ${forwardSpec(localPort)}`], { stdio: 'ignore' });
+  // `--`: the pattern starts with "-L", which pkill would otherwise parse as its own option (and exit with an error).
+  spawnSync('pkill', ['-f', '--', `-L ${forwardSpec(localPort)}`], { stdio: 'ignore' });
 }
 
 function spawnTunnel(info: BitAdbInfo, localPort: number): ChildProcess {

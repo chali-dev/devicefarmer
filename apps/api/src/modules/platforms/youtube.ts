@@ -4,7 +4,7 @@ import type { HttpError } from '../../lib/errors.js';
 import { withMediaFile } from '../media/media.js';
 import { GOOGLE_QUOTA_REASONS, googleErrorReasons, type GoogleApiErrorBody } from '../tracked/youtube.js';
 import { expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
-import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet } from './types.js';
+import type { Authed, PlatformAdapter, PlatformAppOptions, PlatformComment, PublishInput, TokenSet } from './types.js';
 
 /**
  * YouTube: Google OAuth 2.0 (authorization code + PKCE S256, offline access for a refresh token)
@@ -20,10 +20,10 @@ const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.force-ssl',
   'https://www.googleapis.com/auth/youtube.readonly',
-  // 账号分析: YouTube Analytics API per-day views/likes/shares/comments. Connections made without it still work.
-  'https://www.googleapis.com/auth/yt-analytics.readonly',
 ];
-const ANALYTICS_SCOPE = SCOPES[3]!;
+// 账号分析: YouTube Analytics API per-day views/likes/shares/comments (admin option accountStats). Connections made without it still work.
+const ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/yt-analytics.readonly';
+const scopes = (o: PlatformAppOptions) => [...SCOPES, ...(o.accountStats ? [ANALYTICS_SCOPE] : [])];
 const ANALYTICS_METRICS = ['views', 'likes', 'shares', 'comments'] as const;
 const CHUNK = 8 * 1024 * 1024; // multiple of 256 KiB, as the resumable protocol requires
 
@@ -90,10 +90,10 @@ export const youtubeAdapter: PlatformAdapter = {
 
   oauth: {
     pkce: true,
-    scopes: () => SCOPES,
+    scopes,
     authorizeUrl(app, state, challenge) {
       const q = new URLSearchParams({
-        client_id: app.clientId, redirect_uri: app.redirectUri, response_type: 'code', scope: SCOPES.join(' '),
+        client_id: app.clientId, redirect_uri: app.redirectUri, response_type: 'code', scope: scopes(app.options).join(' '),
         access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state,
         ...(challenge ? { code_challenge: challenge, code_challenge_method: 'S256' } : {}),
       });

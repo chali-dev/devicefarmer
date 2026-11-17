@@ -8,6 +8,7 @@ const zhCN = {
     short: '云',
   },
   common: {
+    required: '请填写必填项',
     save: '保存',
     saved: '已保存',
     cancel: '取消',
@@ -992,6 +993,8 @@ const zhCN = {
     copied: '已复制',
     directPost: '已通过 TikTok 直接发布审核（video.publish）',
     directPostHint: '未通过审核时视频只会发送到创作者的 TikTok 收件箱，由创作者在 App 中完成发布。',
+    accountStats: '申请账号分析数据权限',
+    accountStatsHint: '用于「账号分析」的每日观看/点赞/分享等数据（Instagram insights、YouTube Analytics、TikTok user.info.stats）。必须先在平台开发者后台开通该权限，否则授权会被平台拒绝；已连接的账号需要重新授权才会生效。关闭时只采集粉丝数等基础数据。',
     tiktokInbox: '当前：发送到创作者收件箱（草稿），需要创作者在 App 中完成发布；评论无官方接口，人工处理。',
     tiktokDirect: '当前：直接发布（未审核应用只能发布为仅自己可见）；评论无官方接口，人工处理。',
     instagramMedia: '发布时平台按 URL 拉取素材：素材必须存放在公网可访问的 S3 存储（生成限时签名地址），本地存储的素材无法通过 API 发布；图片仅支持 JPEG。',
