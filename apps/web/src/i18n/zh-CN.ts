@@ -1088,7 +1088,6 @@ const zhCN = {
     useText: '留空则使用 {name} 的文案',
     tasksOf: '发布任务',
     saveDraft: '保存草稿',
-    saveReady: '保存为待发布',
     moveUp: '前移',
     moveDown: '后移',
     removeMedia: '移除',
