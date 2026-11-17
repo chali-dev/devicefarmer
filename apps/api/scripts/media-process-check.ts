@@ -149,6 +149,11 @@ try {
   for (const [label, proc] of [
     ['not JSON', '{nope'], ['unknown aspect 3:2', { crop: { aspect: '3:2' } }], ['maxSize 500', { maxSize: 500 }],
     ['quality ultra', { quality: 'ultra' }], ['crop x > 1', { crop: { aspect: '1:1', x: 2 } }], ['unknown key', { rotate: 90 }],
+    ['rect x + w > 1', { crop: { x: 0.6, y: 0, w: 0.5, h: 0.5 } }], ['rect y + h > 1', { crop: { x: 0, y: 0.7, w: 0.2, h: 0.4 } }],
+    ['rect w = 0', { crop: { x: 0, y: 0, w: 0, h: 0.5 } }], ['rect h < 0', { crop: { x: 0, y: 0, w: 0.5, h: -0.2 } }],
+    ['rect too small (w 0.005)', { crop: { x: 0.1, y: 0.1, w: 0.005, h: 0.5 } }], ['rect negative x', { crop: { x: -0.1, y: 0, w: 0.5, h: 0.5 } }],
+    ['rect missing h', { crop: { x: 0, y: 0, w: 0.5 } }], ['rect with unknown aspect', { crop: { x: 0, y: 0, w: 0.5, h: 0.5, aspect: '3:2' } }],
+    ['rect with extra key', { crop: { x: 0, y: 0, w: 0.5, h: 0.5, r: 1 } }],
   ] as const) {
     const r = await upload(admin, `bad-${tag}.jpg`, small, 'image/jpeg', proc);
     check(`invalid options (${label}) → 400 media.bad_process_options`, r.status === 400 && r.body?.code === 'media.bad_process_options', `${r.status} ${r.body?.code}`);
@@ -183,6 +188,36 @@ try {
   check('portrait 16:9 crop at y=1 → bottom half only', bottom.file.length > 0 && near(await pixel(bottom.file, 5, 2), BLUE) && near(await pixel(bottom.file, 995, 2), YELLOW));
   const centre = await process1(admin, `crop-centre-${tag}.png`, quadPng, 'image/png', { crop: { aspect: '1:1' } });
   check('1:1 default centre → 1000×1000, centred (x 300..1300 of source)', centre.item?.width === 1000 && centre.item?.height === 1000 && near(await pixel(centre.file, 495, 5), RED) && near(await pixel(centre.file, 505, 5), GREEN));
+
+  // ---------- explicit rectangles { x, y, w, h [, aspect] } (the editor's form)
+  const corners = async (buf: Buffer) => {
+    const m = await sharp(buf).metadata();
+    return { w: m.width!, h: m.height!, tl: await pixel(buf, 3, 3), tr: await pixel(buf, m.width! - 4, 3), bl: await pixel(buf, 3, m.height! - 4), br: await pixel(buf, m.width! - 4, m.height! - 4) };
+  };
+  const all = (c: Awaited<ReturnType<typeof corners>>, col: [number, number, number], tol?: number) => [c.tl, c.tr, c.bl, c.br].every((p) => near(p, col, tol));
+  const rq = await process1(admin, `rect-q2-${tag}.png`, quadPng, 'image/png', { crop: { x: 0.5, y: 0, w: 0.5, h: 0.5 } });
+  const rqc = rq.file.length ? await corners(rq.file) : null;
+  check('free rect = top-right quadrant → 800×500, green only', rq.item?.status === 'ready' && rqc?.w === 800 && rqc.h === 500 && all(rqc, GREEN) && rq.item.width === 800 && rq.item.height === 500,
+    `${rq.item?.status} ${rqc?.w}×${rqc?.h} ${rq.item?.error ?? ''}`);
+  const rc = await process1(admin, `rect-mid-${tag}.png`, quadPng, 'image/png', { crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 } });
+  const rcc = rc.file.length ? await corners(rc.file) : null;
+  check('free rect around the centre → 800×500 with all four quadrants in place', rcc?.w === 800 && rcc.h === 500 && near(rcc.tl, RED) && near(rcc.tr, GREEN) && near(rcc.bl, BLUE) && near(rcc.br, YELLOW), `${rcc?.w}×${rcc?.h}`);
+  const rb = await process1(admin, `rect-odd-${tag}.png`, quadPng, 'image/png', { crop: { x: 0.1, y: 0.6, w: 0.3, h: 0.3 } });
+  const rbc = rb.file.length ? await corners(rb.file) : null;
+  check('free rect 0.1/0.6/0.3/0.3 → exactly 480×300, blue only', rbc?.w === 480 && rbc.h === 300 && all(rbc, BLUE), `${rbc?.w}×${rbc?.h}`);
+  const ra = await process1(admin, `rect-45-${tag}.png`, quadPng, 'image/png', { crop: { x: 0.5, y: 0, w: 0.25, h: 0.5, aspect: '4:5' } });
+  const rac = ra.file.length ? await corners(ra.file) : null;
+  check('4:5 rect (400×500 at the top right) → 400×500, green only', rac?.w === 400 && rac.h === 500 && all(rac, GREEN), `${rac?.w}×${rac?.h}`);
+  const rs = await process1(admin, `rect-11-${tag}.png`, quadPng, 'image/png', { crop: { x: 0, y: 0, w: 0.5, h: 0.8, aspect: '1:1' }, maxSize: 720 });
+  const rsc = rs.file.length ? await corners(rs.file) : null;
+  check('1:1 rect 800×800 at the left + 720 → 720×720, red on top, blue at the bottom', rsc?.w === 720 && rsc.h === 720 && near(rsc.tl, RED) && near(rsc.tr, RED) && near(rsc.bl, BLUE) && near(rsc.br, BLUE), `${rsc?.w}×${rsc?.h}`);
+  const rm = await process1(admin, `rect-mismatch-${tag}.png`, quadPng, 'image/png', { crop: { x: 0, y: 0, w: 0.5, h: 0.5, aspect: '1:1' } });
+  check('rect that does not match its aspect (800×500 as 1:1) → failed with a reason', rm.item?.status === 'failed' && /does not match aspect/.test(rm.item.error ?? ''), `${rm.item?.status} ${rm.item?.error?.slice(0, 80)}`);
+  const rf = await process1(admin, `rect-full-${tag}.png`, quadPng, 'image/png', { crop: { x: 0, y: 0, w: 1, h: 1 } });
+  check('full-source rect = no-op: byte-identical, processing null', rf.item?.status === 'ready' && sha(rf.file) === sha(quadPng) && rf.item.processing === null, `${rf.item?.status} ${JSON.stringify(rf.item?.processing)}`);
+  const rr = await process1(admin, `rect-rot-${tag}.jpg`, rotated, 'image/jpeg', { crop: { x: 0, y: 0.5, w: 1, h: 0.5 } });
+  check('rect on an EXIF-rotated JPEG uses displayed coordinates → 600×500', rr.item?.width === 600 && rr.item?.height === 500, `${rr.item?.width}×${rr.item?.height}`);
+  check('rect options recorded on the asset', ['x', 'y', 'w', 'h', 'aspect'].every((k) => rs.item?.processing?.options?.crop?.[k] === ({ x: 0, y: 0, w: 0.5, h: 0.8, aspect: '1:1' } as any)[k]), JSON.stringify(rs.item?.processing?.options));
 
   // ---------- size presets, aspect exactness, no upscaling
   const ig45 = await process1(admin, `ig45-${tag}.jpg`, big45, 'image/jpeg', { crop: { aspect: '4:5' }, maxSize: 1080 });
@@ -259,6 +294,18 @@ try {
     const m = th ? await sharp(th).metadata() : null;
     const ok = th && m ? near(await pixel(th, 2, 2), want, 60) && near(await pixel(th, m.width! - 3, m.height! - 3), want, 60) : false;
     check(`video 9:16 crop at x=${x} → ${label} only (202×360)`, Boolean(ok) && r.item.width === 202 && r.item.height === 360, `${r.item?.width}×${r.item?.height}`);
+  }
+  // Rectangles on video (1280×360: red | blue halves), even pixel rounding; checked on the cover frame.
+  for (const [label, crop, want, w, h] of [
+    ['free rect on the blue half', { x: 0.5, y: 0.25, w: 0.3, h: 0.5 }, BLUE, 384, 180],
+    ['free rect with odd pixel sizes → rounded down to even', { x: 0.1, y: 0.1, w: 0.165, h: 0.33 }, RED, 210, 118],
+    ['9:16 rect on the blue half', { x: 0.6, y: 0, w: 202 / 1280, h: 1, aspect: '9:16' }, BLUE, 202, 360],
+  ] as const) {
+    const r = await process1(admin, `vrect-${w}-${tag}.mp4`, vidHalves, 'video/mp4', { crop });
+    const th = r.item?.status === 'ready' ? (await raw(`/api/media/${r.item.id}/thumbnail`, admin)).buf : null;
+    const p = r.file.length ? await probe(r.file) : null;
+    const ok = th ? all(await corners(th), want, 60) : false;
+    check(`video ${label} → ${w}×${h}`, ok && p?.width === w && p?.height === h && r.item.width === w && r.item.height === h, `${r.item?.status} ${p?.width}×${p?.height} ${r.item?.error ?? ''}`);
   }
   const vw = await process1(admin, `webm-${tag}.webm`, webm, 'video/webm', { quality: 'medium', crop: { aspect: '1:1' } });
   const pw = vw.file.length ? await probe(vw.file) : null;

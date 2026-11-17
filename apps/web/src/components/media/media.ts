@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { ApiError, getToken, responseError } from '../../api/client'
-import type { MediaCropAspect, MediaItem, MediaLimits } from '../../api/types'
+import type { MediaCropAspect, MediaFormatLimit, MediaItem, MediaLimits, MediaProcessOptions } from '../../api/types'
 
 /** <img>/<video> can't send the Authorization header: fetch → Blob (→ object URL). */
 export async function fetchAuthBlob(url: string): Promise<Blob> {
@@ -96,37 +96,115 @@ export function xhrUpload(fields: Record<string, string>, file: File, onProgress
   })
   return { promise, abort: () => xhr.abort() }
 }
-
 // ---------------------------------------------------------------- crop / compress (mirrors api media/transform.ts)
 export const ASPECTS: Record<MediaCropAspect, number | null> = { original: null, '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9, '1.91:1': 1.91 }
 
-/** Crop box as fractions of the source, centred on pos and clamped inside. */
-export function cropFraction(w: number, h: number, aspect: MediaCropAspect, pos: { x: number; y: number }) {
-  const r = ASPECTS[aspect]
+/** Editor presets: free, 'original' (locked to the source's own ratio) and the fixed ratios. */
+export type EditorAspect = 'free' | MediaCropAspect
+export const EDITOR_ASPECTS: EditorAspect[] = ['free', 'original', '1:1', '4:5', '9:16', '16:9', '1.91:1']
+export type EditorSize = 'original' | 1080 | 720
+export type EditorQuality = 'original' | 'high' | 'medium' | 'low'
+export interface EditSettings { aspect: EditorAspect; maxSize: EditorSize; quality: EditorQuality }
+/** Fractions (0..1) of the orientation-corrected source. */
+export interface Rect { x: number; y: number; w: number; h: number }
+/** A picked file waiting in the editor (MediaUploader owns the list, MediaEditor edits it in place). */
+export interface PendingFile {
+  uid: number; file: File; url: string; video: boolean; processable: boolean; formatId: string
+  settings: EditSettings; rect: Rect | null; dims: { w: number; h: number } | null
+}
+/** Source pixels. */
+export interface Box { x: number; y: number; w: number; h: number }
+
+/** Pixel ratio (w/h) the crop box is locked to; null = free. */
+export function lockedRatio(aspect: EditorAspect, w: number, h: number): number | null {
+  if (aspect === 'free') return null
+  return aspect === 'original' ? w / h : ASPECTS[aspect]
+}
+const fixedAspect = (a: EditorAspect): MediaCropAspect | undefined => (a === 'free' || a === 'original' ? undefined : a)
+
+/** Largest centred box of the ratio (the whole source when free), as fractions. */
+export function defaultRect(w: number, h: number, ratio: number | null): Rect {
   let bw = 1, bh = 1
-  if (r) { if (w / h > r) bw = (h * r) / w; else bh = w / r / h }
-  const left = Math.min(Math.max(pos.x - bw / 2, 0), 1 - bw)
-  const top = Math.min(Math.max(pos.y - bh / 2, 0), 1 - bh)
-  return { left, top, w: bw, h: bh }
+  if (ratio) { if (w / h > ratio) bw = (h * ratio) / w; else bh = w / ratio / h }
+  return { x: (1 - bw) / 2, y: (1 - bh) / 2, w: bw, h: bh }
 }
 
-/** Expected output size (same rules as the server: shorter side ≤ maxSize, longer ≤ 2×, no upscaling, even for video). */
-export function outputSize(w: number, h: number, aspect: MediaCropAspect, maxSize: number | null, video: boolean) {
-  const r = ASPECTS[aspect]
-  let bw = w, bh = h
-  if (r) { if (w / h > r) bw = Math.round(h * r); else bh = Math.round(w / r) }
-  if (video) { bw -= bw % 2; bh -= bh % 2 }
-  const s = maxSize ? Math.min(1, maxSize / Math.min(bw, bh), (2 * maxSize) / Math.max(bw, bh)) : 1
-  let tw = Math.max(1, Math.round(bw * s)), th = Math.max(1, Math.round(bh * s))
-  if (video) { tw = 2 * Math.round(tw / 2); th = 2 * Math.round(th / 2) }
+/** Rectangle → pixel box exactly like the server's rectBox (rounded, clamped, even for video, snapped to a fixed aspect). */
+export function rectBox(w: number, h: number, c: Rect, aspect: MediaCropAspect | undefined, even: boolean): Box {
+  const ev = (v: number) => (even ? v - (v % 2) : v)
+  const min = even ? 2 : 1
+  const maxW = ev(w), maxH = ev(h)
+  let bw = Math.min(Math.max(ev(Math.round(c.w * w)), min), maxW)
+  let bh = Math.min(Math.max(ev(Math.round(c.h * h)), min), maxH)
+  const r = aspect ? ASPECTS[aspect] : null
+  if (r) {
+    const nw = even ? 2 * Math.round((bh * r) / 2) : Math.round(bh * r)
+    if (nw <= maxW) bw = Math.max(min, nw)
+    else { bw = maxW; bh = Math.min(maxH, Math.max(min, even ? 2 * Math.round(bw / r / 2) : Math.round(bw / r))) }
+  }
+  const x = ev(Math.min(Math.max(Math.round(c.x * w), 0), w - bw))
+  const y = ev(Math.min(Math.max(Math.round(c.y * h), 0), h - bh))
+  return { x, y, w: bw, h: bh }
+}
+
+/** Server rule: shorter side ≤ maxSize and longer side ≤ 2 × maxSize, never upscaled; even for video. */
+export function targetSize(w: number, h: number, maxSize: number | undefined, even: boolean) {
+  const s = maxSize ? Math.min(1, maxSize / Math.min(w, h), (2 * maxSize) / Math.max(w, h)) : 1
+  let tw = Math.max(1, Math.round(w * s)), th = Math.max(1, Math.round(h * s))
+  if (even) { tw = Math.max(2, 2 * Math.round(tw / 2)); th = Math.max(2, 2 * Math.round(th / 2)) }
   return { w: tw, h: th }
+}
+
+/** What the server will do with these settings on a w×h source. */
+export function plan(w: number, h: number, s: EditSettings, rect: Rect | null, video: boolean) {
+  const box = rectBox(w, h, rect ?? defaultRect(w, h, lockedRatio(s.aspect, w, h)), fixedAspect(s.aspect), video)
+  const even = (v: number) => (video ? v - (v % 2) : v)
+  const crop = box.x > 0 || box.y > 0 || box.w < even(w) || box.h < even(h)
+  const out = targetSize(box.w, box.h, s.maxSize === 'original' ? undefined : s.maxSize, video)
+  const cropped = box.w !== w || box.h !== h
+  const resized = out.w !== box.w || out.h !== box.h
+  const any = crop || s.maxSize !== 'original' || s.quality !== 'original'
+  return { box, out, crop, cropped, resized, any }
+}
+
+/** The upload's `process` field (null = stored as uploaded). Without known dimensions a fixed preset falls back to the centred legacy form. */
+export function processOptions(s: EditSettings, rect: Rect | null, dims: { w: number; h: number } | null, video: boolean): MediaProcessOptions | null {
+  const o: MediaProcessOptions = {}
+  const fa = fixedAspect(s.aspect)
+  if (dims) {
+    const p = plan(dims.w, dims.h, s, rect, video)
+    if (p.crop) o.crop = { x: p.box.x / dims.w, y: p.box.y / dims.h, w: p.box.w / dims.w, h: p.box.h / dims.h, ...(fa ? { aspect: fa } : {}) }
+  } else if (fa) o.crop = { aspect: fa, x: 0.5, y: 0.5 }
+  if (s.maxSize !== 'original') o.maxSize = s.maxSize
+  if (s.quality !== 'original') o.quality = s.quality
+  return Object.keys(o).length ? o : null
+}
+
+/** Canvas approximation of the server's sharp encode (same quality numbers; sharp uses mozjpeg, so its JPEGs are usually a bit smaller). */
+const IMAGE_Q = { high: 0.9, medium: 0.8, low: 0.65 } as const
+export async function encodePreview(src: CanvasImageSource, box: Box, out: { w: number; h: number }, formatId: string, quality: EditorQuality): Promise<Blob | null> {
+  const canvas = document.createElement('canvas')
+  canvas.width = out.w
+  canvas.height = out.h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(src, box.x, box.y, box.w, box.h, 0, 0, out.w, out.h)
+  const q = IMAGE_Q[quality === 'original' ? 'high' : quality]
+  const type = formatId === 'png' ? 'image/png' : formatId === 'webp' ? 'image/webp' : 'image/jpeg'
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), type, q))
 }
 
 const extOfFile = (file: File) => /\.([a-z0-9]{1,8})$/i.exec(file.name)?.[1]?.toLowerCase() ?? ''
 
-export function isProcessable(file: File, limits: MediaLimits | null): boolean {
+export function formatOf(file: File, limits: MediaLimits | null): MediaFormatLimit | undefined {
   const ext = extOfFile(file)
-  return Boolean(limits && [...limits.image.formats, ...limits.video.formats].some((f) => f.processable && f.exts.includes(ext)))
+  return limits ? [...limits.image.formats, ...limits.video.formats].find((f) => f.exts.includes(ext)) : undefined
+}
+
+export function isProcessable(file: File, limits: MediaLimits | null): boolean {
+  return Boolean(formatOf(file, limits)?.processable)
 }
 
 export function isVideoFile(file: File, limits: MediaLimits | null): boolean {

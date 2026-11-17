@@ -236,9 +236,11 @@ export const mediaCategories = pgTable('media_categories', {
 ]);
 
 export type MediaCropAspect = 'original' | '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1';
+/** Crop rectangle in 0..1 of the (orientation-corrected) source; `aspect` = preset it is locked to. */
+export interface MediaCropRect { x: number; y: number; w: number; h: number; aspect?: MediaCropAspect }
 export interface MediaProcessOptions {
-  /** Aspect preset; x/y = centre of the crop box in 0..1 of the (orientation-corrected) source. */
-  crop?: { aspect: MediaCropAspect; x: number; y: number };
+  /** A rectangle, or the legacy form: aspect preset with x/y = centre of the largest box of that aspect. */
+  crop?: MediaCropRect | { aspect: MediaCropAspect; x: number; y: number };
   /** Shorter side ≤ maxSize (longer side ≤ 2 × maxSize); never upscales. */
   maxSize?: 1080 | 720;
   quality?: 'high' | 'medium' | 'low';

@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { z } from 'zod';
 import { config } from '../../config.js';
-import type { MediaCropAspect, MediaFileFacts, MediaProcessOptions } from '../../db/schema.js';
+import type { MediaCropAspect, MediaCropRect, MediaFileFacts, MediaProcessOptions } from '../../db/schema.js';
 import { PROCESSABLE, type MediaFormat } from './formats.js';
 import { probeVideo, SHARP_INPUT, stderrOf } from './process.js';
 
@@ -17,20 +17,35 @@ const run = promisify(execFile);
  */
 export const ASPECTS: Record<MediaCropAspect, number | null> = { original: null, '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9, '1.91:1': 1.91 };
 
+const AspectEnum = z.enum(Object.keys(ASPECTS) as [MediaCropAspect, ...MediaCropAspect[]]);
+const frac = z.number().min(0).max(1);
+/** Smallest crop side, as a fraction of the source side. */
+export const MIN_CROP_FRACTION = 0.01;
+const EPS = 1e-6;
+
 export const ProcessOptionsSchema = z.object({
-  crop: z.object({
-    aspect: z.enum(Object.keys(ASPECTS) as [MediaCropAspect, ...MediaCropAspect[]]),
-    x: z.number().min(0).max(1).default(0.5),
-    y: z.number().min(0).max(1).default(0.5),
-  }).strict().optional(),
+  crop: z.union([
+    // Explicit rectangle in 0..1 of the (orientation-corrected) source; `aspect` = the preset the client locked it to (verified in the job).
+    z.object({ x: frac, y: frac, w: frac.min(MIN_CROP_FRACTION), h: frac.min(MIN_CROP_FRACTION), aspect: AspectEnum.optional() }).strict()
+      .refine((c) => c.x + c.w <= 1 + EPS, { message: 'x + w must be ≤ 1', path: ['w'] })
+      .refine((c) => c.y + c.h <= 1 + EPS, { message: 'y + h must be ≤ 1', path: ['h'] }),
+    // Legacy: largest box of the preset's aspect, positioned by its centre.
+    z.object({ aspect: AspectEnum, x: frac.default(0.5), y: frac.default(0.5) }).strict(),
+  ]).optional(),
   maxSize: z.union([z.literal(1080), z.literal(720)]).optional(),
   quality: z.enum(['high', 'medium', 'low']).optional(),
 }).strict();
 
-/** Drops no-op parts; null when nothing is left to do. */
+const isRect = (c: NonNullable<MediaProcessOptions['crop']>): c is MediaCropRect => 'w' in c;
+
+/** Drops no-op parts (incl. a rectangle covering the whole source); null when nothing is left to do. */
 export function normalizeOptions(o: z.infer<typeof ProcessOptionsSchema>): MediaProcessOptions | null {
   const out: MediaProcessOptions = {};
-  if (o.crop && o.crop.aspect !== 'original') out.crop = { aspect: o.crop.aspect, x: o.crop.x, y: o.crop.y };
+  const c = o.crop;
+  if (c && 'w' in c) {
+    const full = c.x < EPS && c.y < EPS && c.w > 1 - EPS && c.h > 1 - EPS;
+    if (!full) out.crop = { x: c.x, y: c.y, w: Math.min(c.w, 1 - c.x), h: Math.min(c.h, 1 - c.y), ...(c.aspect && c.aspect !== 'original' ? { aspect: c.aspect } : {}) };
+  } else if (c && c.aspect !== 'original') out.crop = { aspect: c.aspect, x: c.x, y: c.y };
   if (o.maxSize) out.maxSize = o.maxSize;
   if (o.quality) out.quality = o.quality;
   return Object.keys(out).length ? out : null;
@@ -38,8 +53,38 @@ export function normalizeOptions(o: z.infer<typeof ProcessOptionsSchema>): Media
 
 export interface Box { x: number; y: number; w: number; h: number }
 
-/** Largest box of the preset's aspect inside w×h, centred on (cx, cy) and clamped to the source. */
+/** Pixel crop box for the options' crop (none = the whole source); even sizes/offsets for video. */
 export function cropBox(w: number, h: number, crop: MediaProcessOptions['crop'], even = false): Box {
+  return crop && isRect(crop) ? rectBox(w, h, crop, even) : aspectBox(w, h, crop, even);
+}
+
+/**
+ * Explicit rectangle → pixels (rounded, clamped inside, even for video). With a fixed-ratio
+ * `aspect` the rectangle must match it within rounding (else the job fails with a reason), and
+ * the box is snapped to the exact ratio (width from height, like the legacy form).
+ * Mirrored in apps/web components/media/media.ts (rectBox).
+ */
+export function rectBox(w: number, h: number, c: MediaCropRect, even = false): Box {
+  const ev = (v: number) => (even ? v - (v % 2) : v);
+  const min = even ? 2 : 1;
+  const maxW = ev(w), maxH = ev(h);
+  let bw = Math.min(Math.max(ev(Math.round(c.w * w)), min), maxW);
+  let bh = Math.min(Math.max(ev(Math.round(c.h * h)), min), maxH);
+  const r = c.aspect ? ASPECTS[c.aspect] : null;
+  if (r) {
+    // ±1 px per side from rounding, plus the even rounding for video.
+    if (Math.abs(bw - bh * r) > (even ? 2 : 1) + r) throw new Error(`crop rectangle ${bw}×${bh} does not match aspect ${c.aspect}`);
+    const nw = even ? 2 * Math.round((bh * r) / 2) : Math.round(bh * r);
+    if (nw <= maxW) bw = Math.max(min, nw);
+    else { bw = maxW; bh = Math.min(maxH, Math.max(min, even ? 2 * Math.round(bw / r / 2) : Math.round(bw / r))); }
+  }
+  const x = ev(Math.min(Math.max(Math.round(c.x * w), 0), w - bw));
+  const y = ev(Math.min(Math.max(Math.round(c.y * h), 0), h - bh));
+  return { x, y, w: bw, h: bh };
+}
+
+/** Legacy form: largest box of the preset's aspect inside w×h, centred on (cx, cy) and clamped to the source. */
+function aspectBox(w: number, h: number, crop: { aspect: MediaCropAspect; x: number; y: number } | undefined, even: boolean): Box {
   const r = crop ? ASPECTS[crop.aspect] : null;
   let bw = w, bh = h;
   if (r) {
