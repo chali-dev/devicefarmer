@@ -402,7 +402,13 @@ export interface Content {
   lang: string | null; translations: string[]
   /** 发布目标: the content's default target accounts, in order. */
   targets: ContentTarget[]
+  /** 媒体号 of the publish tasks the viewer may see (latest task per account), next due time of an unfinished task, latest published time. */
+  publishAccounts: ContentPublishAccount[]; nextPublishAt: string | null; lastPublishedAt: string | null
   createdAt: string; updatedAt: string
+}
+export interface ContentPublishAccount {
+  id: string; platform: string; handle: string; displayName: string | null
+  status: PublishStatus; postType: PostType; scheduledAt: string; publishedAt: string | null
 }
 export interface ContentTarget {
   id: string; platform: string; handle: string; displayName: string | null; personaId: string | null; groupId: string | null

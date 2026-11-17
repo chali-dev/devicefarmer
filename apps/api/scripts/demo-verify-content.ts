@@ -315,6 +315,29 @@ try {
     const got = await cl(T, `status=${s}&q=demo`);
     check(`status=${s} filter (admin, all owners)`, eqSet(ctitles(got), CONTENTS.filter((c) => c.stage === s && !withPublish.has(c.title)).map((c) => c.title)), sorted(ctitles(got)));
   }
+  // List publish summary (媒体号 / 发布时间), recomputed here from the DB rows: accounts of non-cancelled tasks
+  // (users: only tasks whose user_id is themselves), next due time of an unfinished task, latest published time.
+  {
+    const ptRows = await db.select().from(schema.publishTasks);
+    const UNF = ['pending', 'scheduled', 'running', 'awaiting_operator'];
+    const expectFor = (contentId: string, viewer: string | null) => {
+      const rs = ptRows.filter((p) => p.contentId === contentId && p.status !== 'cancelled' && (!viewer || p.userId === viewer));
+      const ms = (xs: (Date | null)[]) => xs.filter((d): d is Date => !!d).map((d) => d.getTime());
+      const next = ms(rs.filter((p) => UNF.includes(p.status)).map((p) => p.scheduledAt));
+      const last = ms(rs.map((p) => p.publishedAt));
+      return { accounts: [...new Set(rs.map((p) => p.accountId))].sort().join('|'), next: next.length ? Math.min(...next) : null, last: last.length ? Math.max(...last) : null };
+    };
+    const got = (x: any) => ({
+      accounts: (x.publishAccounts as any[]).map((a) => a.id).sort().join('|'),
+      next: x.nextPublishAt ? new Date(x.nextPublishAt).getTime() : null, last: x.lastPublishedAt ? new Date(x.lastPublishedAt).getTime() : null,
+    });
+    const bad = (xs: any[], viewer: string | null) => xs.filter((x) => JSON.stringify(got(x)) !== JSON.stringify(expectFor(x.id, viewer))).map((x) => x.title);
+    const withAcc = aC.filter((x) => x.publishAccounts.length).length;
+    check(`list publishAccounts / nextPublishAt / lastPublishedAt match the publish tasks (admin, ${withAcc} contents with tasks)`, bad(aC, null).length === 0, bad(aC, null).join(','));
+    check('list publish summary for demo-user: only its own publish tasks', bad(uC, userId).length === 0, bad(uC, userId).join(','));
+    const shapeOk = aC.every((x) => (x.publishAccounts as any[]).every((a) => a.handle && a.platform && a.status && a.status !== 'cancelled' && a.scheduledAt && a.postType));
+    check('publishAccounts entries carry platform, handle, status, postType, scheduledAt (no cancelled)', shapeOk);
+  }
   const media0 = aC.find((x) => x.title === 'demo 夏日海边合集');
   check('media attached in order with thumbnails', media0.media.map((m: any) => m.name).join(',') === 'demo-海边日落,demo-城市夜景,demo-早餐摆拍' && media0.media.every((m: any) => m.thumbnailUrl));
   check('instagram caption stored in platformHints', media0.platformHints?.instagram?.caption === '☀️ Summer memories #travel');

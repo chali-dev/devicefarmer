@@ -114,7 +114,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const cond = and(...where);
     const [{ total } = { total: 0 }] = await db.select({ total: sql<number>`count(*)::int` }).from(c).where(cond);
     const rows = await db.select().from(c).where(cond).orderBy(desc(c.updatedAt), desc(c.id)).limit(q.pageSize).offset((q.page - 1) * q.pageSize);
-    return { items: await toContentItems(rows), total, page: q.page, pageSize: q.pageSize };
+    return { items: await toContentItems(rows, req.user), total, page: q.page, pageSize: q.pageSize };
   });
 
   /** Tags in use (filter suggestions); categories come from /api/content-categories. */
@@ -147,7 +147,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     });
     if (req.audit) req.audit.extra = { id: row.id, media: media.length, ...(category ? { category: category.name } : {}) };
     reply.code(201);
-    return { content: (await toContentItems([row]))[0] };
+    return { content: (await toContentItems([row], req.user))[0] };
   });
 
   app.get('/api/contents/:id', { schema: { params: Id } }, async (req) => {
@@ -157,7 +157,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const tasks = await db.select().from(schema.publishTasks)
       .where(and(eq(schema.publishTasks.contentId, row.id), isAdmin(req.user) ? undefined : eq(schema.publishTasks.userId, req.user.id)))
       .orderBy(desc(schema.publishTasks.scheduledAt));
-    return { content: (await toContentItems([row]))[0], translations: await translationsOf(row.id), publishTasks: await toPublishItems(tasks, req.user) };
+    return { content: (await toContentItems([row], req.user))[0], translations: await translationsOf(row.id), publishTasks: await toPublishItems(tasks, req.user) };
   });
 
   app.put('/api/contents/:id', { schema: { params: Id, body: UpdateBody } }, async (req) => {
@@ -194,7 +194,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       await refreshContentStatus(cur.id, tx);
     });
     const [row] = await db.select().from(c).where(eq(c.id, cur.id));
-    return { content: (await toContentItems([row!]))[0] };
+    return { content: (await toContentItems([row!], req.user))[0] };
   });
 
   /** Refused while publish tasks are unfinished; finished publish history goes with the content. */

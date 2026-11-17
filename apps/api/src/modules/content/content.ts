@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
-import { PUBLISH_UNFINISHED, type Content, type ContentStatus, type MediaAsset, type PublishStatus } from '../../db/schema.js';
+import { PUBLISH_UNFINISHED, type Content, type ContentStatus, type MediaAsset, type PostType, type PublishStatus } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -177,10 +177,48 @@ export const mediaItem = (a: MediaAsset): ContentMediaItem => ({
 
 const NONE = '00000000-0000-0000-0000-000000000000';
 
-export async function toContentItems(rows: Content[]) {
+/** 媒体号 of a content's publish tasks: one entry per account (its latest non-cancelled task). */
+export interface ContentPublishAccount {
+  id: string; platform: string; handle: string; displayName: string | null;
+  status: PublishStatus; postType: PostType; scheduledAt: Date; publishedAt: Date | null;
+}
+export interface ContentPublishSummary { accounts: ContentPublishAccount[]; nextPublishAt: Date | null; lastPublishedAt: Date | null }
+
+const epoch = (v: number | string | null): Date | null => (v === null || v === undefined ? null : new Date(Number(v)));
+
+/**
+ * Publish summary per content for the viewer, in ONE query: accounts of its non-cancelled publish tasks (latest task
+ * per account, in the order they were first distributed to), the earliest due time of an unfinished task and the latest
+ * published time. Users see only tasks whose publish_tasks.user_id is themselves (运营只能看到自己的媒体号, same rule as
+ * the content detail): an admin may have distributed their content to another user's account.
+ */
+export async function publishSummaries(viewer: AuthUser, contentIds: string[]): Promise<Map<string, ContentPublishSummary>> {
+  const out = new Map<string, ContentPublishSummary>();
+  if (!contentIds.length) return out;
+  const unfinished = sql.join(PUBLISH_UNFINISHED.map((s) => sql`${s}`), sql`, `);
+  const rows = await db.selectDistinctOn([pt.contentId, pt.accountId], {
+    contentId: pt.contentId, id: sa.id, platform: sa.platform, handle: sa.handle, displayName: sa.displayName,
+    status: pt.status, postType: pt.postType, scheduledAt: pt.scheduledAt, publishedAt: pt.publishedAt,
+    firstAt: sql<number>`(extract(epoch from min(${pt.createdAt}) over (partition by ${pt.contentId}, ${pt.accountId})) * 1000)::float8`,
+    nextAt: sql<number | null>`(extract(epoch from min(${pt.scheduledAt}) filter (where ${pt.status} in (${unfinished})) over (partition by ${pt.contentId})) * 1000)::float8`,
+    lastAt: sql<number | null>`(extract(epoch from max(${pt.publishedAt}) over (partition by ${pt.contentId})) * 1000)::float8`,
+  }).from(pt).innerJoin(sa, eq(sa.id, pt.accountId))
+    .where(and(inArray(pt.contentId, contentIds), ne(pt.status, 'cancelled'), isAdmin(viewer) ? undefined : eq(pt.userId, viewer.id)))
+    .orderBy(pt.contentId, pt.accountId, desc(pt.createdAt), desc(pt.id));
+  rows.sort((a, b) => Number(a.firstAt) - Number(b.firstAt));
+  for (const { contentId, firstAt: _f, nextAt, lastAt, ...acc } of rows) {
+    const cur = out.get(contentId) ?? { accounts: [], nextPublishAt: epoch(nextAt), lastPublishedAt: epoch(lastAt) };
+    cur.accounts.push(acc);
+    out.set(contentId, cur);
+  }
+  return out;
+}
+
+/** List/detail items; `viewer` scopes the publish summary (publishAccounts / nextPublishAt / lastPublishedAt). */
+export async function toContentItems(rows: Content[], viewer: AuthUser) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [tagRows, mediaRows, owners, counts, langs, targetRows, cats] = await Promise.all([
+  const [tagRows, mediaRows, owners, counts, langs, targetRows, cats, summaries] = await Promise.all([
     db.select({ contentId: schema.contentTagLinks.contentId, name: schema.contentTags.name }).from(schema.contentTagLinks)
       .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
       .where(inArray(schema.contentTagLinks.contentId, ids)).orderBy(asc(schema.contentTags.name)),
@@ -198,6 +236,7 @@ export async function toContentItems(rows: Content[]) {
       .leftJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
       .where(inArray(schema.contentTargets.contentId, ids)).orderBy(asc(schema.contentTargets.position)),
     categoriesByIds(rows.flatMap((r) => (r.categoryId ? [r.categoryId] : []))),
+    publishSummaries(viewer, ids),
   ]);
   return rows.map(({ category: _legacy, ...r }) => ({
     ...r,
@@ -207,6 +246,10 @@ export async function toContentItems(rows: Content[]) {
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),
     media: mediaRows.filter((m) => m.contentId === r.id).map((m) => mediaItem(m.a)),
     publishCounts: counts.get(r.id) ?? {},
+    /** 媒体号 of the viewer-visible publish tasks (latest task per account) + next due / last published time. */
+    publishAccounts: summaries.get(r.id)?.accounts ?? [],
+    nextPublishAt: summaries.get(r.id)?.nextPublishAt ?? null,
+    lastPublishedAt: summaries.get(r.id)?.lastPublishedAt ?? null,
     /** Languages with a translation (the source language is `lang`). */
     translations: langs.get(r.id) ?? [],
     /** 发布目标: default target accounts, in order (DistributeModal starts from them). */

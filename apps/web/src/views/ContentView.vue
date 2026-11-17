@@ -19,6 +19,7 @@ import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import VNodes from '../components/common/VNodes'
+import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
@@ -97,17 +98,24 @@ const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: 
 onMounted(() => { void load(); void loadFacets(); void loadLangs(); void loadCategories() })
 
 const columns = computed(() => [
-  { title: t('content.colTitle'), key: 'title', width: 280 },
-  { title: t('content.colMedia'), key: 'media', width: 200 },
-  { title: t('content.colStatus'), key: 'status', width: 120 },
-  { title: t('content.colCategory'), key: 'category', width: 140 },
-  { title: t('content.colPublish'), key: 'publish', width: 160 },
-  ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 110 }] : []),
-  { title: t('content.colUpdated'), key: 'updated', width: 170 },
-  actionColumn(250),
+  { title: t('content.colTitle'), key: 'title', width: 260 },
+  { title: t('content.colMedia'), key: 'media', width: 124 },
+  { title: t('content.colPublish'), key: 'status', width: 124 },
+  { title: t('content.colPublishAt'), key: 'publishAt', width: 124 },
+  { title: t('content.colAccounts'), key: 'accounts', width: 176 },
+  ...(auth.isAdmin ? [{ title: t('content.colAuthor'), key: 'owner', width: 112 }] : []),
+  { title: t('content.colUpdated'), key: 'updated', width: 110 },
+  actionColumn(170),
 ])
 const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 function onTableChange(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void load() }
+/** 发布时间: the next due time while a publish task is unfinished, else the latest published time. */
+const publishAt = (c: Content) => (c.nextPublishAt ? { at: c.nextPublishAt, next: true } : c.lastPublishedAt ? { at: c.lastPublishedAt, next: false } : null)
+const shortFmt = (d: string) => {
+  const x = new Date(d)
+  return x.toLocaleString(dateLocale(), { ...(x.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' as const } : {}), month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+const TAG_MAX = 3
 const publishTotal = (c: Content) => Object.entries(c.publishCounts).filter(([s]) => s !== 'cancelled').reduce((a, [, n]) => a + (n ?? 0), 0)
 
 // ---------------------------------------------------------------- editor
@@ -361,7 +369,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
         <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
-        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
       </SearchBar>
 
@@ -369,24 +377,47 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" @change="onTableChange">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'title'">
-            <a @click="openEdit(record)">{{ record.title }}</a>
-            <div v-if="record.tags.length" style="margin-top: 2px"><a-tag v-for="tg in record.tags" :key="tg">{{ tg }}</a-tag></div>
-            <div v-if="record.lang || record.translations.length" class="langs">
-              <a-tooltip v-if="record.lang" :title="`${t('content.lang.source')} · ${langName(record.lang)}`"><a-tag color="blue" class="lang-chip">{{ record.lang }}</a-tag></a-tooltip>
-              <a-tooltip v-for="l in record.translations" :key="l" :title="langName(l)"><a-tag class="lang-chip">{{ l }}</a-tag></a-tooltip>
+            <a class="title-link ellipsis" :title="record.title" @click="openEdit(record)">{{ record.title }}</a>
+            <div v-if="record.category || record.tags.length || record.lang || record.translations.length" class="meta">
+              <a-tag v-if="record.category" color="blue" class="chip">{{ record.category.name }}</a-tag>
+              <a-tag v-for="tg in record.tags.slice(0, TAG_MAX)" :key="tg" class="chip">#{{ tg }}</a-tag>
+              <a-tooltip v-if="record.tags.length > TAG_MAX" :title="record.tags.slice(TAG_MAX).map((x: string) => `#${x}`).join(' ')">
+                <a-tag class="chip">+{{ record.tags.length - TAG_MAX }}</a-tag>
+              </a-tooltip>
+              <a-tooltip v-if="record.lang" :title="`${t('content.lang.source')} · ${langName(record.lang)}`"><a-tag class="chip lang">{{ record.lang }}</a-tag></a-tooltip>
+              <a-tooltip v-for="l in record.translations" :key="l" :title="langName(l)"><a-tag class="chip lang">{{ l }}</a-tag></a-tooltip>
             </div>
           </template>
-          <template v-else-if="column.key === 'media'"><MediaStrip :media="record.media" :size="36" :max="4" /></template>
-          <template v-else-if="column.key === 'status'"><StatusTag kind="content" :status="record.status" /></template>
-          <template v-else-if="column.key === 'category'">{{ record.category?.name ?? '—' }}</template>
-          <template v-else-if="column.key === 'publish'">
-            <span v-if="!publishTotal(record)" class="muted">—</span>
-            <a v-else @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">
-              {{ t('content.publishSummary', { published: record.publishCounts.published ?? 0, total: publishTotal(record) }) }}
-            </a>
+          <template v-else-if="column.key === 'media'">
+            <MediaStrip v-if="record.media.length" :media="record.media" :size="32" :max="3" />
+            <span v-else class="muted">—</span>
           </template>
-          <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-          <template v-else-if="column.key === 'updated'">{{ fmt(record.updatedAt) }}</template>
+          <template v-else-if="column.key === 'status'">
+            <div class="status-cell">
+              <StatusTag kind="content" :status="record.status" />
+              <a-tooltip v-if="publishTotal(record)" :title="t('content.publishSummary', { published: record.publishCounts.published ?? 0, total: publishTotal(record) })">
+                <a class="small count" @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">{{ record.publishCounts.published ?? 0 }}/{{ publishTotal(record) }}</a>
+              </a-tooltip>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'publishAt'">
+            <template v-if="publishAt(record)">
+              <a-tooltip :title="fmt(publishAt(record)!.at)"><div class="nowrap">{{ shortFmt(publishAt(record)!.at) }}</div></a-tooltip>
+              <div class="muted small">{{ publishAt(record)!.next ? t('content.publishAtNext') : t('content.publishAtLast') }}</div>
+            </template>
+            <span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'accounts'"><ContentAccountsCell :content="record" /></template>
+          <template v-else-if="column.key === 'owner'">
+            <span v-if="record.ownerName" class="author">
+              <a-avatar :size="20" class="avatar">{{ record.ownerName.charAt(0).toUpperCase() }}</a-avatar>
+              <span class="ellipsis" :title="record.ownerName">{{ record.ownerName }}</span>
+            </span>
+            <span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'updated'">
+            <a-tooltip :title="fmt(record.updatedAt)"><span class="muted nowrap">{{ shortFmt(record.updatedAt) }}</span></a-tooltip>
+          </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
@@ -556,8 +587,15 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 
 
 <style scoped>
-.langs { margin-top: 2px; }
-.lang-chip { font-size: 11px; line-height: 18px; padding-inline: 5px; margin-inline-end: 4px; }
+.title-link { display: block; font-weight: 500; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.meta .chip { margin: 0; font-size: 11px; line-height: 18px; padding-inline: 5px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta .chip.lang { color: var(--cp-text-secondary); }
+.status-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.status-cell :deep(.ant-tag) { margin: 0; }
+.status-cell .count { font-variant-numeric: tabular-nums; }
+.author { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
+.author .avatar { background: var(--cp-primary); flex: none; font-size: 11px; }
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
 .lang-tabs { margin-bottom: 12px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
