@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TARGETS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
+import { CATEGORIES, CONTENT_CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TARGETS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
 
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); };
@@ -322,10 +322,21 @@ try {
   check('tag filter case-insensitive (FITNESS)', eqSet(ctitles(tagC), ['demo 健身打卡第1天', 'demo 跑步vlog']));
   const tagHash = await cl(U, `tag=${encodeURIComponent('#food')}`);
   check('tag filter strips leading #', eqSet(ctitles(tagHash), ['demo 周末午餐', 'demo 早餐灵感']));
-  const catC = await cl(T, `category=${encodeURIComponent('活动')}`);
-  check('category filter (活动)', eqSet(ctitles(catC), CONTENTS.filter((c) => c.category === '活动').map((c) => c.title)));
-  const catNone = await cl(U, 'category=none');
-  check('category=none', eqSet(ctitles(catNone), ['demo 自拍分享']));
+  // 内容分类: public categories for admin's demo contents, demo-user's personal ones for its own.
+  const ccPub = (await http('GET', '/api/content-categories?scope=public', U)).body.categories as any[];
+  const ccMine = (await http('GET', '/api/content-categories?scope=mine', U)).body.categories as any[];
+  const ccId = (name: string) => [...ccPub, ...ccMine].find((x) => x.name === name)?.id;
+  check('content categories: public 活动/新品发布/生活方式 (read-only for demo-user), personal 健身/美食/旅行',
+    CONTENT_CATEGORIES.every((cc) => (cc.owner === 'public' ? ccPub : ccMine).some((x) => x.name === cc.name && x.writable === (cc.owner === 'user'))));
+  check('demo contents carry their category ({id, name}, scope)', CONTENTS.every((c) => {
+    const row = aC.find((x) => x.title === c.title);
+    return c.category ? row?.category?.name === c.category && row.category.ownerType === (c.owner === 'admin' ? 'public' : 'user') : row?.category === null;
+  }));
+  const catC = await cl(T, `categoryId=${ccId('活动')}`);
+  check('category filter (活动)', eqSet(ctitles(catC).filter((x) => x.startsWith('demo ')), CONTENTS.filter((c) => c.category === '活动').map((c) => c.title)));
+  check('category count (demo-user sees 健身 = 2 of its own)', ccMine.find((x) => x.name === '健身')?.count === CONTENTS.filter((c) => c.category === '健身').length);
+  const catNone = await cl(U, 'categoryId=none');
+  check('categoryId=none', eqSet(ctitles(catNone), ['demo 自拍分享']));
   const qBody = await cl(T, `q=${encodeURIComponent('20 平米')}`);
   check('q searches the body', eqSet(ctitles(qBody), ['demo 品牌故事草稿']));
   const pg: string[] = [];
@@ -333,7 +344,7 @@ try {
   for (let p = 1; p <= 3; p++) { const x = (await http('GET', `/api/contents?ownerId=${userId}&pageSize=2&page=${p}`, T)).body; ctot = x.total; pg.push(...x.items.map((i: any) => i.id)); }
   check('pagination pageSize=2 × 3 pages = 6 distinct', ctot === 6 && new Set(pg).size === 6);
   const facets = (await http('GET', '/api/contents/facets', U)).body;
-  check('facets (demo-user): own categories/tags only', eqSet(facets.categories.filter((x: string) => ['健身', '美食', '旅行', '活动', '新品发布'].includes(x)), ['健身', '美食', '旅行']) && facets.tags.some((x: string) => x.toLowerCase() === 'vlog') && !facets.tags.includes('christmas'));
+  check('facets (demo-user): own tags only, no categories', !('categories' in facets) && facets.tags.some((x: string) => x.toLowerCase() === 'vlog') && !facets.tags.includes('christmas'));
 
   // create / edit / stage / delete on throw-away contents
   const pubReady = byName.get('demo-早餐摆拍'); const uOwn = byName.get('demo-user-午餐');
@@ -351,10 +362,10 @@ try {
   check('admin creating for demo-user with disabled public media → 400 content.media_not_usable', r.status === 400 && r.body.code === 'content.media_not_usable');
   r = await http('POST', '/api/contents', U, { title: `${tmp} x`, ownerId: adminId });
   check('demo-user creating for another owner → 403', r.status === 403);
-  r = await http('POST', '/api/contents', U, { title: `${tmp} 新内容`, body: '正文', category: '  ', tags: ['A', 'a', '#B'], mediaIds: [uOwn.id, pubReady.id, uOwn.id], platformHints: { instagram: { caption: 'cap 1' } } });
+  r = await http('POST', '/api/contents', U, { title: `${tmp} 新内容`, body: '正文', categoryId: null, tags: ['A', 'a', '#B'], mediaIds: [uOwn.id, pubReady.id, uOwn.id], platformHints: { instagram: { caption: 'cap 1' } } });
   const nc = r.body.content;
   if (nc?.id) cleanup.push(() => http('DELETE', `/api/contents/${nc.id}`, T));
-  check('create: default stage/status draft, blank category → null, tags deduped (# stripped), media deduped in order', r.status === 201 && nc.stage === 'draft' && nc.status === 'draft' && nc.category === null
+  check('create: default stage/status draft, categoryId null → no category, tags deduped (# stripped), media deduped in order', r.status === 201 && nc.stage === 'draft' && nc.status === 'draft' && nc.category === null
     && eqSet(nc.tags, ['A', 'B']) && nc.media.map((m: any) => m.id).join() === [uOwn.id, pubReady.id].join() && nc.ownerName === 'demo-user', JSON.stringify({ tags: nc?.tags, cat: nc?.category }));
   r = await http('POST', '/api/contents', U, { title: `${tmp} y`, platformHints: { instagram: { caption: 'x'.repeat(2201) } } });
   check('instagram caption > 2200 → 400', r.status === 400);
@@ -363,9 +374,9 @@ try {
   r = await http('POST', '/api/contents', U, { title: `${tmp} yt`, platformHints: { youtube: { title: 'yt title' } } });
   { const cid = r.body?.content?.id; if (cid) cleanup.push(() => http('DELETE', `/api/contents/${cid}`, T)); }
   console.log(`  (info) youtube hints with ENABLED_PLATFORMS=instagram → HTTP ${r.status} (${r.status === 201 ? 'accepted and stored' : r.body?.code})`);
-  r = await http('PUT', `/api/contents/${nc.id}`, U, { title: `${tmp} 改名`, body: '新正文', category: '健身', tags: ['C'], mediaIds: [pubReady.id], platformHints: { instagram: { caption: 'cap 2' } }, stage: 'ready' });
+  r = await http('PUT', `/api/contents/${nc.id}`, U, { title: `${tmp} 改名`, body: '新正文', categoryId: ccId('健身'), tags: ['C'], mediaIds: [pubReady.id], platformHints: { instagram: { caption: 'cap 2' } }, stage: 'ready' });
   const ge = (await http('GET', `/api/contents/${nc.id}`, U)).body;
-  check('edit persists title/body/category/tags/media/caption; stage+status ready', r.status === 200 && ge.content.title === `${tmp} 改名` && ge.content.body === '新正文' && ge.content.category === '健身'
+  check('edit persists title/body/category/tags/media/caption; stage+status ready', r.status === 200 && ge.content.title === `${tmp} 改名` && ge.content.body === '新正文' && ge.content.category?.name === '健身'
     && eqSet(ge.content.tags, ['C']) && ge.content.media.length === 1 && ge.content.platformHints.instagram.caption === 'cap 2' && ge.content.stage === 'ready' && ge.content.status === 'ready');
   check('detail has no publish tasks', Array.isArray(ge.publishTasks) && ge.publishTasks.length === 0);
   r = await http('PUT', `/api/contents/${nc.id}`, U, { stage: 'archived' });

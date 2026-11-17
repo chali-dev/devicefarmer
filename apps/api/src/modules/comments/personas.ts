@@ -3,7 +3,8 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { badRequest } from '../../lib/errors.js';
+import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
 
@@ -17,9 +18,7 @@ const P = schema.personas;
 const TPL = schema.commentTemplates;
 const SA = schema.socialAccounts;
 const Id = z.object({ id: z.string().uuid() });
-const Name = z.string().trim().min(1).max(50);
-const Description = z.string().trim().max(200).nullable().optional().transform((v) => (v === '' ? null : v));
-const Sort = z.number().int().min(-100000).max(100000);
+const scoped = scopedList('persona', '人设', P, P);
 
 /** Template visibility for the per-persona counts (same rule as the template list). */
 const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, user.id)));
@@ -27,7 +26,7 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 type Exec = Pick<typeof db, 'select'>;
 
 /** A public persona fits everything; a personal one only things owned by its owner (`ownerUserId`, null = shared). */
-export const personaFits = (p: Persona, ownerUserId: string | null) => p.ownerType === 'public' || (ownerUserId !== null && p.ownerId === ownerUserId);
+export const personaFits = (p: Persona, ownerUserId: string | null) => scoped.fits(p, ownerUserId);
 
 /**
  * Throws 400 unless the persona exists and fits something owned by `ownerUserId` (null = shared): a template
@@ -48,29 +47,9 @@ async function logAccountPersona(tx: Parameters<Parameters<typeof db.transaction
   await writeLogs(tx, user, accountIds.map((accountId) => ({ accountId, action: 'update' as const, field: 'persona', fromValue: from, toValue: to, message })));
 }
 
-/** Persona the user may see (public: everyone; personal: owner or admin). 404 otherwise. */
-async function visiblePersona(user: AuthUser, id: string): Promise<Persona> {
-  const [p] = await db.select().from(P).where(eq(P.id, id));
-  if (!p || (p.ownerType === 'user' && p.ownerId !== user.id && !isAdmin(user))) throw notFound('人设不存在', 'persona.not_found');
-  return p;
-}
-/** Persona the user may manage (public: admin; personal: owner or admin). */
-async function manageablePersona(user: AuthUser, id: string): Promise<Persona> {
-  const p = await visiblePersona(user, id);
-  if (p.ownerType === 'public' && !isAdmin(user)) throw forbidden('仅管理员可以管理公共人设', 'persona.admin_only');
-  return p;
-}
-
-function uniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string } };
-  return e.code === '23505' || e.cause?.code === '23505';
-}
-async function nameTaken<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  try { return await fn(); } catch (err) {
-    if (uniqueViolation(err)) throw conflict('人设名称已存在', 'persona.exists', { name });
-    throw err;
-  }
-}
+const findPersona = async (id: string) => (await db.select().from(P).where(eq(P.id, id)))[0];
+const visiblePersona = async (user: AuthUser, id: string) => scoped.visible(user, await findPersona(id));
+const manageablePersona = async (user: AuthUser, id: string) => scoped.manageable(user, await findPersona(id));
 
 export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
@@ -79,14 +58,9 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
    * public = public personas; mine = the caller's; all-users = every user's personal personas (admin, optional ownerId).
    * `count` = templates using the persona that the caller can see (one grouped query).
    */
-  app.get('/api/personas', {
-    schema: { querystring: z.object({ scope: z.enum(['public', 'mine', 'all-users']).default('public'), ownerId: z.string().uuid().optional() }) },
-  }, async (req) => {
-    const { scope, ownerId } = req.query;
-    if (scope === 'all-users' && !isAdmin(req.user)) throw forbidden('仅管理员可以查看其他用户的人设', 'persona.admin_only');
-    const where = scope === 'public' ? eq(P.ownerType, 'public')
-      : scope === 'mine' ? eq(P.ownerId, req.user.id)
-        : ownerId ? eq(P.ownerId, ownerId) : isNotNull(P.ownerId);
+  app.get('/api/personas', { schema: { querystring: ScopedListQuery } }, async (req) => {
+    const { scope } = req.query;
+    const where = scoped.listWhere(req.user, scope, req.query.ownerId);
     const counts = db.select({ personaId: TPL.personaId, n: sql<number>`count(*)::int`.as('n') }).from(TPL)
       .where(and(isNotNull(TPL.personaId), visibleTemplates(req.user))).groupBy(TPL.personaId).as('c');
     const rows = await db.select({ p: P, ownerName: schema.users.username, count: sql<number>`coalesce(${counts.n}, 0)` }).from(P)
@@ -100,20 +74,10 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /** scope public (admin) or mine; admins may create a personal persona for another user with ownerId. */
-  app.post('/api/personas', {
-    schema: { body: z.object({ scope: z.enum(['public', 'mine']), ownerId: z.string().uuid().optional(), name: Name, description: Description, sort: Sort.optional() }) },
-  }, async (req, reply) => {
+  app.post('/api/personas', { schema: { body: ScopedCreateBody } }, async (req, reply) => {
     const b = req.body;
-    if (b.scope === 'public' && !isAdmin(req.user)) throw forbidden('仅管理员可以管理公共人设', 'persona.admin_only');
-    if (b.ownerId && b.ownerId !== req.user.id && !isAdmin(req.user)) throw forbidden('仅管理员可以管理其他用户的人设', 'persona.admin_only');
-    const ownerId = b.scope === 'public' ? null : b.ownerId ?? req.user.id;
-    if (ownerId && ownerId !== req.user.id) {
-      const [u] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, ownerId));
-      if (!u) throw notFound('用户不存在', 'users.not_found');
-    }
-    const owner = ownerId ? eq(P.ownerId, ownerId) : isNull(P.ownerId);
-    const sort = b.sort ?? ((await db.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(owner))[0]?.max ?? -1) + 1;
-    const [row] = await nameTaken(b.name, () => db.insert(P).values({
+    const { ownerId, sort } = await scoped.createTarget(req.user, b);
+    const [row] = await scoped.uniqueName(b.name, () => db.insert(P).values({
       ownerType: ownerId ? 'user' : 'public', ownerId, name: b.name, description: b.description ?? null, sort, createdBy: req.user.id,
     }).returning());
     if (req.audit) req.audit.extra = { id: row!.id };
@@ -122,12 +86,11 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.patch('/api/personas/:id', {
-    schema: { params: Id, body: z.object({ name: Name.optional(), description: Description, sort: Sort.optional() }) },
+    schema: { params: Id, body: ScopedPatchBody },
   }, async (req) => {
     const p = await manageablePersona(req.user, req.params.id);
-    const set = Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined));
-    if (!Object.keys(set).length) throw badRequest('nothing to update', 'common.nothing_to_update');
-    const [row] = await nameTaken(req.body.name ?? p.name, () => db.update(P).set(set).where(eq(P.id, p.id)).returning());
+    const set = scoped.patchSet(req.body);
+    const [row] = await scoped.uniqueName(req.body.name ?? p.name, () => db.update(P).set(set).where(eq(P.id, p.id)).returning());
     return { persona: row };
   });
 
@@ -152,9 +115,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     const src = await manageablePersona(req.user, req.params.id);
     const dst = await visiblePersona(req.user, req.body.into);
     if (req.audit) req.audit.target = src.name;
-    if (src.id === dst.id) throw badRequest('不能合并到自身', 'persona.merge_same');
-    const ok = dst.ownerType === 'public' || (src.ownerType === 'user' && dst.ownerId === src.ownerId);
-    if (!ok) throw badRequest('只能合并到同一范围的人设（个人人设可以合并到公共人设）', 'persona.merge_scope');
+    scoped.assertMerge(src, dst);
     const moved = await db.transaction(async (tx) => {
       const rows = await tx.update(TPL).set({ personaId: dst.id, persona: null }).where(eq(TPL.personaId, src.id)).returning({ id: TPL.id });
       const accounts = await tx.update(SA).set({ personaId: dst.id }).where(eq(SA.personaId, src.id)).returning({ id: SA.id });

@@ -287,11 +287,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
   'POST /api/contents': {
     action: 'content.create', target: ({ body }) => body.title as string,
-    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), targetIds: body.targetIds ? ids(body.targetIds) : undefined, stage: body.stage, lang: body.lang }),
+    detail: ({ body }) => ({ ownerId: body.ownerId, categoryId: body.categoryId, tags: body.tags, mediaIds: ids(body.mediaIds), targetIds: body.targetIds ? ids(body.targetIds) : undefined, stage: body.stage, lang: body.lang }),
   },
   'PUT /api/contents/:id': {
     action: ({ body }) => (body.stage === 'archived' ? 'content.archive' : 'content.update'),
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, targetIds: body.targetIds ? ids(body.targetIds) : undefined, lang: body.lang }),
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, categoryId: body.categoryId, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, targetIds: body.targetIds ? ids(body.targetIds) : undefined, lang: body.lang }),
   },
   'DELETE /api/contents/:id': { action: 'content.delete' },
   // 多语言内容: only the language is recorded, never the translated texts.
@@ -347,6 +347,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },
   'POST /api/personas/:id/merge': { action: 'persona.merge' },
+  // 内容分类: names only (no descriptions); the merge route adds the target name.
+  'POST /api/content-categories': { action: 'content_category.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
+  'PATCH /api/content-categories/:id': { action: 'content_category.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
+  'DELETE /api/content-categories/:id': { action: 'content_category.delete' },
+  'POST /api/content-categories/:id/merge': { action: 'content_category.merge' },
   // account analytics (账号分析)
   'POST /api/analytics/accounts/:id/stats': {
     action: 'analytics.stats_add', detail: ({ body }) => ({ day: body.day, fields: Object.keys(body).filter((k) => k !== 'day' && body[k] !== undefined) }),
@@ -470,6 +475,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   }
   if (pattern.startsWith('/api/personas/:id')) {
     const [r] = await db.select({ name: schema.personas.name }).from(schema.personas).where(eq(schema.personas.id, id));
+    return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/content-categories/:id')) {
+    const [r] = await db.select({ name: schema.contentCategories.name }).from(schema.contentCategories).where(eq(schema.contentCategories.id, id));
     return r?.name ?? null;
   }
   if (pattern.startsWith('/api/comment-templates/:id')) {

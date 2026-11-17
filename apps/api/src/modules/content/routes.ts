@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -11,14 +11,13 @@ import {
   assertNoUnfinishedPublish, assertTargetAccounts, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, setContentTargets,
   toContentItems, visibleContent,
 } from './content.js';
+import { assertCategoryFor } from './categories.js';
 import { getLanguageSettings, Lang, publicTranslation, translationsOf } from './languages.js';
 
 const c = schema.contents;
 const Id = z.object({ id: z.string().uuid() });
 const Tags = z.array(z.string().trim().min(1).max(32)).max(20);
-const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
-const blank = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim());
 
 const Privacy = z.enum(['public', 'unlisted', 'private']);
 const Hints = z.object({
@@ -42,7 +41,8 @@ const Editable = {
   /** Source language (BCP-47); create defaults to the configured default source language. */
   lang: Lang.nullable().optional(),
   body: z.string().max(5000).optional(),
-  category: optText(50),
+  /** 内容分类: a public category or one of the owner's (null clears). */
+  categoryId: z.string().uuid().nullable().optional(),
   tags: Tags.optional(),
   mediaIds: z.array(z.string().uuid()).max(20).optional(),
   /** 发布目标: the owner's accounts, in order (concrete ids; group/persona picks are expanded by the client). */
@@ -55,8 +55,8 @@ const UpdateBody = z.object({ ...Editable, title: Editable.title.optional() });
 
 const ListQuery = z.object({
   status: z.enum(CONTENT_STATUSES).optional(),
-  /** exact category, or 'none' */
-  category: z.string().trim().max(50).optional(),
+  /** category id, or 'none' (未分类) */
+  categoryId: z.union([z.literal('none'), z.string().uuid()]).optional(),
   tag: z.string().trim().max(32).optional(),
   /** Available in this language: source language or an existing translation. */
   lang: Lang.optional(),
@@ -104,8 +104,8 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const q = req.query;
     const where: (SQL | undefined)[] = [ownerWhere(req.user, q.ownerId)];
     if (q.status) where.push(eq(c.status, q.status));
-    if (q.category === 'none') where.push(sql`${c.category} is null`);
-    else if (q.category) where.push(eq(c.category, q.category));
+    if (q.categoryId === 'none') where.push(isNull(c.categoryId));
+    else if (q.categoryId) where.push(eq(c.categoryId, q.categoryId));
     if (q.tag) {
       where.push(sql`exists (select 1 from content_tag_links l join content_tags t on t.id = l.tag_id where l.content_id = ${c.id} and lower(t.name) = ${q.tag.toLowerCase().replace(/^#+/, '')})`);
     }
@@ -117,16 +117,13 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     return { items: await toContentItems(rows), total, page: q.page, pageSize: q.pageSize };
   });
 
-  /** Categories and tags in use (filter suggestions). */
+  /** Tags in use (filter suggestions); categories come from /api/content-categories. */
   app.get('/api/contents/facets', { schema: { querystring: z.object({ ownerId: z.string().uuid().optional() }) } }, async (req) => {
     const cond = ownerWhere(req.user, req.query.ownerId);
-    const [cats, tags] = await Promise.all([
-      db.selectDistinct({ v: c.category }).from(c).where(and(cond, sql`${c.category} is not null`)).orderBy(asc(c.category)).limit(500),
-      db.selectDistinct({ v: schema.contentTags.name }).from(schema.contentTagLinks)
-        .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
-        .innerJoin(c, eq(c.id, schema.contentTagLinks.contentId)).where(cond).orderBy(asc(schema.contentTags.name)).limit(500),
-    ]);
-    return { categories: cats.map((x) => x.v!), tags: tags.map((x) => x.v) };
+    const tags = await db.selectDistinct({ v: schema.contentTags.name }).from(schema.contentTagLinks)
+      .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
+      .innerJoin(c, eq(c.id, schema.contentTagLinks.contentId)).where(cond).orderBy(asc(schema.contentTags.name)).limit(500);
+    return { tags: tags.map((x) => x.v) };
   });
 
   app.post('/api/contents', { schema: { body: CreateBody } }, async (req, reply) => {
@@ -134,11 +131,12 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const owner = await resolveOwner(req.user, b.ownerId);
     const media = await assertUsableMedia(req.user, owner, b.mediaIds ?? []);
     const targets = await assertTargetAccounts(req.user, owner.id, b.targetIds ?? []);
+    const category = b.categoryId ? await assertCategoryFor(owner.id, b.categoryId) : null;
     const stage = b.stage ?? 'draft';
     if (stage === 'archived') throw badRequest('新内容不能直接归档', 'content.bad_stage');
     const row = await db.transaction(async (tx) => {
       const [r] = await tx.insert(c).values({
-        userId: owner.id, title: b.title, body: b.body ?? '', category: blank(b.category) ?? null, stage, status: stage,
+        userId: owner.id, title: b.title, body: b.body ?? '', categoryId: category?.id ?? null, stage, status: stage,
         lang: b.lang !== undefined ? b.lang : (await getLanguageSettings()).defaultSource,
         platformHints: b.platformHints ?? {}, createdBy: req.user.id,
       }).returning();
@@ -147,7 +145,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       await setContentTargets(tx, r!.id, targets);
       return r!;
     });
-    if (req.audit) req.audit.extra = { id: row.id, media: media.length };
+    if (req.audit) req.audit.extra = { id: row.id, media: media.length, ...(category ? { category: category.name } : {}) };
     reply.code(201);
     return { content: (await toContentItems([row]))[0] };
   });
@@ -163,13 +161,15 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const b = req.body;
     const media = b.mediaIds ? await assertUsableMedia(req.user, await ownerOf(cur.userId), b.mediaIds) : null;
     const targets = b.targetIds ? await assertTargetAccounts(req.user, cur.userId, b.targetIds) : null;
+    const category = b.categoryId ? await assertCategoryFor(cur.userId, b.categoryId) : null;
+    if (req.audit && b.categoryId !== undefined) req.audit.extra = { category: category?.name ?? null };
     await db.transaction(async (tx) => {
       const locked = await visibleContent(req.user, cur.id, tx, true);
       const set: Partial<typeof c.$inferInsert> = {};
       if (b.title !== undefined) set.title = b.title;
       if (b.body !== undefined) set.body = b.body;
-      const cat = blank(b.category);
-      if (cat !== undefined) set.category = cat;
+      // The legacy text is cleared whenever the category changes (see content-category-data-migration.ts).
+      if (b.categoryId !== undefined) Object.assign(set, { categoryId: b.categoryId, category: null });
       if (b.platformHints !== undefined) set.platformHints = b.platformHints;
       if (b.lang !== undefined && b.lang !== locked.lang) {
         if (b.lang) {

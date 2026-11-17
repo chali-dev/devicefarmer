@@ -546,13 +546,39 @@ export const socialAccountStats = pgTable('social_account_stats', {
 export const CONTENT_STATUSES = ['draft', 'ready', 'scheduled', 'partially_published', 'published', 'failed', 'archived'] as const;
 export type ContentStatus = (typeof CONTENT_STATUSES)[number];
 
+/**
+ * 内容分类 (content categories), scoped like personas: public (owner_id null, admin-managed, usable by everyone) or
+ * personal (owner_id, private to that user; admins see all). Name unique per owner, case-insensitive.
+ */
+export const contentCategories = pgTable('content_categories', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
+  ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  sort: integer('sort').notNull().default(0),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [
+  uniqueIndex('content_categories_owner_name').on(sql`coalesce(${t.ownerId}, '00000000-0000-0000-0000-000000000000'::uuid)`, sql`lower(${t.name})`),
+  ownerCheck('content_categories_owner_chk'),
+]);
+export type ContentCategory = typeof contentCategories.$inferSelect;
+
 export const contents = pgTable('contents', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: text('title').notNull(),
   /** Base caption / description; publish tasks copy it unless they override it. */
   body: text('body').notNull().default(''),
+  /**
+   * Legacy free-text category, replaced by `category_id` (content-category-data-migration.ts). No longer read; the code
+   * only clears it when it changes a content's category (so the migration never re-links it). Drop in a later release.
+   */
   category: text('category'),
+  /** 内容分类: a public category or one of the owner's personal categories (assertCategoryFor). */
+  categoryId: uuid('category_id').references(() => contentCategories.id, { onDelete: 'set null' }),
   /** Source (original) language, BCP-47 (e.g. zh-CN). Null = not set (rows from before 多语言内容). */
   lang: text('lang'),
   stage: text('stage', { enum: ['draft', 'ready', 'archived'] }).notNull().default('draft'),
@@ -566,6 +592,7 @@ export const contents = pgTable('contents', {
   index('contents_user_created_idx').on(t.userId, t.createdAt),
   index('contents_user_status_idx').on(t.userId, t.status),
   index('contents_user_category_idx').on(t.userId, t.category),
+  index('contents_category_id_idx').on(t.categoryId),
   index('contents_created_at_idx').on(t.createdAt),
 ]);
 

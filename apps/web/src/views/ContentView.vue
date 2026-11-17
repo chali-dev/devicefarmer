@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -10,13 +10,15 @@ import { api, codeText, errorText } from '../api/client'
 import { langName } from '../api/lang'
 import {
   CONTENT_STATUSES, PUBLISH_UNFINISHED,
-  type Content, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PostType, type PublishTaskItem,
+  type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PostType, type PublishTaskItem,
   type SocialAccount,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
+import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import VNodes from '../components/common/VNodes'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
@@ -40,8 +42,8 @@ const items = ref<Content[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = reactive({ current: 1, pageSize: 20 })
-const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), category: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
-const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
+const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), categoryId: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
+const facets = ref<{ tags: string[] }>({ tags: [] })
 const users = ref<ManagedUser[]>([])
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`content.status.${s}`)
@@ -51,7 +53,7 @@ async function load() {
   try {
     const p = new URLSearchParams({ page: String(page.current), pageSize: String(page.pageSize) })
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    for (const k of ['status', 'category', 'tag', 'lang', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
+    for (const k of ['status', 'categoryId', 'tag', 'lang', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
     const r = await api<{ items: Content[]; total: number }>('GET', `/api/contents?${p}`)
     items.value = r.items
     total.value = r.total
@@ -64,12 +66,35 @@ async function loadFacets() {
   } catch (e) { message.error(errorText(e)) }
 }
 const search = () => { page.current = 1; void load() }
-function reset() { Object.assign(filters, { q: '', status: undefined, category: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search() }
+function reset() { Object.assign(filters, { q: '', status: undefined, categoryId: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search(); void loadCategories() }
+
+// ---------------------------------------------------------------- 内容分类: public + personal (admins: every user's, or the owner filter's)
+const myId = computed(() => auth.user?.id)
+const getCategories = (q: string) => api<{ categories: ContentCategory[] }>('GET', `/api/content-categories?${q}`).then((r) => r.categories)
+const ownerScope = (ownerId?: string) => (!ownerId || ownerId === myId.value ? 'scope=mine' : `scope=all-users&ownerId=${ownerId}`)
+const publicCats = ref<ContentCategory[]>([])
+const personalCats = ref<ContentCategory[]>([])
+async function loadCategories() {
+  try {
+    const personal = auth.isAdmin ? (filters.ownerId ? ownerScope(filters.ownerId) : 'scope=all-users') : 'scope=mine'
+    ;[publicCats.value, personalCats.value] = await Promise.all([getCategories('scope=public'), getCategories(personal)])
+  } catch (e) { message.error(errorText(e)) }
+}
+function categoryGroups(pub: ContentCategory[], own: ContentCategory[]) {
+  const opt = (c: ContentCategory) => ({ value: c.id, label: c.ownerId && c.ownerId !== myId.value && c.ownerName ? `${c.name} · ${c.ownerName}` : c.name, title: c.description ?? undefined })
+  return [
+    ...(pub.length ? [{ label: t('content.categories.tabs.public'), options: pub.map(opt) }] : []),
+    ...(own.length ? [{ label: t('content.categories.tabs.mine'), options: own.map(opt) }] : []),
+  ]
+}
+const filterCategoryOptions = computed(() => [{ value: 'none', label: t('content.uncategorized') }, ...categoryGroups(publicCats.value, personalCats.value)])
+const categoryManagerOpen = ref(false)
+function categoriesChanged() { void loadCategories(); void load() }
 /** 多语言内容: languages offered in the editor (admin setting). */
 const langCfg = ref<LanguageSettings>({ languages: [], defaultSource: null })
 async function loadLangs() { try { langCfg.value = await api<LanguageSettings>('GET', '/api/contents/languages') } catch { /* editor still works with the source only */ } }
 const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
-onMounted(() => { void load(); void loadFacets(); void loadLangs() })
+onMounted(() => { void load(); void loadFacets(); void loadLangs(); void loadCategories() })
 
 const columns = computed(() => [
   { title: t('content.colTitle'), key: 'title', width: 280 },
@@ -93,7 +118,7 @@ const editorTasks = ref<PublishTaskItem[]>([])
 /** Platform hints as plain records; hints of platforms without a tab stay as loaded (and are saved again). */
 type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
-  title: '', category: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[], ownerId: undefined as string | undefined,
+  title: '', categoryId: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[], ownerId: undefined as string | undefined,
   texts: {} as Record<string, string>, hints: {} as Hints, targets: [] as string[],
 })
 const pickerOpen = ref(false)
@@ -102,6 +127,27 @@ const targetOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth
 const targetAccounts = ref<SocialAccount[]>([])
 const firstTarget = computed(() => targetAccounts.value[0] ?? null)
 const previewType = ref<PostType>('feed')
+/** The editor's categories: public ones + the content owner's personal ones; 新建分类 adds a personal one of that owner. */
+const ownerCats = ref<ContentCategory[]>([])
+const formCategoryOptions = computed(() => categoryGroups(publicCats.value, ownerCats.value))
+async function loadOwnerCats() {
+  if (!editorOpen.value) return
+  try { ownerCats.value = await getCategories(ownerScope(targetOwner.value)) } catch (e) { message.error(errorText(e)) }
+}
+watch([targetOwner, editorOpen], () => { void loadOwnerCats() })
+const newCategory = ref('')
+async function addCategory() {
+  const name = newCategory.value.trim()
+  if (!name) return
+  try {
+    const o = targetOwner.value
+    const r = await api<{ category: ContentCategory }>('POST', '/api/content-categories', { scope: 'mine', name, ...(o && o !== myId.value ? { ownerId: o } : {}) })
+    newCategory.value = ''
+    message.success(t('content.categories.created'))
+    await Promise.all([loadOwnerCats(), loadCategories()])
+    form.categoryId = r.category.id
+  } catch (e) { message.error(errorText(e)) }
+}
 
 /**
  * 平台文案 tabs: one text box per enabled platform. The first tab is the body (the text every platform uses);
@@ -190,7 +236,7 @@ function fillForm(c: Content | null) {
   hints.youtube ??= {}
   sourceLang.value = c ? (c.lang ?? undefined) : (langCfg.value.defaultSource ?? undefined)
   Object.assign(form, {
-    title: c?.title ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
+    title: c?.title ?? '', categoryId: c?.category?.id ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
     ownerId: !c && auth.isAdmin ? auth.user?.id : undefined, targets: (c?.targets ?? []).map((x) => x.id),
     texts: splitTexts(c?.body ?? '', hints), hints,
   })
@@ -246,7 +292,7 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
   try {
     const { body: text, platformHints } = joinTexts(form.texts, form.hints)
     const body = {
-      title: form.title.trim(), body: text, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
+      title: form.title.trim(), body: text, categoryId: form.categoryId ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
       targetIds: form.targets,
       lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
@@ -300,6 +346,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 <template>
   <PageContainer :title="t('content.title')">
     <template #extra>
+      <a-button @click="categoryManagerOpen = true">{{ t('content.categories.manage') }}</a-button>
       <a-button @click="router.push('/publish')">{{ t('content.openScheduler') }}</a-button>
       <a-button type="primary" @click="openNew"><template #icon><PlusOutlined /></template>{{ t('content.add') }}</a-button>
     </template>
@@ -310,14 +357,12 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         <a-select v-model:value="filters.status" :placeholder="t('content.colStatus')" allow-clear style="width: 140px" @change="search">
           <a-select-option v-for="s in CONTENT_STATUSES" :key="s" :value="s">{{ statusText(s) }}</a-select-option>
         </a-select>
-        <a-select v-model:value="filters.category" :placeholder="t('content.colCategory')" allow-clear style="width: 140px" @change="search">
-          <a-select-option value="none">{{ t('content.uncategorized') }}</a-select-option>
-          <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
-        </a-select>
+        <a-select v-model:value="filters.categoryId" :placeholder="t('content.colCategory')" allow-clear show-search option-filter-prop="label" style="width: 160px"
+          :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
         <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search(); loadFacets()" />
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
       </SearchBar>
 
       <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
@@ -333,7 +378,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           </template>
           <template v-else-if="column.key === 'media'"><MediaStrip :media="record.media" :size="36" :max="4" /></template>
           <template v-else-if="column.key === 'status'"><StatusTag kind="content" :status="record.status" /></template>
-          <template v-else-if="column.key === 'category'">{{ record.category ?? '—' }}</template>
+          <template v-else-if="column.key === 'category'">{{ record.category?.name ?? '—' }}</template>
           <template v-else-if="column.key === 'publish'">
             <span v-if="!publishTotal(record)" class="muted">—</span>
             <a v-else @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">
@@ -404,7 +449,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 
     <a-form v-show="!currentTr" layout="vertical">
       <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
-        <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []" />
+        <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []; form.categoryId = undefined" />
       </a-form-item>
       <a-form-item :label="t('content.targets.label')">
         <ContentTargetPicker v-model="form.targets" :owner-id="targetOwner" @accounts="(a: SocialAccount[]) => (targetAccounts = a)" />
@@ -438,7 +483,16 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         </a-col>
         <a-col :xs="24" :sm="8">
           <a-form-item :label="t('content.fieldCategory')">
-            <a-auto-complete v-model:value="form.category" :options="facets.categories.map((c) => ({ value: c }))" allow-clear :maxlength="50" />
+            <a-select v-model:value="form.categoryId" :options="formCategoryOptions" :dropdown-style="{ minWidth: '240px' }" allow-clear show-search option-filter-prop="label" :placeholder="t('content.uncategorized')">
+              <template #dropdownRender="{ menuNode }">
+                <VNodes :vnodes="menuNode" />
+                <a-divider style="margin: 4px 0" />
+                <div class="new-category">
+                  <a-input v-model:value="newCategory" size="small" :maxlength="50" :placeholder="t('content.categories.namePlaceholder')" @press-enter="addCategory" @keydown.stop />
+                  <a-button type="link" size="small" :disabled="!newCategory.trim()" @click="addCategory"><template #icon><PlusOutlined /></template>{{ t('content.categories.add') }}</a-button>
+                </div>
+              </template>
+            </a-select>
           </a-form-item>
         </a-col>
         <a-col :xs="24" :sm="8">
@@ -498,6 +552,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 
   <MediaPicker v-model:open="pickerOpen" :exclude="form.media.map((m) => m.id)" @pick="onPick" />
   <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" @done="load" />
+  <ScopedListManager v-model:open="categoryManagerOpen" path="/api/content-categories" list-key="categories" texts="content.categories" @changed="categoriesChanged" />
 </template>
 
 
@@ -508,4 +563,5 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 .lang-tabs { margin-bottom: 12px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
+.new-category { display: flex; gap: 4px; padding: 4px 8px; }
 </style>

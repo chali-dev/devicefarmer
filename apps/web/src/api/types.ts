@@ -393,7 +393,9 @@ export interface ContentHints {
   facebook?: { caption?: string }
 }
 export interface Content {
-  id: string; userId: string; ownerName: string | null; title: string; body: string; category: string | null
+  id: string; userId: string; ownerName: string | null; title: string; body: string
+  /** 内容分类 */
+  categoryId: string | null; category: ContentCategoryRef | null
   stage: 'draft' | 'ready' | 'archived'; status: ContentStatus; platformHints: ContentHints
   tags: string[]; media: ContentMedia[]; publishCounts: Partial<Record<PublishStatus, number>>
   /** Source language (BCP-47) and the languages that have a translation. */
@@ -552,11 +554,16 @@ export interface CommentLog {
 export type TemplateKind = 'comment' | 'post'
 /** 人设 as embedded in a template. Public ones are usable by every template, personal ones only by their owner's. */
 export interface PersonaRef { id: string; name: string; description: string | null; ownerType: 'public' | 'user'; ownerId: string | null }
-export interface Persona extends PersonaRef {
+/** A row of a scoped name list (人设, 内容分类): public (admin-managed) or personal; `count` = uses the viewer can see. */
+export interface ScopedItem extends PersonaRef {
   sort: number; createdAt: string; updatedAt: string
-  /** templates using it that the viewer can see */
   count: number; writable: boolean; ownerName: string | null
 }
+/** 人设 (count = templates using it). */
+export type Persona = ScopedItem
+/** 内容分类 (count = contents using it). */
+export type ContentCategory = ScopedItem
+export interface ContentCategoryRef { id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null }
 export interface CommentTemplate {
   id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string
   /** 话术库: reply (comment) or post/caption template, optional persona (人设) and lowercase tags. */
