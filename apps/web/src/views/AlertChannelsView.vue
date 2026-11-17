@@ -56,8 +56,9 @@ const resultTip = (c: Channel) => c.lastResult
 
 const columns = computed(() => [
   { title: t('alertChannels.colName'), key: 'name', width: 200 },
+  { title: t('alertChannels.type'), key: 'type', width: 100 },
   { title: t('alertChannels.colTarget'), key: 'target', width: 220 },
-  { title: t('alertChannels.colKinds'), key: 'kinds', width: 300 },
+  { title: t('alertChannels.colKinds'), key: 'kinds', width: 260 },
   { title: t('alertChannels.colEnabled'), key: 'enabled', width: 80 },
   { title: t('alertChannels.colLast'), key: 'last', width: 120 },
   actionColumn(170),
@@ -139,7 +140,7 @@ async function save() {
       </SearchBar>
       <a-table
         :data-source="channels" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
-        :pagination="pagination({ hideOnSinglePage: true })" :scroll="{ x: 1090 }"
+        :pagination="pagination({ hideOnSinglePage: true })" :scroll="{ x: 1150 }"
       >
         <template #emptyText>
           <a-empty :description="t('alertChannels.empty')">
@@ -148,10 +149,10 @@ async function save() {
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <a-space :size="4" wrap>
-              <a-typography-text :ellipsis="{ tooltip: record.name }" style="max-width: 120px; display: inline-block; vertical-align: middle">{{ record.name }}</a-typography-text>
-              <a-tag>{{ t(`alertChannels.types.${record.type}`) }}</a-tag>
-            </a-space>
+            <a-typography-text :content="record.name" :ellipsis="{ tooltip: record.name }" style="display: block" />
+          </template>
+          <template v-else-if="column.key === 'type'">
+            <a-tag>{{ t(`alertChannels.types.${record.type}`) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'target'">
             <span class="mono">{{ record.config.chatId ?? '—' }}</span>
