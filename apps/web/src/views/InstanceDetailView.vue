@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { message, Modal } from 'ant-design-vue'
+import { CheckOutlined, InboxOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { PROXY_STATUS_COLOR, proxyLabel, TASK_STATUS_BADGE, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
+import { proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
+import PageContainer from '../components/common/PageContainer.vue'
 import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmAction, confirmDanger } from '../components/common/ui'
 import DeviceSocialCard from '../components/social/DeviceSocialCard.vue'
 import { useInstancesStore } from '../stores/instances'
 import { useAuthStore } from '../stores/auth'
@@ -83,9 +86,8 @@ async function loadApps() {
   finally { appsLoading.value = false }
 }
 function uninstall(pkg: string) {
-  Modal.confirm({
-    title: t('detail.apps.confirmUninstall', { pkg }), content: t('detail.apps.uninstallContent'), okType: 'danger',
-    okText: t('common.uninstall'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('detail.apps.confirmUninstall', { pkg }), content: t('detail.apps.uninstallContent'), okText: t('common.uninstall'),
     onOk: async () => {
       try { await store.uninstallApp([props.id], pkg); message.success(t('detail.apps.uninstallSubmitted')) }
       catch (e) { message.error(errorText(e)) }
@@ -173,7 +175,7 @@ async function bindProxy(proxyId: string | null) {
   finally { proxySaving.value = false }
 }
 function unbindProxy() {
-  Modal.confirm({ title: t('detail.proxy.confirmUnbind'), okText: t('common.ok'), cancelText: t('common.cancel'), onOk: () => bindProxy(null) })
+  confirmAction({ title: t('detail.proxy.confirmUnbind'), onOk: () => bindProxy(null) })
 }
 async function checkProxy() {
   proxyChecking.value = true
@@ -205,250 +207,256 @@ async function act(a: 'start' | 'stop' | 'restart') {
   }
   // BitBrowser phones are billed from power-on until shutdown.
   if (inst.value?.engine === 'bitbrowser' && a !== 'stop') {
-    Modal.confirm({ title: t('devices.ext.billingTitle'), content: t('devices.ext.billingConfirm'), okText: t(`devices.${a}`), cancelText: t('common.cancel'), onOk: go })
+    confirmAction({ title: t('devices.ext.billingTitle'), content: t('devices.ext.billingConfirm'), okText: t(`devices.${a}`), onOk: go })
   } else await go()
 }
-
+const busy = computed(() => ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.value?.status ?? ''))
+const appColumns = computed(() => [
+  { title: t('detail.apps.package'), dataIndex: 'package', key: 'package' },
+  { title: t('detail.apps.version'), key: 'version', width: 160 },
+  actionColumn(170),
+])
 </script>
+
 
 <template>
   <a-result v-if="!inst && !store.loading" status="404" :title="t('detail.notFound')">
     <template #extra><a-button @click="router.push('/instances')">{{ t('detail.backToList') }}</a-button></template>
   </a-result>
 
-  <a-row v-else-if="inst" :gutter="[24, 24]">
-    <a-col :xs="24" :lg="11" :xl="9">
-      <a-card size="small" :body-style="{ padding: '20px 12px' }">
-        <DevicePlayer
-          v-if="inst.status === 'running'"
-          ref="player"
-          :key="`${inst.id}-${inst.containerId}`"
-          :instance-id="inst.id"
-          :width="inst.spec.width"
-          :height="inst.spec.height"
-        />
-        <a-empty v-else :description="t('detail.notRunning', { status: t(`status.${inst.status}`) })" />
-      </a-card>
-    </a-col>
+  <PageContainer v-else-if="inst" :title="inst.name">
+    <template #title-suffix><StatusTag :status="inst.status" /></template>
+    <template #extra>
+      <a-button :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">{{ t('detail.screenshot') }}</a-button>
+      <a-button :disabled="inst.status === 'running'" @click="act('start')">{{ t('devices.start') }}</a-button>
+      <a-button :disabled="inst.status !== 'running'" @click="act('stop')">{{ t('devices.stop') }}</a-button>
+      <a-button @click="act('restart')">{{ t('devices.restart') }}</a-button>
+    </template>
 
-    <a-col :xs="24" :lg="13" :xl="15">
-      <a-space direction="vertical" size="middle" style="width: 100%">
-        <a-card size="small">
-          <template #title>
-            <a-space><a @click="router.push('/instances')">{{ t('nav.instances') }}</a><span>/</span><span>{{ inst.name }}</span></a-space>
-          </template>
-          <template #extra>
-            <a-space>
-              <a-button size="small" :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">{{ t('detail.screenshot') }}</a-button>
-              <a-button size="small" :disabled="inst.status === 'running'" @click="act('start')">{{ t('devices.start') }}</a-button>
-              <a-button size="small" :disabled="inst.status !== 'running'" @click="act('stop')">{{ t('devices.stop') }}</a-button>
-              <a-button size="small" @click="act('restart')">{{ t('devices.restart') }}</a-button>
-            </a-space>
-          </template>
-          <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
-            <a-descriptions-item :label="t('common.status')"><StatusTag :status="inst.status" /></a-descriptions-item>
-            <a-descriptions-item :label="t('detail.engine')">{{ isExternal ? t(`devices.ext.kinds.${inst.engine}`) : `${inst.engine} · ${inst.profile}` }}</a-descriptions-item>
-            <a-descriptions-item :label="t('detail.boot')">{{ inst.bootCompleted ? t('detail.bootDone') : t('detail.bootPending') }}</a-descriptions-item>
-            <a-descriptions-item label="ADB">{{ inst.adbState ?? '—' }}</a-descriptions-item>
-            <a-descriptions-item label="STF">{{ inst.stfReady ? t('detail.stfReady') : t('detail.stfNotReady') }}</a-descriptions-item>
-            <a-descriptions-item :label="t('devices.colAdbPort')">{{ inst.adbPort }}</a-descriptions-item>
-            <a-descriptions-item :label="t('devices.colResolution')">{{ inst.spec.width }}×{{ inst.spec.height }} @ {{ inst.spec.dpi }}dpi</a-descriptions-item>
-            <a-descriptions-item v-if="isExternal" :label="t('devices.ext.phoneId')"><a-typography-text copyable>{{ inst.externalId }}</a-typography-text></a-descriptions-item>
-            <a-descriptions-item v-else :label="t('devices.colImage')"><a-typography-text :ellipsis="true" style="max-width: 260px">{{ inst.image }}</a-typography-text></a-descriptions-item>
-          </a-descriptions>
-          <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon style="margin-top: 8px" />
-        </a-card>
+    <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon />
 
-        <a-card v-if="inst.google || inst.profile.includes('gapps') || inst.engine === 'emulator'" size="small" :title="t('detail.google.title')">
-          <template #extra>
-            <a-space>
-              <a-button size="small" :loading="checking" :disabled="inst.status !== 'running'" @click="checkGoogle">{{ t('detail.google.checkNow') }}</a-button>
-            </a-space>
-          </template>
-          <template v-if="google">
-            <a-space wrap style="margin-bottom: 8px">
-              <a-tag :color="google.gms.running ? 'green' : google.gms.installed ? 'orange' : 'red'">GMS {{ google.gms.version?.split(' ')[0] ?? t('detail.google.notInstalled') }}{{ google.gms.installed && !google.gms.running ? t('detail.google.notRunning') : '' }}</a-tag>
-              <a-tag :color="google.gsf.installed ? 'green' : 'red'">GSF {{ google.gsf.installed ? t('detail.google.installed') : t('detail.google.notInstalled') }}</a-tag>
-              <a-tooltip :title="t('detail.google.updateChannelTip')"><a-tag :color="google.playStore.installed ? 'default' : 'orange'">{{ t('detail.google.updateChannel', { state: google.playStore.installed ? t('detail.google.ok') : t('detail.google.missing') }) }}</a-tag></a-tooltip>
-              <a-tag :color="google.youtube.installed ? 'green' : 'default'">YouTube {{ google.youtube.installed ? google.youtube.version : t('detail.google.notInstalled') }}</a-tag>
-              <a-tag v-if="google.youtube.playing" color="blue">{{ t('detail.google.youtubePlaying') }}</a-tag>
-              <a-tag :color="google.googleAccounts ? 'green' : 'default'">{{ google.googleAccounts ? t('detail.google.accounts', { n: google.googleAccounts }) : t('detail.google.noAccount') }}</a-tag>
-            </a-space>
-            <a-descriptions :column="1" size="small">
-              <a-descriptions-item label="GSF ID">
-                <template v-if="google.gsf.gsfId">
-                  <a-typography-text code>{{ google.gsf.gsfId }}</a-typography-text>
-                  <a-button type="link" size="small" @click="copyGsf">{{ t('common.copy') }}</a-button>
-                </template>
-                <span v-else class="muted">{{ t('detail.google.gsfPending') }}</span>
-              </a-descriptions-item>
-              <a-descriptions-item :label="t('detail.google.checkedAt')">{{ new Date(google.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
-            </a-descriptions>
-            <a-alert v-if="!google.googleAccounts" type="info" show-icon style="margin-top: 8px">
-              <template #message>{{ t('detail.google.beforeLogin') }}</template>
-              <template #description>
-                {{ t('detail.google.beforeLogin1') }}
-                <a href="https://www.google.com/android/uncertified" target="_blank" rel="noopener noreferrer">google.com/android/uncertified</a>
-                {{ t('detail.google.beforeLogin2') }}
-              </template>
-            </a-alert>
-          </template>
-          <a-empty v-else :description="t('detail.google.notChecked')" />
-        </a-card>
-
-        <a-card size="small" :title="t('detail.input.title')">
-          <template #extra>
-            <a-tooltip :title="t('detail.input.secureTip')">
-              <a-space :size="4"><a-switch v-model:checked="secure" size="small" />{{ t('detail.input.secure') }}</a-space>
-            </a-tooltip>
-          </template>
-          <a-input-password v-if="secure" v-model:value="text" :placeholder="t('detail.input.securePlaceholder')" :disabled="inst.status !== 'running'" autocomplete="off" @press-enter="sendText">
-            <template #addonAfter><a @click="sendText">{{ t('common.send') }}</a></template>
-          </a-input-password>
-          <a-input-search
-            v-else
-            v-model:value="text"
-            :placeholder="t('detail.input.placeholder')"
-            :enter-button="t('common.send')"
-            :disabled="inst.status !== 'running'"
-            @search="sendText"
+    <a-row :gutter="[16, 16]">
+      <a-col :xs="24" :lg="11" :xl="9">
+        <a-card :bordered="false" class="player-card">
+          <DevicePlayer
+            v-if="inst.status === 'running'"
+            ref="player"
+            :key="`${inst.id}-${inst.containerId}`"
+            :instance-id="inst.id"
+            :width="inst.spec.width"
+            :height="inst.spec.height"
           />
-          <div class="hint">{{ secure ? t('detail.input.secureHint') : t('detail.input.hint') }}</div>
+          <a-empty v-else :description="t('detail.notRunning', { status: t(`status.${inst.status}`) })" />
         </a-card>
+      </a-col>
 
-        <a-card size="small" :title="t('detail.files.title')">
-          <a-upload-dragger :multiple="true" :show-upload-list="false" :custom-request="uploadFile as any" :disabled="inst.status !== 'running' || fileUploading">
-            <p style="margin: 8px 0">{{ fileUploading ? t('common.uploading') : t('detail.files.drop') }}</p>
-            <p class="hint" style="margin: 0 0 8px">{{ t('detail.files.hint') }}</p>
-          </a-upload-dragger>
-          <div v-for="p in lastUploads" :key="p" class="hint">✓ {{ p }}</div>
-        </a-card>
+      <a-col :xs="24" :lg="13" :xl="15">
+        <div class="stack">
+          <a-card :bordered="false" :title="t('cloud.basic')">
+            <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
+              <a-descriptions-item :label="t('detail.engine')">{{ isExternal ? t(`devices.ext.kinds.${inst.engine}`) : `${inst.engine} · ${inst.profile}` }}</a-descriptions-item>
+              <a-descriptions-item :label="t('detail.boot')">{{ inst.bootCompleted ? t('detail.bootDone') : t('detail.bootPending') }}</a-descriptions-item>
+              <a-descriptions-item label="ADB">{{ inst.adbState ?? '—' }}</a-descriptions-item>
+              <a-descriptions-item label="STF">{{ inst.stfReady ? t('detail.stfReady') : t('detail.stfNotReady') }}</a-descriptions-item>
+              <a-descriptions-item :label="t('devices.colAdbPort')">{{ inst.adbPort }}</a-descriptions-item>
+              <a-descriptions-item :label="t('devices.colResolution')">{{ inst.spec.width }}×{{ inst.spec.height }} @ {{ inst.spec.dpi }}dpi</a-descriptions-item>
+              <a-descriptions-item v-if="isExternal" :label="t('devices.ext.phoneId')" :span="2"><a-typography-text copyable>{{ inst.externalId }}</a-typography-text></a-descriptions-item>
+              <a-descriptions-item v-else :label="t('devices.colImage')" :span="2"><a-typography-text :ellipsis="{ tooltip: inst.image }" :content="inst.image" /></a-descriptions-item>
+            </a-descriptions>
+          </a-card>
 
-        <a-card size="small" :title="t('detail.apps.title')">
-          <template #extra>
-            <a-button size="small" :loading="appsLoading" :disabled="inst.status !== 'running'" @click="loadApps">{{ t('common.refresh') }}</a-button>
-          </template>
-          <a-upload-dragger
-            accept=".apk,.apks,.xapk,.apkm,.zip"
-            :show-upload-list="false"
-            :custom-request="upload as any"
-            :disabled="inst.status !== 'running' || uploading"
-            style="margin-bottom: 12px"
-          >
-            <p style="margin: 8px 0">{{ uploading ? t('common.uploading') : t('detail.apps.drop') }}</p>
-            <p class="hint" style="margin: 0 0 8px">{{ t('detail.apps.hint') }}</p>
-          </a-upload-dragger>
-          <a-table :data-source="appsList" row-key="package" size="small" :pagination="false" :loading="appsLoading"
-            :locale="{ emptyText: inst.status === 'running' ? t('detail.apps.empty') : t('detail.apps.deviceNotRunning') }"
-            :columns="[{ title: t('detail.apps.package'), dataIndex: 'package', key: 'package' }, { title: t('detail.apps.version'), key: 'version', width: 160 }, { title: '', key: 'ops', width: 170 }]">
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>
-              <template v-else-if="column.key === 'ops'">
-                <a-tag v-if="record.protected">{{ t('detail.apps.platform') }}</a-tag>
-                <a-space v-else :size="0">
-                  <a-button type="link" size="small" @click="importToLibrary(record.package)">{{ t('detail.apps.addToLibrary') }}</a-button>
-                  <a-button type="link" size="small" danger @click="uninstall(record.package)">{{ t('common.uninstall') }}</a-button>
-                </a-space>
-              </template>
+          <a-card v-if="inst.google || inst.profile.includes('gapps') || inst.engine === 'emulator'" :bordered="false" :title="t('detail.google.title')">
+            <template #extra>
+              <a-button size="small" :loading="checking" :disabled="inst.status !== 'running'" @click="checkGoogle">{{ t('detail.google.checkNow') }}</a-button>
             </template>
-          </a-table>
-        </a-card>
+            <template v-if="google">
+              <a-space wrap :size="[0, 8]" style="margin-bottom: 12px">
+                <a-tag :color="google.gms.running ? 'green' : google.gms.installed ? 'orange' : 'red'">GMS {{ google.gms.version?.split(' ')[0] ?? t('detail.google.notInstalled') }}{{ google.gms.installed && !google.gms.running ? t('detail.google.notRunning') : '' }}</a-tag>
+                <a-tag :color="google.gsf.installed ? 'green' : 'red'">GSF {{ google.gsf.installed ? t('detail.google.installed') : t('detail.google.notInstalled') }}</a-tag>
+                <a-tooltip :title="t('detail.google.updateChannelTip')"><a-tag :color="google.playStore.installed ? 'default' : 'orange'">{{ t('detail.google.updateChannel', { state: google.playStore.installed ? t('detail.google.ok') : t('detail.google.missing') }) }}</a-tag></a-tooltip>
+                <a-tag :color="google.youtube.installed ? 'green' : 'default'">YouTube {{ google.youtube.installed ? google.youtube.version : t('detail.google.notInstalled') }}</a-tag>
+                <a-tag v-if="google.youtube.playing" color="blue">{{ t('detail.google.youtubePlaying') }}</a-tag>
+                <a-tag :color="google.googleAccounts ? 'green' : 'default'">{{ google.googleAccounts ? t('detail.google.accounts', { n: google.googleAccounts }) : t('detail.google.noAccount') }}</a-tag>
+              </a-space>
+              <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
+                <a-descriptions-item label="GSF ID">
+                  <template v-if="google.gsf.gsfId">
+                    <a-typography-text code>{{ google.gsf.gsfId }}</a-typography-text>
+                    <a-button type="link" size="small" @click="copyGsf">{{ t('common.copy') }}</a-button>
+                  </template>
+                  <span v-else class="muted">{{ t('detail.google.gsfPending') }}</span>
+                </a-descriptions-item>
+                <a-descriptions-item :label="t('detail.google.checkedAt')">{{ new Date(google.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
+              </a-descriptions>
+              <a-alert v-if="!google.googleAccounts" type="info" show-icon style="margin-top: 12px">
+                <template #message>{{ t('detail.google.beforeLogin') }}</template>
+                <template #description>
+                  {{ t('detail.google.beforeLogin1') }}
+                  <a href="https://www.google.com/android/uncertified" target="_blank" rel="noopener noreferrer">google.com/android/uncertified</a>
+                  {{ t('detail.google.beforeLogin2') }}
+                </template>
+              </a-alert>
+            </template>
+            <a-empty v-else :description="t('detail.google.notChecked')" />
+          </a-card>
 
-        <a-card v-if="isExternal" size="small" :title="t('detail.proxy.title')">
-          <div class="hint">{{ t('devices.ext.proxyHint') }}</div>
-        </a-card>
-        <a-card v-else size="small" :title="t('detail.proxy.title')">
-          <template #extra>
-            <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
-          </template>
-          <a-descriptions :column="{ xs: 1, sm: 2 }" size="small">
-            <a-descriptions-item :label="t('detail.proxy.current')" :span="2">
-              <template v-if="inst.proxy">
-                <a-tag>{{ inst.proxy.type.toUpperCase() }}</a-tag>
-                <span>{{ proxyLabel(inst.proxy) }}</span>
-                <span class="hint"> · {{ inst.proxy.host }}:{{ inst.proxy.port }}</span>
-                <a-tag :color="PROXY_STATUS_COLOR[inst.proxy.status]" style="margin-left: 6px">{{ t(`proxies.statusText.${inst.proxy.status}`) }}</a-tag>
-              </template>
-              <span v-else class="hint">{{ t('detail.proxy.none') }}</span>
-            </a-descriptions-item>
-            <a-descriptions-item v-if="inst.proxy && (inst.proxy.country || inst.proxy.city)" :label="t('detail.proxy.location')">
-              {{ [inst.proxy.country, inst.proxy.city].filter(Boolean).join(' · ') }}
-            </a-descriptions-item>
-          </a-descriptions>
-          <a-space v-if="auth.isAdmin" wrap style="margin-top: 8px">
-            <a-select
-              v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
-              :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" style="min-width: min(320px, 70vw); max-width: 100%"
-              @dropdown-visible-change="(o: boolean) => o && loadFreeProxies()"
+          <a-card :bordered="false" :title="t('detail.input.title')">
+            <template #extra>
+              <a-tooltip :title="t('detail.input.secureTip')">
+                <a-space :size="4"><a-switch v-model:checked="secure" size="small" />{{ t('detail.input.secure') }}</a-space>
+              </a-tooltip>
+            </template>
+            <a-input-password v-if="secure" v-model:value="text" :placeholder="t('detail.input.securePlaceholder')" :disabled="inst.status !== 'running'" autocomplete="off" @press-enter="sendText">
+              <template #addonAfter><a @click="sendText">{{ t('common.send') }}</a></template>
+            </a-input-password>
+            <a-input-search
+              v-else
+              v-model:value="text"
+              :placeholder="t('detail.input.placeholder')"
+              :enter-button="t('common.send')"
+              :disabled="inst.status !== 'running'"
+              @search="sendText"
             />
-            <a-button type="primary" size="small" :loading="proxySaving" :disabled="!proxyChoice || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" @click="bindProxy(proxyChoice!)">{{ t('detail.proxy.bindApply') }}</a-button>
-            <a-button v-if="inst.proxy" size="small" danger :loading="proxySaving" :disabled="['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)" @click="unbindProxy">{{ t('detail.proxy.unbind') }}</a-button>
-            <a-button size="small" type="link" @click="router.push('/proxies')">{{ t('detail.proxy.manage') }}</a-button>
-          </a-space>
-          <div v-else class="hint" style="margin-top: 4px">{{ t('detail.proxy.adminOnly') }}</div>
-          <a-descriptions v-if="inst.proxyStatus" :column="{ xs: 1, sm: 2 }" size="small" style="margin-top: 12px">
-            <a-descriptions-item :label="t('detail.proxy.egress')">
-              <a-tag :color="inst.proxyStatus.ok ? 'green' : 'red'">{{ inst.proxyStatus.ok ? t('detail.proxy.ok') : t('detail.proxy.blocked') }}</a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item :label="t('detail.proxy.egressIp')">{{ inst.proxyStatus.egressIp ?? '—' }}</a-descriptions-item>
-            <a-descriptions-item :label="t('detail.proxy.latency')">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
-            <a-descriptions-item :label="t('detail.proxy.dns')">{{ inst.proxyStatus.dnsOk ? t('detail.proxy.ok') : t('detail.proxy.dnsFailed') }}</a-descriptions-item>
-            <a-descriptions-item :label="t('detail.proxy.checkedAt')">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
-            <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
-          </a-descriptions>
-          <div class="hint" style="margin-top: 8px">{{ t('detail.proxy.killSwitch') }}</div>
-          <div class="hint">{{ t('detail.proxy.hint') }}</div>
-        </a-card>
+          </a-card>
 
-        <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
+          <a-card :bordered="false" :title="t('detail.files.title')">
+            <a-upload-dragger :multiple="true" :show-upload-list="false" :custom-request="uploadFile as any" :disabled="inst.status !== 'running' || fileUploading">
+              <p class="ant-upload-drag-icon"><InboxOutlined /></p>
+              <p class="ant-upload-text">{{ fileUploading ? t('common.uploading') : t('detail.files.drop') }}</p>
+            </a-upload-dragger>
+            <div v-for="p in lastUploads" :key="p" class="muted small upload-line"><CheckOutlined /> {{ p }}</div>
+          </a-card>
 
-        <a-card size="small" :title="t('detail.settings.title')">
-          <a-alert v-if="isExternal" type="info" show-icon :message="t('devices.ext.settingsHint')" style="margin-bottom: 12px" />
-          <a-form layout="vertical" :disabled="isExternal || ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.status)">
-            <a-row :gutter="12">
-              <a-col :xs="24" :sm="8">
-                <a-form-item :label="t('devices.form.locale')">
-                  <a-select v-model:value="settingsForm.locale" show-search allow-clear :placeholder="t('common.default')" :options="LOCALES.map((l) => ({ value: l, label: l }))" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="8">
-                <a-form-item :label="t('devices.form.timezone')">
-                  <a-select v-model:value="settingsForm.timezone" show-search allow-clear :placeholder="t('common.default')" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="8">
-                <a-form-item :label="t('devices.form.deviceName')">
-                  <a-input v-model:value="settingsForm.deviceName" :placeholder="t('detail.settings.deviceNamePlaceholder')" :maxlength="40" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-space wrap>
-              <a-button v-if="!isExternal" type="primary" size="small" :loading="savingSettings" @click="saveSettings">{{ t('detail.proxy.saveApply') }}</a-button>
-              <span v-if="actual" class="hint">{{ t('detail.settings.current', { locale: actual.locale || t('detail.settings.defaultLocale'), timezone: actual.timezone ?? '', release: actual.release ?? '', model: actual.model ?? '' }) }}</span>
-            </a-space>
-          </a-form>
-        </a-card>
-
-        <a-card size="small" :title="t('detail.tasksTitle')">
-          <a-list :data-source="tasks" size="small" :locale="{ emptyText: t('detail.noTasks') }">
-            <template #renderItem="{ item }">
-              <a-list-item>
-                <a-space wrap>
-                  <a-badge :status="TASK_STATUS_BADGE[item.status as keyof typeof TASK_STATUS_BADGE]" :text="taskText(item.type)" />
-                  <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
-                </a-space>
-                <template #extra><span class="time">{{ new Date(item.createdAt).toLocaleString(dateLocale()) }}</span></template>
-              </a-list-item>
+          <a-card :bordered="false" :title="t('detail.apps.title')">
+            <template #extra>
+              <a-button size="small" :loading="appsLoading" :disabled="inst.status !== 'running'" @click="loadApps">{{ t('common.refresh') }}</a-button>
             </template>
-          </a-list>
-        </a-card>
-      </a-space>
-    </a-col>
-  </a-row>
+            <a-upload-dragger
+              accept=".apk,.apks,.xapk,.apkm,.zip"
+              :show-upload-list="false"
+              :custom-request="upload as any"
+              :disabled="inst.status !== 'running' || uploading"
+              style="margin-bottom: 12px"
+            >
+              <p class="ant-upload-drag-icon"><InboxOutlined /></p>
+              <p class="ant-upload-text">{{ uploading ? t('common.uploading') : t('detail.apps.drop') }}</p>
+            </a-upload-dragger>
+            <a-table :data-source="appsList" :columns="appColumns" row-key="package" size="small" :pagination="false" :loading="appsLoading" :scroll="{ x: 560 }"
+              :locale="{ emptyText: inst.status === 'running' ? t('detail.apps.empty') : t('detail.apps.deviceNotRunning') }">
+              <template #bodyCell="{ column, record }">
+                <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }}</template>
+                <template v-else-if="column.key === 'ops'">
+                  <a-tag v-if="record.protected">{{ t('detail.apps.platform') }}</a-tag>
+                  <a-space v-else :size="0">
+                    <a-button type="link" size="small" @click="importToLibrary(record.package)">{{ t('detail.apps.addToLibrary') }}</a-button>
+                    <a-button type="link" size="small" danger @click="uninstall(record.package)">{{ t('common.uninstall') }}</a-button>
+                  </a-space>
+                </template>
+              </template>
+            </a-table>
+          </a-card>
+
+          <a-card v-if="isExternal" :bordered="false" :title="t('detail.proxy.title')">
+            <span class="muted">{{ t('devices.ext.proxyHint') }}</span>
+          </a-card>
+          <a-card v-else :bordered="false">
+            <template #title>
+              <a-space :size="4">
+                {{ t('detail.proxy.title') }}
+                <a-tooltip :title="t('detail.proxy.killSwitch')"><QuestionCircleOutlined class="muted" /></a-tooltip>
+              </a-space>
+            </template>
+            <template #extra>
+              <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
+            </template>
+            <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
+              <a-descriptions-item :label="t('detail.proxy.current')" :span="2">
+                <a-space v-if="inst.proxy" wrap :size="4">
+                  <a-tag>{{ inst.proxy.type.toUpperCase() }}</a-tag>
+                  <span>{{ proxyLabel(inst.proxy) }}</span>
+                  <span class="muted">{{ inst.proxy.host }}:{{ inst.proxy.port }}</span>
+                  <StatusTag kind="proxy" :status="inst.proxy.status" />
+                </a-space>
+                <span v-else class="muted">{{ t('detail.proxy.none') }}</span>
+              </a-descriptions-item>
+              <a-descriptions-item v-if="inst.proxy && (inst.proxy.country || inst.proxy.city)" :label="t('detail.proxy.location')" :span="2">
+                {{ [inst.proxy.country, inst.proxy.city].filter(Boolean).join(' · ') }}
+              </a-descriptions-item>
+              <template v-if="inst.proxyStatus">
+                <a-descriptions-item :label="t('detail.proxy.egress')">
+                  <a-tag :color="inst.proxyStatus.ok ? 'success' : 'error'">{{ inst.proxyStatus.ok ? t('detail.proxy.ok') : t('detail.proxy.blocked') }}</a-tag>
+                </a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.egressIp')">{{ inst.proxyStatus.egressIp ?? '—' }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.latency')">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.dns')">{{ inst.proxyStatus.dnsOk ? t('detail.proxy.ok') : t('detail.proxy.dnsFailed') }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.checkedAt')" :span="inst.proxyStatus.error ? 1 : 2">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
+                <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
+              </template>
+            </a-descriptions>
+            <a-space v-if="auth.isAdmin" wrap style="margin-top: 12px">
+              <a-select
+                v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
+                :disabled="busy" style="width: 320px; max-width: 100%"
+                @dropdown-visible-change="(o: boolean) => o && loadFreeProxies()"
+              />
+              <a-button type="primary" :loading="proxySaving" :disabled="!proxyChoice || busy" @click="bindProxy(proxyChoice!)">{{ t('detail.proxy.bindApply') }}</a-button>
+              <a-button v-if="inst.proxy" danger :loading="proxySaving" :disabled="busy" @click="unbindProxy">{{ t('detail.proxy.unbind') }}</a-button>
+              <a-button type="link" @click="router.push('/proxies')">{{ t('detail.proxy.manage') }}</a-button>
+            </a-space>
+            <div v-else class="muted" style="margin-top: 12px">{{ t('detail.proxy.adminOnly') }}</div>
+          </a-card>
+
+          <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
+
+          <a-card :bordered="false" :title="t('detail.settings.title')">
+            <a-alert v-if="isExternal" type="info" show-icon :message="t('devices.ext.settingsHint')" style="margin-bottom: 16px" />
+            <a-form layout="vertical" :disabled="isExternal || busy">
+              <a-row :gutter="12">
+                <a-col :xs="24" :sm="8">
+                  <a-form-item :label="t('devices.form.locale')">
+                    <a-select v-model:value="settingsForm.locale" show-search allow-clear :placeholder="t('common.default')" :options="LOCALES.map((l) => ({ value: l, label: l }))" />
+                  </a-form-item>
+                </a-col>
+                <a-col :xs="24" :sm="8">
+                  <a-form-item :label="t('devices.form.timezone')">
+                    <a-select v-model:value="settingsForm.timezone" show-search allow-clear :placeholder="t('common.default')" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" />
+                  </a-form-item>
+                </a-col>
+                <a-col :xs="24" :sm="8">
+                  <a-form-item :label="t('devices.form.deviceName')">
+                    <a-input v-model:value="settingsForm.deviceName" :placeholder="t('detail.settings.deviceNamePlaceholder')" :maxlength="40" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
+              <a-space wrap>
+                <a-button v-if="!isExternal" type="primary" :loading="savingSettings" @click="saveSettings">{{ t('detail.proxy.saveApply') }}</a-button>
+                <span v-if="actual" class="muted small">{{ t('detail.settings.current', { locale: actual.locale || t('detail.settings.defaultLocale'), timezone: actual.timezone ?? '', release: actual.release ?? '', model: actual.model ?? '' }) }}</span>
+              </a-space>
+            </a-form>
+          </a-card>
+
+          <a-card :bordered="false" :title="t('detail.tasksTitle')">
+            <a-list :data-source="tasks" size="small" :locale="{ emptyText: t('detail.noTasks') }">
+              <template #renderItem="{ item }">
+                <a-list-item>
+                  <a-space wrap>
+                    <StatusTag kind="task" :status="item.status" />
+                    <span>{{ taskText(item.type) }}</span>
+                    <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
+                  </a-space>
+                  <template #extra><span class="muted small nowrap">{{ new Date(item.createdAt).toLocaleString(dateLocale()) }}</span></template>
+                </a-list-item>
+              </template>
+            </a-list>
+          </a-card>
+        </div>
+      </a-col>
+    </a-row>
+  </PageContainer>
 </template>
 
 <style scoped>
-.hint { color: var(--cp-text-tertiary); font-size: 12px; margin-top: 8px; }
-.time { color: var(--cp-text-tertiary); font-size: 12px; }
-.muted { color: var(--cp-text-tertiary); }
+.stack { display: flex; flex-direction: column; gap: var(--cp-gap); }
+.player-card :deep(.ant-card-body) { padding: 20px 12px; }
+.upload-line { margin-top: 8px; }
 </style>

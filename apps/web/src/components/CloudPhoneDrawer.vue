@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  AppstoreOutlined, CameraOutlined, CompressOutlined, ExpandOutlined, PoweroffOutlined, ReloadOutlined,
+  AppstoreOutlined, CameraOutlined, CloseOutlined, CompressOutlined, ExpandOutlined, PoweroffOutlined, ReloadOutlined,
   RotateRightOutlined, SoundOutlined, SyncOutlined, UploadOutlined, WifiOutlined, ZoomInOutlined, ZoomOutOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
@@ -214,27 +214,25 @@ const other = computed(() => [
               <a-tab-pane key="info" :tab="t('cloud.tabInfo')" />
               <a-tab-pane key="ops" :tab="t('cloud.tabOps')" />
             </a-tabs>
-            <a-button type="text" shape="circle" :aria-label="t('cloud.close')" @click="open = false">✕</a-button>
+            <a-tooltip :title="t('cloud.close')"><a-button type="text" :aria-label="t('cloud.close')" @click="open = false"><template #icon><CloseOutlined /></template></a-button></a-tooltip>
           </header>
           <div class="panel">
             <template v-if="tab === 'info'">
-              <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon style="margin-bottom: 12px" />
-              <h4>{{ t('cloud.basic') }}</h4>
-              <dl><template v-for="[k, v] in basic" :key="k"><dt>{{ k }}</dt><dd>{{ dash(v) }}</dd></template></dl>
-              <h4>{{ t('cloud.network') }}</h4>
-              <dl>
-                <template v-for="[k, v, kind] in network" :key="k">
-                  <dt>{{ k }}</dt>
-                  <dd>
-                    {{ v }}
-                    <a-tooltip v-if="kind === 'geo' && running" :title="t('cloud.recheckEgress')">
-                      <a-button type="link" size="small" :loading="checking" :aria-label="t('cloud.recheckEgress')" style="padding: 0 4px; height: auto" @click="recheckEgress"><SyncOutlined v-if="!checking" /></a-button>
-                    </a-tooltip>
-                  </dd>
-                </template>
-              </dl>
-              <h4>{{ t('cloud.other') }}</h4>
-              <dl><template v-for="[k, v] in other" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+              <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon style="margin-top: 16px" />
+              <a-descriptions :title="t('cloud.basic')" :column="1" size="small" bordered>
+                <a-descriptions-item v-for="[k, v] in basic" :key="k" :label="k">{{ dash(v) }}</a-descriptions-item>
+              </a-descriptions>
+              <a-descriptions :title="t('cloud.network')" :column="1" size="small" bordered>
+                <a-descriptions-item v-for="[k, v, kind] in network" :key="k" :label="k">
+                  {{ v }}
+                  <a-tooltip v-if="kind === 'geo' && running" :title="t('cloud.recheckEgress')">
+                    <a-button type="link" size="small" :loading="checking" :aria-label="t('cloud.recheckEgress')" style="padding: 0 4px; height: auto" @click="recheckEgress"><SyncOutlined v-if="!checking" /></a-button>
+                  </a-tooltip>
+                </a-descriptions-item>
+              </a-descriptions>
+              <a-descriptions :title="t('cloud.other')" :column="1" size="small" bordered>
+                <a-descriptions-item v-for="[k, v] in other" :key="k" :label="k">{{ v }}</a-descriptions-item>
+              </a-descriptions>
             </template>
 
             <template v-else>
@@ -252,7 +250,6 @@ const other = computed(() => [
                 <a-tooltip :title="t('detail.input.secureTip')"><a-space :size="4"><a-switch v-model:checked="secure" size="small" />{{ t('detail.input.secure') }}</a-space></a-tooltip>
                 <a-button type="primary" size="small" :disabled="!running || !text" @click="sendText">{{ t('common.send') }}</a-button>
               </a-space>
-              <div class="hint">{{ secure ? t('detail.input.secureHint') : t('detail.input.hint') }}</div>
 
               <h4>{{ t('cloud.apps') }}</h4>
               <a-space wrap>
@@ -286,8 +283,9 @@ const other = computed(() => [
 .stage.fs { background: #000; }
 .waiting { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--cp-text-secondary); }
 .fs-exit { position: absolute; top: 12px; right: 12px; z-index: 2; }
-.tools { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; background: #1f1f1f; border-radius: 10px; align-self: center; }
-.tool { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 52px; padding: 6px 0; border: 0; border-radius: 6px; background: transparent; color: #e6e6e6; font-size: 16px; cursor: pointer; }
+/* Side keys next to the phone bezel: dark in both themes, like the bezel itself (DevicePlayer). */
+.tools { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; background: #1f1f1f; border-radius: var(--cp-radius-lg); align-self: center; }
+.tool { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 52px; padding: 6px 0; border: 0; border-radius: var(--cp-radius); background: transparent; color: #e6e6e6; font-size: 16px; cursor: pointer; }
 .tool span { font-size: 11px; line-height: 1.2; }
 .tool:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
 .tool:disabled { opacity: 0.4; cursor: default; }
@@ -295,11 +293,11 @@ const other = computed(() => [
 .tool.tool-static:hover { background: transparent; }
 .net.idle { opacity: 0.4; }
 .panel { flex: 1; overflow: auto; padding: 4px 16px 24px; }
-h4 { margin: 18px 0 10px; font-size: 14px; font-weight: 600; color: var(--cp-text); }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; margin: 0; padding-bottom: 16px; border-bottom: 1px solid var(--cp-border-secondary); font-size: 13px; }
-dt { color: var(--cp-text-secondary); }
-dd { margin: 0; text-align: right; color: var(--cp-text); word-break: break-all; }
-.hint { margin-top: 6px; color: var(--cp-text-tertiary); font-size: 12px; }
+h4 { margin: 20px 0 12px; font-size: 14px; font-weight: 600; color: var(--cp-text); }
+.panel :deep(.ant-descriptions) { margin-top: 16px; }
+.panel :deep(.ant-descriptions-header) { margin-bottom: 8px; }
+.panel :deep(.ant-descriptions-item-label) { width: 120px; }
+.panel :deep(.ant-descriptions-item-content) { word-break: break-all; }
 @media (max-width: 900px) {
   .layout { flex-direction: column; min-height: 0; }
   .right { width: 100%; border-left: 0; border-top: 1px solid var(--cp-border-secondary); }

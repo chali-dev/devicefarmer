@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { message, Modal } from 'ant-design-vue'
+import { QuestionCircleOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import type { LibraryApp } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -47,9 +50,8 @@ async function setPreinstall(a: LibraryApp, v: boolean) {
 }
 
 function remove(a: LibraryApp) {
-  Modal.confirm({
-    title: t('library.confirmDelete', { name: `${a.package} ${a.versionName ?? ''}`.trim() }), content: t('library.deleteContent'), okType: 'danger',
-    okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('library.confirmDelete', { name: `${a.package} ${a.versionName ?? ''}`.trim() }), content: t('library.deleteContent'),
     onOk: async () => { try { await api('DELETE', `/api/library/${a.id}`); await load() } catch (e) { message.error(errorText(e)) } },
   })
 }
@@ -67,55 +69,55 @@ async function install() {
 }
 
 const columns = computed(() => [
-  { title: t('library.package'), dataIndex: 'package', key: 'package' },
+  { title: t('library.package'), dataIndex: 'package', key: 'package', width: 260 },
   { title: t('library.version'), key: 'version', width: 200 },
   { title: t('library.files'), key: 'files', width: 140 },
-  { title: t('library.source'), dataIndex: 'sourceInstance', key: 'source', width: 120 },
+  { title: t('library.source'), dataIndex: 'sourceInstance', key: 'source', width: 160 },
   { title: t('library.preinstall'), key: 'preinstall', width: 110 },
-  { title: '', key: 'ops', width: 160, align: 'right' as const },
+  actionColumn(170),
 ])
 </script>
 
 <template>
-  <a-card :title="t('library.title')" size="small">
-    <template #extra>
-      <a-space>
-        <a-tooltip v-if="auth.isAdmin" :title="t('library.uploadTip')">
-          <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
-            <a-button size="small" type="primary" :loading="uploading">{{ t('library.upload') }}</a-button>
-          </a-upload>
-        </a-tooltip>
-        <a-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</a-button>
-      </a-space>
+  <PageContainer>
+    <template #title-suffix>
+      <a-tooltip :title="t('library.howToBody')"><QuestionCircleOutlined class="muted" /></a-tooltip>
     </template>
-    <a-alert type="info" show-icon style="margin-bottom: 12px">
-      <template #message>{{ t('library.howTo') }}</template>
-      <template #description>{{ t('library.howToBody') }}</template>
-    </a-alert>
-    <a-table :data-source="apps" :columns="columns" row-key="id" size="middle" :loading="loading" :pagination="false" :scroll="{ x: 820 }"
-      :locale="{ emptyText: t('library.empty') }">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span class="muted">({{ record.versionCode }})</span></template>
-        <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
-        <template v-else-if="column.key === 'source'">{{ sourceText(record.sourceInstance) }}</template>
-        <template v-else-if="column.key === 'preinstall'">
-          <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
-          <span v-else>{{ record.preinstall ? t('common.yes') : '—' }}</span>
+    <template #extra>
+      <a-tooltip :title="t('common.refresh')">
+        <a-button :loading="loading" :aria-label="t('common.refresh')" @click="load"><template #icon><ReloadOutlined /></template></a-button>
+      </a-tooltip>
+      <a-tooltip v-if="auth.isAdmin" :title="t('library.uploadTip')">
+        <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
+          <a-button type="primary" :loading="uploading"><template #icon><UploadOutlined /></template>{{ t('library.upload') }}</a-button>
+        </a-upload>
+      </a-tooltip>
+    </template>
+    <a-card :bordered="false">
+      <a-table :data-source="apps" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :pagination="pagination({ defaultPageSize: 50 })" :scroll="{ x: 1040 }"
+        :locale="{ emptyText: t('library.empty') }">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'package'"><span class="mono">{{ record.package }}</span></template>
+          <template v-else-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span class="muted">({{ record.versionCode }})</span></template>
+          <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
+          <template v-else-if="column.key === 'source'">{{ sourceText(record.sourceInstance) }}</template>
+          <template v-else-if="column.key === 'preinstall'">
+            <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
+            <span v-else>{{ record.preinstall ? t('common.yes') : '—' }}</span>
+          </template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button type="link" size="small" @click="target = record; targetIds = []">{{ t('library.installTo') }}</a-button>
+              <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
+            </a-space>
+          </template>
         </template>
-        <template v-else-if="column.key === 'ops'">
-          <a-button type="link" size="small" @click="target = record; targetIds = []">{{ t('library.installTo') }}</a-button>
-          <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
-        </template>
-      </template>
-    </a-table>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 
-  <a-modal :open="!!target" :title="t('library.installTitle', { pkg: target?.package ?? '' })" :ok-text="t('common.install')" :cancel-text="t('common.cancel')" @ok="install" @cancel="target = null">
+  <a-modal :open="!!target" :width="MODAL_WIDTH.sm" :title="t('library.installTitle', { pkg: target?.package ?? '' })" :ok-text="t('common.install')" :cancel-text="t('common.cancel')" :ok-button-props="{ disabled: !targetIds.length }" @ok="install" @cancel="target = null">
     <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" :placeholder="t('library.pickRunning')"
       :options="store.list.filter((i) => i.status === 'running').map((i) => ({ value: i.id, label: i.name }))" />
   </a-modal>
 </template>
-
-<style scoped>
-.muted { color: var(--cp-text-tertiary); }
-</style>

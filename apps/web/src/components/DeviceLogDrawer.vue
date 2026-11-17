@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { dateLocale } from '../i18n'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { TASK_STATUS_COLOR, taskStatusText, taskText, type Instance, type Task } from '../api/types'
+import { taskText, type Instance, type Task } from '../api/types'
+import StatusTag from './common/StatusTag.vue'
+import { DRAWER_WIDTH, pagination } from './common/ui'
 import { useInstancesStore } from '../stores/instances'
 
 /** Per-device log: task history (live) and Android logcat on demand. */
@@ -44,7 +47,7 @@ function operator(task: Task) {
 const taskColumns = computed(() => [
   { title: t('common.time'), key: 'time', width: 160 },
   { title: t('common.action'), key: 'type', width: 130 },
-  { title: t('common.status'), key: 'status', width: 80 },
+  { title: t('common.status'), key: 'status', width: 90 },
   { title: t('common.operator'), key: 'by', width: 100 },
   { title: t('common.error'), key: 'error' },
 ])
@@ -85,17 +88,17 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
 </script>
 
 <template>
-  <a-drawer v-model:open="open" :width="720" :title="t('logs.title', { name: instance?.name ?? '' })" destroy-on-close>
+  <a-drawer v-model:open="open" :width="DRAWER_WIDTH.lg" :title="t('logs.title', { name: instance?.name ?? '' })" destroy-on-close>
     <a-tabs v-model:active-key="tab">
       <a-tab-pane key="tasks" :tab="t('logs.tasks')">
         <a-alert v-if="tasksError" type="error" :message="tasksError" show-icon style="margin-bottom: 12px" />
-        <a-table :data-source="taskRows" :columns="taskColumns" row-key="id" size="small" :loading="tasksLoading"
-          :pagination="{ pageSize: 20, size: 'small', hideOnSinglePage: true }" :locale="{ emptyText: t('logs.noTasks') }">
+        <a-table :data-source="taskRows" :columns="taskColumns" row-key="id" size="small" :loading="tasksLoading" :scroll="{ x: 640 }"
+          :pagination="pagination({ defaultPageSize: 20, hideOnSinglePage: true })" :locale="{ emptyText: t('logs.noTasks') }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
             <template v-else-if="column.key === 'type'">{{ taskText(record.type) }}</template>
             <template v-else-if="column.key === 'status'">
-              <a-tag :color="TASK_STATUS_COLOR[record.status as Task['status']]">{{ taskStatusText(record.status) }}</a-tag>
+              <StatusTag kind="task" :status="record.status" />
             </template>
             <template v-else-if="column.key === 'by'">{{ operator(record as Task) }}</template>
             <template v-else-if="column.key === 'error'">
@@ -107,14 +110,16 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
       <a-tab-pane key="logcat" :tab="t('logs.logcat')">
         <a-space wrap style="margin-bottom: 12px">
           <a-select v-model:value="level" :options="LEVELS" style="width: 100px" @change="loadLogcat" />
-          <a-input-search v-model:value="keyword" :placeholder="t('logs.keyword')" allow-clear style="width: 220px" @search="loadLogcat" />
-          <a-button :loading="logLoading" @click="loadLogcat">{{ t('common.refresh') }}</a-button>
-          <span class="count">{{ t('logs.lines', { n: lines.length }) }}</span>
+          <a-input-search v-model:value="keyword" :placeholder="t('logs.keyword')" allow-clear style="width: 220px; max-width: 100%" @search="loadLogcat" />
+          <a-tooltip :title="t('common.refresh')">
+            <a-button :loading="logLoading" :aria-label="t('common.refresh')" @click="loadLogcat"><template #icon><ReloadOutlined /></template></a-button>
+          </a-tooltip>
+          <span class="muted small">{{ t('logs.lines', { n: lines.length }) }}</span>
         </a-space>
         <a-alert v-if="logError" type="error" :message="logError" show-icon style="margin-bottom: 12px" />
         <a-spin :spinning="logLoading">
-          <div class="logcat">
-            <div v-if="!lines.length" class="empty">{{ logLoaded ? t('logs.noMatch') : '' }}</div>
+          <div class="logcat mono">
+            <div v-if="!lines.length" class="empty muted">{{ logLoaded ? t('logs.noMatch') : '' }}</div>
             <div v-for="(l, i) in lines" :key="i" :class="['line', `lv-${lineLevel(l)}`]">{{ l }}</div>
           </div>
         </a-spin>
@@ -125,23 +130,12 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
 
 <style scoped>
 .logcat {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--cp-fill-alter);
-  border: 1px solid var(--cp-border-secondary);
-  border-radius: 6px;
-  padding: 8px;
-  height: calc(100vh - 230px);
-  min-height: 240px;
-  overflow: auto;
+  font-size: 12px; line-height: 1.5; padding: 8px; overflow: auto;
+  height: calc(100vh - 230px); min-height: 240px;
+  background: var(--cp-fill-alter); border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius);
 }
 .line { white-space: pre-wrap; word-break: break-all; }
-/* Dark red / orange on light backgrounds; lighter tints (red-4 / orange-5) on dark ones. */
-.lv-E, .lv-F { color: #cf1322; }
-.lv-W { color: #d46b08; }
-:root[data-theme='dark'] .lv-E, :root[data-theme='dark'] .lv-F { color: #ff7875; }
-:root[data-theme='dark'] .lv-W { color: #ffa940; }
-.empty { color: var(--cp-text-tertiary); padding: 16px; text-align: center; }
-.count { color: var(--cp-text-tertiary); font-size: 12px; }
+.lv-E, .lv-F { color: var(--cp-error); }
+.lv-W { color: var(--cp-warning); }
+.empty { padding: 16px; text-align: center; }
 </style>
