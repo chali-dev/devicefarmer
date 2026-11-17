@@ -11,6 +11,8 @@
  *   (two "立即" ones). The demo accounts have no device and no platform connection, so the publish method is
  *   manual and every run fails the "account linked to a device" precheck (publish.no_device) when it fires:
  *   no platform API is called and nothing is posted. One (content, account) pair is created once (any status).
+ * - 发布目标: default target accounts on a few contents (same 媒体矩阵 accounts; set when they differ), and 账号人设 from
+ *   these personas on three of those accounts (so 插入话术 defaults to the first target's persona).
  * - var/demo-content-state.json remembers what this script created; --clean removes exactly that
  *   (matched by id AND the exact demo name); demo-user is kept unless --drop-user is also given (and only if this
  *   script created it), because other demo seeds may use demo-user too and deleting a user cascades its data.
@@ -129,6 +131,17 @@ export const CONTENTS: ContentSpec[] = [
  * time of the seeding host) at `at` (HH:mm); `inMin` = minutes from now ('now' tasks run at once).
  */
 export interface PublishSpec { content: string; account: string; postType: 'feed' | 'reel' | 'story'; day?: number; at?: string; inMin?: number }
+/** 发布目标 (default target accounts) per content title; demo-user's fitness content targets its 健身教练 accounts. */
+export const TARGETS: Record<string, string[]> = {
+  'demo 新品咖啡上市': ['demo.wanderlust.lena', 'demo.minimal.closet', 'demo.brand.backup'],
+  'demo 夏日海边合集': ['demo.wanderlust.lena', 'demo.island.hopper'],
+  'demo 健身打卡第1天': ['demo.fit.with.mia', 'demo.yoga.daily', 'demo.run.club.sh'],
+  'demo 跑步vlog': ['demo.fit.with.mia', 'demo.run.club.sh'],
+};
+
+/** 账号人设 from this script's personas (the 媒体矩阵 seed sets its own on other accounts). */
+export const ACCOUNT_PERSONAS: Record<string, string> = { 'demo.wanderlust.lena': '品牌官方', 'demo.tokyo.bites': 'Barista Lily', 'demo.cozy.home': '旅行博主' };
+
 export const PUBLISHES: PublishSpec[] = [
   { content: 'demo 新品咖啡上市', account: 'demo.wanderlust.lena', postType: 'feed', day: 1, at: '10:00' },
   { content: 'demo 双十一预热', account: 'demo.wanderlust.lena', postType: 'story', day: 1, at: '20:30' },
@@ -392,12 +405,34 @@ async function seed() {
     published += r.created.length;
   }
   saveState(st);
+
+  // 发布目标 (default targets; only when the 媒体矩阵 accounts exist)
+  let targeted = 0;
+  for (const [title, handles] of Object.entries(TARGETS)) {
+    const spec = CONTENTS.find((c) => c.title === title)!;
+    const ids = handles.map((h) => accs[spec.owner].find((a) => a.handle === h && a.platform === 'instagram' && (spec.owner === 'user' || a.userId !== U.id))?.id);
+    const contentId = contentIds.get(title);
+    if (!contentId || ids.some((x) => !x)) continue;
+    const cur = must(await http('GET', `/api/contents/${contentId}`, tok(spec.owner)), `content ${title}`).content;
+    targeted++;
+    if ((cur.targets ?? []).map((x: any) => x.id).join() === ids.join()) continue;
+    note(true);
+    must(await http('PUT', `/api/contents/${contentId}`, tok(spec.owner), { targetIds: ids }), `targets ${title}`);
+  }
+  for (const [handle, name] of Object.entries(ACCOUNT_PERSONAS)) {
+    const owner = PERSONAS.find((x) => x.name === name)!.owner === 'user' ? 'user' : 'admin';
+    const acc = accs[owner].find((a) => a.handle === handle && a.platform === 'instagram' && (owner === 'user' || a.userId !== U.id));
+    if (!acc || acc.personaId === personaIds.get(name)) continue;
+    note(true);
+    must(await http('PUT', `/api/social/accounts/${acc.id}`, tok(owner), { personaId: personaIds.get(name) }), `persona ${handle}`);
+  }
   if (skipped) console.log(`! ${skipped} demo publish tasks skipped: the 媒体矩阵 demo accounts are missing (run scripts/demo-seed-matrix.ts first)`);
 
   console.log(`\nseed done: ${counts.created} created, ${counts.existing} already present`);
   console.log(`  categories ${CATEGORIES.length} · media ${MEDIA.length} (public ${MEDIA.filter((m) => m.owner === 'public').length}, admin private ${MEDIA.filter((m) => m.owner === 'admin').length}, ${DEMO_USER} private ${MEDIA.filter((m) => m.owner === 'user').length})`);
   console.log(`  personas ${PERSONAS.length} (public ${PERSONAS.filter((x) => x.owner === 'public').length}, admin ${PERSONAS.filter((x) => x.owner === 'admin').length}, ${DEMO_USER} ${PERSONAS.filter((x) => x.owner === 'user').length})`);
   console.log(`  templates ${TEMPLATES.length} (shared ${TEMPLATES.filter((t) => t.owner === 'shared').length}, admin ${TEMPLATES.filter((t) => t.owner === 'admin').length}, ${DEMO_USER} ${TEMPLATES.filter((t) => t.owner === 'user').length}) · contents ${CONTENTS.length} (admin ${CONTENTS.filter((c) => c.owner === 'admin').length}, ${DEMO_USER} ${CONTENTS.filter((c) => c.owner === 'user').length}) · translations ${CONTENTS.reduce((n, c) => n + (c.translations?.length ?? 0), 0)}`);
+  console.log(`  publish targets on ${targeted}/${Object.keys(TARGETS).length} contents`);
   console.log(`  publish tasks ${PUBLISHES.length - skipped}/${PUBLISHES.length} (${published} created now; manual method, no device → they fail publish.no_device when due, nothing is posted)`);
   console.log(`  ${DEMO_USER} credentials: ${path.relative(process.cwd(), CRED_FILE)}`);
 }

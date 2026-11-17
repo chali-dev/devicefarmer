@@ -253,6 +253,9 @@ export interface SocialAccount {
   externalId: string | null
   groupId: string | null
   groupName: string | null
+  /** 账号人设 */
+  personaId: string | null
+  personaName: string | null
   tags: string[]
   instanceId: string | null
   instance: { id: string; name: string; status: string; accessible: boolean } | null
@@ -393,7 +396,13 @@ export interface Content {
   tags: string[]; media: ContentMedia[]; publishCounts: Partial<Record<PublishStatus, number>>
   /** Source language (BCP-47) and the languages that have a translation. */
   lang: string | null; translations: string[]
+  /** 发布目标: the content's default target accounts, in order. */
+  targets: ContentTarget[]
   createdAt: string; updatedAt: string
+}
+export interface ContentTarget {
+  id: string; platform: string; handle: string; displayName: string | null; personaId: string | null; groupId: string | null
+  instance: { id: string; name: string } | null
 }
 /** 多语言内容: a human-written version of a content in another language (text fields only). */
 export interface ContentTranslation {
@@ -516,7 +525,8 @@ export interface CommentItem {
   id: string; userId: string; accountId: string; platform: string; source: 'api' | 'manual'; externalId: string; parentExternalId: string | null
   externalPostId: string | null; postUrl: string | null; publishTaskId: string | null; authorName: string | null; authorHandle: string | null; text: string
   likeCount: number | null; replyCount: number | null; publishedAt: string | null; fetchedAt: string; status: CommentStatus; createdAt: string
-  account: { id: string; handle: string; platform: string } | null
+  /** personaId = 账号人设 (default persona filter of the reply templates). */
+  account: { id: string; handle: string; platform: string; personaId: string | null } | null
   publishTask: { id: string; url: string | null; title: string | null } | null
   reply: CommentReplySummary | null
   children?: CommentItem[]

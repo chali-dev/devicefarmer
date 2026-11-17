@@ -10,15 +10,18 @@ import { api, codeText, errorText } from '../api/client'
 import { langName } from '../api/lang'
 import {
   CONTENT_STATUSES, PUBLISH_UNFINISHED,
-  type Content, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PublishTaskItem,
+  type Content, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PostType, type PublishTaskItem,
+  type SocialAccount,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
+import PhonePreview from '../components/content/PhonePreview.vue'
 import PlatformTextTabs, { type TextTab } from '../components/content/PlatformTextTabs.vue'
 import TemplateInsert from '../components/content/TemplateInsert.vue'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
@@ -91,9 +94,14 @@ const editorTasks = ref<PublishTaskItem[]>([])
 type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
   title: '', category: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[], ownerId: undefined as string | undefined,
-  texts: {} as Record<string, string>, hints: {} as Hints,
+  texts: {} as Record<string, string>, hints: {} as Hints, targets: [] as string[],
 })
 const pickerOpen = ref(false)
+/** 发布目标: accounts of the content's owner (admins pick the owner when creating; it defaults to themselves). */
+const targetOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth.user?.id)
+const targetAccounts = ref<SocialAccount[]>([])
+const firstTarget = computed(() => targetAccounts.value[0] ?? null)
+const previewType = ref<PostType>('feed')
 
 /**
  * 平台文案 tabs: one text box per enabled platform. The first tab is the body (the text every platform uses);
@@ -182,7 +190,8 @@ function fillForm(c: Content | null) {
   hints.youtube ??= {}
   sourceLang.value = c ? (c.lang ?? undefined) : (langCfg.value.defaultSource ?? undefined)
   Object.assign(form, {
-    title: c?.title ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])], ownerId: undefined,
+    title: c?.title ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
+    ownerId: !c && auth.isAdmin ? auth.user?.id : undefined, targets: (c?.targets ?? []).map((x) => x.id),
     texts: splitTexts(c?.body ?? '', hints), hints,
   })
 }
@@ -221,6 +230,11 @@ function insertTemplate(text: string, replace: boolean) {
   const cur = texts[textTab.value] ?? ''
   texts[textTab.value] = replace || !cur.trim() ? text : `${cur.replace(/\s+$/, '')}\n\n${text}`
 }
+/** Phone preview text: the active language + platform tab (an empty platform tab falls back to the body). */
+const previewText = computed(() => {
+  const texts = currentTr.value?.texts ?? form.texts
+  return texts[textTab.value]?.trim() ? texts[textTab.value]! : texts[primary.value] ?? ''
+})
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
 async function save(stage: 'draft' | 'ready') {
@@ -232,6 +246,7 @@ async function save(stage: 'draft' | 'ready') {
     const { body: text, platformHints } = joinTexts(form.texts, form.hints)
     const body = {
       title: form.title.trim(), body: text, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
+      targetIds: form.targets,
       lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
     let id = editing.value?.id
@@ -239,7 +254,7 @@ async function save(stage: 'draft' | 'ready') {
       // Removed versions first, so the original language may move to a language whose version was just removed.
       for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${id}/translations/${lang}`)
       await api('PUT', `/api/contents/${id}`, body)
-    } else id = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })).content.id
+    } else id = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId && form.ownerId !== auth.user?.id ? { ownerId: form.ownerId } : {}) })).content.id
     for (const f of trs.value) {
       const b = trBody(f)
       if (trOrig.value[f.lang] !== stable(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
@@ -342,7 +357,9 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
     </a-card>
   </PageContainer>
 
-  <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg" destroy-on-close>
+  <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg + 360" destroy-on-close>
+    <a-row :gutter="24">
+    <a-col :xs="24" :lg="15">
     <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
       <a-tab-pane :key="SRC" :closable="false">
         <template #tab>{{ sourceLang ? langName(sourceLang) : t('content.lang.source') }}<a-tag v-if="sourceLang" class="src-tag">{{ t('content.lang.source') }}</a-tag></template>
@@ -366,7 +383,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="trTabs" :values="currentTr.texts">
-          <template #extra><TemplateInsert @insert="insertTemplate" /></template>
+          <template #extra><TemplateInsert :default-persona-id="firstTarget?.personaId" @insert="insertTemplate" /></template>
           <template #default="{ tab }">
             <a-form-item v-if="tab.key === 'youtube'" :label="t('content.ytTitle')" class="tab-field">
               <a-input v-model:value="currentTr.hints.youtube!.title" :maxlength="100" show-count :placeholder="form.hints.youtube?.title || currentTr.title || form.title" />
@@ -378,14 +395,17 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 
     <a-form v-show="!currentTr" layout="vertical">
       <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
-        <a-select v-model:value="form.ownerId" allow-clear show-search option-filter-prop="label" :placeholder="t('content.ownerSelf')" :options="users.map((u) => ({ value: u.id, label: u.username }))" />
+        <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []" />
+      </a-form-item>
+      <a-form-item :label="t('content.targets.label')">
+        <ContentTargetPicker v-model="form.targets" :owner-id="targetOwner" @accounts="(a: SocialAccount[]) => (targetAccounts = a)" />
       </a-form-item>
       <a-form-item :label="t('content.fieldTitle')" required>
         <a-input v-model:value="form.title" :maxlength="200" show-count />
       </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="sourceTabs" :values="form.texts">
-          <template #extra><TemplateInsert @insert="insertTemplate" /></template>
+          <template #extra><TemplateInsert :default-persona-id="firstTarget?.personaId" @insert="insertTemplate" /></template>
           <template #default="{ tab }">
             <a-row v-if="tab.key === 'youtube'" :gutter="12" class="tab-field">
               <a-col :xs="24" :sm="16">
@@ -443,6 +463,11 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         </template>
       </a-list>
     </template>
+    </a-col>
+    <a-col :xs="24" :lg="9">
+      <div class="preview-col"><PhonePreview v-model:mode="previewType" :media="form.media" :text="previewText" :handle="firstTarget?.handle ?? null" /></div>
+    </a-col>
+    </a-row>
 
     <template #footer>
       <a-button @click="editorOpen = false">{{ t('common.cancel') }}</a-button>
@@ -465,4 +490,5 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
 .lang-tabs { margin-bottom: 12px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
+.preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 </style>

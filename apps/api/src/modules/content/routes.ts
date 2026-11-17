@@ -8,7 +8,8 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { distribute } from '../publish/publish.js';
 import { toPublishItems } from '../publish/routes.js';
 import {
-  assertNoUnfinishedPublish, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, toContentItems, visibleContent,
+  assertNoUnfinishedPublish, assertTargetAccounts, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, setContentTargets,
+  toContentItems, visibleContent,
 } from './content.js';
 import { getLanguageSettings, Lang, publicTranslation, translationsOf } from './languages.js';
 
@@ -44,6 +45,8 @@ const Editable = {
   category: optText(50),
   tags: Tags.optional(),
   mediaIds: z.array(z.string().uuid()).max(20).optional(),
+  /** 发布目标: the owner's accounts, in order (concrete ids; group/persona picks are expanded by the client). */
+  targetIds: z.array(z.string().uuid()).max(50).optional(),
   platformHints: Hints.optional(),
   stage: z.enum(['draft', 'ready', 'archived']).optional(),
 };
@@ -130,6 +133,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const b = req.body;
     const owner = await resolveOwner(req.user, b.ownerId);
     const media = await assertUsableMedia(req.user, owner, b.mediaIds ?? []);
+    const targets = await assertTargetAccounts(req.user, owner.id, b.targetIds ?? []);
     const stage = b.stage ?? 'draft';
     if (stage === 'archived') throw badRequest('新内容不能直接归档', 'content.bad_stage');
     const row = await db.transaction(async (tx) => {
@@ -140,6 +144,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       }).returning();
       await setContentMedia(tx, r!.id, media.map((m) => m.id));
       await setContentTags(tx, r!.id, b.tags ?? []);
+      await setContentTargets(tx, r!.id, targets);
       return r!;
     });
     if (req.audit) req.audit.extra = { id: row.id, media: media.length };
@@ -157,6 +162,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const cur = await visibleContent(req.user, req.params.id);
     const b = req.body;
     const media = b.mediaIds ? await assertUsableMedia(req.user, await ownerOf(cur.userId), b.mediaIds) : null;
+    const targets = b.targetIds ? await assertTargetAccounts(req.user, cur.userId, b.targetIds) : null;
     await db.transaction(async (tx) => {
       const locked = await visibleContent(req.user, cur.id, tx, true);
       const set: Partial<typeof c.$inferInsert> = {};
@@ -180,6 +186,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       await tx.update(c).set(set).where(eq(c.id, cur.id));
       if (media) await setContentMedia(tx, cur.id, media.map((m) => m.id));
       if (b.tags) await setContentTags(tx, cur.id, b.tags);
+      if (targets) await setContentTargets(tx, cur.id, targets);
       await refreshContentStatus(cur.id, tx);
     });
     const [row] = await db.select().from(c).where(eq(c.id, cur.id));

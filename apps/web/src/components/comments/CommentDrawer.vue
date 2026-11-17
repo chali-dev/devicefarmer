@@ -32,6 +32,11 @@ const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) 
 const DONE = ['failed', 'rejected', 'cancelled']
 
 const form = reactive({ text: '', templateId: undefined as string | undefined, at: null as Dayjs | null })
+/** Template persona filter; defaults to the comment account's persona (账号人设) when templates use it. */
+const persona = ref<string | undefined>()
+const personas = computed(() => [...new Map(props.templates.flatMap((x) => (x.persona ? [[x.persona.id, x.persona] as const] : []))).values()]
+  .sort((a, b) => a.name.localeCompare(b.name)))
+const shownTemplates = computed(() => props.templates.filter((x) => !persona.value || x.personaId === persona.value || x.id === form.templateId))
 const review = reactive({ note: '', reason: '' })
 const outcome = reactive({ result: 'sent' as 'sent' | 'failed', reason: '', externalReplyId: '' })
 
@@ -46,6 +51,8 @@ async function load() {
     form.text = a?.status === 'draft' || (a?.status === 'pending_review' && a.canEdit) ? a.text : ''
     form.templateId = a?.templateId ?? undefined
     form.at = null
+    const pid = r.comment.account?.personaId
+    persona.value = pid && personas.value.some((p) => p.id === pid) ? pid : undefined
     Object.assign(review, { note: '', reason: '' })
     Object.assign(outcome, { result: 'sent', reason: '', externalReplyId: '' })
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
@@ -140,9 +147,13 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
         <template v-if="editing">
           <a-form layout="vertical">
             <a-form-item :label="t('comments.template')">
-              <a-select v-model:value="form.templateId" allow-clear :placeholder="t('comments.noTemplate')" @change="(v: any) => pickTemplate(v as string | undefined)">
-                <a-select-option v-for="x in templates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.persona" class="muted small"> · {{ x.persona.name }}</span><span v-if="x.shared" class="muted small"> · {{ t('scripts.public') }}</span></a-select-option>
-              </a-select>
+              <div class="tpl-row">
+                <a-select v-if="personas.length" v-model:value="persona" allow-clear :placeholder="t('scripts.persona')" class="tpl-persona"
+                  :options="personas.map((p) => ({ value: p.id, label: p.name }))" />
+                <a-select v-model:value="form.templateId" allow-clear :placeholder="t('comments.noTemplate')" class="tpl-pick" @change="(v: any) => pickTemplate(v as string | undefined)">
+                  <a-select-option v-for="x in shownTemplates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.persona" class="muted small"> · {{ x.persona.name }}</span><span v-if="x.shared" class="muted small"> · {{ t('scripts.public') }}</span></a-select-option>
+                </a-select>
+              </div>
             </a-form-item>
             <a-form-item :label="t('comments.replyText')" required>
               <a-textarea v-model:value="form.text" :auto-size="{ minRows: 3, maxRows: 10 }" :maxlength="5000" show-count />
@@ -249,5 +260,8 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 .err { color: var(--cp-error); font-size: 12px; }
 .box { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); background: var(--cp-fill-alter); padding: 12px; margin-top: 12px; }
 .gap { margin-bottom: 12px; }
+.tpl-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.tpl-persona { width: 160px; }
+.tpl-pick { flex: 1; min-width: 200px; }
 .hist { border-bottom: 1px solid var(--cp-border-secondary); padding: 6px 0; }
 </style>
