@@ -258,6 +258,8 @@ export interface SocialAccount {
   instance: { id: string; name: string; status: string; accessible: boolean } | null
   /** Derived from the device's pool proxy (non-secret fields). */
   proxy: InstanceProxy | null
+  /** Measured egress of the linked device (only with a grant on it). */
+  egress: { ip: string | null; country: string | null; region: string | null; city: string | null; checkedAt: string } | null
   loginStatus: SocialLoginStatus
   accountStatus: SocialAccountStatus
   notes: string | null

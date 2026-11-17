@@ -5,6 +5,11 @@ export function langName(code: string): string {
   try { return new Intl.DisplayNames([dateLocale()], { type: 'language' }).of(code) ?? code } catch { return code }
 }
 
+/** Display name of an ISO 3166 country/region code in the UI language (e.g. "IN" → "印度" / "India"); falls back to the code. */
+export function countryName(code: string): string {
+  try { return new Intl.DisplayNames([dateLocale()], { type: 'region' }).of(code.toUpperCase()) ?? code } catch { return code }
+}
+
 /** Canonical BCP-47 form (zh-cn → zh-CN), or null when invalid. */
 export function canonicalLang(code: string): string | null {
   if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(code.trim())) return null

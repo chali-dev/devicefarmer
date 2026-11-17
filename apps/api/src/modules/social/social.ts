@@ -185,6 +185,8 @@ export interface SocialAccountItem extends SocialAccount {
   instance: { id: string; name: string; status: string; accessible: boolean } | null;
   /** Egress proxy, derived from the device's pool binding (non-secret fields only). */
   proxy: InstanceProxyView | null;
+  /** Measured egress of the linked device (country/region/city/IP from its proxy status); viewers with a grant only. */
+  egress: { ip: string | null; country: string | null; region: string | null; city: string | null; checkedAt: string } | null;
   exception: boolean;
 }
 
@@ -198,7 +200,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
     db.select({ id: schema.socialAccountGroups.id, name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups)
       .where(inArray(schema.socialAccountGroups.id, idsOf(rows.map((r) => r.groupId)))),
-    db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId })
+    db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId, proxyStatus: schema.instances.proxyStatus })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(rows.map((r) => r.instanceId)))),
     accessibleInstanceIds(user),
   ]);
@@ -213,6 +215,9 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
       tags: tags.get(r.id) ?? [],
       instance: inst ? { id: inst.id, name: inst.name, status: inst.status, accessible: canSee(inst.id) } : null,
       proxy: inst?.proxyId && canSee(inst.id) ? proxies.get(inst.proxyId) ?? null : null,
+      egress: inst?.proxyStatus && canSee(inst.id)
+        ? { ip: inst.proxyStatus.egressIp, country: inst.proxyStatus.country ?? null, region: inst.proxyStatus.region ?? null, city: inst.proxyStatus.city ?? null, checkedAt: inst.proxyStatus.checkedAt }
+        : null,
       exception: isException(r),
     };
   });

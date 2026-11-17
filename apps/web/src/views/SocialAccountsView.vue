@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { countryName } from '../api/lang'
 import { dateLocale } from '../i18n'
 import { ExclamationCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
@@ -10,7 +11,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
-  proxyLabel, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
+  SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialGroup, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -111,7 +112,7 @@ const columns = computed(() => [
   { title: t('social.colGroup'), key: 'group', width: 110 },
   { title: t('social.colTags'), key: 'tags', width: 160 },
   { title: t('social.colDevice'), key: 'device', width: 140 },
-  { title: t('social.colProxy'), key: 'proxy', width: 170 },
+  { title: t('social.colCountry'), key: 'proxy', width: 140 },
   { title: t('social.colLogin'), key: 'login', width: 120 },
   { title: t('social.colAccount'), key: 'account', width: 120 },
   { title: t('social.colChecked'), key: 'checked', width: 160 },
@@ -384,11 +385,12 @@ const groupColumns = computed(() => [
             <span v-else class="muted">{{ t('social.notLinked') }}</span>
           </template>
           <template v-else-if="column.key === 'proxy'">
-            <template v-if="record.proxy">
-              <div>{{ proxyLabel(record.proxy) }}</div>
-              <div class="muted small">{{ [record.proxy.country, record.proxy.city].filter(Boolean).join(' · ') || `${record.proxy.host}:${record.proxy.port}` }}</div>
-            </template>
-            <a-tooltip v-else-if="record.instance" :title="t('social.proxyDirectHint')"><span class="muted">{{ t('social.proxyDirect') }}</span></a-tooltip>
+            <!-- Country of the linked device's measured egress; before a measurement, the proxy's configured country (marked). -->
+            <a-tooltip v-if="record.egress?.country"
+              :title="[[record.egress.region, record.egress.city].filter(Boolean).join(' · '), record.egress.ip].filter(Boolean).join(' · ')">
+              <span>{{ countryName(record.egress.country) }} <span class="muted">({{ record.egress.country }})</span></span>
+            </a-tooltip>
+            <span v-else-if="record.proxy?.country">{{ countryName(record.proxy.country) }} <span class="muted small">{{ t('social.countryConfigured') }}</span></span>
             <span v-else class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'login'">
