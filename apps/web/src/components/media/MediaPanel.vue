@@ -136,13 +136,23 @@ const selectedItems = computed(() => items.value.filter((i) => selected.value.in
 function toggle(id: string, on: boolean) { selected.value = on ? [...new Set([...selected.value, id])] : selected.value.filter((x) => x !== id) }
 const allChecked = computed(() => items.value.length > 0 && selected.value.length === items.value.length)
 
-function batchDelete() {
+/** Warning line when assets are used by contents (deleting drops them from those contents); '' otherwise. */
+async function usageWarning(ids: string[]): Promise<string> {
+  try {
+    const { usage } = await api<{ usage: Record<string, number> }>('GET', `/api/media/usage?ids=${ids.join(',')}`)
+    const n = Object.values(usage).reduce((a, b) => a + b, 0)
+    return n ? ` ${t('media.usedByContents', { n })}` : ''
+  } catch { return '' } // the warning is advisory: never block the delete dialog
+}
+
+async function batchDelete() {
   const ok = selectedItems.value.filter((i) => i.canManage)
   if (!ok.length) { message.warning(t('media.noPermitted')); return }
   const skip = selectedItems.value.length - ok.length
+  const used = await usageWarning(ok.map((i) => i.id))
   confirmDanger({
     title: t('media.batchDeleteConfirm', { n: ok.length }),
-    content: `${t('media.deleteContent')}${skip ? ` ${t('media.batchDeleteSkip', { n: skip })}` : ''}`,
+    content: `${t('media.deleteContent')}${used}${skip ? ` ${t('media.batchDeleteSkip', { n: skip })}` : ''}`,
     onOk: async () => {
       try {
         const r = await api<{ results: { id: string; ok: boolean; error?: string; code?: string; params?: Record<string, string | number> }[]; deleted: number; failed: number }>(
@@ -166,9 +176,10 @@ async function toggleFavorite(m: MediaItem) {
   } catch (e) { message.error(errMsg(e)) }
 }
 
-function remove(m: MediaItem) {
+async function remove(m: MediaItem) {
+  const used = await usageWarning([m.id])
   confirmDanger({
-    title: t('media.confirmDelete', { name: m.name }), content: t('media.deleteContent'),
+    title: t('media.confirmDelete', { name: m.name }), content: `${t('media.deleteContent')}${used}`,
     onOk: async () => {
       try {
         await api('DELETE', `/api/media/${m.id}`)

@@ -610,6 +610,7 @@ const en: Messages = {
     noPermitted: 'You may not delete any of the selected items',
     confirmDelete: 'Delete {name}?',
     deleteContent: 'The stored file and thumbnail are deleted too; files already pushed to devices are not affected.',
+    usedByContents: 'Note: used by {n} content item(s); deleting removes it from them.',
     editTitle: 'Edit media',
     nameRequired: 'Name is required',
     tagTooLong: 'Each tag can have at most 32 characters',

@@ -302,6 +302,21 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     return { item: (await toItems(req.user, [await getVisibleMedia(req.user, a.id)]))[0] };
   });
 
+  /**
+   * Contents that reference each asset (shown before deleting: deleting drops the asset from them).
+   * Only assets the caller may delete are counted (admins: all; users: their own private media).
+   */
+  app.get('/api/media/usage', {
+    schema: { querystring: z.object({ ids: z.string().transform((s) => [...new Set(s.split(',').filter(Boolean))]).pipe(z.array(z.string().uuid()).min(1).max(100)) }) },
+  }, async (req) => {
+    const ma = schema.mediaAssets, cm = schema.contentMedia;
+    const rows = await db.select({ id: cm.assetId, contents: sql<number>`count(*)::int` }).from(cm)
+      .innerJoin(ma, eq(ma.id, cm.assetId))
+      .where(and(inArray(cm.assetId, req.query.ids), isAdmin(req.user) ? undefined : and(eq(ma.ownerType, 'user'), eq(ma.ownerId, req.user.id))))
+      .groupBy(cm.assetId);
+    return { usage: Object.fromEntries(rows.map((r) => [r.id, r.contents])) as Record<string, number> };
+  });
+
   app.delete('/api/media/:id', { schema: { params: Id } }, async (req, reply) => {
     const a = await getVisibleMedia(req.user, req.params.id);
     await deleteMedia(req.user, a);

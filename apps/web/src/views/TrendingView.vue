@@ -36,7 +36,8 @@ async function load() {
 }
 onMounted(load)
 
-const regionOptions = computed(() => [...new Set([...(data.value?.settings.regions ?? []), ...(data.value?.regions ?? []).map((r) => r.region)])])
+// No region chips while trending is unavailable for the platform scope (configured regions are kept for later).
+const regionOptions = computed(() => (data.value?.notice === 'trending.unavailable' ? [] : [...new Set([...(data.value?.settings.regions ?? []), ...(data.value?.regions ?? []).map((r) => r.region)])]))
 function pickRegion(r: string) { filters.region = r; filters.snapshotId = undefined; void load() }
 const items = computed(() => (data.value?.items ?? []).filter((x) => (!filters.onlyNew || x.isNew) && (!filters.onlyRising || (x.rankChange ?? 0) > 0)))
 

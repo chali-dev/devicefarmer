@@ -611,6 +611,7 @@ const zhCN = {
     noPermitted: '选中的素材都无权删除',
     confirmDelete: '删除素材 {name}？',
     deleteContent: '将同时删除存储中的文件和缩略图；已推送到设备上的文件不受影响。',
+    usedByContents: '注意：有 {n} 条内容正在使用，删除后会从这些内容中移除。',
     editTitle: '编辑素材',
     nameRequired: '名称不能为空',
     tagTooLong: '每个标签最多 32 个字符',
