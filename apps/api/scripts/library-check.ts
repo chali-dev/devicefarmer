@@ -1,8 +1,10 @@
 /**
- * App library test (real devices, no mocks): import an installed app from instance A,
- * flag it for preinstall, create instance B and verify it was installed automatically.
+ * App library test (real devices, no mocks): upload an APK into the library (admin only, package and
+ * version read from the manifest), then import an installed app from instance A, flag it for preinstall,
+ * create instance B and verify it was installed automatically.
  * Usage: npx tsx --env-file=../../.env scripts/library-check.ts <test.apk>
  */
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 
 const API = 'http://127.0.0.1:3000';
@@ -40,6 +42,32 @@ const apps = async (id: string) => (await http('GET', `/api/instances/${id}/apps
 
 let a = '', b = '', libId = '';
 try {
+  // ---- upload (no device needed)
+  const upload = (token: string, bytes: Buffer, name: string) => { const fd = new FormData(); fd.append('file', new Blob([bytes]), name); return http('POST', '/api/library/upload', token, fd); };
+  const apkBytes = fs.readFileSync(apk);
+  let up = await upload(T, apkBytes, 'some-name.apk');
+  const u = up.body?.app;
+  check('admin uploads an APK into the library', up.status === 200 && u?.package === PKG && /^\d+$/.test(u.versionCode), `${u?.package} ${u?.versionName} (${u?.versionCode})`);
+  check('uploaded entry: one base APK, sha256 of the file, source upload:<admin>',
+    u?.files.length === 1 && u.files[0].sha256 === createHash('sha256').update(apkBytes).digest('hex') && u.sourceInstance === `upload:${process.env.ADMIN_USERNAME}`);
+  up = await upload(T, apkBytes, 'again.apk');
+  check('re-upload of the same version replaces the entry (same id)', up.status === 200 && up.body.app.id === u.id);
+  up = await upload(T, Buffer.from('not a zip at all'), 'junk.apk');
+  check('junk .apk refused with library.bad_apk', up.status === 400 && up.body?.code === 'library.bad_apk', up.body?.error);
+  up = await upload(T, Buffer.from('hello'), 'notes.txt');
+  check('other file types refused', up.status === 400 && up.body?.code === 'apps.unsupported_type');
+  const uname = `libup${Date.now() % 1e6}`;
+  const cu = await http('POST', '/api/users', T, { username: uname, password: 'test-pass-123', role: 'user' });
+  const UT: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: uname, password: 'test-pass-123' }) })).json()).token;
+  up = await upload(UT, apkBytes, 'user.apk');
+  check('non-admin upload refused (403 library.upload_admin_only)', up.status === 403 && up.body?.code === 'library.upload_admin_only');
+  await http('DELETE', `/api/users/${cu.body.user.id}`, T);
+  // audit writes are fire-and-forget: poll briefly
+  const audited = await waitFor('audit entry', async () => ((await http('GET', '/api/audit?action=library.upload&pageSize=5', T)).body?.items ?? []).find((e: any) => String(e.target ?? '').startsWith(PKG)), 10_000).catch(() => null);
+  check('upload is in the audit log with package as target', !!audited, audited?.target);
+  const d0 = await http('DELETE', `/api/library/${u.id}`, T);
+  check('uploaded entry deleted', d0.status === 204 && !fs.existsSync(`var/library/${PKG}/${u.versionCode}`));
+
   a = await create('liba');
   const fd = new FormData(); fd.append('instanceIds', JSON.stringify([a])); fd.append('file', new Blob([fs.readFileSync(apk)]), 'test.apk');
   const inst = await http('POST', '/api/apps/install', T, fd);

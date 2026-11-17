@@ -154,6 +154,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'library.import', target: ({ body }) => body.package as string,
     detail: ({ body }) => ({ package: body.package, instanceId: body.instanceId }),
   },
+  'POST /api/library/upload': {
+    action: 'library.upload',
+    detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size } : undefined),
+  },
   'PATCH /api/library/:id': { action: 'library.update', detail: ({ body }) => ({ preinstall: body.preinstall }) },
   'POST /api/library/:id/install': {
     action: 'library.install', detail: ({ body }) => ({ instanceIds: ids(body.instanceIds), count: ids(body.instanceIds).length }),

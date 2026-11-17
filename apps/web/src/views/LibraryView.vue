@@ -21,6 +21,24 @@ async function load() {
 }
 onMounted(load)
 
+/** Admin upload: .apk or split bundle; package/version are read from the manifests by the API. */
+const UPLOAD_ACCEPT = '.apk,.apks,.xapk,.apkm,.zip'
+const uploading = ref(false)
+async function upload(file: File) {
+  uploading.value = true
+  const hide = message.loading(t('library.uploading'), 0)
+  try {
+    const body = new FormData()
+    body.append('file', file)
+    const r = await api<{ app: LibraryApp }>('POST', '/api/library/upload', body)
+    message.success(t('library.uploaded', { pkg: r.app.package, version: r.app.versionName ?? r.app.versionCode }))
+    await load()
+  } catch (e) { message.error(errorText(e)) }
+  finally { hide(); uploading.value = false }
+  return false // handled here, not by a-upload
+}
+const sourceText = (s: string | null) => (s?.startsWith('upload:') ? t('library.uploadedBy', { user: s.slice('upload:'.length) }) : s ?? '—')
+
 const size = (a: LibraryApp) => `${(a.files.reduce((s, f) => s + f.size, 0) / 1048576).toFixed(1)} MB`
 
 async function setPreinstall(a: LibraryApp, v: boolean) {
@@ -60,7 +78,16 @@ const columns = computed(() => [
 
 <template>
   <a-card :title="t('library.title')" size="small">
-    <template #extra><a-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</a-button></template>
+    <template #extra>
+      <a-space>
+        <a-tooltip v-if="auth.isAdmin" :title="t('library.uploadTip')">
+          <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
+            <a-button size="small" type="primary" :loading="uploading">{{ t('library.upload') }}</a-button>
+          </a-upload>
+        </a-tooltip>
+        <a-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</a-button>
+      </a-space>
+    </template>
     <a-alert type="info" show-icon style="margin-bottom: 12px">
       <template #message>{{ t('library.howTo') }}</template>
       <template #description>{{ t('library.howToBody') }}</template>
@@ -70,6 +97,7 @@ const columns = computed(() => [
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span class="muted">({{ record.versionCode }})</span></template>
         <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
+        <template v-else-if="column.key === 'source'">{{ sourceText(record.sourceInstance) }}</template>
         <template v-else-if="column.key === 'preinstall'">
           <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
           <span v-else>{{ record.preinstall ? t('common.yes') : '—' }}</span>

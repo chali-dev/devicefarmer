@@ -2,15 +2,18 @@ import { desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { conflict, forbidden, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
-import { libraryApks, removeLibraryApp } from './library.js';
+import { prepareUpload } from '../apps/package.js';
+import { addUploadToLibrary, libraryApks, removeLibraryApp } from './library.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const Pkg = z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/);
 
-/** App library: import from a device, install to instances, preinstall on new instances. */
+/** App library: import from a device or upload (admin), install to instances, preinstall on new instances. */
 export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -26,6 +29,24 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
     const taskId = await enqueue('import-app', inst, req.user.id, { package: req.body.package }, `导入应用库 ${req.body.package}`);
     reply.code(202);
     return { taskId };
+  });
+
+  /**
+   * Upload (admin only: library entries can be preinstalled on every new device). multipart, one file:
+   * .apk or a split bundle (.apks/.xapk/.apkm/.zip). Package and version are read from the manifests.
+   */
+  app.post('/api/library/upload', async (req) => {
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以上传到应用库', 'library.upload_admin_only');
+    const file = await req.file();
+    if (!file) throw badRequest('missing file', 'library.missing_file');
+    const prepared = await prepareUpload(file.file, file.filename);
+    try {
+      const row = await addUploadToLibrary(prepared.apkPaths, req.user.username);
+      if (req.audit) { req.audit.target = `${row.package} ${row.versionName ?? row.versionCode}`; req.audit.extra = { id: row.id, versionCode: row.versionCode, apks: row.files.length }; }
+      return { app: row };
+    } finally {
+      await fs.promises.rm(path.dirname(prepared.apkPaths[0]!), { recursive: true, force: true });
+    }
   });
 
   app.patch('/api/library/:id', {
