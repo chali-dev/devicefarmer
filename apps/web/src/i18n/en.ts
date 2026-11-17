@@ -718,12 +718,10 @@ const en: Messages = {
     kind: 'IP kind',
     kinds: {
       static: 'Static IP',
-      dynamic: 'Dynamic IP',
       mobile: 'Mobile IP',
     },
     kindDesc: {
       static: 'Static residential/datacenter IPs: the egress IP stays the same, suited to accounts that stay logged in and need a stable identity.',
-      dynamic: 'Dynamic IPs: the provider rotates the egress IP per session or over time, so an account\'s egress may change; suited to short tasks.',
       mobile: 'Mobile IPs: egress through a mobile carrier network; an IP may be shared by many users and changes with the network.',
     },
     empty: 'No {kind} proxies yet. Add one to bind it to a cloud phone.',

@@ -58,7 +58,7 @@ export interface LibraryApp {
 
 export type ProxyType = 'socks5' | 'http'
 export type ProxyStatus = 'unchecked' | 'ok' | 'failed'
-export const PROXY_KINDS = ['static', 'dynamic', 'mobile'] as const
+export const PROXY_KINDS = ['static', 'mobile'] as const
 export type ProxyKind = (typeof PROXY_KINDS)[number]
 export const PROXY_STATUS_COLOR: Record<ProxyStatus, string> = { unchecked: 'default', ok: 'success', failed: 'error' }
 

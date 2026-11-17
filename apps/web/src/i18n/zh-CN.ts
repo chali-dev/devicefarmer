@@ -719,12 +719,10 @@ const zhCN = {
     kind: 'IP 类型',
     kinds: {
       static: '静态IP',
-      dynamic: '动态IP',
       mobile: '移动IP',
     },
     kindDesc: {
       static: '静态住宅/机房 IP：出口 IP 长期固定，适合长期登录、需要稳定身份的账号。',
-      dynamic: '动态 IP：供应商按会话或时间轮换出口 IP，同一账号的出口可能变化，适合短时任务。',
       mobile: '移动 IP：来自移动运营商网络的出口，多个用户可能共享同一 IP，出口会随网络变化。',
     },
     empty: '还没有{kind}代理，添加一个后即可绑定到云手机',

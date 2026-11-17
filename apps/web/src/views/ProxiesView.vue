@@ -29,7 +29,7 @@ const batchChecking = ref(false)
 const route = useRoute()
 // Active IP kind tab (静态 / 动态 / 移动); counts are totals per kind, independent of the other filters.
 const kind = ref<ProxyKind>(queryParam(route.query, 'kind', PROXY_KINDS) ?? 'static')
-const kindCounts = ref<Record<ProxyKind, number>>({ static: 0, dynamic: 0, mobile: 0 })
+const kindCounts = ref<Record<ProxyKind, number>>({ static: 0, mobile: 0 })
 const kindOptions = computed(() => PROXY_KINDS.map((k) => ({ value: k, payload: { count: kindCounts.value[k] } })))
 function switchKind() { selectedKeys.value = []; void load() }
 

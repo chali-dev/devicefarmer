@@ -89,7 +89,8 @@ export type DeviceSource = typeof deviceSources.$inferSelect;
  * Static residential proxy pool (代理管理, admin-managed). The password is AES-256-GCM encrypted
  * (lib/secret-box.ts) and write-only. `lastCheck` is the check from the API host through the proxy.
  */
-export const PROXY_KINDS = ['static', 'dynamic', 'mobile'] as const;
+/** 'dynamic' (rotating) was removed; migration 0028 turned such rows into 'static'. */
+export const PROXY_KINDS = ['static', 'mobile'] as const;
 export type ProxyKind = (typeof PROXY_KINDS)[number];
 
 export const proxies = pgTable('proxies', {

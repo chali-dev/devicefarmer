@@ -1,7 +1,7 @@
 /**
  * Demo data + verification for 云手机管理 (non-device parts) and 系统管理, against the real API (no mocks).
  * Seeds (idempotent): demo users (demo-user shared with the other demo seeders, demo-ops admin, demo-viewer,
- * demo-disabled), ~22 pool proxies over static/dynamic/mobile (fake TEST-NET / .invalid endpoints, never
+ * demo-disabled), ~17 pool proxies over static/mobile (fake TEST-NET / .invalid endpoints, never
  * bound to devices), the two APKs in the app library (preinstall left off), two disabled Telegram demo
  * channels (fake token, never tested/sent). Then verifies filters, sealing of secrets, import counts,
  * exclusivity, library metadata, user rules, RBAC (with a temporary grant for demo-user that is revoked
@@ -92,7 +92,7 @@ const DEMO_USERS: { username: string; role: 'admin' | 'user'; disabled?: boolean
   { username: 'demo-viewer', role: 'user' },
   { username: 'demo-disabled', role: 'user', disabled: true },
 ];
-type P = { type: 'socks5' | 'http'; kind: 'static' | 'dynamic' | 'mobile'; host: string; port: number; username?: string; password?: string; label: string; country?: string; region?: string; city?: string; provider?: string; notes?: string };
+type P = { type: 'socks5' | 'http'; kind: 'static' | 'mobile'; host: string; port: number; username?: string; password?: string; label: string; country?: string; region?: string; city?: string; provider?: string; notes?: string };
 // TEST-NET ranges (RFC 5737) and .invalid names: well-formed, never routable / resolvable.
 const PROXIES: P[] = [
   { type: 'socks5', kind: 'static', host: '203.0.113.11', port: 1080, username: 'demo_us1', password: 'DemoPw-us1-x7Q', label: 'demo-US-洛杉矶-01', country: 'US', region: 'California', city: 'Los Angeles', provider: 'DemoNet ISP', notes: '演示数据：住宅静态 IP' },
@@ -102,16 +102,20 @@ const PROXIES: P[] = [
   { type: 'http', kind: 'static', host: '203.0.113.41', port: 3128, label: 'demo-SG-新加坡-01（无认证）', country: 'SG', city: 'Singapore', provider: 'Example Hosting', notes: '演示数据：无用户名密码' },
   { type: 'socks5', kind: 'static', host: 'sg-static.demo-proxy.invalid', port: 1080, username: 'demo_sg2', password: 'DemoPw-sg2-z4C', label: 'demo-SG-新加坡-02', country: 'SG', city: 'Singapore', provider: 'DemoNet ISP' },
   { type: 'socks5', kind: 'static', host: '203.0.113.51', port: 1080, username: 'demo_gb1', password: 'DemoPw-gb1-w8E', label: 'demo-GB-伦敦-01', country: 'GB', region: 'England', city: 'London', provider: 'Example Hosting' },
-  { type: 'socks5', kind: 'dynamic', host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-a1', password: 'DemoPw-rot-a1', label: 'demo-动态-US-会话A', country: 'US', provider: 'RotateDemo', notes: '演示数据：每 10 分钟轮换' },
-  { type: 'socks5', kind: 'dynamic', host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-b2', password: 'DemoPw-rot-b2', label: 'demo-动态-US-会话B', country: 'US', provider: 'RotateDemo' },
-  { type: 'socks5', kind: 'dynamic', host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-c3', password: 'DemoPw-rot-c3', label: 'demo-动态-BR-会话C', country: 'BR', city: 'São Paulo', provider: 'RotateDemo' },
-  { type: 'http', kind: 'dynamic', host: '198.51.100.20', port: 9000, username: 'demo_dyn_jp', password: 'DemoPw-dyn-jp', label: 'demo-动态-JP', country: 'JP', provider: 'RotateDemo' },
-  { type: 'http', kind: 'dynamic', host: '198.51.100.21', port: 9000, username: 'demo_dyn_kr', password: 'DemoPw-dyn-kr', label: 'demo-动态-KR', country: 'KR', city: 'Seoul', provider: 'RotateDemo' },
   { type: 'socks5', kind: 'mobile', host: '198.51.100.31', port: 5000, username: 'demo_4g_us1', password: 'DemoPw-4g-us1', label: 'demo-4G-US-T-Mobile', country: 'US', city: 'Dallas', provider: 'MobileDemo', notes: '演示数据：4G 移动出口' },
   { type: 'socks5', kind: 'mobile', host: '198.51.100.32', port: 5000, username: 'demo_4g_us2', password: 'DemoPw-4g-us2', label: 'demo-4G-US-Verizon', country: 'US', city: 'Chicago', provider: 'MobileDemo' },
   { type: 'socks5', kind: 'mobile', host: '198.51.100.33', port: 5000, username: 'demo_5g_gb', password: 'DemoPw-5g-gb', label: 'demo-5G-GB-EE', country: 'GB', city: 'Manchester', provider: 'MobileDemo' },
   { type: 'http', kind: 'mobile', host: 'mobile-de.demo-proxy.invalid', port: 8000, username: 'demo_4g_de', password: 'DemoPw-4g-de', label: 'demo-4G-DE-Vodafone', country: 'DE', city: 'Berlin', provider: 'MobileDemo' },
 ];
+// Demo proxies of the removed 'dynamic' kind (older runs created them): deleted by the seed and by --clean when unbound.
+const LEGACY_PROXIES = [
+  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-a1' },
+  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-b2' },
+  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-c3' },
+  { host: '198.51.100.20', port: 9000, username: 'demo_dyn_jp' },
+  { host: '198.51.100.21', port: 9000, username: 'demo_dyn_kr' },
+];
+const isLegacy = (p: any) => LEGACY_PROXIES.some((d) => d.host === p.host && d.port === p.port && d.username === p.username);
 // Imported via /api/proxies/import (kind static, provider ImportDemo, country CA); line 4 duplicates line 1, line 5 is invalid.
 const IMPORT_TEXT = [
   '# 演示导入（demo import）',
@@ -149,7 +153,7 @@ process.exit(failed.length ? 1 : 0);
 async function clean() {
   const proxies = (await http('GET', '/api/proxies', T)).body.proxies as any[];
   const mine = new Set([...state.proxies,
-    ...proxies.filter((p) => PROXIES.some((d) => d.host === p.host && d.port === p.port && (d.username ?? null) === p.username) || IMPORT_HOSTS.includes(p.host)).map((p) => p.id)]);
+    ...proxies.filter((p) => PROXIES.some((d) => d.host === p.host && d.port === p.port && (d.username ?? null) === p.username) || IMPORT_HOSTS.includes(p.host) || isLegacy(p)).map((p) => p.id)]);
   let n = 0;
   for (const id of mine) {
     const p = proxies.find((x) => x.id === id);
@@ -227,6 +231,10 @@ async function seed() {
   // ---- proxies
   const existing = (await http('GET', '/api/proxies', T)).body.proxies as any[];
   let created = 0;
+  for (const p of existing.filter(isLegacy)) {
+    if (p.boundInstance) { info(`legacy demo proxy ${p.host}:${p.port} is bound to ${p.boundInstance.name}: left alone`); continue; }
+    if ((await http('DELETE', `/api/proxies/${p.id}`, T)).status === 204) state.proxies = state.proxies.filter((id: string) => id !== p.id);
+  }
   for (const p of PROXIES) {
     const hit = existing.find((e) => e.type === p.type && e.host === p.host && e.port === p.port && e.username === (p.username ?? null));
     if (hit) { if (!state.proxies.includes(hit.id)) state.proxies.push(hit.id); continue; }
@@ -293,17 +301,17 @@ async function verify() {
   const withPw = PROXIES.filter((p) => p.password).length;
   check('hasPassword true exactly on entries that have one', demo.filter((p) => p.hasPassword).length === withPw + 3, `${demo.filter((p) => p.hasPassword).length}`);
   const kc = r.body.kindCounts;
-  for (const k of ['static', 'dynamic', 'mobile'] as const) {
+  for (const k of ['static', 'mobile'] as const) {
     const f = await http('GET', `/api/proxies?kind=${k}`, T);
     check(`?kind=${k} returns only ${k} (count matches kindCounts)`, f.body.proxies.every((p: any) => p.kind === k) && f.body.proxies.length === kc[k], `${f.body.proxies.length} vs ${kc[k]}`);
   }
-  check('kindCounts sum = pool size', kc.static + kc.dynamic + kc.mobile === pool.length);
+  check('kindCounts sum = pool size', kc.static + kc.mobile === pool.length);
   r = await http('GET', `/api/proxies?q=${encodeURIComponent('东京')}`, T);
   check('?q= search by label (东京)', r.body.proxies.length >= 1 && r.body.proxies.every((p: any) => /东京/.test(`${p.label}${p.city}${p.notes}`)));
   r = await http('GET', `/api/proxies?q=${encodeURIComponent('MobileDemo, ImportDemo')}`, T);
   check('?q= comma terms match any (provider)', r.body.proxies.filter((p: any) => state.proxies.includes(p.id)).length === 4 + IMPORT_HOSTS.length, `${r.body.proxies.length}`);
   r = await http('GET', '/api/proxies?country=jp', T);
-  check('?country= is case-insensitive', r.body.proxies.length >= 2 && r.body.proxies.every((p: any) => p.country === 'JP'));
+  check('?country= is case-insensitive', r.body.proxies.length >= 1 && r.body.proxies.every((p: any) => p.country === 'JP'));
   r = await http('GET', '/api/proxies?bound=free', T);
   check('?bound=free includes every demo proxy (none bound)', demo.every((p) => r.body.proxies.some((x: any) => x.id === p.id)));
   r = await http('GET', '/api/proxies?status=bogus', T);

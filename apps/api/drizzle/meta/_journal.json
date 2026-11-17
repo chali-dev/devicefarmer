@@ -197,6 +197,13 @@
       "when": 1794923274609,
       "tag": "0027_content_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794929128355,
+      "tag": "0028_proxy_kind_no_dynamic",
+      "breakpoints": true
     }
   ]
 }

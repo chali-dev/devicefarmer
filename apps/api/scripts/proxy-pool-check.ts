@@ -9,7 +9,7 @@
  *   (set-proxy then only writes the sidecar config, which is verified to carry the decrypted password).
  *   Device-level traffic/kill-switch is covered by scripts/proxy-check.ts.
  * - Requires that the pool has no free usable proxies other than the ones it creates (concurrency test).
- * - Also covers the IP kind (static/dynamic/mobile) and POST /api/proxies/test (unsaved config probe). The parts of
+ * - Also covers the IP kind (static/mobile; the removed dynamic is refused) and POST /api/proxies/test (unsaved config probe). The parts of
  *   the test-endpoint check that need a working proxy are reported as SKIP when the test proxy is unreachable.
  * Usage (from apps/api, API running): npx tsx --env-file=<env> scripts/proxy-pool-check.ts
  */
@@ -75,21 +75,23 @@ try {
   check('kind defaults to static', r.body.proxy.kind === 'static', r.body.proxy.kind);
   r = await http('POST', '/api/proxies', T, { ...good, label: 'dup', password: 'other' });
   check('duplicate endpoint (type, host, port, user) refused 409', r.status === 409 && r.body.code === 'proxy.duplicate', r.body?.code);
-  r = await http('POST', '/api/proxies', T, { ...good, label: 'pp-test-http', type: 'http', kind: 'dynamic' });
+  r = await http('POST', '/api/proxies', T, { ...good, label: 'pp-test-http', type: 'http', kind: 'mobile' });
   check('same host/port as HTTP is a different pool entry', r.status === 201);
-  check('create with kind dynamic', r.body.proxy?.kind === 'dynamic', r.body.proxy?.kind);
+  check('create with kind mobile', r.body.proxy?.kind === 'mobile', r.body.proxy?.kind);
   const httpId: string = r.body.proxy.id; created.push(httpId);
   r = await http('POST', '/api/proxies', T, { label: 'pp-test-bad', type: 'socks5', host: PHOST, port: Number(PPORT), username: 'cpuser-wrong', password: 'wrong-pass' });
   const badId: string = r.body.proxy.id; created.push(badId);
   r = await http('POST', '/api/proxies', T, { type: 'socks5', host: '192.0.2.1', port: 1080, kind: 'satellite' });
   check('unknown kind rejected 400', r.status === 400);
+  r = await http('POST', '/api/proxies', T, { type: 'socks5', host: '192.0.2.1', port: 1080, kind: 'dynamic' });
+  check('removed kind dynamic rejected 400', r.status === 400);
   r = await http('PUT', `/api/proxies/${badId}`, T, { kind: 'mobile' });
   check('update kind → mobile (no re-apply, status kept)', r.status === 200 && r.body.proxy.kind === 'mobile' && r.body.taskId === null && r.body.proxy.status === 'unchecked');
   r = await http('GET', '/api/proxies?kind=mobile', T);
   check('list filter kind=mobile', r.status === 200 && r.body.proxies.some((p: any) => p.id === badId) && r.body.proxies.every((p: any) => p.kind === 'mobile'));
-  check('list returns per-kind counts (unfiltered)', typeof r.body.kindCounts?.static === 'number' && r.body.kindCounts.static >= 1 && r.body.kindCounts.dynamic >= 1 && r.body.kindCounts.mobile >= 1, JSON.stringify(r.body.kindCounts));
+  check('list returns per-kind counts (unfiltered)', typeof r.body.kindCounts?.static === 'number' && r.body.kindCounts.static >= 1 && r.body.kindCounts.mobile >= 1 && !('dynamic' in r.body.kindCounts), JSON.stringify(r.body.kindCounts));
   r = await http('GET', '/api/proxies', T);
-  check('list without kind returns every kind, each with its kind', ['static', 'dynamic', 'mobile'].every((k) => r.body.proxies.some((p: any) => p.kind === k)));
+  check('list without kind returns every kind, each with its kind', ['static', 'mobile'].every((k) => r.body.proxies.some((p: any) => p.kind === k)));
   r = await http('GET', `/api/proxies?q=${encodeURIComponent('pp-test-http, pp-test-bad')}`, T);
   check('search q: comma-separated terms match any', r.body.proxies.length === 2 && r.body.proxies.some((p: any) => p.id === httpId) && r.body.proxies.some((p: any) => p.id === badId), String(r.body.proxies?.length));
   r = await http('POST', '/api/proxies', T, { type: 'socks5', host: 'bad host!', port: 1080 });
@@ -175,7 +177,7 @@ try {
   const expected = '1:created 2:created 3:created 4:created 6:duplicate 7:invalid 8:invalid 9:duplicate 10:invalid';
   check('import dry-run: per-line created/duplicate/invalid', st(r.body) === expected, st(r.body));
   check('dry-run inserts nothing', (await http('GET', '/api/proxies', T)).body.proxies.length === before);
-  r = await http('POST', '/api/proxies/import', T, { text, defaultType: 'http', provider: 'imp', kind: 'dynamic' });
+  r = await http('POST', '/api/proxies/import', T, { text, defaultType: 'http', provider: 'imp', kind: 'mobile' });
   check('import: same per-line results, 4 created', st(r.body) === expected && r.body.created === 4 && r.body.duplicate === 2 && r.body.invalid === 3, `${r.body.created}/${r.body.duplicate}/${r.body.invalid}`);
   check('import results mask passwords', !r.text.includes('imp-secret'));
   const imported: string[] = r.body.results.filter((l: any) => l.id).map((l: any) => l.id);
@@ -186,7 +188,7 @@ try {
     byHost.get('203.0.113.10')?.type === 'socks5' && byHost.get('203.0.113.10')?.username === 'imp-u1'
     && byHost.get('203.0.113.11')?.type === 'http' && byHost.get('203.0.113.12')?.type === 'http' && byHost.get('203.0.113.12')?.username === 'imp-u3'
     && byHost.get('203.0.113.13')?.username === null && impRows.every((p) => p.provider === 'imp'));
-  check('import applies the optional kind', impRows.length === 4 && impRows.every((p) => p.kind === 'dynamic'));
+  check('import applies the optional kind', impRows.length === 4 && impRows.every((p) => p.kind === 'mobile'));
   check('imported passwords encrypted', impRows.filter((p) => p.passwordEnc).length === 2 && impRows.every((p) => !p.passwordEnc || (p.passwordEnc.startsWith('v1:') && !p.passwordEnc.includes('imp-secret'))));
   r = await http('POST', '/api/proxies/import', T, { text: 'socks5://imp-u1:x@203.0.113.10:1080\n203.0.113.13:8000', defaultType: 'http' });
   check('re-import → duplicates', r.body.duplicate === 2 && r.body.created === 0);
