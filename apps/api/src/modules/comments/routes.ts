@@ -376,17 +376,52 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     return { reply: (await toReplyItems([await recordReplyOutcome(req.user, r, req.body)], req.user))[0] };
   });
 
-  // ------------------------------------------------------------ templates
-  app.get('/api/comment-templates', async (req) => {
+  // ------------------------------------------------------------ templates (话术库: kind comment = reply templates, post = captions)
+  /** Visible templates: own + shared (admins: all). `kind` defaults to comment so the reply composer is unchanged; `all` lists both. */
+  const TemplateQuery = z.object({
+    kind: z.enum(['comment', 'post', 'all']).default('comment'),
+    /** exact persona, or 'none' for templates without one */
+    persona: z.string().trim().max(50).optional(),
+    tag: z.string().trim().max(32).optional(),
+    scope: z.enum(['own', 'shared']).optional(),
+    q: z.string().trim().max(100).optional(),
+  });
+  const templateWhere = (user: AuthUser, q: Partial<z.infer<typeof TemplateQuery>>): SQL | undefined => and(
+    isAdmin(user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, user.id)),
+    q.kind && q.kind !== 'all' ? eq(TPL.kind, q.kind) : undefined,
+    q.persona === 'none' ? isNull(TPL.persona) : q.persona ? eq(TPL.persona, q.persona) : undefined,
+    q.tag ? sql`${TPL.tags} @> array[${q.tag.toLowerCase()}]::text[]` : undefined,
+    q.scope === 'shared' ? isNull(TPL.userId) : q.scope === 'own' ? eq(TPL.userId, user.id) : undefined,
+    q.q ? or(ilike(TPL.name, like(q.q)), ilike(TPL.text, like(q.q))) : undefined,
+  );
+  app.get('/api/comment-templates', { schema: { querystring: TemplateQuery } }, async (req) => {
     const rows = await db.select({ t: TPL, owner: schema.users.username }).from(TPL).leftJoin(schema.users, eq(schema.users.id, TPL.userId))
-      .where(isAdmin(req.user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, req.user.id))).orderBy(asc(TPL.name));
+      .where(templateWhere(req.user, req.query)).orderBy(asc(TPL.name));
     return { templates: rows.map((r) => ({ ...r.t, shared: r.t.userId === null, ownerName: r.owner ?? null, writable: r.t.userId !== null || isAdmin(req.user) })) };
   });
 
-  const TemplateBody = z.object({ name: z.string().trim().min(1).max(100), text: z.string().trim().min(1).max(5000) });
+  /** Personas and tags in use among visible templates (filter suggestions). */
+  app.get('/api/comment-templates/facets', { schema: { querystring: TemplateQuery.pick({ kind: true }) } }, async (req) => {
+    const cond = templateWhere(req.user, req.query);
+    const [personas, tags] = await Promise.all([
+      db.selectDistinct({ p: TPL.persona }).from(TPL).where(and(cond, sql`${TPL.persona} is not null`)).orderBy(asc(TPL.persona)).limit(500),
+      db.selectDistinct({ t: sql<string>`unnest(${TPL.tags})` }).from(TPL).where(cond).orderBy(sql`1`).limit(500),
+    ]);
+    return { personas: personas.map((p) => p.p!), tags: tags.map((t) => t.t) };
+  });
+
+  const normTags = (tags: string[]) => [...new Set(tags.map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  const TemplateBody = z.object({
+    name: z.string().trim().min(1).max(100), text: z.string().trim().min(1).max(5000),
+    kind: z.enum(['comment', 'post']).optional(),
+    persona: z.string().trim().max(50).nullable().optional().transform((v) => (v === '' ? null : v)),
+    tags: z.array(z.string().trim().min(1).max(32)).max(20).transform(normTags).optional(),
+  });
   app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional() }) } }, async (req, reply) => {
-    if (req.body.shared && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
-    const [row] = await db.insert(TPL).values({ userId: req.body.shared ? null : req.user.id, name: req.body.name, text: req.body.text, createdBy: req.user.id }).returning();
+    const { shared, ...b } = req.body;
+    if (shared && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
+    const [row] = await db.insert(TPL).values({ ...b, userId: shared ? null : req.user.id, createdBy: req.user.id }).returning();
+    if (req.audit) req.audit.extra = { id: row!.id, kind: row!.kind };
     reply.code(201);
     return { template: { ...row!, shared: row!.userId === null } };
   });
@@ -394,7 +429,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/comment-templates/:id', { schema: { params: Id, body: TemplateBody.partial() } }, async (req) => {
     const t = await visibleTemplate(req.user, req.params.id);
     assertTemplateWritable(req.user, t);
-    const [row] = await db.update(TPL).set(req.body).where(eq(TPL.id, t.id)).returning();
+    const set = Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined));
+    if (!Object.keys(set).length) throw new HttpError(400, 'nothing to update', 'common.nothing_to_update');
+    const [row] = await db.update(TPL).set(set).where(eq(TPL.id, t.id)).returning();
     return { template: { ...row!, shared: row!.userId === null } };
   });
 

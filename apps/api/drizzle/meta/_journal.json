@@ -141,6 +141,13 @@
       "when": 1794830908234,
       "tag": "0019_proxy_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794902133862,
+      "tag": "0020_content_tools",
+      "breakpoints": true
     }
   ]
 }

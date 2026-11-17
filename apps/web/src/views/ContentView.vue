@@ -14,6 +14,7 @@ import {
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
+import TemplateInsert, { type InsertTarget } from '../components/content/TemplateInsert.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -101,6 +102,15 @@ function moveMedia(i: number, d: number) {
   const [x] = m.splice(i, 1)
   m.splice(i + d, 0, x!)
   form.media = m
+}
+/** 话术库: puts a post template's text into one field; the person edits it before saving. */
+function insertTemplate(target: InsertTarget, text: string, replace: boolean) {
+  const join = (cur: string) => (replace || !cur.trim() ? text : `${cur.replace(/\s+$/, '')}\n\n${text}`)
+  if (target === 'body') form.body = join(form.body)
+  else if (target === 'ytDescription') form.yt.description = join(form.yt.description)
+  else if (target === 'igCaption') form.ig.caption = join(form.ig.caption)
+  else if (target === 'ttCaption') form.tt.caption = join(form.tt.caption)
+  else form.fb.caption = join(form.fb.caption)
 }
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
@@ -218,6 +228,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         <a-input v-model:value="form.title" :maxlength="200" show-count />
       </a-form-item>
       <a-form-item :label="t('content.fieldBody')">
+        <template #extra><TemplateInsert style="margin-top: 4px" @insert="insertTemplate" /></template>
         <a-textarea v-model:value="form.body" :rows="5" :maxlength="5000" show-count :placeholder="t('content.bodyPlaceholder')" />
       </a-form-item>
       <a-row :gutter="12">

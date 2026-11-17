@@ -233,7 +233,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'PATCH /api/tracked-accounts/:id': {
     action: 'tracked.update',
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, category: body.category, tags: body.tags }),
+    detail: ({ body }) => ({
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, category: body.category, tags: body.tags, refreshIntervalHours: body.refreshIntervalHours,
+    }),
   },
   'DELETE /api/tracked-accounts/:id': { action: 'tracked.delete' },
   'POST /api/tracked-accounts/:id/snapshots': {
@@ -245,6 +247,13 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
+  // 趋势热点 / 定时采集
+  'PUT /api/trending/settings': {
+    action: 'trending.settings_update',
+    detail: ({ body }) => ({ regions: body.regions, categoryId: body.categoryId, intervalHours: body.intervalHours, maxResults: body.maxResults, retentionDays: body.retentionDays }),
+  },
+  'POST /api/trending/refresh': { action: 'trending.refresh' },
+  'POST /api/collection/run': { action: 'collection.run' },
   // platform integrations (平台接入). Client secrets and tokens are never logged; the OAuth callback
   // (a GET) is recorded explicitly by its route as platform.connect / platform.connect_failed.
   'PUT /api/settings/platforms/:platform': {
@@ -313,8 +322,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),
     detail: ({ body }) => ({ result: body.result, externalReplyId: body.externalReplyId }),
   },
-  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared }) },
-  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
+  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment', persona: body.persona }) },
+  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind, persona: body.persona }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },

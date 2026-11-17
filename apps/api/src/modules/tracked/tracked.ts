@@ -21,6 +21,9 @@ export const REF_TYPE = 'tracked_account';
 /** Recent posts requested per API refresh. */
 const RECENT_POSTS = 20;
 
+/** Readable label (task centre, audit). */
+export const display = (a: Pick<TrackedAccount, 'platform' | 'handle'>) => `${platformDef(a.platform).label} ${/^UC[A-Za-z0-9_-]{22}$/.test(a.handle) ? a.handle : `@${a.handle}`}`;
+
 export async function getVisibleAccount(user: AuthUser, id: string): Promise<TrackedAccount> {
   const [row] = await db.select().from(ta).where(eq(ta.id, id));
   if (!row || (row.userId !== user.id && !isAdmin(user))) throw notFound('追踪账号不存在', 'tracked.not_found');
@@ -174,11 +177,41 @@ export async function pendingRefreshes(ids: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.refId!));
 }
 
+/**
+ * Why an account can't be refreshed now, as an error code; null = OK. Manual-only accounts are fine here
+ * (a manual refresh is a no-op task); the scheduler skips them separately. Shared by manual refresh and the scheduler.
+ */
+export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Promise<{ code: string; message: string; status: number } | null> {
+  if (acc.status === 'paused') return { code: 'tracked.paused', message: '账号已暂停追踪', status: 409 };
+  if (busy.has(acc.id)) return { code: 'tracked.refresh_in_progress', message: '该账号正在刷新', status: 409 };
+  const src = platformDef(acc.platform).source;
+  if (src) {
+    try { await src.requireConfigured(); } catch (err) {
+      const e = err as Error & { code?: string; statusCode?: number };
+      return { code: e.code ?? 'tracked.api_not_configured', message: e.message, status: e.statusCode ?? 400 };
+    }
+  }
+  return null;
+}
+
 // Device-less job on the unified task core. One attempt: a failed official-API call (quota, bad key)
 // is not helped by an automatic retry; the user can retry from the task centre.
-registerTaskHandler<{ trackedAccountId: string }>('tracked-refresh', {
+// A scheduled run (payload.scheduled) re-checks the account when it starts: paused, schedule switched off or
+// the API unconfigured since it was queued → a skipped no-op instead of an API call.
+registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean }>('tracked-refresh', {
   queue: 'task-ops',
   timeoutMs: 5 * 60_000,
   maxAttempts: 1,
-  run: (ctx) => refreshTrackedAccount(ctx.payload.trackedAccountId ?? ctx.task.refId!),
+  async run(ctx) {
+    const id = ctx.payload.trackedAccountId ?? ctx.task.refId!;
+    if (ctx.payload.scheduled) {
+      const [acc] = await db.select().from(ta).where(eq(ta.id, id));
+      const code = !acc ? null : acc.refreshIntervalHours === null ? 'tracked.schedule_off' : (await refreshRefusal(acc, new Set()))?.code;
+      if (code) {
+        await ctx.log('info', `scheduled refresh skipped: ${code}`, { code });
+        return { outcome: 'skipped', code };
+      }
+    }
+    return refreshTrackedAccount(id);
+  },
 });
