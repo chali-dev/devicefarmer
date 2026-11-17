@@ -28,7 +28,8 @@ const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('screenSource'), source: z.enum(['stf', 'secure', 'scrcpy']) }),
   // Reads the device clipboard (scrcpy source only).
   z.object({ type: z.literal('getClipboard') }),
-  // Latency probe: answered at once with {type:'pong', t, deviceMs} (deviceMs = API ↔ device adb round trip).
+  // Latency probe: answered at once with {type:'pong', t, deviceMs, link}: deviceMs = API ↔ device round trip of the
+  // path input takes (link 'relay': WebSocket ping over the scrcpy relay; 'adb': a no-op adb shell).
   z.object({ type: z.literal('ping'), t: z.number() }),
   // The browser dropped H.264 frames (decoder backlog) and needs a fresh key frame (scrcpy source only).
   z.object({ type: z.literal('keyFrame') }),
@@ -164,7 +165,10 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         }
         else if (msg.type === 'key') { if (!sc?.key(msg.action, msg.key)) await stf.key(channel!, msg.action, msg.key); }
         else if (msg.type === 'paste') { if (sc) sc.paste(msg.text); else await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
-        else if (msg.type === 'ping') send({ type: 'pong', t: msg.t, deviceMs: deviceRttMs(adbPort) });
+        else if (msg.type === 'ping') {
+          const relay = sc?.relayRttMs();
+          send({ type: 'pong', t: msg.t, ...(relay !== undefined ? { deviceMs: relay, link: 'relay' } : { deviceMs: deviceRttMs(adbPort), link: 'adb' }) });
+        }
         else if (msg.type === 'keyFrame') sc?.requestKeyFrame();
         else if (msg.type === 'getClipboard') {
           if (!sc) return send({ type: 'error', message: 'device clipboard needs the scrcpy source', code: 'player.clipboard_needs_scrcpy' });

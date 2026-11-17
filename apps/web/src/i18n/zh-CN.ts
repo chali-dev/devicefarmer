@@ -424,7 +424,7 @@ const zhCN = {
     sourceStf: '标准',
     sourceScrcpy: '高速',
     latency: '画面延迟: {ms}ms',
-    latencyTip: '估算的操作到画面延迟（不含编解码）：浏览器↔服务器 {ws} ms + 服务器↔手机 {device} ms + 播放缓冲 {buffer} ms',
+    latencyTip: '估算的操作到画面延迟（不含编解码）：浏览器↔服务器 {ws} ms + 服务器↔手机（{link}）{device} ms + 播放缓冲 {buffer} ms',
     latencyPending: '正在测量延迟…',
     fpsTip: '帧率: {fps} fps',
     latencyShort: '{ms}ms',

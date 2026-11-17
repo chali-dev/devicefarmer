@@ -423,7 +423,7 @@ const en: Messages = {
     sourceStf: 'Standard',
     sourceScrcpy: 'Fast',
     latency: 'Latency: {ms}ms',
-    latencyTip: 'Estimated input-to-screen latency (without encoding/decoding): browser ↔ server {ws} ms + server ↔ phone {device} ms + playout buffer {buffer} ms',
+    latencyTip: 'Estimated input-to-screen latency (without encoding/decoding): browser ↔ server {ws} ms + server ↔ phone ({link}) {device} ms + playout buffer {buffer} ms',
     latencyPending: 'Measuring latency…',
     fpsTip: 'Frame rate: {fps} fps',
     latencyShort: '{ms}ms',

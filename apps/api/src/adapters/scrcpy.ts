@@ -33,6 +33,20 @@ export interface ScrcpyOptions {
   maxSize: number; maxFps: number; bitRate: number
   /** Seconds between periodic key frames (scrcpy's default is 10); RESET_VIDEO still forces one at once. */
   keyFrameIntervalS?: number
+  /** Carry the sockets through the CpRelay helper (WebSocket, outside adb) instead of adb local sockets. */
+  relay?: ScrcpyRelay
+}
+
+/** Waits for the relay helper's connections (modules/control/scrcpy-relay.ts). */
+export interface RelayWait { token: string; streams: Record<string, Promise<Duplex>>; cancel(): void }
+export interface ScrcpyRelay {
+  /** ws(s) URL of the relay listener as the device reaches it. */
+  url: string;
+  /** Local dex and its versioned path on the device (/data/local/tmp/…). */
+  dexPath: string; remoteDex: string;
+  expect(channels: string[], timeoutMs: number): RelayWait;
+  /** Round trip over one relay stream (WebSocket ping), null until measured. */
+  rttMs(stream: Duplex): number | null;
 }
 export interface VideoPacket { config: boolean; key: boolean; pts: bigint; data: Buffer }
 
@@ -135,6 +149,7 @@ export class ScrcpyServer extends EventEmitter {
   height = 0;
   closed = false;
   private shellStream: Duplex | null = null;
+  private relayStream: Duplex | null = null;
   private video: Duplex | null = null;
   private control: Duplex | null = null;
   private readonly logTail: string[] = [];
@@ -143,8 +158,16 @@ export class ScrcpyServer extends EventEmitter {
     super();
   }
 
-  /** Last lines the server printed (its own error messages). */
+  /** Last lines the server (and relay helper) printed. */
   get log(): string { return this.logTail.join('\n'); }
+
+  /** How the sockets are carried. */
+  get via(): 'relay' | 'adb' { return this.opts.relay ? 'relay' : 'adb'; }
+
+  /** API ↔ device round trip of the control path when it is the relay (undefined over adb), ms. */
+  relayRttMs(): number | null | undefined {
+    return this.opts.relay && this.control ? this.opts.relay.rttMs(this.control) : undefined;
+  }
 
   /** Pushes the jar if needed, starts the server and connects both sockets. Resolves when the H.264 stream header arrived. */
   async start(timeoutMs = 15_000): Promise<void> {
@@ -162,35 +185,20 @@ export class ScrcpyServer extends EventEmitter {
     const device = this.adb.device(this.adbPort);
     const sh = await device.shell(`CLASSPATH=${REMOTE_JAR} exec app_process / com.genymobile.scrcpy.Server ${args.join(' ')}`);
     this.shellStream = sh;
-    let partial = '';
-    sh.on('data', (c: Buffer) => {
-      const lines = (partial + c.toString('utf8')).split(/\r?\n/);
-      partial = lines.pop() ?? '';
-      for (const l of lines) if (l.trim()) { this.logTail.push(l.trim()); if (this.logTail.length > 20) this.logTail.shift(); }
-    });
+    this.collectLog(sh, '');
     sh.on('close', () => this.close('server exited'));
-    sh.on('error', () => undefined);
 
     const deadline = Date.now() + timeoutMs;
     const fail = (msg: string) => new Error(`${msg}${this.log ? `: ${this.log.split('\n').slice(-3).join(' | ')}` : ''}`);
-    // The socket only exists once the server is listening: retry like scrcpy's client (100 ms apart).
-    let video: Duplex | null = null;
-    let first: Buffer | null = null;
-    while (!first) {
-      if (this.closed) throw fail('scrcpy server exited');
-      if (Date.now() > deadline) { this.close('start timeout'); throw fail('scrcpy server did not start'); }
-      try {
-        video = await device.openLocal(`localabstract:scrcpy_${this.scid}`);
-        first = await firstChunk(video, 2000);
-      } catch {
-        video?.destroy();
-        video = null;
-        await new Promise((r) => setTimeout(r, 100));
-      }
+    let video: Duplex, first: Buffer;
+    try {
+      ({ video, first, control: this.control } = this.opts.relay ? await this.connectRelay(this.opts.relay, deadline) : await this.connectAdb(deadline));
+    } catch (err) {
+      this.close('start failed');
+      throw fail((err as Error).message);
     }
-    if (first[0] !== 0) { video!.destroy(); this.close('bad dummy byte'); throw fail('unexpected scrcpy handshake'); }
+    if (first[0] !== 0) { video.destroy(); this.close('bad dummy byte'); throw fail('unexpected scrcpy handshake'); }
     this.video = video;
-    this.control = await device.openLocal(`localabstract:scrcpy_${this.scid}`);
     this.control.on('error', () => undefined);
     this.control.on('close', () => this.close('control socket closed'));
     this.readDeviceMessages(this.control);
@@ -204,7 +212,7 @@ export class ScrcpyServer extends EventEmitter {
       });
       this.once('close', (reason: string) => { clearTimeout(timer); reject(fail(reason)); });
     });
-    this.readVideo(video!, first.subarray(1));
+    this.readVideo(video, first.subarray(1));
     try { await header; } catch (err) { this.close('start failed'); throw err; }
   }
 
@@ -218,9 +226,63 @@ export class ScrcpyServer extends EventEmitter {
     this.video?.destroy();
     this.control?.destroy();
     this.shellStream?.destroy();
-    // Closing the sockets/shell ends the server; make sure in case the shell stream lingers.
-    void this.adb.shell(this.adbPort, `pkill -f 'scid=${this.scid}' || true`, 5000).catch(() => undefined);
+    this.relayStream?.destroy();
+    // Closing the sockets/shell ends the server and the relay; make sure in case a shell stream lingers
+    // (the scid is in both command lines).
+    void this.adb.shell(this.adbPort, `pkill -f '${this.scid}' || true`, 5000).catch(() => undefined);
     this.emit('close', reason);
+  }
+
+  private collectLog(sh: Duplex, prefix: string): void {
+    let partial = '';
+    sh.on('data', (c: Buffer) => {
+      const lines = (partial + c.toString('utf8')).split(/\r?\n/);
+      partial = lines.pop() ?? '';
+      for (const l of lines) if (l.trim()) { this.logTail.push(prefix + l.trim()); if (this.logTail.length > 20) this.logTail.shift(); }
+    });
+    sh.on('error', () => undefined);
+  }
+
+  /** adb local sockets; the socket only exists once the server listens: retry like scrcpy's client (100 ms apart). */
+  private async connectAdb(deadline: number): Promise<{ video: Duplex; first: Buffer; control: Duplex }> {
+    const device = this.adb.device(this.adbPort);
+    for (;;) {
+      if (this.closed) throw new Error('scrcpy server exited');
+      if (Date.now() > deadline) throw new Error('scrcpy server did not start');
+      let video: Duplex | null = null;
+      try {
+        video = await device.openLocal(`localabstract:scrcpy_${this.scid}`);
+        const first = await firstChunk(video, 2000);
+        return { video, first, control: await device.openLocal(`localabstract:scrcpy_${this.scid}`) };
+      } catch {
+        video?.destroy();
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  }
+
+  /** CpRelay on the device connects both sockets to the relay listener (it retries until the server listens). */
+  private async connectRelay(relay: ScrcpyRelay, deadline: number): Promise<{ video: Duplex; first: Buffer; control: Duplex }> {
+    await this.adb.pushIfMissing(this.adbPort, relay.dexPath, relay.remoteDex);
+    const wait = relay.expect(['video', 'control'], Math.max(1000, deadline - Date.now()));
+    let video: Duplex | null = null;
+    try {
+      // same shell: drop older helper versions, then run this one in the foreground
+      const name = relay.remoteDex.slice(relay.remoteDex.lastIndexOf('/') + 1);
+      const sh = await this.adb.device(this.adbPort).shell(
+        `cd /data/local/tmp && for f in cprelay-*.dex; do [ "$f" = ${name} ] || rm -f "$f"; done; ` +
+        `CLASSPATH=${relay.remoteDex} exec app_process / CpRelay scrcpy_${this.scid} video,control ${relay.url} ${wait.token}`);
+      this.relayStream = sh;
+      this.collectLog(sh, 'relay: ');
+      sh.on('close', () => { if (!this.closed) wait.cancel(); this.close('relay exited'); });
+      video = await wait.streams.video!;
+      const first = await firstChunk(video, Math.max(1000, deadline - Date.now()));
+      return { video, first, control: await wait.streams.control! };
+    } catch (err) {
+      wait.cancel();
+      video?.destroy();
+      throw err;
+    }
   }
 
   private readVideo(sock: Duplex, initial: Buffer): void {

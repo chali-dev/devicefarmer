@@ -58,7 +58,9 @@ function session(token: string, instanceId: string) {
   const msgs: any[] = [];
   const t0 = Date.now();
   let mode: 'jpeg' | 'h264' = 'jpeg';
-  const st = { jpeg: 0, jpegBytes: 0, h264: 0, h264Bytes: 0, configs: 0, keys: 0, firstJpegAt: 0, firstKeyAt: 0, closeCode: null as number | null };
+  const st = { jpeg: 0, jpegBytes: 0, h264: 0, h264Bytes: 0, configs: 0, keys: 0, firstJpegAt: 0, firstKeyAt: 0, lastKeyAt: 0, closeCode: null as number | null };
+  /** Arrival time and pts (ms) of delta frames, for the jitter estimate (what the browser's playout buffer follows). */
+  const arrivals: { at: number; ptsMs: number }[] = [];
   ws.on('open', () => ws.send(JSON.stringify({ type: 'auth', token })));
   ws.on('message', (data, bin) => {
     const now = Date.now();
@@ -75,11 +77,12 @@ function session(token: string, instanceId: string) {
     const flags = b[0]!;
     if (flags & 1) { st.configs++; return; }
     st.h264++; st.h264Bytes += b.length;
-    if (flags & 2) { st.keys++; st.firstKeyAt ||= now; }
+    if (flags & 2) { st.keys++; st.firstKeyAt ||= now; st.lastKeyAt = now; }
+    else arrivals.push({ at: now, ptsMs: Number(b.readBigUInt64BE(1)) / 1000 });
   });
   ws.on('close', (code) => { st.closeCode = code; });
   return {
-    ws, msgs, st, t0,
+    ws, msgs, st, t0, arrivals,
     send: (m: object) => ws.send(JSON.stringify(m)),
     msg: (pred: (m: any) => boolean, label: string, timeoutMs = 15_000) => waitFor(label, () => msgs.find(pred), timeoutMs),
     close: () => new Promise<void>((r) => { if (ws.readyState === WebSocket.CLOSED) return r(); ws.once('close', () => r()); ws.close(1000); }),
@@ -96,11 +99,29 @@ async function toScrcpy(s: Session) {
   return { ok: sw.source === 'scrcpy', reply: sw, sentAt: t };
 }
 
-/** Per-interval rate of one session's counters. */
+/** Per-interval rate of one session's counters; for h264 also the arrival jitter (p50/p90 of lateness vs. pts, ms). */
 async function rate(s: Session, seconds: number, kind: 'jpeg' | 'h264') {
-  const f0 = s.st[kind], b0 = s.st[`${kind}Bytes`];
+  const f0 = s.st[kind], b0 = s.st[`${kind}Bytes`], a0 = s.arrivals.length;
   await sleep(seconds * 1000);
-  return { fps: (s.st[kind] - f0) / seconds, kBps: (s.st[`${kind}Bytes`] - b0) / 1024 / seconds };
+  const late = s.arrivals.slice(a0).map((x) => x.at - x.ptsMs);
+  const min = Math.min(...late);
+  const sorted = late.map((l) => l - min).sort((x, y) => x - y);
+  const pct = (q: number) => (sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]!) : null);
+  return { fps: (s.st[kind] - f0) / seconds, kBps: (s.st[`${kind}Bytes`] - b0) / 1024 / seconds, ...(kind === 'h264' ? { jitterP50Ms: pct(0.5), jitterP90Ms: pct(0.9) } : {}) };
+}
+
+/** Request → arrival of a fresh key frame (encoder reset on the device; no input), median of n samples, ms. */
+async function keyFrameRtt(s: Session, n = 5) {
+  const ms: number[] = [];
+  for (let i = 0; i < n; i++) {
+    await sleep(1200); // the hub allows one reset per second
+    const before = s.st.keys, t = Date.now();
+    s.send({ type: 'keyFrame' });
+    await waitFor('requested key frame', () => s.st.keys > before, 10_000, 5).catch(() => null);
+    if (s.st.keys > before) ms.push(s.st.lastKeyAt - t);
+  }
+  ms.sort((a, b) => a - b);
+  return { samples: ms, medianMs: ms.length ? ms[Math.floor(ms.length / 2)]! : null };
 }
 
 /** CPU busy % over an interval from /proc/stat (VM via limactl, or the device via adb). */
@@ -209,7 +230,7 @@ try {
   const sw = await toScrcpy(a);
   check('switch to scrcpy', sw.ok, sw.reply.reason ?? '');
   const info = await a.msg((m) => m.type === 'video', 'video info', 5000);
-  check('codec info JSON', typeof info.codec === 'string' && info.codec.startsWith('avc1.') && info.width > 0 && info.height > 0, `${info.codec} ${info.width}x${info.height}`);
+  check('codec info JSON', typeof info.codec === 'string' && info.codec.startsWith('avc1.') && info.width > 0 && info.height > 0, `${info.codec} ${info.width}x${info.height} via ${info.via}${info.relayError ? ` (relay failed: ${info.relayError})` : ''}`);
   await waitFor('config + key frame', () => a.st.configs > 0 && a.st.keys > 0, 10_000);
   const ttffScrcpy = a.st.firstKeyAt - sw.sentAt;
   check('config and key frame within 10 s', true, `first key frame ${ttffScrcpy} ms after switching (${a.st.firstKeyAt - a.t0} ms after connecting)`);
@@ -218,7 +239,7 @@ try {
     const c = await cpu();
     const pc = await procCpu(port, '[s]crcpy.Server');
     const r = await rate(a, MEASURE_S, 'h264');
-    measurements.scrcpy = { ttffMs: ttffScrcpy, ttffFromConnectMs: a.st.firstKeyAt - a.t0, ...r, cpu: await cpuEnd(c), captureProcCpuPctOfCore: await pc() };
+    measurements.scrcpy = { via: info.via, ttffMs: ttffScrcpy, ttffFromConnectMs: a.st.firstKeyAt - a.t0, ...r, cpu: await cpuEnd(c), captureProcCpuPctOfCore: await pc(), keyFrameRtt: await keyFrameRtt(a) };
     console.log(`  scrcpy: ${JSON.stringify(measurements.scrcpy)}`);
   }
   await stopMotion();

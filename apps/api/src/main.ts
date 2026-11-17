@@ -14,6 +14,7 @@ import { startAuditRetention } from './modules/audit/audit.js';
 import { auditPlugin } from './modules/audit/plugin.js';
 import { auditRoutes } from './modules/audit/routes.js';
 import { controlRoutes } from './modules/control/session.js';
+import { startRelayListener } from './modules/control/scrcpy-relay.js';
 import { eventsRoutes } from './modules/control/events-ws.js';
 import { instanceRoutes } from './modules/instances/routes.js';
 import './modules/instances/queue.js'; // registers the device-op task handlers
@@ -126,3 +127,4 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 await app.listen({ port: config.API_PORT, host: '127.0.0.1' });
+startRelayListener(app.log);

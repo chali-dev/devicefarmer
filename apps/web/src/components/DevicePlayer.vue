@@ -83,7 +83,7 @@ const fps = ref(0)
  * 画面延迟 estimate (ms): browser ↔ API round trip (ping/pong) + API ↔ device adb round trip (measured by
  * the server) + the H.264 playout buffer. Roughly touch → visible result, without encode/decode time.
  */
-const latency = ref<{ ws: number; device: number | null; buffer: number } | null>(null)
+const latency = ref<{ ws: number; device: number | null; link: string; buffer: number } | null>(null)
 const latencyTotal = computed(() => latency.value ? latency.value.ws + (latency.value.device ?? 0) + latency.value.buffer : null)
 /** Colour by total latency (preset palette tokens from ThemeVars): ≤100 green, ≤200 yellow, ≤400 orange, else red. */
 const latencyColor = computed(() => {
@@ -96,16 +96,16 @@ const latencyTipLines = computed(() => {
   if (state.value !== 'live') return [t('player.latencyPending')]
   const l = latency.value
   return [
-    l ? t('player.latencyTip', { ws: l.ws, device: l.device ?? '-', buffer: l.buffer }) : t('player.latencyPending'),
+    l ? t('player.latencyTip', { ws: l.ws, device: l.device ?? '-', link: l.link, buffer: l.buffer }) : t('player.latencyPending'),
     t('player.fpsTip', { fps: fps.value }),
   ]
 })
 let pingTimer: ReturnType<typeof setInterval> | null = null
 const PING_MS = 2000
-function onPong(msg: { t: number; deviceMs: number | null }) {
+function onPong(msg: { t: number; deviceMs: number | null; link?: string }) {
   const ws = Math.max(0, Math.round(performance.now() - msg.t))
   const buffer = source.value === 'scrcpy' ? Math.round(playoutDelay(performance.now())) : 0
-  latency.value = { ws, device: msg.deviceMs ?? null, buffer }
+  latency.value = { ws, device: msg.deviceMs ?? null, link: msg.link ?? 'adb', buffer }
 }
 
 /**

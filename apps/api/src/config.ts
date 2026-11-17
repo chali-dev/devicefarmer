@@ -68,6 +68,18 @@ const Env = z.object({
   SCRCPY_BIT_RATE_EXTERNAL: z.coerce.number().int().min(100_000).default(600_000),
   /** Periodic key frame interval for external phones, seconds (scrcpy default 10). */
   SCRCPY_KEY_INTERVAL_EXTERNAL_S: z.coerce.number().int().min(1).max(600).default(60),
+  /**
+   * Experimental relay for external phones: the device helper (infra/device-tools/relay) carries the
+   * scrcpy sockets over a WebSocket to this public URL instead of adb (e.g. wss://<name>.ngrok-free.dev/scrcpy-relay
+   * forwarded to SCRCPY_RELAY_PORT). Unset = off. Falls back to adb when the relay doesn't connect.
+   */
+  // URL-safe characters only: it is passed on the device's shell command line
+  SCRCPY_RELAY_URL: z.string().regex(/^wss?:\/\/[\w.\-]+(:\d+)?(\/[\w.\-/]*)?$/).optional(),
+  /** Local port of the relay listener (127.0.0.1 only; expose just this port, never the API). */
+  SCRCPY_RELAY_PORT: z.coerce.number().int().min(1).max(65535).default(3010),
+  SCRCPY_RELAY_DEX_PATH: z.string().default('../../infra/device-tools/relay/out/cprelay.dex'),
+  /** Bit rate over the relay (plain TCP carries several Mb/s where adb carried ~0.8). */
+  SCRCPY_BIT_RATE_RELAY: z.coerce.number().int().min(100_000).default(2_000_000),
   /** App library storage (imported official APKs). Not cleaned up automatically. */
   LIBRARY_DIR: z.string().default('var/library'),
   /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */

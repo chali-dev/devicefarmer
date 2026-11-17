@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../../config.js';
 import {
   ACTION_DOWN, ACTION_MOVE, ACTION_UP, KEYCODES, ScrcpyServer, encodeGetClipboard, encodeKeycode, encodeResetVideo,
-  encodeSetClipboard, encodeText, encodeTouch, h264CodecString, type VideoPacket,
+  encodeSetClipboard, encodeText, encodeTouch, h264CodecString, type ScrcpyRelay, type VideoPacket,
 } from '../../adapters/scrcpy.js';
 import { adb } from '../../services.js';
+import { expectRelay, relayRttMs } from './scrcpy-relay.js';
 
 /**
  * One scrcpy server per device, shared by every viewer (fan-out). Late joiners get the cached config
@@ -33,6 +36,8 @@ export interface ScrcpyHandle {
   getClipboard(): Promise<string>;
   /** A fresh key frame for everyone (rate-limited), e.g. after the browser dropped frames. */
   requestKeyFrame(): void;
+  /** Round trip of the relay (control socket) when the device streams through it; undefined over adb. */
+  relayRttMs(): number | null | undefined;
   leave(): void;
 }
 
@@ -42,11 +47,28 @@ const CLIPBOARD_POLL_MS = 1000;
 const RESET_MIN_GAP_MS = 1000;
 /** No answer to a clipboard read within this time = empty clipboard (the server sends nothing then). */
 const CLIPBOARD_EMPTY_MS = 1500;
+/** Start budget over the relay; past it the adb path is tried instead. */
+const RELAY_START_MS = 10_000;
+
+/** Relay settings when configured and the helper is built (versioned on the device by content hash, re-hashed after a rebuild). */
+let relayDex: { mtimeMs: number; remote: string } | null = null;
+function relayOptions(): ScrcpyRelay | undefined {
+  if (!config.SCRCPY_RELAY_URL) return undefined;
+  const dexPath = path.resolve(config.SCRCPY_RELAY_DEX_PATH);
+  const st = fs.statSync(dexPath, { throwIfNoEntry: false });
+  if (!st) return undefined;
+  if (relayDex?.mtimeMs !== st.mtimeMs) {
+    relayDex = { mtimeMs: st.mtimeMs, remote: `/data/local/tmp/cprelay-${createHash('sha256').update(fs.readFileSync(dexPath)).digest('hex').slice(0, 12)}.dex` };
+  }
+  return { url: config.SCRCPY_RELAY_URL, dexPath, remoteDex: relayDex.remote, expect: expectRelay, rttMs: relayRttMs };
+}
 
 interface ViewerState { v: ScrcpyViewer; needKey: boolean }
 
 class Share {
-  readonly server: ScrcpyServer;
+  server: ScrcpyServer;
+  /** Why the relay was not used (it failed and adb took over). */
+  relayError: string | null = null;
   readonly viewers = new Set<ViewerState>();
   readonly ready: Promise<void>;
   config: Buffer | null = null;
@@ -61,29 +83,18 @@ class Share {
   /** Last position per pointer, for 'up' events (the client sends no coordinates there). */
   pointers = new Map<number, { x: number; y: number }>();
 
-  constructor(readonly adbPort: number, external: boolean) {
-    // External phones stream through a narrow tunnel (BitBrowser: ~1-2 Mb/s): a bit rate above what it
-    // carries queues up in the tunnel and the picture lags further and further behind.
-    this.server = new ScrcpyServer(adb, adbPort, path.resolve(config.SCRCPY_SERVER_PATH), {
-      maxSize: config.SCRCPY_MAX_SIZE, maxFps: config.SCRCPY_MAX_FPS,
-      bitRate: external ? config.SCRCPY_BIT_RATE_EXTERNAL : config.SCRCPY_BIT_RATE,
-      // A key frame (~40 KB) takes several round trips through the tunnel and stalls the picture each
-      // time; viewers that need one (late join, dropped frames) request it with RESET_VIDEO anyway.
-      ...(external ? { keyFrameIntervalS: config.SCRCPY_KEY_INTERVAL_EXTERNAL_S } : {}),
-    });
-    this.server.on('packet', (p: VideoPacket) => this.onPacket(p));
-    this.server.on('clipboard', (text: string) => this.onClipboard(text));
-    this.server.on('close', (reason: string) => {
-      if (shares.get(adbPort) === this) shares.delete(adbPort);
-      if (this.stopTimer) clearTimeout(this.stopTimer);
-      if (this.pollTimer) clearInterval(this.pollTimer);
-      for (const w of this.clipWaiters) w(this.clipboard ?? '');
-      this.clipWaiters = [];
-      const vs = [...this.viewers];
-      this.viewers.clear();
-      for (const s of vs) s.v.onEnd(reason);
-    });
-    this.ready = this.server.start().then(() => {
+  constructor(readonly adbPort: number, readonly external: boolean) {
+    const relay = external ? relayOptions() : undefined;
+    this.server = this.makeServer(relay);
+    this.ready = (relay
+      ? this.server.start(RELAY_START_MS).catch(async (err: Error) => {
+        this.relayError = err.message;
+        this.server = this.makeServer(undefined);
+        await this.server.start();
+      })
+      : this.server.start()
+    ).then(() => {
+      this.server.on('close', (reason: string) => this.onClose(reason));
       this.pollTimer = setInterval(() => { if (this.viewers.size) this.server.send(encodeGetClipboard()); }, CLIPBOARD_POLL_MS);
       this.server.send(encodeGetClipboard());
       // The server answers nothing while the clipboard is empty: then the baseline is "".
@@ -91,8 +102,37 @@ class Share {
     });
   }
 
+  private makeServer(relay: ScrcpyRelay | undefined): ScrcpyServer {
+    // External phones over adb stream through a narrow tunnel (BitBrowser: one adb stream carries ~0.8 Mb/s):
+    // a bit rate above that queues up and the picture lags further and further behind. The relay
+    // (plain TCP) carries several Mb/s, so it gets its own bit rate and scrcpy's default key frame interval.
+    const server = new ScrcpyServer(adb, this.adbPort, path.resolve(config.SCRCPY_SERVER_PATH), {
+      maxSize: config.SCRCPY_MAX_SIZE, maxFps: config.SCRCPY_MAX_FPS,
+      bitRate: relay ? config.SCRCPY_BIT_RATE_RELAY : this.external ? config.SCRCPY_BIT_RATE_EXTERNAL : config.SCRCPY_BIT_RATE,
+      // A key frame (~40 KB) takes several adb round trips through the tunnel and stalls the picture each
+      // time; viewers that need one (late join, dropped frames) request it with RESET_VIDEO anyway.
+      ...(this.external && !relay ? { keyFrameIntervalS: config.SCRCPY_KEY_INTERVAL_EXTERNAL_S } : {}),
+      ...(relay ? { relay } : {}),
+    });
+    server.on('packet', (p: VideoPacket) => this.onPacket(p));
+    server.on('clipboard', (text: string) => this.onClipboard(text));
+    return server;
+  }
+
+  private onClose(reason: string) {
+    if (shares.get(this.adbPort) === this) shares.delete(this.adbPort);
+    if (this.stopTimer) clearTimeout(this.stopTimer);
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    for (const w of this.clipWaiters) w(this.clipboard ?? '');
+    this.clipWaiters = [];
+    const vs = [...this.viewers];
+    this.viewers.clear();
+    for (const s of vs) s.v.onEnd(reason);
+  }
+
   videoInfo() {
-    return { type: 'video', codec: this.codec, width: this.server.width, height: this.server.height };
+    // via: how the device's video reaches the API (relay = CpRelay WebSocket, adb = adb local sockets)
+    return { type: 'video', codec: this.codec, width: this.server.width, height: this.server.height, via: this.server.via, relayError: this.relayError };
   }
 
   requestKeyFrame() {
@@ -227,6 +267,9 @@ export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external
     },
     requestKeyFrame() {
       sh.requestKeyFrame();
+    },
+    relayRttMs() {
+      return sh.server.relayRttMs();
     },
     leave() {
       if (left) return;
