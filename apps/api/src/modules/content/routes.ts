@@ -152,7 +152,11 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.get('/api/contents/:id', { schema: { params: Id } }, async (req) => {
     const row = await visibleContent(req.user, req.params.id);
-    const tasks = await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, row.id)).orderBy(desc(schema.publishTasks.scheduledAt));
+    // Users see only publish tasks of their own accounts: an admin may have distributed this content to
+    // another user's account, whose handle must not reach the content owner (运营只能看到自己的媒体号).
+    const tasks = await db.select().from(schema.publishTasks)
+      .where(and(eq(schema.publishTasks.contentId, row.id), isAdmin(req.user) ? undefined : eq(schema.publishTasks.userId, req.user.id)))
+      .orderBy(desc(schema.publishTasks.scheduledAt));
     return { content: (await toContentItems([row]))[0], translations: await translationsOf(row.id), publishTasks: await toPublishItems(tasks, req.user) };
   });
 

@@ -1,0 +1,321 @@
+/**
+ * 运营只能看到自己的媒体号: an operator (role user) never sees another user's social accounts, anywhere.
+ * Real API + DB, no mocks. Two temporary users A and B (+ the built-in admin), placeholder `instances` rows
+ * (adb ports 5598–5599, no containers). User A is granted device D1, which hosts one of B's accounts.
+ * Seeds for both users: accounts (group, tag, personal persona), media + content with targets, scheduled
+ * publish tasks (plus an admin distribution of A's content to B's account), manual analytics stats,
+ * manual comments + a reply draft, an account-check task and an account.problem notification.
+ * Then, as A: every list/detail/filter/count/action endpoint must never contain B's account ids, handles,
+ * display name, group, tag or persona, others' rows are 404 and ownerId filters are ignored or 403;
+ * A's /api/events WebSocket must not carry B's account events. The admin sees both.
+ * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/account-visibility-check.ts
+ * (E2E_API=http://127.0.0.1:<port> for another API).
+ */
+import { randomBytes } from 'node:crypto';
+import { inArray } from 'drizzle-orm';
+import sharp from 'sharp';
+import { db, schema, sqlClient } from '../src/db/index.js';
+
+const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
+const results: [string, boolean][] = [];
+const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail.slice(0, 400)}` : ''}`); };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function http<T = any>(method: string, path: string, token?: string, body?: unknown) {
+  const form = body instanceof FormData;
+  const res = await fetch(API + path, {
+    method,
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined && !form ? { 'content-type': 'application/json' } : {}) },
+    body: body === undefined ? undefined : form ? body : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json: any = null;
+  try { json = JSON.parse(text); } catch { /* 204 */ }
+  return { status: res.status, body: json as T, text };
+}
+async function login(username: string, password: string): Promise<string> {
+  const r = await http('POST', '/api/auth/login', undefined, { username, password });
+  if (!r.body?.token) throw new Error(`login ${username} failed: ${r.status}`);
+  return r.body.token;
+}
+async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 60_000): Promise<T> {
+  const t0 = Date.now();
+  for (;;) { const v = await fn().catch(() => null); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${label}`); await sleep(500); }
+}
+async function upload(token: string, name: string, r: number): Promise<string> {
+  const data = await sharp({ create: { width: 360, height: 640, channels: 3, background: { r, g: 120, b: 80 } } }).jpeg().toBuffer();
+  const fd = new FormData();
+  fd.append('scope', 'mine');
+  fd.append('file', new Blob([new Uint8Array(data)], { type: 'image/jpeg' }), name);
+  const res = await http('POST', '/api/media/upload', token, fd);
+  if (res.status !== 201) throw new Error(`upload failed ${res.status} ${res.text}`);
+  const id: string = res.body.item.id;
+  await waitFor(`media ${name} ready`, async () => (await http('GET', `/api/media/${id}`, token)).body.item.status === 'ready', 120_000);
+  return id;
+}
+
+const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
+const tag = randomBytes(3).toString('hex');
+const userIds: string[] = [];
+const fakeIds: string[] = [];
+const wsMessages: string[] = [];
+let ws: WebSocket | null = null;
+
+try {
+  // ---------------------------------------------------------------- setup
+  const pw = randomBytes(12).toString('base64url');
+  for (const n of ['a', 'b']) {
+    const r = await http('POST', '/api/users', T, { username: `av${n}${tag}`, password: pw, role: 'user' });
+    if (r.status !== 201) throw new Error(`create user: ${r.status} ${r.text}`);
+    userIds.push(r.body.user.id);
+  }
+  const [uA, uB] = userIds as [string, string];
+  const A = await login(`ava${tag}`, pw);
+  const B = await login(`avb${tag}`, pw);
+  const fakes = await db.insert(schema.instances).values([1, 2].map((n) => ({
+    name: `avfake-${tag}-${n}`, image: 'none', adbPort: 5597 + n, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
+  }))).returning();
+  fakeIds.push(...fakes.map((f) => f.id));
+  const [D1, D2] = fakes as [typeof fakes[0], typeof fakes[0]];
+  await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: [D1.id] });
+  await http('PUT', `/api/users/${uB}/grants`, T, { instanceIds: [D2.id] });
+
+  // A's /api/events WebSocket, open before B does anything.
+  ws = new WebSocket(`${API.replace(/^http/, 'ws')}/api/events`);
+  await new Promise<void>((resolve, reject) => {
+    ws!.onopen = () => ws!.send(JSON.stringify({ type: 'auth', token: A }));
+    ws!.onmessage = (ev) => { const s = String(ev.data); wsMessages.push(s); if (s.includes('"ready"')) resolve(); };
+    ws!.onerror = () => reject(new Error('ws error'));
+    setTimeout(() => reject(new Error('ws ready timeout')), 10_000);
+  });
+
+  // Per user: group, personal persona, instagram account (B's on D1, A's unlinked), media, content with target.
+  const seed = async (who: 'a' | 'b', token: string) => {
+    const g = await http('POST', '/api/social/groups', token, { name: `av${who}group${tag}` });
+    const p = await http('POST', '/api/personas', token, { scope: 'mine', name: `av${who}persona${tag}` });
+    const acc = await http('POST', '/api/social/accounts', token, {
+      platform: 'instagram', handle: `av${who}_${tag}_main`, displayName: `AV${who.toUpperCase()}Display${tag}`, notes: `av${who}notes${tag}`,
+      groupId: g.body.group.id, personaId: p.body.persona.id, tags: [`av${who}tag${tag}`],
+    });
+    if (acc.status !== 201) throw new Error(`account ${who}: ${acc.status} ${acc.text}`);
+    const media = await upload(token, `av${who}.jpg`, who === 'a' ? 30 : 200);
+    const c = await http('POST', '/api/contents', token, { title: `av${who}content${tag}`, body: 'Body', mediaIds: [media], targetIds: [acc.body.account.id] });
+    if (c.status !== 201) throw new Error(`content ${who}: ${c.status} ${c.text}`);
+    return { group: g.body.group.id as string, persona: p.body.persona.id as string, account: acc.body.account.id as string, content: c.body.content.id as string };
+  };
+  const a = await seed('a', A);
+  const b = await seed('b', B);
+  let r = await http('PUT', `/api/social/accounts/${b.account}`, T, { instanceId: D1.id });
+  check('setup: admin links B\'s account to D1 (A has a grant on D1, B none)', r.status === 200 && r.body.account.instance?.id === D1.id, r.text);
+
+  const later = new Date(Date.now() + 2 * 86400_000).toISOString();
+  const dA = await http('POST', `/api/contents/${a.content}/distribute`, A, { targets: [{ accountId: a.account, scheduledAt: later }] });
+  const dB = await http('POST', `/api/contents/${b.content}/distribute`, B, { targets: [{ accountId: b.account, scheduledAt: later }] });
+  // Admin distributes A's content to B's account (allowed for admins): the task belongs to B.
+  const dX = await http('POST', `/api/contents/${a.content}/distribute`, T, { targets: [{ accountId: b.account, scheduledAt: later }] });
+  check('setup: scheduled publish tasks (A, B, admin: A\'s content → B\'s account)', dA.status === 201 && dB.status === 201 && dX.status === 201, `${dA.text} ${dB.text} ${dX.text}`);
+  const ptB: string = dB.body.created[0].id;
+  const ptX: string = dX.body.created[0].id;
+  const publishIds = [dA.body.created[0].id, ptB, ptX];
+
+  const today = new Date().toISOString().slice(0, 10);
+  r = await http('POST', `/api/analytics/accounts/${a.account}/stats`, A, { followers: 100, posts: 3 });
+  const rb = await http('POST', `/api/analytics/accounts/${b.account}/stats`, B, { followers: 777, posts: 9 });
+  check('setup: manual analytics stats for A and B', r.status === 201 && rb.status === 201, r.text + rb.text);
+
+  const cmA = await http('POST', '/api/comments', A, { accountId: a.account, text: `ava comment ${tag}`, authorName: 'Viewer A', externalPostId: 'post-a' });
+  const cmB = await http('POST', '/api/comments', B, { accountId: b.account, text: `avb comment ${tag}`, authorName: 'Viewer B', externalPostId: `avbpost${tag}` });
+  const rpB = await http('POST', `/api/comments/${cmB.body.comment?.id}/replies`, B, { text: `avb reply ${tag}` });
+  check('setup: manual comments (A, B) + B\'s reply draft', cmA.status === 201 && cmB.status === 201 && rpB.status === 201, cmA.text + cmB.text + rpB.text);
+  const commentB: string = cmB.body.comment.id;
+  const replyB: string = rpB.body.reply.id;
+
+  // B: account check task (manual-only without a connection) + an account.problem alert ("mark checked").
+  r = await http('POST', `/api/platforms/accounts/${b.account}/check`, B);
+  const taskB: string = r.body?.taskId;
+  check('setup: B queues a social-account-check task', r.status === 202 && !!taskB, r.text);
+  await waitFor('B check task finished', async () => ['success', 'failed'].includes((await http('GET', `/api/tasks/${taskB}`, B)).body?.task?.status));
+  r = await http('POST', `/api/social/accounts/${b.account}/checked`, B, { loginStatus: 'logged_out', message: 'test' });
+  check('setup: B marks the account logged out (account.problem)', r.status === 200, r.text);
+  await waitFor('B notification', async () => ((await http('GET', '/api/notifications', B)).body?.items ?? (await http('GET', '/api/notifications', B)).body?.notifications ?? [])
+    .some((n: any) => n.kind === 'account.problem'), 15_000).catch(() => undefined);
+  await sleep(1500); // let pending events reach the WebSocket
+
+  // ---------------------------------------------------------------- what must never reach A
+  const bTokens = [b.account, b.group, b.persona, `avb_${tag}_main`, `AVBDisplay${tag}`, `avbgroup${tag}`, `avbpersona${tag}`, `avbtag${tag}`, `avbnotes${tag}`,
+    ptB, ptX, commentB, replyB, taskB, `avb comment ${tag}`, `avb reply ${tag}`, `avbpost${tag}`];
+  const leaks = (text: string) => bTokens.filter((t) => text.toLowerCase().includes(t.toLowerCase()));
+  const clean = async (label: string, path: string, expect = 200, token = A) => {
+    const res = await http('GET', path, token);
+    const l = leaks(res.text);
+    check(`A: GET ${label} → ${expect}, no B data`, res.status === expect && !l.length, `${res.status} leaks=${l.join(',')} ${res.text.slice(0, 200)}`);
+    return res;
+  };
+
+  // social accounts
+  r = await clean('/api/social/accounts', '/api/social/accounts?pageSize=200');
+  check('A: account list = exactly A\'s account', r.body.total === 1 && r.body.items[0]?.id === a.account, r.text.slice(0, 300));
+  r = await clean('/api/social/accounts?ownerId=<B> (ignored for users)', `/api/social/accounts?ownerId=${uB}`);
+  check('A: ownerId=<B> still returns only A\'s account', r.body.items.every((x: any) => x.userId === uA));
+  r = await clean('/api/social/accounts?instanceId=<D1> (granted device hosting B\'s account)', `/api/social/accounts?instanceId=${D1.id}`);
+  check('A: D1\'s account list is empty for A', r.body.total === 0);
+  for (const q of [`q=avb_${tag}`, `groupId=${b.group}`, `personaId=${b.persona}`, `tags=avbtag${tag}`, 'loginStatus=logged_out', 'exception=true']) {
+    r = await clean(`/api/social/accounts?${q.split('=')[0]}=…`, `/api/social/accounts?${q}`);
+    check(`A: filter ${q.split('=')[0]} matching only B's account → 0`, r.body.total === 0, r.text.slice(0, 200));
+  }
+  await clean('/api/social/tags', '/api/social/tags');
+  await clean('/api/social/tags?ownerId=<B>', `/api/social/tags?ownerId=${uB}`);
+  r = await clean('/api/social/groups?ownerId=<B>', `/api/social/groups?ownerId=${uB}`);
+  check('A: groups = only A\'s group', r.body.groups.length === 1 && r.body.groups[0].id === a.group);
+  await clean('/api/social/accounts/<B>', `/api/social/accounts/${b.account}`, 404);
+  await clean('/api/social/accounts/<B>/logs', `/api/social/accounts/${b.account}/logs`, 404);
+  const deny = async (label: string, method: string, path: string, body?: unknown, codes = [404]) => {
+    const res = await http(method, path, A, body);
+    check(`A: ${label} → ${codes.join('/')}`, codes.includes(res.status) && !leaks(res.text).length, `${res.status} ${res.text.slice(0, 200)}`);
+  };
+  await deny('PUT B\'s account', 'PUT', `/api/social/accounts/${b.account}`, { notes: 'x' });
+  await deny('mark B\'s account checked', 'POST', `/api/social/accounts/${b.account}/checked`, {});
+  await deny('batch with B\'s account', 'POST', '/api/social/accounts/batch', { ids: [a.account, b.account], action: 'add-tags', tags: ['x'] });
+  await deny('rename B\'s group', 'PUT', `/api/social/groups/${b.group}`, { name: 'x' });
+  await deny('move own account into B\'s group', 'PUT', `/api/social/accounts/${a.account}`, { groupId: b.group });
+  await deny('set B\'s personal persona on own account', 'PUT', `/api/social/accounts/${a.account}`, { personaId: b.persona }, [400, 404]);
+  await deny('DELETE B\'s account', 'DELETE', `/api/social/accounts/${b.account}`);
+  // A second instagram account of A on D1: refused by the per-device limit, which counts B's account (open question, see report).
+  r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `ava_${tag}_second`, instanceId: D1.id });
+  check('A: device limit on D1 (counts B\'s account) answers without B\'s handle', !leaks(r.text).length, r.text);
+  console.log(`  (info) linking a 2nd instagram account of A to D1 → ${r.status} ${r.body?.code ?? ''}`);
+  r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `avb_${tag}_main` });
+  console.log(`  (info) creating B's handle as A → ${r.status} ${r.body?.code ?? ''} (handles are unique across owners)`);
+
+  // devices
+  r = await clean('/api/instances', '/api/instances');
+  check('A: device list = D1 only', r.body.instances.length === 1 && r.body.instances[0].id === D1.id);
+  await clean('/api/instances/<D1>', `/api/instances/${D1.id}`);
+  await clean('/api/system/connections', '/api/system/connections');
+  await clean('/api/system/connections/<D1>/history', `/api/system/connections/${D1.id}/history`);
+
+  // analytics
+  r = await clean('/api/analytics/summary', '/api/analytics/summary?days=7');
+  await clean('/api/analytics/summary?ownerId=<B>', `/api/analytics/summary?days=7&ownerId=${uB}`);
+  check('A: analytics summary has no 777 followers (B\'s)', !r.text.includes('777'));
+  await clean('/api/analytics/accounts/<B>', `/api/analytics/accounts/${b.account}`, 404);
+  await deny('POST stats on B\'s account', 'POST', `/api/analytics/accounts/${b.account}/stats`, { followers: 1 });
+  await deny('DELETE B\'s stats day', 'DELETE', `/api/analytics/accounts/${b.account}/stats/${today}`);
+  await deny('refresh B\'s analytics', 'POST', `/api/analytics/accounts/${b.account}/refresh`);
+
+  // platform connections
+  await clean('/api/platforms/connections?accountIds=<B>', `/api/platforms/connections?accountIds=${b.account}`);
+  await deny('connect B\'s account', 'POST', '/api/platforms/instagram/connect', { socialAccountId: b.account }, [400, 404]);
+  await deny('disconnect B\'s account', 'DELETE', `/api/platforms/accounts/${b.account}/connection`);
+  await deny('check B\'s account', 'POST', `/api/platforms/accounts/${b.account}/check`);
+
+  // content + publish
+  r = await clean('/api/contents', '/api/contents');
+  check('A: contents = A\'s content, targets = A\'s account only', r.body.items.length === 1 && r.body.items[0].targets.every((x: any) => x.id === a.account));
+  await clean('/api/contents?ownerId=<B>', `/api/contents?ownerId=${uB}`, 403);
+  r = await clean('/api/contents/<A> (admin also distributed it to B\'s account)', `/api/contents/${a.content}`);
+  check('A: content detail lists only A\'s publish task', r.body.publishTasks?.length === 1 && r.body.publishTasks[0].accountId === a.account, r.text.slice(0, 300));
+  await clean('/api/contents/<B>', `/api/contents/${b.content}`, 404);
+  await deny('create content targeting B\'s account', 'POST', '/api/contents', { title: 'x', targetIds: [b.account] });
+  await deny('distribute to B\'s account', 'POST', `/api/contents/${a.content}/distribute`, { targets: [{ accountId: b.account, scheduledAt: later }] });
+  r = await clean('/api/publish/tasks', '/api/publish/tasks');
+  const sum = (o: Record<string, number>) => Object.values(o ?? {}).reduce((s, n) => s + Number(n), 0);
+  check('A: publish tasks + byStatus/byPostType counts = 1 (own only)', r.body.total === 1 && sum(r.body.byStatus) === 1 && sum(r.body.byPostType) === 1, r.text.slice(0, 300));
+  r = await clean('/api/publish/tasks?accountId=<B>', `/api/publish/tasks?accountId=${b.account}`);
+  check('A: accountId=<B> → 0 and zero counts', r.body.total === 0 && sum(r.body.byStatus) === 0);
+  await clean('/api/publish/tasks?ownerId=<B>', `/api/publish/tasks?ownerId=${uB}`, 403);
+  const from = new Date(Date.now() - 86400_000).toISOString(); const to = new Date(Date.now() + 7 * 86400_000).toISOString();
+  r = await clean('/api/publish/tasks?from&to (calendar)', `/api/publish/tasks?from=${from}&to=${to}`);
+  check('A: calendar range counts own only', r.body.total === 1);
+  await clean('/api/publish/tasks/<B>', `/api/publish/tasks/${ptB}`, 404);
+  await clean('/api/publish/tasks/<admin → B>', `/api/publish/tasks/${ptX}`, 404);
+  await deny('cancel B\'s publish task', 'POST', `/api/publish/tasks/${ptB}/cancel`);
+
+  // comments
+  r = await clean('/api/comments/accounts', '/api/comments/accounts');
+  check('A: comment accounts = A\'s only', r.body.accounts.length === 1 && r.body.accounts[0].id === a.account);
+  r = await clean('/api/comments', '/api/comments');
+  check('A: comments total 1, byStatus sums to 1', r.body.total === 1 && sum(r.body.byStatus) === 1, r.text.slice(0, 200));
+  r = await clean('/api/comments?accountId=<B>', `/api/comments?accountId=${b.account}`);
+  check('A: accountId=<B> → 0, byStatus zero', r.body.total === 0 && sum(r.body.byStatus) === 0);
+  await clean('/api/comments?ownerId=<B>', `/api/comments?ownerId=${uB}`, 403);
+  await clean('/api/comments/posts?accountId=<B>', `/api/comments/posts?accountId=${b.account}`, 404);
+  await clean('/api/comments/<B>', `/api/comments/${commentB}`, 404);
+  r = await clean('/api/comment-replies', '/api/comment-replies');
+  await clean('/api/comment-replies?accountId=<B>', `/api/comment-replies?accountId=${b.account}`);
+  await clean('/api/comment-replies?ownerId=<B>', `/api/comment-replies?ownerId=${uB}`, 403);
+  await clean('/api/comment-replies/<B>', `/api/comment-replies/${replyB}`, 404);
+  await deny('manual comment on B\'s account', 'POST', '/api/comments', { accountId: b.account, text: 'x', authorName: 'x' });
+  await deny('sync B\'s comments', 'POST', `/api/comments/accounts/${b.account}/sync`);
+  await deny('reply to B\'s comment', 'POST', `/api/comments/${commentB}/replies`, { text: 'x' });
+  await deny('approve B\'s reply', 'POST', `/api/comment-replies/${replyB}/approve`, {});
+  await clean('/api/comment-templates', '/api/comment-templates?kind=all');
+
+  // personas / categories
+  r = await clean('/api/personas?scope=mine', '/api/personas?scope=mine');
+  check('A: personal personas = A\'s only', r.body.personas.length === 1 && r.body.personas[0].id === a.persona);
+  await clean('/api/personas?scope=public', '/api/personas?scope=public');
+  await clean('/api/personas?scope=all-users', `/api/personas?scope=all-users&ownerId=${uB}`, 403);
+  await deny('rename B\'s persona', 'PATCH', `/api/personas/${b.persona}`, { name: 'x' });
+  await clean('/api/content-categories?scope=mine', '/api/content-categories?scope=mine');
+
+  // dashboard
+  r = await clean('/api/dashboard', '/api/dashboard');
+  const w = r.body.widgets ?? r.body;
+  check('A: dashboard social total = 1, linked = 0', w.social?.total === 1 && w.social?.linked === 0, JSON.stringify(w.social));
+  check('A: dashboard has no perUser breakdown', !w.perUser);
+  await clean('/api/dashboard?userId=<B>', `/api/dashboard?userId=${uB}`, 403);
+  const asA = await http('GET', `/api/dashboard?userId=${uA}`, T);
+  const wa = asA.body.widgets ?? asA.body;
+  check('admin: dashboard as A shows the same social numbers', JSON.stringify(wa.social) === JSON.stringify(w.social), `${JSON.stringify(wa.social)} vs ${JSON.stringify(w.social)}`);
+
+  // task centre
+  r = await clean('/api/tasks', '/api/tasks');
+  await clean('/api/tasks?refId=<B account>', `/api/tasks?refId=${b.account}`);
+  await clean('/api/tasks?userId=<B>', `/api/tasks?userId=${uB}`);
+  await clean('/api/tasks?instanceId=<D1>', `/api/tasks?instanceId=${D1.id}`);
+  await clean('/api/tasks/stats', '/api/tasks/stats');
+  await clean('/api/tasks/<B check task>', `/api/tasks/${taskB}`, 404);
+  await deny('retry B\'s task', 'POST', `/api/tasks/${taskB}/retry`);
+
+  // alerts, audit
+  await clean('/api/notifications', '/api/notifications');
+  r = await http('GET', '/api/notifications', B);
+  check('B: received the account.problem alert about own account', r.text.includes('account.problem') && r.text.includes(`avb_${tag}_main`), r.text.slice(0, 300));
+  await clean('/api/audit', '/api/audit', 403);
+
+  // WebSocket
+  const wsLeaks = wsMessages.filter((m) => leaks(m).length);
+  check(`A's /api/events WebSocket: ${wsMessages.length} messages, none about B's account`, wsLeaks.length === 0, wsLeaks.slice(0, 2).join(' | '));
+
+  // ---------------------------------------------------------------- admin sees both
+  r = await http('GET', '/api/social/accounts?pageSize=200', T);
+  check('admin: account list contains A\'s and B\'s', [a.account, b.account].every((id) => r.body.items.some((x: any) => x.id === id)));
+  r = await http('GET', `/api/social/accounts?ownerId=${uB}`, T);
+  check('admin: ownerId=<B> → B\'s account only', r.body.total === 1 && r.body.items[0].id === b.account);
+  r = await http('GET', `/api/analytics/summary?days=7&ownerId=${uB}`, T);
+  check('admin: analytics summary for B has B\'s account', r.status === 200 && r.text.includes(b.account));
+  r = await http('GET', `/api/contents/${a.content}`, T);
+  check('admin: A\'s content detail lists both publish tasks', r.body.publishTasks?.length === 2);
+  r = await http('GET', `/api/publish/tasks?ownerId=${uB}`, T);
+  check('admin: publish tasks for B = 2', r.body.total === 2);
+  r = await http('GET', `/api/comments?ownerId=${uB}`, T);
+  check('admin: comments of B visible', r.body.total === 1);
+  r = await http('GET', `/api/social/accounts/${b.account}`, B);
+  check('B: own account detail visible', r.status === 200 && r.body.account.handle === `avb_${tag}_main`);
+} catch (err) {
+  check(`unexpected error: ${(err as Error).message}`, false);
+} finally {
+  try { ws?.close(); } catch { /* ignore */ }
+  const pts = userIds.length ? await db.select({ id: schema.publishTasks.id, status: schema.publishTasks.status }).from(schema.publishTasks).where(inArray(schema.publishTasks.userId, userIds)) : [];
+  for (const p of pts) if (['pending', 'scheduled'].includes(p.status)) await http('POST', `/api/publish/tasks/${p.id}/cancel`, T).catch(() => undefined);
+  if (pts.length) await db.delete(schema.tasks).where(inArray(schema.tasks.refId, pts.map((p) => p.id)));
+  for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
+  if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  const left = userIds.length ? await db.select().from(schema.socialAccounts).where(inArray(schema.socialAccounts.userId, userIds)) : [];
+  check('cleanup: users (accounts, contents, publish tasks) and placeholder devices removed', left.length === 0);
+  await sqlClient.end();
+  const failed = results.filter((x) => !x[1]).length;
+  console.log(`\n${results.length - failed}/${results.length} checks passed`);
+  process.exit(failed ? 1 : 0);
+}
