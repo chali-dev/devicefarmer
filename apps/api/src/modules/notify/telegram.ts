@@ -1,55 +1,31 @@
-import { UnrecoverableError } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { config } from '../../config.js';
-import { db, schema } from '../../db/index.js';
-import { badRequest, HttpError } from '../../lib/errors.js';
-import { openSecret, sealSecret } from '../../lib/secret-box.js';
+import { HttpError } from '../../lib/errors.js';
 import { scrub } from '../platforms/http.js';
-import { registerTaskHandler } from '../tasks/core.js';
-import { ALERT_KINDS, type AlertKind } from './rules.js';
+import { ChannelFinalError, type ChannelDriver } from './channel-driver.js';
+import type { AlertKind } from './rules.js';
 
 /**
- * Telegram channel (告警通知 → Telegram bot). Admin settings in `settings` key `alerts.telegram`: bot token
- * secret-box sealed and write-only, chat id, enabled, message language. Messages are plain text built here
- * from a template per kind (zh-CN / en) and sent by the device-less `notify-telegram` task (retried on
- * 429/5xx/network, not on other 4xx), so the caller never waits for Telegram. The token is only put in the
- * request URL and scrubbed from any text that is stored or returned.
+ * Telegram alert channel type (告警通道 → Telegram bot): one driver for any number of channels
+ * (alert_channels rows of type `telegram`). Config: bot token (secret: sealed, write-only), chat id,
+ * optional forum topic (message thread) id, message language. Messages are plain text built here from a
+ * template per kind (zh-CN / en). Sent by the `notify-telegram` task (channels.ts): retried on
+ * 429/5xx/network, not on other 4xx. The token is only put in the request URL and scrubbed from any text
+ * that is stored or returned.
  */
-export const TELEGRAM_TASK = 'notify-telegram';
 export const TELEGRAM_LANGS = ['zh-CN', 'en'] as const;
 export type TelegramLang = (typeof TELEGRAM_LANGS)[number];
-const KEY = 'alerts.telegram';
 
-interface Stored { enabled?: boolean; chatId?: string | null; tokenEnc?: string | null; language?: TelegramLang }
-export interface TelegramSettings { enabled: boolean; chatId: string | null; tokenSet: boolean; language: TelegramLang; updatedAt: string | null }
-
-async function load(): Promise<{ v: Stored; updatedAt: Date | null }> {
-  const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));
-  return { v: (row?.value as Stored | undefined) ?? {}, updatedAt: row?.updatedAt ?? null };
-}
-
-export async function getTelegramSettings(): Promise<TelegramSettings> {
-  const { v, updatedAt } = await load();
-  return { enabled: Boolean(v.enabled), chatId: v.chatId ?? null, tokenSet: Boolean(v.tokenEnc), language: v.language ?? 'zh-CN', updatedAt: updatedAt?.toISOString() ?? null };
-}
-
-/** Partial update; `token: null` clears the token (and disables the channel). Enabling needs token + chat id. */
-export async function saveTelegramSettings(p: { enabled?: boolean; chatId?: string | null; token?: string | null; language?: TelegramLang }): Promise<TelegramSettings> {
-  const { v } = await load();
-  const next: Stored = {
-    enabled: p.enabled ?? v.enabled ?? false,
-    chatId: p.chatId !== undefined ? p.chatId : v.chatId ?? null,
-    tokenEnc: p.token === null ? null : p.token ? sealSecret(p.token) : v.tokenEnc ?? null,
-    language: p.language ?? v.language ?? 'zh-CN',
-  };
-  if (!next.tokenEnc || !next.chatId) {
-    if (p.enabled) throw badRequest('启用 Telegram 需要先填写 Bot Token 和 Chat ID', 'alerts.telegram_incomplete');
-    next.enabled = false;
-  }
-  await db.insert(schema.settings).values({ key: KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
-  return getTelegramSettings();
-}
+const TelegramConfig = z.object({
+  /** BotFather token `<bot id>:<secret>`. */
+  botToken: z.string({ error: 'bot token required' }).trim().regex(/^\d{3,20}:[A-Za-z0-9_-]{30,64}$/, 'invalid bot token'),
+  /** Numeric chat id (groups/channels are negative) or @channelusername. */
+  chatId: z.string({ error: 'chat id required' }).trim().regex(/^(-?\d{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/, 'invalid chat id'),
+  /** Forum topic of a supergroup (message_thread_id); null = the general chat. */
+  threadId: z.number().int().min(1).max(2 ** 31 - 1).nullable().default(null),
+  language: z.enum(TELEGRAM_LANGS).default('zh-CN'),
+}).strict();
+type TelegramConfig = z.infer<typeof TelegramConfig>;
 
 // ---------------------------------------------------------------- message text
 
@@ -63,6 +39,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'connection.expired': { problem: '{platform} 账号 @{handle} 的官方接口授权失效：{status}', recovered: '{platform} 账号 @{handle} 的官方接口授权已恢复' },
       'publish.failed': { problem: '发布失败：{platform} @{handle}《{title}》' },
       'task.failed': { problem: '任务失败：{type}（{label}）' },
+      'channel.failed': { problem: '告警通道 {name} 发送失败', recovered: '告警通道 {name} 已恢复' },
     },
     words: {
       error: '错误', stopped: '已停止', container_missing: '容器不存在', container_exited: '容器意外退出', sidecar_down: '网络边车未运行',
@@ -80,6 +57,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'connection.expired': { problem: 'Official API authorisation of {platform} account @{handle} is no longer valid: {status}', recovered: 'Official API authorisation of {platform} account @{handle} works again' },
       'publish.failed': { problem: 'Publish failed: {platform} @{handle} "{title}"' },
       'task.failed': { problem: 'Task failed: {type} ({label})' },
+      'channel.failed': { problem: 'Alert channel {name} failed to deliver', recovered: 'Alert channel {name} works again' },
     },
     words: {
       error: 'error', stopped: 'stopped', container_missing: 'container missing', container_exited: 'container exited unexpectedly', sidecar_down: 'network sidecar not running',
@@ -98,6 +76,7 @@ export function alertPath(refType: string | null, refId: string | null, params: 
   if (refType === 'social_account') return `/social?q=${encodeURIComponent(String(params.handle ?? ''))}`;
   if (refType === 'publish') return `/publish?task=${refId}`;
   if (refType === 'task') return `/tasks?task=${refId}`;
+  if (refType === 'alert_channel') return '/alert-channels';
   return null;
 }
 
@@ -118,19 +97,15 @@ export function alertText(lang: TelegramLang, kind: AlertKind, recovered: boolea
 
 // ---------------------------------------------------------------- sending
 
-/** Telegram refused the request for good (bad token, chat not found, bot blocked…): never retried. */
-class TelegramFinalError extends UnrecoverableError {
-  constructor(readonly code: string, message: string, readonly params: Record<string, string | number> = {}) { super(message); }
-}
 const transient = (status: number, code: string, message: string, params?: Record<string, string | number>) => new HttpError(status, message, code, params);
 
-/** POST sendMessage. Throws HttpError (transient: 429/5xx/network) or TelegramFinalError (other 4xx). */
-export async function sendTelegram(token: string, chatId: string, text: string, signal?: AbortSignal): Promise<void> {
+/** POST sendMessage. Throws HttpError (transient: 429/5xx/network) or ChannelFinalError (other 4xx). */
+export async function sendTelegram(token: string, chatId: string, text: string, signal?: AbortSignal, threadId?: number | null): Promise<void> {
   let res: Response;
   try {
     res = await fetch(`${config.TELEGRAM_API_BASE.replace(/\/$/, '')}/bot${token}/sendMessage`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000), disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000), disable_web_page_preview: true, ...(threadId ? { message_thread_id: threadId } : {}) }),
       signal: AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
     });
   } catch (err) {
@@ -142,46 +117,17 @@ export async function sendTelegram(token: string, chatId: string, text: string, 
   const desc = scrub(String(body.description ?? res.statusText), [token]).slice(0, 200);
   if (res.status === 429) throw transient(429, 'alerts.telegram_rate_limited', `Telegram 限流：${desc}`, { error: desc });
   if (res.status >= 500) throw transient(502, 'alerts.telegram_unavailable', `Telegram 服务异常（${res.status}）`, { status: res.status, error: desc });
-  if (res.status === 401 || res.status === 404) throw new TelegramFinalError('alerts.telegram_unauthorized', `Telegram Bot Token 无效：${desc}`, { error: desc });
-  if (/chat not found/i.test(desc)) throw new TelegramFinalError('alerts.telegram_chat_not_found', `Telegram Chat ID 不存在：${desc}`, { error: desc });
-  if (res.status === 403) throw new TelegramFinalError('alerts.telegram_forbidden', `Bot 无权向该 Chat 发消息：${desc}`, { error: desc });
-  throw new TelegramFinalError('alerts.telegram_rejected', `Telegram 拒绝了请求（${res.status}）：${desc}`, { status: res.status, error: desc });
+  if (res.status === 401 || res.status === 404) throw new ChannelFinalError('alerts.telegram_unauthorized', `Telegram Bot Token 无效：${desc}`, { error: desc });
+  if (/chat not found/i.test(desc)) throw new ChannelFinalError('alerts.telegram_chat_not_found', `Telegram Chat ID 不存在：${desc}`, { error: desc });
+  if (res.status === 403) throw new ChannelFinalError('alerts.telegram_forbidden', `Bot 无权向该 Chat 发消息：${desc}`, { error: desc });
+  throw new ChannelFinalError('alerts.telegram_rejected', `Telegram 拒绝了请求（${res.status}）：${desc}`, { status: res.status, error: desc });
 }
 
-async function credentials(): Promise<{ token: string; chatId: string; language: TelegramLang } | null> {
-  const { v } = await load();
-  if (!v.tokenEnc || !v.chatId) return null;
-  return { token: openSecret(v.tokenEnc), chatId: v.chatId, language: v.language ?? 'zh-CN' };
-}
-
-/** "Send test message" (admin): synchronous, uses the stored settings (even while disabled). Errors are coded 4xx/5xx. */
-export async function sendTestMessage(): Promise<{ ok: true }> {
-  const c = await credentials();
-  if (!c) throw badRequest('请先保存 Bot Token 和 Chat ID', 'alerts.telegram_incomplete');
-  try {
-    await sendTelegram(c.token, c.chatId, TEXT[c.language].test);
-  } catch (err) {
-    if (err instanceof TelegramFinalError) throw new HttpError(400, err.message, err.code, err.params);
-    throw err;
-  }
-  return { ok: true };
-}
-
-export interface TelegramPayload { kind: AlertKind; recovered: boolean; params: Record<string, string | number>; refType: string | null; refId: string | null }
-
-registerTaskHandler<TelegramPayload>(TELEGRAM_TASK, {
-  queue: 'task-ops',
-  maxAttempts: 4,
-  backoffMs: 10_000,
-  timeoutMs: 60_000,
-  async run(ctx) {
-    const s = await getTelegramSettings();
-    const c = s.enabled ? await credentials() : null;
-    if (!c) { await ctx.log('info', 'telegram disabled: not sent'); return { sent: false }; }
-    const p = ctx.payload;
-    if (!ALERT_KINDS[p.kind]) throw new TelegramFinalError('alerts.unknown_kind', `unknown alert kind ${p.kind}`);
-    await sendTelegram(c.token, c.chatId, alertText(c.language, p.kind, p.recovered, p.params, alertPath(p.refType, p.refId, p.params)), ctx.signal);
-    await ctx.log('info', 'telegram message sent');
-    return { sent: true };
+export const telegramDriver: ChannelDriver<TelegramConfig> = {
+  config: TelegramConfig as unknown as z.ZodType<TelegramConfig>,
+  secrets: ['botToken'],
+  async send(c, msg, signal) {
+    const text = 'test' in msg ? TEXT[c.language].test : alertText(c.language, msg.kind, msg.recovered, msg.params, alertPath(msg.refType, msg.refId, msg.params));
+    await sendTelegram(c.botToken, c.chatId, text, signal, c.threadId);
   },
-});
+};

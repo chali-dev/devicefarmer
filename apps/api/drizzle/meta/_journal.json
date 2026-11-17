@@ -148,6 +148,13 @@
       "when": 1794903338593,
       "tag": "0020_mvp_modules",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794909896835,
+      "tag": "0021_alert_channels",
+      "breakpoints": true
     }
   ]
 }

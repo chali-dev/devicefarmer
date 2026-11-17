@@ -1,6 +1,6 @@
 /**
  * Alerts (告警通知) + account status monitoring (号状态监控) against the real API, DB, Redis, task centre
- * and the real Telegram / YouTube APIs (no mocks).
+ * and the real YouTube API (no mocks).
  * - device.down: placeholder `instances` rows (no Android container, adb ports 5591–5592) set to `running`;
  *   the API's real monitor finds no container and marks them `error`. The device "recovered" path of the
  *   monitor needs a real booted device, so recovery semantics are exercised by calling the real recover()
@@ -9,10 +9,8 @@
  *   check (scheduleAccountChecks) of an account holding a placeholder connection with a FAKE token: the
  *   REAL YouTube API rejects it → connection.expired + account.problem.
  * - publish.failed: a real distribution to a suspended (facebook, text-only) account fails in preflight.
- * - task.failed + Telegram: a fake bot token makes the REAL Telegram API answer 401 → the notify-telegram
- *   task fails at once (no retry on 4xx) → task.failed in-app alert to admins (never sent to Telegram again).
- *   A real message is sent only with TELEGRAM_TEST_TOKEN + TELEGRAM_TEST_CHAT.
- * - recipients/RBAC/isolation, cooldown, mark read, WebSocket delivery, settings write-only, audit, retention.
+ * - recipients/RBAC/isolation, cooldown, mark read, WebSocket delivery, rules RBAC/validation, audit, retention.
+ * External alert channels (Telegram, fan-out, delivery failures) are covered by scripts/alert-channels-check.ts.
  * Creates two temporary users and removes everything afterwards (settings restored).
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/alerts-check.ts
  */
@@ -69,13 +67,11 @@ const [admin] = await db.select().from(schema.users).where(eq(schema.users.usern
 const uT = admin!.id;
 const tag = randomBytes(3).toString('hex');
 const h = (s: string) => `al_${tag}_${s}`;
-/** Same shape as a BotFather token (bot id : 35 chars), but no such bot. */
-const FAKE_TOKEN = `${100000000 + Math.floor(Math.random() * 1e8)}:AA${randomBytes(25).toString('base64url').slice(0, 33)}`;
 const FAKE_YT = `ya29.fake-${randomBytes(16).toString('hex')}`;
 const userIds: string[] = [];
 const fakeIds: string[] = [];
 const refIds: string[] = [];
-const saved = Object.fromEntries(await Promise.all(['alerts.rules', 'alerts.telegram', 'platform.apps'].map(async (k) =>
+const saved = Object.fromEntries(await Promise.all(['alerts.rules', 'platform.apps'].map(async (k) =>
   [k, (await db.select().from(schema.settings).where(eq(schema.settings.key, k)))[0]?.value ?? null] as const)));
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const sockets: WebSocket[] = [];
@@ -107,21 +103,17 @@ try {
   check('user: GET alert rules → 403', r.status === 403);
   r = await http('PUT', '/api/settings/alerts', A, { cooldownMinutes: 1 });
   check('user: PUT alert rules → 403', r.status === 403);
-  r = await http('GET', '/api/settings/telegram', A);
-  check('user: GET Telegram settings → 403', r.status === 403);
-  r = await http('POST', '/api/settings/telegram/test', A);
-  check('user: Telegram test → 403', r.status === 403);
   r = await http('PUT', '/api/settings/alerts', T, { cooldownMinutes: -1 });
   check('admin: negative cooldown → 400', r.status === 400);
   r = await http('PUT', '/api/settings/alerts', T, { kinds: { 'nope.kind': { inApp: true } } });
   check('admin: unknown kind → 400', r.status === 400);
   r = await http('PUT', '/api/settings/alerts', T, { accountCheckHours: 0 });
   check('admin: account check interval 0 → 400 (null = off)', r.status === 400);
-  const allOn = { 'device.down': { inApp: true, telegram: false }, 'account.problem': { inApp: true, telegram: false }, 'connection.expired': { inApp: true, telegram: false }, 'publish.failed': { inApp: true, telegram: false }, 'task.failed': { inApp: true, telegram: false } };
+  const allOn = { 'device.down': { inApp: true }, 'account.problem': { inApp: true }, 'connection.expired': { inApp: true }, 'publish.failed': { inApp: true }, 'task.failed': { inApp: true }, 'channel.failed': { inApp: true } };
   r = await http('PUT', '/api/settings/alerts', T, { kinds: allOn, cooldownMinutes: 60, notifyAdmins: true, recovered: true, retentionDays: 30, accountCheckHours: 24 });
   check('admin: save rules', r.status === 200 && r.body.rules.cooldownMinutes === 60 && r.body.rules.kinds['task.failed'].inApp === true, r.text);
   r = await http('GET', '/api/settings/alerts', T);
-  check('admin: GET rules lists 5 kinds with severity/recoverable', r.status === 200 && r.body.kinds.length === 5 && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable), r.text.slice(0, 200));
+  check('admin: GET rules lists 6 kinds with severity/recoverable', r.status === 200 && r.body.kinds.length === 6 && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable), r.text.slice(0, 200));
 
   // ---------------------------------------------------------------- device.down through the real monitor
   await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));
@@ -230,47 +222,6 @@ try {
   await sleep(500);
   check('publish.failed to admin once; B nothing', (await notes(uT, ptId)).length === 1 && (await notes(uB, ptId)).length === 0);
 
-  // ---------------------------------------------------------------- Telegram: write-only settings, real API with a fake token
-  r = await http('PUT', '/api/settings/telegram', T, { enabled: true });
-  check('enable without token/chat → 400 alerts.telegram_incomplete', r.status === 400 && r.body.code === 'alerts.telegram_incomplete', r.text);
-  r = await http('PUT', '/api/settings/telegram', T, { token: 'not-a-token' });
-  check('malformed bot token → 400', r.status === 400);
-  r = await http('PUT', '/api/settings/telegram', T, { token: FAKE_TOKEN, chatId: '-1001234567890', enabled: true, language: 'en' });
-  check('save fake token + chat id (token write-only)', r.status === 200 && r.body.telegram.tokenSet === true && r.body.telegram.enabled === true && !r.text.includes(FAKE_TOKEN), r.text);
-  r = await http('GET', '/api/settings/telegram', T);
-  check('GET never returns the token', r.status === 200 && !r.text.includes(FAKE_TOKEN) && !/v1:/.test(r.text));
-  const [tgRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'alerts.telegram'));
-  check('DB stores the token sealed', !!tgRow && !JSON.stringify(tgRow.value).includes(FAKE_TOKEN) && JSON.stringify(tgRow.value).includes('v1:'));
-  r = await http('POST', '/api/settings/telegram/test', T);
-  check('test message with a fake token → real Telegram says 401 → 400 alerts.telegram_unauthorized (no token in the reply)',
-    r.status === 400 && r.body.code === 'alerts.telegram_unauthorized' && !r.text.includes(FAKE_TOKEN), r.text);
-  // An alert with Telegram on → notify-telegram task → fails at once (4xx: no retry) → task.failed in-app alert to admins only
-  await http('PUT', '/api/settings/alerts', T, { kinds: { 'account.problem': { telegram: true } } });
-  r = await http('POST', '/api/social/accounts', A, { platform: 'tiktok', handle: h('tt') });
-  const tt: string = r.body.account.id; refIds.push(tt);
-  await http('POST', `/api/social/accounts/${tt}/checked`, A, { loginStatus: 'needs_verification' });
-  const tgTask = await waitFor('telegram task', async () => (await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'notify-telegram'), eq(schema.tasks.refId, tt))))[0], 10_000);
-  check('Telegram task created for the alert; payload has kind/params, no token', (tgTask.payload as any)?.kind === 'account.problem' && !JSON.stringify(tgTask.payload).includes(FAKE_TOKEN));
-  const tgDone = await finished(tgTask.id);
-  check('Telegram task failed once with alerts.telegram_unauthorized (no retry on 4xx)', tgDone.status === 'failed' && tgDone.errorCode === 'alerts.telegram_unauthorized' && tgDone.attempts === 1, `${tgDone.status} ${tgDone.errorCode} attempts=${tgDone.attempts}`);
-  const logs = await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, tgTask.id));
-  check('task logs/error never contain the token', !JSON.stringify(logs).includes(FAKE_TOKEN) && !(tgDone.error ?? '').includes(FAKE_TOKEN));
-  const nTask = await waitFor('task.failed', async () => (await notes(uT, tgTask.id, 'task.failed'))[0], 10_000);
-  check('task.failed alert to admin (type notify-telegram, code)', nTask.params.type === 'notify-telegram' && nTask.params.code === 'alerts.telegram_unauthorized');
-  await sleep(1000);
-  const tgTasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'notify-telegram'), gte(schema.tasks.createdAt, t0)));
-  check('a failed Telegram delivery is not sent to Telegram again (no loop)', tgTasks.length === 1, String(tgTasks.length));
-  check('task.failed of a system task: users A/B get nothing', (await notes(uA, tgTask.id)).length === 0 && (await notes(uB, tgTask.id)).length === 0);
-  if (process.env.TELEGRAM_TEST_TOKEN && process.env.TELEGRAM_TEST_CHAT) {
-    r = await http('PUT', '/api/settings/telegram', T, { token: process.env.TELEGRAM_TEST_TOKEN, chatId: process.env.TELEGRAM_TEST_CHAT, enabled: true, language: 'zh-CN' });
-    r = await http('POST', '/api/settings/telegram/test', T);
-    check('REAL Telegram test message sent', r.status === 200 && r.body.ok === true, r.text);
-  } else {
-    console.log('  (real Telegram send skipped: set TELEGRAM_TEST_TOKEN and TELEGRAM_TEST_CHAT)');
-  }
-  r = await http('PUT', '/api/settings/telegram', T, { token: null });
-  check('clearing the token disables the channel', r.status === 200 && r.body.telegram.tokenSet === false && r.body.telegram.enabled === false);
-
   // ---------------------------------------------------------------- reading: list, isolation, mark read
   r = await http('GET', '/api/notifications', A);
   const mine = r.body.notifications as any[];
@@ -290,8 +241,7 @@ try {
   await sleep(800);
   const audits = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), or(like(schema.auditLogs.action, 'settings.%'), like(schema.auditLogs.path, '/api/notifications%'))));
   const acts = new Set(audits.map((a) => a.action));
-  check('audit: settings.alerts, settings.telegram, settings.telegram_test recorded', ['settings.alerts', 'settings.telegram', 'settings.telegram_test'].every((a) => acts.has(a)), [...acts].join(','));
-  check('audit: Telegram token never in the audit log', !JSON.stringify(audits).includes(FAKE_TOKEN) && audits.some((a) => a.action === 'settings.telegram' && (a.detail as any)?.bot === 'replaced'));
+  check('audit: settings.alerts recorded', acts.has('settings.alerts'), [...acts].join(','));
   check('audit: marking notifications read is not recorded', !audits.some((a) => a.path.startsWith('/api/notifications')));
 
   // ---------------------------------------------------------------- retention (real cleanup task)

@@ -35,5 +35,6 @@ export function alertLink(n: Pick<AppNotification, 'refType' | 'refId' | 'params
   if (n.refType === 'social_account') return { path: '/social', query: { q: String(n.params?.handle ?? '') } }
   if (n.refType === 'publish') return { path: '/publish', query: { task: n.refId } }
   if (n.refType === 'task') return { path: '/tasks', query: { task: n.refId } }
+  if (n.refType === 'alert_channel') return '/alert-channels'
   return null
 }

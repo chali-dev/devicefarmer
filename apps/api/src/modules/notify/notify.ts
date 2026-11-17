@@ -4,7 +4,7 @@ import type { Notification } from '../../db/schema.js';
 import { events } from '../../lib/events.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
 import { ALERT_KINDS, getRules, type AlertKind, type AlertRules } from './rules.js';
-import { getTelegramSettings, TELEGRAM_TASK, type TelegramPayload } from './telegram.js';
+import { enqueueChannels, matchingChannels } from './channels.js';
 
 /**
  * Notifications (告警通知): the one entry point other modules use (through ./triggers.ts).
@@ -14,9 +14,11 @@ import { getTelegramSettings, TELEGRAM_TASK, type TelegramPayload } from './tele
  *   repeated at most once per cooldown, and a problem that recovered in between is reported again at once.
  *   The claim is a single upsert, so concurrent callers deliver once.
  * - Recipients: every enabled admin (rule `notifyAdmins`) plus the object's people: device → users granted
- *   on it; social account → its owner; publish task → its owner; task → its creator + users granted on its device.
- * - Channels per kind: in-app rows (pushed to exactly those users over /api/events) and Telegram (a
- *   `notify-telegram` task, never awaited by the caller). Never throws: alerting must not break the caller.
+ *   on it; social account → its owner; publish task → its owner; task → its creator + users granted on its
+ *   device; alert channel → admins only (always).
+ * - In-app rows per kind (rule `inApp`, pushed to exactly those users over /api/events), plus one
+ *   `notify-<type>` task per matching enabled alert channel (channels.ts; never awaited by the caller).
+ *   De-dup / cooldown is per alert, before the fan-out. Never throws: alerting must not break the caller.
  */
 const S = schema.alertStates;
 const N = schema.notifications;
@@ -29,7 +31,7 @@ export interface AlertInput {
   key?: string;
   /** Short identifiers / codes only (truncated); never secrets or external free text. */
   params: AlertParams;
-  /** Skip Telegram (e.g. for a failed Telegram delivery itself). */
+  /** Skip the external alert channels (e.g. for a failed channel delivery itself). */
   inAppOnly?: boolean;
 }
 
@@ -41,6 +43,7 @@ const clean = (p: AlertParams): Record<string, string | number> =>
 async function peopleOf(refType: string, refId: string): Promise<string[]> {
   const grants = (instanceId: string) => db.select({ id: schema.instanceGrants.userId }).from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, instanceId));
   if (refType === 'instance') return (await grants(refId)).map((r) => r.id);
+  if (refType === 'alert_channel') return (await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.role, 'admin'))).map((r) => r.id);
   if (refType === 'social_account') return (await db.select({ id: schema.socialAccounts.userId }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, refId))).map((r) => r.id);
   if (refType === 'publish') return (await db.select({ id: schema.publishTasks.userId }).from(schema.publishTasks).where(eq(schema.publishTasks.id, refId))).map((r) => r.id);
   if (refType === 'task') {
@@ -61,7 +64,7 @@ export async function recipientsOf(kind: AlertKind, refId: string, rules: Pick<A
   return (await db.select({ id: schema.users.id }).from(schema.users).where(and(inArray(schema.users.id, [...ids]), eq(schema.users.disabled, false)))).map((r) => r.id);
 }
 
-async function deliver(a: AlertInput, recovered: boolean, rules: AlertRules): Promise<void> {
+async function deliver(a: AlertInput, recovered: boolean, rules: AlertRules, channels: Awaited<ReturnType<typeof matchingChannels>>): Promise<void> {
   const def = ALERT_KINDS[a.kind];
   const rule = rules.kinds[a.kind];
   const params = clean(a.params);
@@ -74,18 +77,19 @@ async function deliver(a: AlertInput, recovered: boolean, rules: AlertRules): Pr
       for (const n of rows) events.publish({ type: 'notification.created', userId: n.userId, notification: n });
     }
   }
-  if (rule.telegram && !a.inAppOnly && (await getTelegramSettings()).enabled) {
-    const payload: TelegramPayload = { kind: a.kind, recovered, params, refType: def.refType, refId: a.refId };
-    await createTask({ type: TELEGRAM_TASK, label: `Telegram · ${a.kind}${recovered ? ' · recovered' : ''}`, refType: 'alert', refId: a.refId, payload: payload as unknown as Record<string, unknown> });
-  }
+  await enqueueChannels(channels, { kind: a.kind, recovered, params, refType: def.refType, refId: a.refId });
 }
 
-/** Raises an alert. Returns true when it was delivered (false: kind off, or within the cooldown). */
+const channelsFor = (a: AlertInput) => (a.inAppOnly ? Promise.resolve([]) : matchingChannels(a.kind));
+
+/** Raises an alert. Returns true when it was delivered (false: kind off in-app and no channel takes it, or within the cooldown). */
 export async function notify(a: AlertInput): Promise<boolean> {
   try {
     const rules = await getRules();
     const rule = rules.kinds[a.kind];
-    if (!rule || (!rule.inApp && !rule.telegram)) return false;
+    if (!rule) return false;
+    const channels = await channelsFor(a);
+    if (!rule.inApp && !channels.length) return false;
     const [claimed] = await db.insert(S).values({ kind: a.kind, key: a.key ?? a.refId, active: true, lastAlertAt: sql`now()` })
       .onConflictDoUpdate({
         target: [S.kind, S.key],
@@ -93,7 +97,7 @@ export async function notify(a: AlertInput): Promise<boolean> {
         setWhere: sql`${S.active} = false or ${S.lastAlertAt} < now() - make_interval(mins => ${rules.cooldownMinutes}::int)`,
       }).returning({ kind: S.kind });
     if (!claimed) return false;
-    await deliver(a, false, rules);
+    await deliver(a, false, rules, channels);
     return true;
   } catch (err) {
     console.warn('[notify] alert failed', a.kind, a.refId, err);
@@ -109,7 +113,7 @@ export async function recover(a: AlertInput): Promise<boolean> {
     if (!cleared) return false;
     const rules = await getRules();
     if (!rules.recovered || !ALERT_KINDS[a.kind].recoverable) return false;
-    await deliver(a, true, rules);
+    await deliver(a, true, rules, await channelsFor(a));
     return true;
   } catch (err) {
     console.warn('[notify] recovery failed', a.kind, a.refId, err);

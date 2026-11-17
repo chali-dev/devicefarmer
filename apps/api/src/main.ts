@@ -44,7 +44,7 @@ import { analyticsRoutes } from './modules/analytics/routes.js';
 import { scheduleDailyAccountStats } from './modules/analytics/analytics.js'; // account-stats task handler + dashboard widget
 import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task + dashboard widget
 import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly collection tick (tracked schedules, trending)
-import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, Telegram, account-check schedule
+import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels, account-check schedule
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 import { logSink } from './modules/system/logs.js';

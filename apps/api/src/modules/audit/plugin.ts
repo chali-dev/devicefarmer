@@ -90,6 +90,13 @@ async function socialAccountName(id: unknown): Promise<string | null> {
   return r ? `${r.platform} @${r.handle}` : null;
 }
 
+/** Non-secret fields of an alert channel config (Telegram); the bot token only as replaced / unchanged. */
+function channelConfigDetail(cfg: unknown): Record<string, unknown> {
+  if (!cfg || typeof cfg !== 'object') return {};
+  const c = cfg as Body;
+  return { chatId: c.chatId, threadId: c.threadId, language: c.language, bot: typeof c.botToken === 'string' && c.botToken ? 'replaced' : 'unchanged' };
+}
+
 const proxyText = (b: Body) => (typeof b.host === 'string' ? `${String(b.type)}://${b.host}:${String(b.port)}` : null);
 
 /** `${METHOD} ${routePattern}` → action. Unknown routes fall back to `${method} ${routePattern}`. */
@@ -346,16 +353,22 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
-  // alerts (告警通知); the bot token itself is never stored in the log
+  // alerts (告警通知): rules
   'PUT /api/settings/alerts': {
     action: 'settings.alerts',
     detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), accountCheckHours: body.accountCheckHours, cooldownMinutes: body.cooldownMinutes }),
   },
-  'PUT /api/settings/telegram': {
-    action: 'settings.telegram',
-    detail: ({ body }) => ({ enabled: body.enabled, chatId: body.chatId, language: body.language, bot: body.token === null ? 'cleared' : typeof body.token === 'string' ? 'replaced' : 'unchanged' }),
+  // alert channels (告警通道): config is summarised field by field; secrets only as set / replaced / unchanged
+  'POST /api/alert-channels': {
+    action: 'alert_channel.create', target: ({ body }) => body.name as string,
+    detail: ({ body }) => ({ type: body.type, enabled: body.enabled, kinds: body.kinds, minSeverity: body.minSeverity, ...channelConfigDetail(body.config) }),
   },
-  'POST /api/settings/telegram/test': { action: 'settings.telegram_test' },
+  'PATCH /api/alert-channels/:id': {
+    action: 'alert_channel.update',
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, enabled: body.enabled, kinds: body.kinds, minSeverity: body.minSeverity, ...channelConfigDetail(body.config) }),
+  },
+  'DELETE /api/alert-channels/:id': { action: 'alert_channel.delete' },
+  'POST /api/alert-channels/:id/test': { action: 'alert_channel.test' },
   'PUT /api/settings/storage': {
     action: 'storage.update',
     detail: ({ body }) => {
@@ -383,6 +396,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   }
   if (pattern.startsWith('/api/device-sources/:id')) {
     const [r] = await db.select({ name: schema.deviceSources.name }).from(schema.deviceSources).where(eq(schema.deviceSources.id, id));
+    return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/alert-channels/:id')) {
+    const [r] = await db.select({ name: schema.alertChannels.name }).from(schema.alertChannels).where(eq(schema.alertChannels.id, id));
     return r?.name ?? null;
   }
   if (pattern.startsWith('/api/users/:id')) {

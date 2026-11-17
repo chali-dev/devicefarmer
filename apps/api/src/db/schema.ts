@@ -956,6 +956,29 @@ export const alertStates = pgTable('alert_states', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [primaryKey({ columns: [t.kind, t.key] }), index('alert_states_updated_idx').on(t.updatedAt)]);
 
+/**
+ * External alert channels (告警通道, modules/notify/channels.ts; admin only). `type` names a driver in the
+ * code registry (telegram today), so a new type needs no migration. `config` holds the driver's non-secret
+ * fields plus each secret sealed as `<field>Enc` (Telegram: chatId, threadId?, language, botTokenEnc); never
+ * returned. `kinds`: alert kinds this channel receives (empty = all channel kinds); `minSeverity`: optional
+ * floor on the kind's severity. `lastResult`: outcome of the last delivery or test (no message text).
+ */
+export const ALERT_CHANNEL_MIN_SEVERITIES = ['warning', 'error'] as const;
+export const alertChannels = pgTable('alert_channels', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull().unique(),
+  type: text('type').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+  kinds: text('kinds').array().notNull().default(sql`'{}'::text[]`),
+  minSeverity: text('min_severity', { enum: ALERT_CHANNEL_MIN_SEVERITIES }),
+  lastResult: jsonb('last_result').$type<{ ok: boolean; at: string; test?: boolean; code?: string | null }>(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+});
+export type AlertChannel = typeof alertChannels.$inferSelect;
+
 export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;

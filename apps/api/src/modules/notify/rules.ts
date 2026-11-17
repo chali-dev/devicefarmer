@@ -3,24 +3,34 @@ import { db, schema } from '../../db/index.js';
 
 /**
  * Alert kinds (告警类型) and the admin rules (`settings` key `alerts.rules`). A kind declares its severity,
- * what it refers to (for recipients and the UI link) and whether it can recover ("back to normal" notice).
+ * what it refers to (for recipients and the UI link), whether it can recover ("back to normal" notice) and
+ * whether external alert channels may receive it (`channel`; which ones is per channel, see channels.ts).
  */
 export const ALERT_KINDS = {
   /** Device became error/stopped outside a user action (monitor), or a lifecycle op failed. Params: name, status, reason[, op]. */
-  'device.down': { severity: 'error', refType: 'instance', recoverable: true, defaultOn: true },
+  'device.down': { severity: 'error', refType: 'instance', recoverable: true, defaultOn: true, channel: true },
   /** Account check result is a problem (logged out, needs verification, suspended…, or the check failed). Params: platform, handle, reason[, code]. */
-  'account.problem': { severity: 'warning', refType: 'social_account', recoverable: true, defaultOn: true },
+  'account.problem': { severity: 'warning', refType: 'social_account', recoverable: true, defaultOn: true, channel: true },
   /** Official-API authorisation expired / revoked / missing permission. Params: platform, handle, status[, code]. */
-  'connection.expired': { severity: 'error', refType: 'social_account', recoverable: true, defaultOn: true },
+  'connection.expired': { severity: 'error', refType: 'social_account', recoverable: true, defaultOn: true, channel: true },
   /** A publish run ended failed. Params: platform, handle, title[, code]. */
-  'publish.failed': { severity: 'error', refType: 'publish', recoverable: false, defaultOn: true },
+  'publish.failed': { severity: 'error', refType: 'publish', recoverable: false, defaultOn: true, channel: true },
   /** Any other task-centre task failed after its last attempt (off by default). Params: type, label[, code]. */
-  'task.failed': { severity: 'warning', refType: 'task', recoverable: false, defaultOn: false },
-} as const satisfies Record<string, { severity: 'info' | 'warning' | 'error'; refType: string; recoverable: boolean; defaultOn: boolean }>;
+  'task.failed': { severity: 'warning', refType: 'task', recoverable: false, defaultOn: false, channel: true },
+  /**
+   * An alert channel failed to deliver (final failure of its notify-<type> task); recovered by its next
+   * successful delivery or test. In-app only and to admins only, so a broken channel never alerts itself.
+   * Params: name[, code].
+   */
+  'channel.failed': { severity: 'warning', refType: 'alert_channel', recoverable: true, defaultOn: true, channel: false },
+} as const satisfies Record<string, { severity: 'info' | 'warning' | 'error'; refType: string; recoverable: boolean; defaultOn: boolean; channel: boolean }>;
 export type AlertKind = keyof typeof ALERT_KINDS;
 export const ALERT_KIND_IDS = Object.keys(ALERT_KINDS) as AlertKind[];
+/** Kinds an external channel can receive. */
+export const CHANNEL_KIND_IDS = ALERT_KIND_IDS.filter((k) => ALERT_KINDS[k].channel);
 
-export interface KindRule { inApp: boolean; telegram: boolean }
+/** In-app (bell) switch per kind. External channels choose their kinds themselves (alert_channels.kinds). */
+export interface KindRule { inApp: boolean }
 export interface AlertRules {
   kinds: Record<AlertKind, KindRule>;
   /** The same kind + object is not delivered again within this many minutes unless it recovered meanwhile. */
@@ -39,7 +49,7 @@ export const LIMITS = { cooldownMax: 7 * 24 * 60, retentionMax: 365, accountChec
 const KEY = 'alerts.rules';
 
 export const defaultRules = (): AlertRules => ({
-  kinds: Object.fromEntries(ALERT_KIND_IDS.map((k) => [k, { inApp: ALERT_KINDS[k].defaultOn, telegram: ALERT_KINDS[k].defaultOn }])) as Record<AlertKind, KindRule>,
+  kinds: Object.fromEntries(ALERT_KIND_IDS.map((k) => [k, { inApp: ALERT_KINDS[k].defaultOn }])) as Record<AlertKind, KindRule>,
   cooldownMinutes: 60,
   notifyAdmins: true,
   recovered: true,
@@ -56,7 +66,7 @@ export function normalizeRules(raw: unknown): AlertRules {
   const kinds = { ...d.kinds };
   for (const k of ALERT_KIND_IDS) {
     const r = v.kinds?.[k];
-    if (r) kinds[k] = { inApp: typeof r.inApp === 'boolean' ? r.inApp : d.kinds[k].inApp, telegram: typeof r.telegram === 'boolean' ? r.telegram : d.kinds[k].telegram };
+    if (r) kinds[k] = { inApp: typeof r.inApp === 'boolean' ? r.inApp : d.kinds[k].inApp };
   }
   return {
     kinds,

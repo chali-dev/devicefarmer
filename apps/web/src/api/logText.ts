@@ -77,6 +77,9 @@ const EXACT: Record<string, string> = {
   'scope missing: re-authorise the account to get these metrics': 'statsScopeMissing',
   'telegram disabled: not sent': 'telegramDisabled',
   'telegram message sent': 'telegramSent',
+  'alert channel deleted: not sent': 'channelDeleted',
+  'alert channel disabled: not sent': 'channelDisabled',
+  'alert message sent': 'channelSent',
 }
 
 const RULES: Rule[] = [
