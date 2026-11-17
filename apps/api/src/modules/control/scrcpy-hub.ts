@@ -25,8 +25,10 @@ export interface ScrcpyViewer {
   onEnd(reason: string): void;
 }
 
+export type TouchInput = { type: 'down' | 'move'; x: number; y: number; contact?: number; pressure?: number } | { type: 'up'; contact?: number };
+
 export interface ScrcpyHandle {
-  touch(ev: { type: 'down' | 'move'; x: number; y: number; contact?: number; pressure?: number } | { type: 'up'; contact?: number }): void;
+  touch(ev: TouchInput): void;
   /** false: no scrcpy keycode for that name (the caller uses STF instead). */
   key(action: 'down' | 'up' | 'press', name: string): boolean;
   paste(text: string): void;
@@ -49,6 +51,17 @@ const RESET_MIN_GAP_MS = 1000;
 const CLIPBOARD_EMPTY_MS = 1500;
 /** Start budget over the relay; past it the adb path is tried instead. */
 const RELAY_START_MS = 10_000;
+/**
+ * Android stamps injected touches with the time scrcpy injects them, and a remote link (adb through a tunnel:
+ * one write in flight per round trip; or the relay) delivers moves in bursts that get injected within a
+ * millisecond: the fling velocity at release becomes absurd and lists fly off. On such links the release
+ * of a drag is held until the last move has surely been injected on its own (link round trip + more than
+ * Android's 40 ms "pointer stopped" time, see sendTouch): the list then stops where the finger stopped,
+ * without a fling (a fling can't be reproduced reliably: the device never sees the browser's timing).
+ */
+const RELEASE_MARGIN_MS = 60;
+/** Round trip assumed while none has been measured yet. */
+const DEFAULT_LINK_RTT_MS = 500;
 
 /** Relay settings when configured and the helper is built (versioned on the device by content hash, re-hashed after a rebuild). */
 let relayDex: { mtimeMs: number; remote: string } | null = null;
@@ -80,8 +93,11 @@ class Share {
   clipboard: string | undefined;
   clipWaiters: ((text: string) => void)[] = [];
   lastReset = 0;
-  /** Last position per pointer, for 'up' events (the client sends no coordinates there). */
-  pointers = new Map<number, { x: number; y: number }>();
+  /** Last position per pointer, for 'up' events (the client sends no coordinates there); movedAt: last move sent (0 = none since down). */
+  pointers = new Map<number, { x: number; y: number; movedAt: number }>();
+  /** Touch events behind a held release (external phones), sent in order. */
+  private touchQueue: TouchInput[] = [];
+  private touchTimer: NodeJS.Timeout | null = null;
 
   constructor(readonly adbPort: number, readonly external: boolean) {
     const relay = external ? relayOptions() : undefined;
@@ -123,6 +139,7 @@ class Share {
     if (shares.get(this.adbPort) === this) shares.delete(this.adbPort);
     if (this.stopTimer) clearTimeout(this.stopTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.touchTimer) clearTimeout(this.touchTimer);
     for (const w of this.clipWaiters) w(this.clipboard ?? '');
     this.clipWaiters = [];
     const vs = [...this.viewers];
@@ -140,6 +157,50 @@ class Share {
     if (now - this.lastReset < RESET_MIN_GAP_MS) return;
     this.lastReset = now;
     this.server.send(encodeResetVideo());
+  }
+
+  touch(ev: TouchInput) {
+    this.touchQueue.push(ev);
+    if (!this.touchTimer) this.flushTouches();
+  }
+
+  private flushTouches() {
+    this.touchTimer = null;
+    while (this.touchQueue.length) {
+      const ev = this.touchQueue[0]!;
+      const hold = ev.type === 'up' ? this.releaseHoldMs(ev.contact ?? 0) : 0;
+      if (hold > 0) { this.touchTimer = setTimeout(() => this.flushTouches(), hold); return; }
+      this.touchQueue.shift();
+      this.sendTouch(ev);
+    }
+  }
+
+  /** How much longer the release of this pointer waits (see RELEASE_MARGIN_MS); 0 for taps and local devices. */
+  private releaseHoldMs(id: number): number {
+    const movedAt = this.pointers.get(id)?.movedAt;
+    if (!this.external || !movedAt) return 0;
+    const rtt = this.server.relayRttMs() ?? adb.rttMs(this.adbPort) ?? DEFAULT_LINK_RTT_MS;
+    return movedAt + rtt + RELEASE_MARGIN_MS - Date.now();
+  }
+
+  private sendTouch(ev: TouchInput) {
+    const srv = this.server;
+    if (!srv.width) return;
+    const id = ev.contact ?? 0;
+    if (ev.type === 'up') {
+      const p = this.pointers.get(id);
+      if (!p) return;
+      this.pointers.delete(id);
+      // After the hold: one more move at the same spot, alone in its burst, makes Android drop the earlier
+      // samples ("pointer stopped", every version), so the velocity at release is 0.
+      if (this.external && p.movedAt) srv.send(encodeTouch(ACTION_MOVE, BigInt(id), p.x, p.y, srv.width, srv.height, 1));
+      srv.send(encodeTouch(ACTION_UP, BigInt(id), p.x, p.y, srv.width, srv.height, 0));
+      return;
+    }
+    const x = Math.min(srv.width - 1, Math.round(ev.x * srv.width));
+    const y = Math.min(srv.height - 1, Math.round(ev.y * srv.height));
+    this.pointers.set(id, { x, y, movedAt: ev.type === 'move' ? Date.now() : 0 });
+    srv.send(encodeTouch(ev.type === 'down' ? ACTION_DOWN : ACTION_MOVE, BigInt(id), x, y, srv.width, srv.height, ev.pressure ?? 1));
   }
 
   private onPacket(p: VideoPacket) {
@@ -223,25 +284,10 @@ export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external
     throw err;
   }
   const srv = sh.server;
-  const toPx = (x: number, y: number) => ({
-    x: Math.min(srv.width - 1, Math.round(x * srv.width)),
-    y: Math.min(srv.height - 1, Math.round(y * srv.height)),
-  });
   let left = false;
   return {
     touch(ev) {
-      if (!srv.width) return;
-      const id = ev.contact ?? 0;
-      if (ev.type === 'up') {
-        const p = sh.pointers.get(id);
-        if (!p) return;
-        sh.pointers.delete(id);
-        srv.send(encodeTouch(ACTION_UP, BigInt(id), p.x, p.y, srv.width, srv.height, 0));
-        return;
-      }
-      const p = toPx(ev.x, ev.y);
-      sh.pointers.set(id, p);
-      srv.send(encodeTouch(ev.type === 'down' ? ACTION_DOWN : ACTION_MOVE, BigInt(id), p.x, p.y, srv.width, srv.height, ev.pressure ?? 1));
+      sh.touch(ev);
     },
     key(action, name) {
       const code = KEYCODES[name];

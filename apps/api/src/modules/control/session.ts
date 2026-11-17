@@ -39,25 +39,6 @@ const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redr
 
 const MAX_BUFFERED = 2 * 1024 * 1024; // drop frames for slow clients instead of queueing
 
-/**
- * API ↔ device round trip per adb port (a no-op `adb shell`), measured at most every DEVICE_RTT_TTL_MS
- * and shared by all viewers of the device, so pings don't add traffic on narrow tunnels.
- */
-const DEVICE_RTT_TTL_MS = 5000;
-const deviceRtt = new Map<number, { at: number; ms: number | null; inflight: boolean }>();
-function deviceRttMs(port: number): number | null {
-  const e = deviceRtt.get(port) ?? { at: 0, ms: null, inflight: false };
-  deviceRtt.set(port, e);
-  if (!e.inflight && Date.now() - e.at > DEVICE_RTT_TTL_MS) {
-    e.inflight = true;
-    const t = performance.now();
-    adb.shell(port, 'true', 5000)
-      .then(() => { e.ms = Math.round(performance.now() - t); }, () => { e.ms = null; })
-      .finally(() => { e.at = Date.now(); e.inflight = false; });
-  }
-  return e.ms;
-}
-
 function screenUrl(url: string): string {
   if (!config.STF_SCREEN_HOST) return url;
   const u = new URL(url);
@@ -167,7 +148,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         else if (msg.type === 'paste') { if (sc) sc.paste(msg.text); else await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
         else if (msg.type === 'ping') {
           const relay = sc?.relayRttMs();
-          send({ type: 'pong', t: msg.t, ...(relay !== undefined ? { deviceMs: relay, link: 'relay' } : { deviceMs: deviceRttMs(adbPort), link: 'adb' }) });
+          send({ type: 'pong', t: msg.t, ...(relay !== undefined ? { deviceMs: relay, link: 'relay' } : { deviceMs: adb.rttMs(adbPort), link: 'adb' }) });
         }
         else if (msg.type === 'keyFrame') sc?.requestKeyFrame();
         else if (msg.type === 'getClipboard') {

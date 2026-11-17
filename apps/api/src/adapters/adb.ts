@@ -23,6 +23,7 @@ export function isProtectedPackage(pkg: string): boolean {
 }
 
 const OFFLINE_RECONNECT_MS = 10_000;
+const RTT_TTL_MS = 5000;
 
 export class AdbAdapter {
   private readonly client: Client;
@@ -101,6 +102,24 @@ export class AdbAdapter {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private readonly rtt = new Map<number, { at: number; ms: number | null; inflight: boolean }>();
+  /**
+   * API ↔ device round trip (a no-op `adb shell`, ms; null until measured), refreshed in the background at
+   * most every RTT_TTL_MS and shared by all callers, so it adds no traffic on narrow tunnels.
+   */
+  rttMs(adbPort: number): number | null {
+    const e = this.rtt.get(adbPort) ?? { at: 0, ms: null, inflight: false };
+    this.rtt.set(adbPort, e);
+    if (!e.inflight && Date.now() - e.at > RTT_TTL_MS) {
+      e.inflight = true;
+      const t = performance.now();
+      this.shell(adbPort, 'true', 5000)
+        .then(() => { e.ms = Math.round(performance.now() - t); }, () => { e.ms = null; })
+        .finally(() => { e.at = Date.now(); e.inflight = false; });
+    }
+    return e.ms;
   }
 
   async bootCompleted(adbPort: number): Promise<boolean> {

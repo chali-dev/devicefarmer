@@ -423,7 +423,7 @@ function point(e: PointerEvent) {
 
 // STF protocol: every touch belongs to a gesture (gestureStart ... gestureStop).
 function onPointerDown(e: PointerEvent) {
-  if (state.value !== 'live' || e.button !== 0) return
+  if (state.value !== 'live' || e.button !== 0 || !e.isPrimary) return // one pointer: every event is contact 0
   canvas.value?.setPointerCapture(e.pointerId)
   canvas.value?.focus()
   pointerDown = true
@@ -433,15 +433,15 @@ function onPointerDown(e: PointerEvent) {
   send({ type: 'touch', ev: { type: 'commit' } })
 }
 function onPointerMove(e: PointerEvent) {
-  if (!pointerDown) return
+  if (!pointerDown || !e.isPrimary) return
   const now = performance.now()
   if (now - lastMove < 16) return // ~60 Hz
   lastMove = now
   send({ type: 'touch', ev: { type: 'move', ...point(e) } })
   send({ type: 'touch', ev: { type: 'commit' } })
 }
-function onPointerUp() {
-  if (!pointerDown) return
+function onPointerUp(e: PointerEvent) {
+  if (!pointerDown || !e.isPrimary) return
   pointerDown = false
   send({ type: 'touch', ev: { type: 'up' } })
   send({ type: 'touch', ev: { type: 'commit' } })
@@ -535,6 +535,7 @@ watch(() => props.instanceId, connect)
             @pointermove="onPointerMove"
             @pointerup="onPointerUp"
             @pointercancel="onPointerUp"
+            @lostpointercapture="onPointerUp"
             @keydown="onKeyDown"
             @paste="onPaste"
             @contextmenu.prevent="key('back')"
