@@ -2,11 +2,13 @@
  * 媒体矩阵 demo data + verification through the real HTTP API (no DB access, no mocks).
  *
  * Seeds (idempotent, everything recognisable by the `demo` prefix, Instagram only):
- * - 社交号管理: 16 Instagram social accounts (admin + demo-user) in 5 groups, tags, notes, varied statuses.
+ * - 社交号管理: 16 Instagram social accounts (admin + demo-user) with 账号人设 (personas are the grouping, see PERSONAS),
+ *   tags, notes, varied statuses.
  * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them.
  * - 追踪账号: 10 tracked Instagram accounts (categories, tags, favourites, weekly snapshots, posts).
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
- * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public).
+ * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public), the rest by topic
+ *   (旅行 / 美食 / 时尚 admin's, 生活 demo-user's); one account without persona.
  * Then verifies filters, RBAC/isolation, logs, batch actions (throw-away `demotmp.*` accounts), exact
  * analytics numbers, tracked deltas, the reply review state machine and in-app notifications.
  * Nothing is sent to Instagram: manual comments always hand replies over to an operator (awaiting_operator).
@@ -112,33 +114,30 @@ const ANCHOR_N = dayNum('2026-11-17');
 
 type Owner = 'admin' | 'user';
 interface AccSpec {
-  handle: string; owner: Owner; displayName: string; group: string | null; tags: string[]; notes: string;
+  handle: string; owner: Owner; displayName: string; persona: string | null; tags: string[]; notes: string;
   login: 'unknown' | 'logged_in' | 'logged_out' | 'needs_verification'; status: 'active' | 'limited' | 'suspended' | 'disabled'; lastError?: string;
   /** days of stats history (0 = none); f0 followers at the first day; g daily growth; vr views/followers */
   days: number; f0: number; g: number; vr: number;
 }
-const G = { travel: 'demo · 旅行 Travel', food: 'demo · 美食 Food', fashion: 'demo · 时尚 Fashion', life: 'demo · 生活 Lifestyle', fit: 'demo · 健身 Fitness' };
+/** 账号人设 names (the former demo groups became personas; fitness accounts use 健身教练, two admin accounts 品牌客服). */
+const G = { travel: 'demo · 旅行 Travel', food: 'demo · 美食 Food', fashion: 'demo · 时尚 Fashion', life: 'demo · 生活 Lifestyle', fit: 'demo · 健身教练', brand: 'demo · 品牌客服' };
 const ACCOUNTS: AccSpec[] = [
-  { handle: 'demo.wanderlust.lena', owner: 'admin', displayName: 'Lena · Wanderlust', group: G.travel, tags: ['travel', 'europe', '主力'], notes: 'demo: 主力旅行号，每周 3 篇图文', login: 'logged_in', status: 'active', days: 90, f0: 18_400, g: 0.0065, vr: 0.32 },
-  { handle: 'demo.island.hopper', owner: 'admin', displayName: 'Island Hopper', group: G.travel, tags: ['travel', 'asia'], notes: 'demo: 东南亚海岛', login: 'logged_in', status: 'active', days: 75, f0: 6_200, g: 0.0110, vr: 0.41 },
-  { handle: 'demo.roadtrip.max', owner: 'admin', displayName: 'Max on the Road', group: G.travel, tags: ['travel', 'video'], notes: 'demo: 需要短信验证', login: 'needs_verification', status: 'active', lastError: 'demo: 登录时要求短信验证', days: 60, f0: 2_950, g: 0.0042, vr: 0.22 },
-  { handle: 'demo.tokyo.bites', owner: 'admin', displayName: 'Tokyo Bites 東京', group: G.food, tags: ['food', 'asia', '主力'], notes: 'demo: 日料探店', login: 'logged_in', status: 'active', days: 90, f0: 42_100, g: 0.0038, vr: 0.18 },
-  { handle: 'demo.vegan.kitchen', owner: 'admin', displayName: 'Green Vegan Kitchen', group: G.food, tags: ['food', 'recipes'], notes: 'demo: 账号受限，暂停发布', login: 'logged_in', status: 'limited', days: 45, f0: 9_800, g: -0.0012, vr: 0.09 },
-  { handle: 'demo.street.eats.sg', owner: 'admin', displayName: 'Street Eats SG', group: G.food, tags: ['food'], notes: 'demo: 已退出登录', login: 'logged_out', status: 'active', days: 30, f0: 1_240, g: 0.0150, vr: 0.55 },
-  { handle: 'demo.minimal.closet', owner: 'admin', displayName: 'Minimal Closet', group: G.fashion, tags: ['fashion', '主力'], notes: 'demo: 极简穿搭', login: 'logged_in', status: 'active', days: 90, f0: 27_600, g: 0.0052, vr: 0.26 },
-  { handle: 'demo.vintage.finds', owner: 'admin', displayName: 'Vintage Finds', group: G.fashion, tags: ['fashion', 'vintage'], notes: 'demo: 新号，尚无数据', login: 'unknown', status: 'active', days: 0, f0: 0, g: 0, vr: 0 },
-  { handle: 'demo.sneaker.drop', owner: 'admin', displayName: 'Sneaker Drop', group: null, tags: ['fashion', 'test'], notes: 'demo: 被平台封禁（演示）', login: 'logged_in', status: 'suspended', days: 40, f0: 15_300, g: -0.0025, vr: 0.05 },
-  { handle: 'demo.brand.backup', owner: 'admin', displayName: 'Brand Backup', group: null, tags: ['backup'], notes: 'demo: 备用号', login: 'unknown', status: 'active', days: 0, f0: 0, g: 0, vr: 0 },
-  { handle: 'demo.cozy.home', owner: 'user', displayName: 'Cozy Home 小家', group: G.life, tags: ['lifestyle', 'home'], notes: 'demo: 家居生活', login: 'logged_in', status: 'active', days: 90, f0: 11_900, g: 0.0071, vr: 0.29 },
-  { handle: 'demo.plant.parent', owner: 'user', displayName: 'Plant Parent', group: G.life, tags: ['lifestyle', 'plants'], notes: 'demo: 绿植', login: 'logged_in', status: 'active', days: 60, f0: 3_400, g: 0.0124, vr: 0.47 },
-  { handle: 'demo.morning.journal', owner: 'user', displayName: 'Morning Journal', group: G.life, tags: ['lifestyle'], notes: 'demo: 需要验证', login: 'needs_verification', status: 'active', days: 35, f0: 860, g: 0.0090, vr: 0.61 },
-  { handle: 'demo.fit.with.mia', owner: 'user', displayName: 'Fit with Mia', group: G.fit, tags: ['fitness', '主力'], notes: 'demo: 健身主力号', login: 'logged_in', status: 'active', days: 90, f0: 33_500, g: 0.0058, vr: 0.24 },
-  { handle: 'demo.yoga.daily', owner: 'user', displayName: 'Yoga Daily', group: G.fit, tags: ['fitness', 'yoga'], notes: 'demo: 已退出登录', login: 'logged_out', status: 'active', days: 50, f0: 5_100, g: 0.0031, vr: 0.2 },
-  { handle: 'demo.run.club.sh', owner: 'user', displayName: 'Run Club Shanghai', group: null, tags: ['fitness', 'running'], notes: 'demo: 受限', login: 'logged_in', status: 'limited', days: 30, f0: 2_200, g: 0.0005, vr: 0.12 },
-];
-const GROUPS: { name: string; owner: Owner }[] = [
-  { name: G.travel, owner: 'admin' }, { name: G.food, owner: 'admin' }, { name: G.fashion, owner: 'admin' },
-  { name: G.life, owner: 'user' }, { name: G.fit, owner: 'user' },
+  { handle: 'demo.wanderlust.lena', owner: 'admin', displayName: 'Lena · Wanderlust', persona: G.travel, tags: ['travel', 'europe', '主力'], notes: 'demo: 主力旅行号，每周 3 篇图文', login: 'logged_in', status: 'active', days: 90, f0: 18_400, g: 0.0065, vr: 0.32 },
+  { handle: 'demo.island.hopper', owner: 'admin', displayName: 'Island Hopper', persona: G.travel, tags: ['travel', 'asia'], notes: 'demo: 东南亚海岛', login: 'logged_in', status: 'active', days: 75, f0: 6_200, g: 0.0110, vr: 0.41 },
+  { handle: 'demo.roadtrip.max', owner: 'admin', displayName: 'Max on the Road', persona: G.travel, tags: ['travel', 'video'], notes: 'demo: 需要短信验证', login: 'needs_verification', status: 'active', lastError: 'demo: 登录时要求短信验证', days: 60, f0: 2_950, g: 0.0042, vr: 0.22 },
+  { handle: 'demo.tokyo.bites', owner: 'admin', displayName: 'Tokyo Bites 東京', persona: G.food, tags: ['food', 'asia', '主力'], notes: 'demo: 日料探店', login: 'logged_in', status: 'active', days: 90, f0: 42_100, g: 0.0038, vr: 0.18 },
+  { handle: 'demo.vegan.kitchen', owner: 'admin', displayName: 'Green Vegan Kitchen', persona: G.food, tags: ['food', 'recipes'], notes: 'demo: 账号受限，暂停发布', login: 'logged_in', status: 'limited', days: 45, f0: 9_800, g: -0.0012, vr: 0.09 },
+  { handle: 'demo.street.eats.sg', owner: 'admin', displayName: 'Street Eats SG', persona: G.food, tags: ['food'], notes: 'demo: 已退出登录', login: 'logged_out', status: 'active', days: 30, f0: 1_240, g: 0.0150, vr: 0.55 },
+  { handle: 'demo.minimal.closet', owner: 'admin', displayName: 'Minimal Closet', persona: G.brand, tags: ['fashion', '主力'], notes: 'demo: 极简穿搭', login: 'logged_in', status: 'active', days: 90, f0: 27_600, g: 0.0052, vr: 0.26 },
+  { handle: 'demo.vintage.finds', owner: 'admin', displayName: 'Vintage Finds', persona: G.fashion, tags: ['fashion', 'vintage'], notes: 'demo: 新号，尚无数据', login: 'unknown', status: 'active', days: 0, f0: 0, g: 0, vr: 0 },
+  { handle: 'demo.sneaker.drop', owner: 'admin', displayName: 'Sneaker Drop', persona: null, tags: ['fashion', 'test'], notes: 'demo: 被平台封禁（演示）', login: 'logged_in', status: 'suspended', days: 40, f0: 15_300, g: -0.0025, vr: 0.05 },
+  { handle: 'demo.brand.backup', owner: 'admin', displayName: 'Brand Backup', persona: G.brand, tags: ['backup'], notes: 'demo: 备用号', login: 'unknown', status: 'active', days: 0, f0: 0, g: 0, vr: 0 },
+  { handle: 'demo.cozy.home', owner: 'user', displayName: 'Cozy Home 小家', persona: G.life, tags: ['lifestyle', 'home'], notes: 'demo: 家居生活', login: 'logged_in', status: 'active', days: 90, f0: 11_900, g: 0.0071, vr: 0.29 },
+  { handle: 'demo.plant.parent', owner: 'user', displayName: 'Plant Parent', persona: G.life, tags: ['lifestyle', 'plants'], notes: 'demo: 绿植', login: 'logged_in', status: 'active', days: 60, f0: 3_400, g: 0.0124, vr: 0.47 },
+  { handle: 'demo.morning.journal', owner: 'user', displayName: 'Morning Journal', persona: G.life, tags: ['lifestyle'], notes: 'demo: 需要验证', login: 'needs_verification', status: 'active', days: 35, f0: 860, g: 0.0090, vr: 0.61 },
+  { handle: 'demo.fit.with.mia', owner: 'user', displayName: 'Fit with Mia', persona: G.fit, tags: ['fitness', '主力'], notes: 'demo: 健身主力号', login: 'logged_in', status: 'active', days: 90, f0: 33_500, g: 0.0058, vr: 0.24 },
+  { handle: 'demo.yoga.daily', owner: 'user', displayName: 'Yoga Daily', persona: G.fit, tags: ['fitness', 'yoga'], notes: 'demo: 已退出登录', login: 'logged_out', status: 'active', days: 50, f0: 5_100, g: 0.0031, vr: 0.2 },
+  { handle: 'demo.run.club.sh', owner: 'user', displayName: 'Run Club Shanghai', persona: G.fit, tags: ['fitness', 'running'], notes: 'demo: 受限', login: 'logged_in', status: 'limited', days: 30, f0: 2_200, g: 0.0005, vr: 0.12 },
 ];
 
 interface Day { day: string; followers: number; following: number; posts: number; views: number; likes: number; shares: number; comments: number }
@@ -195,16 +194,17 @@ function snapshots(t: TrackedSpec) {
 }
 const POST_TITLES = ['清晨的第一缕光 ☀️', '这周最受欢迎的一组', '幕后花絮 | Behind the scenes', '收藏级攻略，建议保存', '粉丝问答合集 Q&A', '新系列预告 Coming soon'];
 
-/** 人设 of the reply templates: shared templates may only use a public persona. */
-const PERSONAS = [
-  { name: 'demo · 品牌客服', owner: 'admin' as Owner, scope: 'public', description: '礼貌、简短，引导私信' },
-  { name: 'demo · 健身教练', owner: 'user' as Owner, scope: 'mine', description: null },
+/** 人设 of the accounts and reply templates: shared templates may only use a public persona; personal ones only fit their owner's accounts. */
+const PERSONAS: { name: string; owner: Owner; scope: 'public' | 'mine'; description: string | null }[] = [
+  { name: G.brand, owner: 'admin', scope: 'public', description: '礼貌、简短，引导私信' },
+  { name: G.fit, owner: 'user', scope: 'mine', description: null },
+  { name: G.travel, owner: 'admin', scope: 'mine', description: '旅行号：目的地、攻略' },
+  { name: G.food, owner: 'admin', scope: 'mine', description: '探店、食谱' },
+  { name: G.fashion, owner: 'admin', scope: 'mine', description: null },
+  { name: G.life, owner: 'user', scope: 'mine', description: '家居、绿植、日常' },
 ];
-/** 账号人设: accounts → persona name (personal personas only on their owner's accounts). */
-const ACCOUNT_PERSONAS: Record<string, string> = {
-  'demo.fit.with.mia': 'demo · 健身教练', 'demo.yoga.daily': 'demo · 健身教练', 'demo.run.club.sh': 'demo · 健身教练',
-  'demo.minimal.closet': 'demo · 品牌客服', 'demo.brand.backup': 'demo · 品牌客服',
-};
+/** 账号人设: accounts → persona name. */
+const ACCOUNT_PERSONAS: Record<string, string> = Object.fromEntries(ACCOUNTS.filter((a) => a.persona).map((a) => [a.handle, a.persona!]));
 const TEMPLATES = [
   { name: 'demo · 感谢支持', text: '谢谢你的喜欢！我们会继续分享更多内容 🙏', shared: true, tags: ['thanks'], persona: 'demo · 品牌客服' },
   { name: 'demo · 引导私信', text: '感谢关注～具体信息请私信我们，我们会尽快回复你。', shared: true, tags: ['dm'], persona: 'demo · 品牌客服' },
@@ -244,43 +244,44 @@ if (CLEAN) {
   let n = 0;
   for (const a of [...await myAccounts(), ...await tmpAccounts()]) { await must('DELETE', `/api/social/accounts/${a.id}`, ADMIN); n++; }
   console.log(`deleted ${n} social accounts (with their stats, comments, replies and logs)`);
-  const groups = ((await must('GET', '/api/social/groups', ADMIN)).groups as any[])
-    .filter((g) => GROUPS.some((s) => s.name === g.name && ownerIdOf(s.owner) === g.userId) || g.name.startsWith('demotmp'));
-  for (const g of groups) await must('DELETE', `/api/social/groups/${g.id}`, ADMIN);
-  console.log(`deleted ${groups.length} groups`);
   const tracked = (await listAll('/api/tracked-accounts?platform=instagram', ADMIN)).filter((t) => TRACKED.some((s) => s.handle === t.handle && ownerIdOf(s.owner) === t.userId));
   for (const t of tracked) await must('DELETE', `/api/tracked-accounts/${t.id}`, ADMIN);
   console.log(`deleted ${tracked.length} tracked accounts (with snapshots and posts)`);
   const tpls = ((await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]).filter((t) => TEMPLATES.some((s) => s.name === t.name) || t.name.startsWith('demotmp'));
   for (const t of tpls) await must('DELETE', `/api/comment-templates/${t.id}`, ADMIN);
   console.log(`deleted ${tpls.length} comment templates`);
-  const pers = [...(await must('GET', '/api/personas?scope=public', ADMIN)).personas, ...(await must('GET', `/api/personas?scope=all-users&ownerId=${DU.id}`, ADMIN)).personas]
-    .filter((x: any) => PERSONAS.some((s) => s.name === x.name && (s.scope === 'public' ? x.ownerType === 'public' : x.ownerId === DU.id)));
+  const pers = [...(await must('GET', '/api/personas?scope=public', ADMIN)).personas, ...(await must('GET', '/api/personas?scope=all-users', ADMIN)).personas]
+    .filter((x: any) => PERSONAS.some((s) => s.name === x.name && (s.scope === 'public' ? x.ownerType === 'public' : x.ownerId === ownerIdOf(s.owner)))
+      || (x.ownerId === DU.id && x.name.startsWith('demotmp')));
   for (const x of pers) await must('DELETE', `/api/personas/${x.id}`, ADMIN);
   console.log(`deleted ${pers.length} personas`);
   console.log(`kept user ${DEMO_USER} (shared with the other demo seeders) and in-app notifications (no delete endpoint)`);
   process.exit(0);
 }
 
-// ---------------------------------------------------------------- seed: groups
-const counts = { groups: 0, accounts: 0, statDays: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0, personas: 0 };
-const groupId = new Map<string, string>();
-for (const o of ['admin', 'user'] as Owner[]) {
-  const existing = (await must('GET', '/api/social/groups', tokenOf(o))).groups as any[];
-  for (const g of GROUPS.filter((x) => x.owner === o)) {
-    let row = existing.find((e) => e.name === g.name && e.userId === ownerIdOf(o));
-    if (!row) { row = (await must('POST', '/api/social/groups', tokenOf(o), { name: g.name })).group; counts.groups++; }
-    groupId.set(g.name, row.id);
-  }
+// ---------------------------------------------------------------- seed: personas (人设; also the grouping of the accounts)
+const counts = { accounts: 0, statDays: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0, personas: 0 };
+const personaId = new Map<string, string>();
+for (const p of PERSONAS) {
+  const list = (await must('GET', `/api/personas?scope=${p.scope}`, tokenOf(p.owner))).personas as any[];
+  let row = list.find((x) => x.name === p.name);
+  if (!row) { row = (await must('POST', '/api/personas', tokenOf(p.owner), { scope: p.scope, name: p.name, description: p.description })).persona; counts.personas++; }
+  personaId.set(p.name, row.id);
 }
 
 // ---------------------------------------------------------------- seed: social accounts
 const accByHandle = new Map<string, any>();
 for (const a of await myAccounts()) accByHandle.set(a.handle, a);
 for (const s of ACCOUNTS) {
-  if (accByHandle.has(s.handle)) continue;
+  const have = accByHandle.get(s.handle);
+  if (have) {
+    // idempotent: put the tags back to the spec (e.g. the 分组 → 人设 data migration may have added a former group name as a tag)
+    const same = have.tags.map((t: string) => t.toLowerCase()).sort().join() === [...s.tags].map((t) => t.toLowerCase()).sort().join();
+    if (!same) accByHandle.set(s.handle, (await must('PUT', `/api/social/accounts/${have.id}`, tokenOf(s.owner), { tags: s.tags })).account);
+    continue;
+  }
   const r = await must('POST', '/api/social/accounts', tokenOf(s.owner), {
-    platform: 'instagram', handle: s.handle, displayName: s.displayName, groupId: s.group ? groupId.get(s.group) : null, tags: s.tags,
+    platform: 'instagram', handle: s.handle, displayName: s.displayName, personaId: s.persona ? personaId.get(s.persona) : null, tags: s.tags,
     notes: s.notes, loginStatus: s.login, accountStatus: s.status === 'suspended' ? 'active' : s.status, lastError: s.lastError ?? null,
   });
   let acc = r.account;
@@ -340,13 +341,6 @@ for (const t of TRACKED) {
 }
 
 // ---------------------------------------------------------------- seed: templates
-const personaId = new Map<string, string>();
-for (const p of PERSONAS) {
-  const list = (await must('GET', `/api/personas?scope=${p.scope}`, tokenOf(p.owner))).personas as any[];
-  let row = list.find((x) => x.name === p.name);
-  if (!row) { row = (await must('POST', '/api/personas', tokenOf(p.owner), { scope: p.scope, name: p.name, description: p.description })).persona; counts.personas++; }
-  personaId.set(p.name, row.id);
-}
 const tplByName = new Map<string, any>();
 for (const t of (await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]) tplByName.set(t.name, t);
 for (const t of TEMPLATES) {
@@ -362,9 +356,9 @@ for (const t of TEMPLATES) {
 }
 
 // ---------------------------------------------------------------- seed: account personas (账号人设)
-for (const [handle, name] of Object.entries(ACCOUNT_PERSONAS)) {
+for (const { handle, persona } of ACCOUNTS) {
   const acc = accByHandle.get(handle)!;
-  const pid = personaId.get(name)!;
+  const pid = persona ? personaId.get(persona)! : null;
   if (acc.personaId === pid) continue;
   const owner = ACCOUNTS.find((x) => x.handle === handle)!.owner;
   accByHandle.set(handle, (await must('PUT', `/api/social/accounts/${acc.id}`, tokenOf(owner), { personaId: pid })).account);
@@ -453,7 +447,7 @@ console.log(`seeded (new this run): ${JSON.stringify(counts)}`);
 // ================================================================= verification
 const tmpTag = randomBytes(3).toString('hex');
 const tmpIds: string[] = [];
-const tmpGroups: [string, string][] = [];
+const tmpPersonas: [string, string][] = [];
 const tmpTemplates: string[] = [];
 const codeOf = (r: { body: any }) => r.body?.code;
 try {
@@ -481,10 +475,10 @@ try {
     check(`all ${ACCOUNTS.length} demo social accounts present`, all.length === ACCOUNTS.length, `${all.length}`);
     const okSpec = ACCOUNTS.every((s) => {
       const a = all.find((x) => x.handle === s.handle);
-      return a && a.userId === ownerIdOf(s.owner) && a.groupName === s.group && a.loginStatus === s.login && a.accountStatus === s.status && a.notes === s.notes
+      return a && a.userId === ownerIdOf(s.owner) && a.personaName === s.persona && a.loginStatus === s.login && a.accountStatus === s.status && a.notes === s.notes
         && a.tags.map((t: string) => t.toLowerCase()).sort().join() === [...s.tags].sort().join() && a.profileUrl === `https://www.instagram.com/${s.handle}/`;
     });
-    check('seeded accounts: owner, group, statuses, notes, tags, profile URL as specified', okSpec);
+    check('seeded accounts: owner, persona, statuses, notes, tags, profile URL as specified', okSpec);
     check('account personas (账号人设) as specified', Object.entries(ACCOUNT_PERSONAS).every(([h, name]) => all.find((x) => x.handle === h)?.personaName === name));
     const coach = await listAll(`/api/social/accounts?personaId=${personaId.get('demo · 健身教练')}`, DU.token);
     check('persona filter (demo-user, 健身教练): the 3 fitness accounts', coach.map((a) => a.handle).sort().join() === ['demo.fit.with.mia', 'demo.run.club.sh', 'demo.yoga.daily'].join(), coach.map((a) => a.handle).join());
@@ -501,10 +495,12 @@ try {
     const tg = await http('GET', `/api/social/accounts?tags=${encodeURIComponent('FOOD,Asia')}&pageSize=200`, ADMIN);
     const tgMine = tg.body.items.filter((a: any) => ACCOUNTS.some((s) => s.handle === a.handle)).map((a: any) => a.handle);
     check('tags filter: all given tags, case-insensitive', tgMine.join() === 'demo.tokyo.bites', JSON.stringify(tgMine));
-    const gf = await http('GET', `/api/social/accounts?groupId=${groupId.get(G.food)}&pageSize=200`, ADMIN);
-    check('group filter', gf.body.total === 3 && gf.body.items.every((a: any) => a.groupName === G.food), gf.text.slice(0, 200));
-    const ug = await http('GET', `/api/social/accounts?groupId=none&q=demo.&pageSize=200`, ADMIN);
-    check('groupId=none filter (ungrouped)', ['demo.sneaker.drop', 'demo.brand.backup', 'demo.run.club.sh'].every((h) => ug.body.items.some((a: any) => a.handle === h)) && ug.body.items.every((a: any) => a.groupId === null));
+    const gf = await http('GET', `/api/social/accounts?personaId=${personaId.get(G.food)}&pageSize=200`, ADMIN);
+    check('persona filter (admin, 美食)', gf.body.total === 3 && gf.body.items.every((a: any) => a.personaName === G.food), gf.text.slice(0, 200));
+    const ug = await http('GET', `/api/social/accounts?personaId=none&q=demo.&pageSize=200`, ADMIN);
+    check('personaId=none filter', ug.body.items.some((a: any) => a.handle === 'demo.sneaker.drop') && ug.body.items.every((a: any) => a.personaId === null && a.handle !== 'demo.brand.backup'));
+    const gone = await http('GET', '/api/social/groups', ADMIN);
+    check('groups API removed (404); items carry no group fields', gone.status === 404 && all.every((a) => !('groupId' in a) && !('groupName' in a)));
     const ls = await http('GET', '/api/social/accounts?loginStatus=needs_verification&pageSize=200', ADMIN);
     check('loginStatus filter', ['demo.roadtrip.max', 'demo.morning.journal'].every((h) => ls.body.items.some((a: any) => a.handle === h)) && ls.body.items.every((a: any) => a.loginStatus === 'needs_verification'));
     const as = await http('GET', '/api/social/accounts?accountStatus=limited&pageSize=200', DU.token);
@@ -519,8 +515,13 @@ try {
     check('pagination: page size, disjoint pages, same total', ids1.length === 5 && ids2.length === 5 && !ids1.some((i: string) => ids2.includes(i)) && p1.body.total === p2.body.total && p1.body.total >= ACCOUNTS.length);
     const tags = await http('GET', '/api/social/tags', DU.token);
     check('demo-user tag suggestions: own tags only', tags.status === 200 && tags.body.tags.includes('fitness') && !tags.body.tags.includes('europe'), tags.text);
-    const grp = await http('GET', '/api/social/groups', DU.token);
-    check('demo-user groups: own only, with counts', grp.body.groups.every((g: any) => g.userId === DU.id) && grp.body.groups.find((g: any) => g.name === G.fit)?.count === 2);
+    const grp = await http('GET', '/api/personas?scope=mine', DU.token);
+    const pubP = await http('GET', '/api/personas?scope=public', DU.token);
+    check('demo-user personas: own only, with account counts (健身教练 3, 生活 3; public 品牌客服 0 of own)', grp.body.personas.every((g: any) => g.ownerId === DU.id)
+      && grp.body.personas.find((g: any) => g.name === G.fit)?.accounts === 3 && grp.body.personas.find((g: any) => g.name === G.life)?.accounts === 3
+      && pubP.body.personas.find((g: any) => g.name === G.brand)?.accounts === 0, grp.text.slice(0, 300));
+    const pubA = (await must('GET', '/api/personas?scope=public', ADMIN)).personas.find((g: any) => g.name === G.brand);
+    check('admin: public 品牌客服 counts both admin accounts', pubA?.accounts === 2, JSON.stringify(pubA));
     const dev = await http('GET', '/api/social/accounts?instanceId=none&q=demo.&pageSize=200', ADMIN);
     check('device link read-only: demo accounts unlinked (instanceId=none)', ACCOUNTS.every((s) => dev.body.items.some((a: any) => a.handle === s.handle && a.instance === null && a.proxy === null)));
     const sus = all.find((a) => a.handle === 'demo.sneaker.drop');
@@ -540,8 +541,8 @@ try {
     check('demo-user batch including another owner\'s account → 404, nothing changed', b.status === 404 && !(await must('GET', `/api/social/accounts/${userAcc.id}`, DU.token)).account.tags.includes('x'));
     const o = await http('POST', '/api/social/accounts', DU.token, { platform: 'instagram', handle: `demotmp.${tmpTag}.forother`, ownerId: adminId });
     check('demo-user cannot create for another owner → 403 social.admin_only', o.status === 403 && codeOf(o) === 'social.admin_only', o.text);
-    const g = await http('PUT', `/api/social/accounts/${userAcc.id}`, DU.token, { groupId: groupId.get(G.travel) });
-    check('demo-user cannot use admin\'s group → 404 social.group_not_found', g.status === 404 && codeOf(g) === 'social.group_not_found', g.text);
+    const g = await http('PUT', `/api/social/accounts/${userAcc.id}`, DU.token, { personaId: personaId.get(G.travel) });
+    check('demo-user cannot use admin\'s personal persona → 400 persona.account_not_allowed', g.status === 400 && codeOf(g) === 'persona.account_not_allowed', g.text);
     const dup = await http('POST', '/api/social/accounts', DU.token, { platform: 'instagram', handle: '@DEMO.Tokyo.Bites' });
     check('handle unique per platform across owners (case-insensitive) → 409 social.account_exists', dup.status === 409 && codeOf(dup) === 'social.account_exists', dup.text);
     const s1 = await http('GET', '/api/social/settings', DU.token);
@@ -553,10 +554,10 @@ try {
 
   // ---------------------------------------------------------------- social: edits, logs, mark checked, batch (throw-away accounts)
   {
-    const tg = (await must('POST', '/api/social/groups', DU.token, { name: `demotmp-${tmpTag}-A` })).group; tmpGroups.push([tg.id, DU.token]);
-    const tg2 = (await must('POST', '/api/social/groups', DU.token, { name: `demotmp-${tmpTag}-B` })).group; tmpGroups.push([tg2.id, DU.token]);
+    const tg = (await must('POST', '/api/personas', DU.token, { scope: 'mine', name: `demotmp-${tmpTag}-A` })).persona; tmpPersonas.push([tg.id, DU.token]);
+    const tg2 = (await must('POST', '/api/personas', DU.token, { scope: 'mine', name: `demotmp-${tmpTag}-B` })).persona; tmpPersonas.push([tg2.id, DU.token]);
     const mk = async (n: number, tok = DU.token) => {
-      const a = (await must('POST', '/api/social/accounts', tok, { platform: 'instagram', handle: `@demotmp.${tmpTag}.${n}`, tags: ['Tmp', 'tmp', 'Batch'], groupId: tok === DU.token ? tg.id : null })).account;
+      const a = (await must('POST', '/api/social/accounts', tok, { platform: 'instagram', handle: `@demotmp.${tmpTag}.${n}`, tags: ['Tmp', 'tmp', 'Batch'], personaId: tok === DU.token ? tg.id : null })).account;
       tmpIds.push(a.id); return a;
     };
     const a1 = await mk(1); const a2 = await mk(2); const a3 = await mk(3);
@@ -601,10 +602,10 @@ try {
     if (adminRec) await must('POST', `/api/notifications/${adminRec.id}/read`, ADMIN);
 
     // batch
-    const mg = await must('POST', '/api/social/accounts/batch', DU.token, { ids: [a1.id, a2.id, a3.id], action: 'move-group', groupId: tg2.id });
-    const moved = await Promise.all([a1, a2, a3].map(async (a) => (await must('GET', `/api/social/accounts/${a.id}`, DU.token)).account.groupId));
+    const mg = await must('POST', '/api/social/accounts/batch', DU.token, { ids: [a1.id, a2.id, a3.id], action: 'set-persona', personaId: tg2.id });
+    const moved = await Promise.all([a1, a2, a3].map(async (a) => (await must('GET', `/api/social/accounts/${a.id}`, DU.token)).account.personaId));
     logs = (await must('GET', `/api/social/accounts/${a3.id}/logs`, DU.token)).logs as any[];
-    check('batch move-group: all moved, changed count, group log', mg.changed === 3 && moved.every((g) => g === tg2.id) && logs.some((l) => l.field === 'group' && l.toValue === tg2.name));
+    check('batch set-persona: all moved, changed count, persona log', mg.changed === 3 && moved.every((g) => g === tg2.id) && logs.some((l) => l.field === 'persona' && l.fromValue === tg.name && l.toValue === tg2.name));
     const at = await must('POST', '/api/social/accounts/batch', DU.token, { ids: [a1.id, a2.id], action: 'add-tags', tags: ['BATCH', 'demo-x'] });
     const t1 = (await must('GET', `/api/social/accounts/${a1.id}`, DU.token)).account.tags as string[];
     check('batch add-tags (case-insensitive merge)', at.changed === 2 && t1.some((t) => t.toLowerCase() === 'batch') && t1.includes('demo-x') && t1.filter((t) => t.toLowerCase() === 'batch').length === 1, JSON.stringify(t1));
@@ -612,19 +613,21 @@ try {
     const t3 = await Promise.all([a1, a2, a3].map(async (a) => (await must('GET', `/api/social/accounts/${a.id}`, DU.token)).account.tags as string[]));
     check('batch remove-tags (case-insensitive)', rt.changed === 3 && t3.every((t) => !t.some((x) => ['demo-x', 'tmp'].includes(x.toLowerCase()))), JSON.stringify(t3));
     const ga = (await must('POST', '/api/social/accounts', ADMIN, { platform: 'instagram', handle: `demotmp.${tmpTag}.adm` })).account; tmpIds.push(ga.id);
-    const mix = await http('POST', '/api/social/accounts/batch', ADMIN, { ids: [a1.id, ga.id], action: 'move-group', groupId: tg.id });
-    check('batch move-group across owners → 409 social.group_owner_mismatch', mix.status === 409 && codeOf(mix) === 'social.group_owner_mismatch', mix.text);
+    const mix = await http('POST', '/api/social/accounts/batch', ADMIN, { ids: [a1.id, ga.id], action: 'set-persona', personaId: tg.id });
+    check('batch set-persona: a personal persona across owners → 400 persona.account_not_allowed', mix.status === 400 && codeOf(mix) === 'persona.account_not_allowed', mix.text);
     const ngr = await http('POST', '/api/social/accounts/batch', DU.token, { ids: [a1.id], action: 'add-tags' });
     check('batch add-tags without tags → 400', ngr.status === 400);
     const del = await must('POST', '/api/social/accounts/batch', DU.token, { ids: [a2.id, a3.id], action: 'delete' });
     const gone = await http('GET', `/api/social/accounts/${a2.id}`, DU.token);
     check('batch delete', del.count === 2 && gone.status === 404);
-    const ren = await must('PUT', `/api/social/groups/${tg2.id}`, DU.token, { name: `demotmp-${tmpTag}-B2` });
-    const gl = await must('DELETE', `/api/social/groups/${tg2.id}`, DU.token);
+    const ren = await must('PATCH', `/api/personas/${tg2.id}`, DU.token, { name: `demotmp-${tmpTag}-B2` });
+    const ren1 = (await must('GET', `/api/social/accounts/${a1.id}`, DU.token)).account;
+    const gl = await must('DELETE', `/api/personas/${tg2.id}`, DU.token);
     const a1b = (await must('GET', `/api/social/accounts/${a1.id}`, DU.token)).account;
     logs = (await must('GET', `/api/social/accounts/${a1.id}/logs`, DU.token)).logs as any[];
-    check('group rename + delete: account ungrouped, both logged', !!ren && gl === null && a1b.groupId === null && logs.some((l) => l.field === 'group' && l.toValue === `demotmp-${tmpTag}-B2`) && logs.some((l) => l.message === 'group deleted'));
-    tmpGroups.splice(tmpGroups.findIndex(([id]) => id === tg2.id), 1);
+    check('persona rename + delete: account shows the new name, then no persona; delete logged', !!ren && ren1.personaName === `demotmp-${tmpTag}-B2` && gl === null && a1b.personaId === null
+      && logs.some((l) => l.field === 'persona' && l.fromValue === `demotmp-${tmpTag}-B2` && l.message === 'persona deleted'));
+    tmpPersonas.splice(tmpPersonas.findIndex(([id]) => id === tg2.id), 1);
   }
 
   // ---------------------------------------------------------------- 账号分析 (exact numbers)
@@ -924,7 +927,7 @@ try {
   check('verification ran to the end', false, (err as Error).stack ?? String(err));
 } finally {
   for (const id of tmpIds) await http('DELETE', `/api/social/accounts/${id}`, ADMIN);
-  for (const [id] of tmpGroups) await http('DELETE', `/api/social/groups/${id}`, ADMIN);
+  for (const [id] of tmpPersonas) await http('DELETE', `/api/personas/${id}`, ADMIN);
   for (const id of tmpTemplates) await http('DELETE', `/api/comment-templates/${id}`, ADMIN);
   const left = await tmpAccounts();
   for (const a of left) await http('DELETE', `/api/social/accounts/${a.id}`, ADMIN);

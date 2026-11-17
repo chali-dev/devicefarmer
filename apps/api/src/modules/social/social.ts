@@ -85,14 +85,6 @@ export async function visibleAccount(user: AuthUser, id: string, exec: Exec = db
   return row;
 }
 
-/** Group that may hold `ownerId`'s accounts. Users only see their own groups (404 otherwise). */
-export async function groupForOwner(exec: Exec, user: AuthUser, groupId: string, ownerId: string) {
-  const [g] = await exec.select().from(schema.socialAccountGroups).where(eq(schema.socialAccountGroups.id, groupId));
-  if (!g || (!isAdmin(user) && g.userId !== user.id)) throw notFound('分组不存在', 'social.group_not_found');
-  if (g.userId !== ownerId) throw conflict('分组属于其他用户', 'social.group_owner_mismatch');
-  return g;
-}
-
 // ---------------------------------------------------------------- tags
 
 function uniqueTags(names: string[]): string[] {
@@ -174,12 +166,12 @@ export async function unlinkInstanceAccounts(tx: Tx, instanceId: string, instanc
 
 /** Login problems or a restricted account or a recorded error. `unknown` login status is not an exception. */
 export const EXCEPTION_SQL = sql`(${sa.loginStatus} in ('logged_out', 'needs_verification') or ${sa.accountStatus} <> 'active' or ${sa.lastError} is not null)`;
-export const isException = (a: SocialAccount) =>
+export const isException = (a: Pick<SocialAccount, 'loginStatus' | 'accountStatus' | 'lastError'>) =>
   a.loginStatus === 'logged_out' || a.loginStatus === 'needs_verification' || a.accountStatus !== 'active' || a.lastError !== null;
 
-export interface SocialAccountItem extends SocialAccount {
+/** Legacy `group_id` (social_account_groups, see schema.ts) is never returned. */
+export interface SocialAccountItem extends Omit<SocialAccount, 'groupId'> {
   ownerName: string | null;
-  groupName: string | null;
   /** 账号人设 name (personaId is on the row). */
   personaName: string | null;
   tags: string[];
@@ -197,11 +189,9 @@ const idsOf = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string 
 
 export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<SocialAccountItem[]> {
   if (!rows.length) return [];
-  const [tags, owners, groups, insts, access, personas] = await Promise.all([
+  const [tags, owners, insts, access, personas] = await Promise.all([
     tagsOf(db, rows.map((r) => r.id)),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
-    db.select({ id: schema.socialAccountGroups.id, name: schema.socialAccountGroups.name }).from(schema.socialAccountGroups)
-      .where(inArray(schema.socialAccountGroups.id, idsOf(rows.map((r) => r.groupId)))),
     db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId, proxyStatus: schema.instances.proxyStatus })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(rows.map((r) => r.instanceId)))),
     accessibleInstanceIds(user),
@@ -209,12 +199,11 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
   ]);
   const canSee = (id: string) => access === 'all' || access.has(id);
   const proxies = await proxyViews(insts.filter((i) => i.proxyId && canSee(i.id)).map((i) => i.proxyId!));
-  return rows.map((r) => {
+  return rows.map(({ groupId: _legacyGroup, ...r }) => {
     const inst = insts.find((i) => i.id === r.instanceId);
     return {
       ...r,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
-      groupName: groups.find((g) => g.id === r.groupId)?.name ?? null,
       personaName: personas.find((p) => p.id === r.personaId)?.name ?? null,
       tags: tags.get(r.id) ?? [],
       instance: inst ? { id: inst.id, name: inst.name, status: inst.status, accessible: canSee(inst.id) } : null,

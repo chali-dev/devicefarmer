@@ -216,15 +216,15 @@ try {
   check('upload with a category of another scope → 400 media.category_mismatch', r.status === 400 && r.body.code === 'media.category_mismatch');
 
   // categories CRUD
-  r = await http('POST', '/api/media/categories', U, { scope: 'mine', name: `${tmp} 分类` });
+  r = await http('POST', '/api/media/categories', U, { scope: 'mine', name: `${tmp} 分类`, description: 'demo: 说明' });
   const cat = r.body.category;
-  const dup = await http('POST', '/api/media/categories', U, { scope: 'mine', name: `${tmp} 分类` });
-  const ren = await http('PUT', `/api/media/categories/${cat?.id}`, U, { name: `${tmp} 分类2` });
+  const dup = await http('POST', '/api/media/categories', U, { scope: 'mine', name: `${tmp} 分类`.toUpperCase() });
+  const ren = await http('PATCH', `/api/media/categories/${cat?.id}`, U, { name: `${tmp} 分类2` });
   r = await upload(U, 'mine', `${tmp}-incat.jpg`, await jpeg(50, 50), 'image/jpeg', cat?.id);
   const inCat = r.body.item; await waitReady(U, inCat.id);
   const dc = await http('DELETE', `/api/media/categories/${cat?.id}`, U);
   const afterCat = (await http('GET', `/api/media/${inCat.id}`, U)).body.item;
-  check('category: create 201, duplicate 409, rename 200, delete 204 → asset uncategorized', cat && dup.status === 409 && ren.status === 200 && dc.status === 204 && afterCat.categoryId === null);
+  check('category: create 201 (with description), case-variant duplicate 409, rename 200, delete 204 → asset uncategorized', cat?.description === 'demo: 说明' && dup.status === 409 && ren.status === 200 && dc.status === 204 && afterCat.categoryId === null);
   const otherDel = await http('DELETE', `/api/media/categories/${prodCat.id}`, U);
   check('user deleting a public category → 403', otherDel.status === 403);
 

@@ -193,31 +193,33 @@ try {
   r = await http('GET', `/api/social/accounts?ownerId=${uA}&pageSize=200`, T);
   check('admin: list filtered by owner', r.body.items.length === 2 && r.body.items.every((x: any) => x.userId === uA && x.ownerName === `sca${tag}`));
 
-  // ---------------------------------------------------------------- groups
-  r = await http('POST', '/api/social/groups', A, { name: 'Main' });
-  check('user A: create group', r.status === 201);
-  const gA: string = r.body.group.id;
-  r = await http('POST', '/api/social/groups', A, { name: 'MAIN' });
-  check('duplicate group name (case-insensitive, same owner) → 409', r.status === 409 && r.body.code === 'social.group_exists');
-  r = await http('POST', '/api/social/groups', B, { name: 'Main' });
-  check('same group name for another user is fine', r.status === 201);
-  const gB: string = r.body.group.id;
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { groupId: gB });
-  check('user A: assign B\'s group → 404', r.status === 404 && r.body.code === 'social.group_not_found');
-  r = await http('PUT', `/api/social/accounts/${b1}`, T, { groupId: gA });
-  check('admin: group of another owner → 409 social.group_owner_mismatch', r.status === 409 && r.body.code === 'social.group_owner_mismatch');
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { groupId: gA });
-  check('user A: move account into own group', r.status === 200 && r.body.account.groupName === 'Main');
+  // ---------------------------------------------------------------- personas (人设; groups were removed)
   r = await http('GET', '/api/social/groups', A);
-  check('user A: groups list = own only, with counts', r.body.groups.length === 1 && r.body.groups[0].count === 1);
-  r = await http('GET', `/api/social/groups?ownerId=${uB}`, T);
-  check('admin: groups of user B', r.body.groups.length === 1 && r.body.groups[0].id === gB);
-  r = await http('PUT', `/api/social/groups/${gA}`, B, { name: 'hijack' });
-  check('user B: rename A\'s group → 404', r.status === 404);
-  r = await http('GET', `/api/social/accounts?groupId=${gA}`, A);
-  check('filter by group', r.body.total === 1 && r.body.items[0].id === a1);
-  r = await http('GET', '/api/social/accounts?groupId=none', A);
-  check('filter ungrouped', r.body.total === 1 && r.body.items[0].id === y1);
+  check('groups API is gone (404)', r.status === 404);
+  r = await http('POST', '/api/personas', A, { scope: 'mine', name: 'Main' });
+  check('user A: create personal persona', r.status === 201);
+  const gA: string = r.body.persona.id;
+  r = await http('POST', '/api/personas', A, { scope: 'mine', name: 'MAIN' });
+  check('duplicate persona name (case-insensitive, same owner) → 409', r.status === 409 && r.body.code === 'persona.exists');
+  r = await http('POST', '/api/personas', B, { scope: 'mine', name: 'Main' });
+  check('same persona name for another user is fine', r.status === 201);
+  const gB: string = r.body.persona.id;
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { personaId: gB });
+  check('user A: assign B\'s persona → 400 persona.account_not_allowed', r.status === 400 && r.body.code === 'persona.account_not_allowed');
+  r = await http('PUT', `/api/social/accounts/${b1}`, T, { personaId: gA });
+  check('admin: persona of another owner → 400 persona.account_not_allowed', r.status === 400 && r.body.code === 'persona.account_not_allowed');
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { personaId: gA, groupId: gB });
+  check('user A: set own persona (a stray groupId is ignored)', r.status === 200 && r.body.account.personaName === 'Main' && !('groupId' in r.body.account) && !('groupName' in r.body.account));
+  r = await http('GET', '/api/personas?scope=mine', A);
+  check('user A: persona list = own only, with account counts', r.body.personas.length === 1 && r.body.personas[0].accounts === 1);
+  r = await http('GET', `/api/personas?scope=all-users&ownerId=${uB}`, T);
+  check('admin: personas of user B', r.body.personas.length === 1 && r.body.personas[0].id === gB && r.body.personas[0].accounts === 0);
+  r = await http('PATCH', `/api/personas/${gA}`, B, { name: 'hijack' });
+  check('user B: rename A\'s persona → 404', r.status === 404);
+  r = await http('GET', `/api/social/accounts?personaId=${gA}`, A);
+  check('filter by persona', r.body.total === 1 && r.body.items[0].id === a1);
+  r = await http('GET', '/api/social/accounts?personaId=none', A);
+  check('filter without persona', r.body.total === 1 && r.body.items[0].id === y1);
 
   // ---------------------------------------------------------------- tags
   r = await http('PUT', `/api/social/accounts/${a1}`, A, { tags: [`Foo${tag}`, `bar${tag}`, `FOO${tag}`] });
@@ -265,7 +267,7 @@ try {
   const has = (action: string, field: string | null, pred: (l: any) => boolean = () => true) => L.some((l) => l.action === action && l.field === field && pred(l));
   check('log: create', has('create', null, (l) => l.actorName === `sca${tag}`));
   check('log: link (to device name)', has('link', 'device', (l) => l.toValue === D1.name));
-  check('log: group change', has('update', 'group', (l) => l.fromValue === null && l.toValue === 'Main'));
+  check('log: persona change', has('update', 'persona', (l) => l.fromValue === null && l.toValue === 'Main'));
   check('log: tags change', has('update', 'tags'));
   check('log: login status from → to', has('status', 'loginStatus', (l) => l.fromValue === 'unknown' && l.toValue === 'needs_verification'));
   check('log: checked with message', has('checked', null, (l) => l.message === 'verified on phone'));
@@ -275,17 +277,19 @@ try {
   const raceLinkLogs = await sqlClient`select count(*)::int as n from social_account_logs where account_id in ${sqlClient(raceIds)} and action = 'link'`;
   check('race: exactly one link log (refused links write none)', (raceLinkLogs[0] as any).n === 1);
 
-  // ---------------------------------------------------------------- batch move group / unlink
+  // ---------------------------------------------------------------- batch set persona / unlink
   r = await http('POST', '/api/social/accounts/batch', A, { ids: [a1, y1], action: 'move-group', groupId: gA });
-  check('batch move group (only moved rows count)', r.status === 200 && r.body.changed === 1);
+  check('batch move-group is gone → 400', r.status === 400);
+  r = await http('POST', '/api/social/accounts/batch', A, { ids: [a1, y1], action: 'set-persona', personaId: gA });
+  check('batch set persona (only changed rows count)', r.status === 200 && r.body.changed === 1);
   r = await http('POST', '/api/social/accounts/batch', A, { ids: [y1], action: 'unlink' });
   check('batch unlink', r.status === 200 && r.body.changed === 1 && (await logsOf(A, y1)).some((l) => l.action === 'unlink' && l.fromValue === D1.name));
   r = await http('PUT', `/api/social/accounts/${y1}`, A, { instanceId: D1.id });
 
-  // ---------------------------------------------------------------- group deletion
-  r = await http('DELETE', `/api/social/groups/${gA}`, A);
-  check('delete group → accounts ungrouped + logged', r.status === 204 && (await http('GET', `/api/social/accounts/${a1}`, A)).body.account.groupId === null
-    && (await logsOf(A, a1)).some((l) => l.field === 'group' && l.message === 'group deleted'));
+  // ---------------------------------------------------------------- persona deletion
+  r = await http('DELETE', `/api/personas/${gA}`, A);
+  check('delete persona → accounts without persona + logged', r.status === 204 && (await http('GET', `/api/social/accounts/${a1}`, A)).body.account.personaId === null
+    && (await logsOf(A, a1)).some((l) => l.field === 'persona' && l.message === 'persona deleted'));
 
   // ---------------------------------------------------------------- device deletion (real delete job) unlinks + logs
   const del = await http('POST', '/api/instances/actions', T, { action: 'delete', ids: [D1.id] });
@@ -316,7 +320,7 @@ try {
   const recent = acts.filter((a) => a.at >= t0);
   const actSet = new Set(recent.map((a) => a.action));
   const want = ['social.account_create', 'social.account_update', 'social.account_checked', 'social.account_delete', 'social.batch.add-tags',
-    'social.batch.unlink', 'social.batch.move-group', 'social.batch.delete', 'social.group_create', 'social.group_delete', 'social.settings_update'];
+    'social.batch.unlink', 'social.batch.set-persona', 'social.batch.delete', 'social.settings_update'];
   check('audit actions recorded', want.every((x) => actSet.has(x)), want.filter((x) => !actSet.has(x)).join(','));
   check('audit target for account update is "platform @handle"', recent.some((a) => a.action === 'social.account_update' && a.target === `instagram @${h('Alpha')}`));
   check('audit delete keeps the target name', recent.some((a) => a.action === 'social.account_delete' && a.target === `youtube @${h('Alpha')}`));
@@ -325,8 +329,8 @@ try {
   // ---------------------------------------------------------------- user deletion cascades
   r = await http('DELETE', `/api/users/${uB}`, T);
   const leftB = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.userId, uB));
-  const leftG = await db.select().from(schema.socialAccountGroups).where(eq(schema.socialAccountGroups.userId, uB));
-  check('deleting a user removes their accounts and groups (cascade)', r.status === 204 && leftB.length === 0 && leftG.length === 0, r.text);
+  const leftG = await db.select().from(schema.personas).where(eq(schema.personas.ownerId, uB));
+  check('deleting a user removes their accounts and personas (cascade)', r.status === 204 && leftB.length === 0 && leftG.length === 0, r.text);
   userIds.splice(userIds.indexOf(uB), 1);
   const aLogs = await logsOf(A, a1);
   check('logs written by a deleted actor survive (actor name kept)', aLogs.length > 0);

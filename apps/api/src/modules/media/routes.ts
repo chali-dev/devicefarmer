@@ -3,7 +3,7 @@ import type { FastifyReply } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import type { MediaAsset, MediaCategory, MediaProcessOptions } from '../../db/schema.js';
+import type { MediaAsset, MediaProcessOptions } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
 import { assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
@@ -101,21 +101,6 @@ function sendObject(reply: FastifyReply, stream: NodeJS.ReadableStream, type: st
   return reply.send(stream);
 }
 
-const CategoryScope = z.enum(['public', 'mine']);
-
-/** Category the user may manage (public: admin; user: owner or admin). */
-async function manageableCategory(user: AuthUser, id: string): Promise<MediaCategory> {
-  const [c] = await db.select().from(mc).where(eq(mc.id, id));
-  if (!c || (c.ownerType === 'user' && c.ownerId !== user.id && !isAdmin(user))) throw notFound('category not found', 'media.category_not_found');
-  if (c.ownerType === 'public' && !isAdmin(user)) throw forbidden('仅管理员可以管理公共分类', 'media.public_admin_only');
-  return c;
-}
-
-function uniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; cause?: { code?: string } };
-  return e.code === '23505' || e.cause?.code === '23505';
-}
-
 /**
  * Media library (素材库): public (admin-managed) and private (per-user) images/videos,
  * categories, tags, favorites, push to devices. See media.ts for the rules.
@@ -160,70 +145,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     return { tags: rows.map((r) => r.name) };
   });
 
-  // ------------------------------------------------------------ categories
-  app.get('/api/media/categories', {
-    schema: { querystring: z.object({ scope: CategoryScope.default('public'), ownerId: z.string().uuid().optional() }) },
-  }, async (req) => {
-    let owner: Owner;
-    if (req.query.scope === 'public') owner = { ownerType: 'public', ownerId: null };
-    else if (req.query.ownerId && req.query.ownerId !== req.user.id) {
-      if (!isAdmin(req.user)) throw forbidden('仅管理员可以查看其他用户的素材', 'media.admin_only');
-      owner = { ownerType: 'user', ownerId: req.query.ownerId };
-    } else owner = { ownerType: 'user', ownerId: req.user.id };
-    const visible = owner.ownerType === 'public' && !isAdmin(req.user) ? sql`and a.status = 'ready'` : sql``;
-    const rows = await db.select({
-      id: mc.id, ownerType: mc.ownerType, ownerId: mc.ownerId, name: mc.name, sort: mc.sort, createdAt: mc.createdAt, updatedAt: mc.updatedAt,
-      // Qualified: in a single-table select drizzle renders ${mc.id} as a bare "id", which the subquery would bind to a.id.
-      count: sql<number>`(select count(*)::int from media_assets a where a.category_id = media_categories.id and a.deleted_at is null ${visible})`,
-    }).from(mc)
-      .where(and(eq(mc.ownerType, owner.ownerType), owner.ownerId ? eq(mc.ownerId, owner.ownerId) : isNull(mc.ownerId)))
-      .orderBy(asc(mc.sort), asc(mc.name));
-    return { categories: rows };
-  });
-
-  app.post('/api/media/categories', {
-    schema: { body: z.object({ scope: CategoryScope, name: z.string().trim().min(1).max(50), sort: z.number().int().min(-100000).max(100000).optional() }) },
-  }, async (req, reply) => {
-    const owner = ownerForScope(req.user, req.body.scope);
-    let sort = req.body.sort;
-    if (sort === undefined) {
-      const [m] = await db.select({ max: sql<number | null>`max(${mc.sort})` }).from(mc)
-        .where(and(eq(mc.ownerType, owner.ownerType), owner.ownerId ? eq(mc.ownerId, owner.ownerId) : isNull(mc.ownerId)));
-      sort = (m?.max ?? -1) + 1;
-    }
-    try {
-      const [row] = await db.insert(mc).values({ ...owner, name: req.body.name, sort }).returning();
-      reply.code(201);
-      return { category: row };
-    } catch (err) {
-      if (uniqueViolation(err)) throw conflict('分类名称已存在', 'media.category_exists', { name: req.body.name });
-      throw err;
-    }
-  });
-
-  app.put('/api/media/categories/:id', {
-    schema: { params: Id, body: z.object({ name: z.string().trim().min(1).max(50).optional(), sort: z.number().int().min(-100000).max(100000).optional() }) },
-  }, async (req) => {
-    const c = await manageableCategory(req.user, req.params.id);
-    const set: Partial<MediaCategory> = {};
-    if (req.body.name !== undefined) set.name = req.body.name;
-    if (req.body.sort !== undefined) set.sort = req.body.sort;
-    if (!Object.keys(set).length) throw badRequest('nothing to update', 'common.nothing_to_update');
-    try {
-      const [row] = await db.update(mc).set(set).where(eq(mc.id, c.id)).returning();
-      return { category: row };
-    } catch (err) {
-      if (uniqueViolation(err)) throw conflict('分类名称已存在', 'media.category_exists', { name: req.body.name ?? '' });
-      throw err;
-    }
-  });
-
-  /** Assets in the category become uncategorized (FK on delete set null). */
-  app.delete('/api/media/categories/:id', { schema: { params: Id } }, async (req, reply) => {
-    const c = await manageableCategory(req.user, req.params.id);
-    await db.delete(mc).where(eq(mc.id, c.id));
-    reply.code(204);
-  });
+  // categories: categories.ts
 
   // ------------------------------------------------------------ upload
   /**

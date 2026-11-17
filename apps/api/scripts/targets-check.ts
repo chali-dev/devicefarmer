@@ -6,8 +6,8 @@
  * - Content targets (content_targets): owner's accounts only (others' → 404), an admin editing a user's content may only use
  *   that user's accounts (400 content.target_not_owner), disabled-platform accounts refused (400 platform.disabled),
  *   order kept and duplicates dropped, deleting an account drops it from targets, deleting the content cascades.
- * - Bulk by group / persona: the picker expands a group or persona to concrete ids from the account list
- *   (`?groupId=` / `?personaId=`); the server stores only those ids (a later group change does not change the targets).
+ * - Bulk by persona (分组 were removed; personas are the grouping): the picker expands a persona to concrete ids from the
+ *   account list (`?personaId=`); the server stores only those ids (a later persona change does not change the targets).
  * - RBAC/isolation: another user's content 404, another user's accounts never appear.
  * Usage (from apps/api, API running with the default ENABLED_PLATFORMS=instagram):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/targets-check.ts
@@ -129,9 +129,9 @@ try {
   check('persona delete is logged on the account', (r.body.logs as any[]).some((x) => x.field === 'persona' && x.fromValue === aOwn.name && x.toValue === null && x.message === 'persona deleted'));
 
   // ================================================================ content targets
-  // groups for the bulk pick
-  const g = (await http('POST', '/api/social/groups', A.token, { name: `G ${tag}` })).body.group;
-  await http('POST', '/api/social/accounts/batch', A.token, { ids: [a1.id, a2.id], action: 'move-group', groupId: g.id });
+  // a personal persona for the bulk pick (what a group used to be)
+  const g = await persona(A.token, { scope: 'mine', name: `G ${tag}` });
+  await http('POST', '/api/social/accounts/batch', A.token, { ids: [a1.id, a2.id], action: 'set-persona', personaId: g.id });
   // disabled-platform account (YouTube is off by default): inserted directly, as the API refuses to create it
   const [yt] = await db.insert(SA).values({ userId: A.id, platform: 'youtube', handle: `yt_${tag}`, createdBy: A.id }).returning();
 
@@ -153,16 +153,16 @@ try {
   r = await http('PUT', `/api/contents/${c2.id}`, T, { targetIds: [b1.id] });
   check('admin updating A\'s content with B\'s account → 400', r.status === 400 && r.body.code === 'content.target_not_owner');
 
-  // bulk by group / persona: the client expands from the account list and sends concrete ids
-  const byGroup = ((await http('GET', `/api/social/accounts?groupId=${g.id}&pageSize=200`, A.token)).body.items as any[]).map((x) => x.id);
+  // bulk by persona: the client expands from the account list and sends concrete ids
+  const byGroup = ((await http('GET', `/api/social/accounts?personaId=${g.id}&pageSize=200`, A.token)).body.items as any[]).map((x) => x.id);
   const byPersona = ((await http('GET', `/api/social/accounts?personaId=${pub.id}&pageSize=200`, A.token)).body.items as any[]).map((x) => x.id);
-  check('group / persona expansion lists the right accounts', byGroup.sort().join() === [a1.id, a2.id].sort().join() && byPersona.join() === a3.id);
+  check('persona expansion lists the right accounts (two personas)', byGroup.sort().join() === [a1.id, a2.id].sort().join() && byPersona.join() === a3.id);
   const expanded = [...new Set([...c1.targets.map((x: any) => x.id), ...byGroup, ...byPersona])];
   r = await http('PUT', `/api/contents/${c1.id}`, A.token, { targetIds: expanded });
   check('update targets with the expanded ids', r.status === 200 && r.body.content.targets.length === 3);
-  await http('POST', '/api/social/accounts/batch', A.token, { ids: [a4.id], action: 'move-group', groupId: g.id });
+  await http('POST', '/api/social/accounts/batch', A.token, { ids: [a4.id], action: 'set-persona', personaId: g.id });
   r = await http('GET', `/api/contents/${c1.id}`, A.token);
-  check('targets are concrete ids (adding an account to the group later does not add it)', r.body.content.targets.length === 3 && !r.body.content.targets.some((x: any) => x.id === a4.id));
+  check('targets are concrete ids (giving an account the persona later does not add it)', r.body.content.targets.length === 3 && !r.body.content.targets.some((x: any) => x.id === a4.id));
   r = await http('PUT', `/api/contents/${c1.id}`, A.token, { title: `tg ${tag} renamed` });
   check('update without targetIds keeps targets', r.body.content.targets.length === 3);
   r = await http('GET', `/api/contents?q=${tag}&pageSize=100`, A.token);
@@ -199,7 +199,7 @@ try {
   }
   await db.delete(P).where(and(eq(P.ownerType, 'public'), inArray(P.name, [`健身教练 ${tag}`, `美食 ${tag}`])));
   const leftU = await db.select().from(schema.users).where(inArray(schema.users.id, userIds.length ? userIds : ['00000000-0000-0000-0000-000000000000']));
-  check('cleanup: test users (cascading accounts, personas, groups) and public personas removed', leftU.length === 0);
+  check('cleanup: test users (cascading accounts, personas) and public personas removed', leftU.length === 0);
   await sqlClient.end();
   const failed = results.filter((x) => !x[1]).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);

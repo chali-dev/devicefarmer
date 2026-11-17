@@ -231,25 +231,39 @@ try {
   const unf = await http('DELETE', `/api/media/${pubImg.id}/favorite`, A.token);
   check('unfavorite: removed from favorites, asset intact', unf.status === 200 && !ids(await list(A.token, 'scope=favorites')).includes(pubImg.id) && (await http('GET', `/api/media/${pubImg.id}`, A.token)).status === 200);
 
-  // ---------- categories
+  // ---------- categories (shared scoped-list model: lib/scoped-list.ts)
   const cPubByUser = await http('POST', '/api/media/categories', A.token, { scope: 'public', name: `公共分类-${tag}` });
-  check('user creates public category → 403', cPubByUser.status === 403, `${cPubByUser.status}`);
-  const cPub = await http('POST', '/api/media/categories', admin, { scope: 'public', name: `公共分类-${tag}` });
-  const cPub2 = await http('POST', '/api/media/categories', admin, { scope: 'public', name: `公共分类-${tag}` });
-  check('admin creates public category; duplicate → 409', cPub.status === 201 && cPub2.status === 409 && cPub2.body.code === 'media.category_exists', `${cPub.status} ${cPub2.status}`);
+  check('user creates public category → 403 media_category.admin_only', cPubByUser.status === 403 && cPubByUser.body.code === 'media_category.admin_only', `${cPubByUser.status}`);
+  const cPub = await http('POST', '/api/media/categories', admin, { scope: 'public', name: `Cat-${tag}`, description: `desc ${tag}` });
+  const cPub2 = await http('POST', '/api/media/categories', admin, { scope: 'public', name: `CAT-${tag}` });
+  check('admin creates public category with description; case variant → 409 media_category.exists',
+    cPub.status === 201 && cPub.body.category.description === `desc ${tag}` && cPub2.status === 409 && cPub2.body.code === 'media_category.exists', `${cPub.status} ${cPub2.status} ${cPub2.body?.code}`);
   const cA = await http('POST', '/api/media/categories', A.token, { scope: 'mine', name: `我的分类-${tag}` });
   const cB = await http('POST', '/api/media/categories', B.token, { scope: 'mine', name: `我的分类-${tag}` });
-  check('users create own categories (same name per owner ok)', cA.status === 201 && cB.status === 201, `${cA.status} ${cB.status}`);
-  createdCats.push(cPub.body.category.id, cA.body.category.id, cB.body.category.id);
+  const cPubSame = await http('POST', '/api/media/categories', A.token, { scope: 'mine', name: `cat-${tag}` });
+  check('users create own categories (same name per owner ok, also next to a public one)', cA.status === 201 && cB.status === 201 && cPubSame.status === 201, `${cA.status} ${cB.status} ${cPubSame.status}`);
+  createdCats.push(cPub.body.category.id, cA.body.category.id, cB.body.category.id, cPubSame.body.category.id);
   const pubCatId = cPub.body.category.id, aCatId = cA.body.category.id, bCatId = cB.body.category.id;
-  check('user renames public category → 403', (await http('PUT', `/api/media/categories/${pubCatId}`, A.token, { name: 'x' })).status === 403);
-  check('A renames B\'s category → 404', (await http('PUT', `/api/media/categories/${bCatId}`, A.token, { name: 'x' })).status === 404);
+  check('user renames public category → 403', (await http('PATCH', `/api/media/categories/${pubCatId}`, A.token, { name: 'x' })).status === 403);
+  check('A renames B\'s category → 404', (await http('PATCH', `/api/media/categories/${bCatId}`, A.token, { name: 'x' })).status === 404);
   check('A deletes B\'s category → 404', (await http('DELETE', `/api/media/categories/${bCatId}`, A.token)).status === 404);
-  const ren = await http('PUT', `/api/media/categories/${aCatId}`, A.token, { name: `改名-${tag}`, sort: 5 });
-  check('A renames + re-sorts own category', ren.status === 200 && ren.body.category.name === `改名-${tag}` && ren.body.category.sort === 5);
+  check('PATCH without fields → 400', (await http('PATCH', `/api/media/categories/${aCatId}`, A.token, {})).status === 400);
+  const ren = await http('PATCH', `/api/media/categories/${aCatId}`, A.token, { name: `改名-${tag}`, sort: 5, description: `mine ${tag}` });
+  check('A renames + re-sorts + describes own category', ren.status === 200 && ren.body.category.name === `改名-${tag}` && ren.body.category.sort === 5 && ren.body.category.description === `mine ${tag}`);
+  const renDup = await http('PATCH', `/api/media/categories/${cPubSame.body.category.id}`, A.token, { name: `CAT-${tag}` });
+  check('case-only rename of an own category is fine', renDup.status === 200, `${renDup.status}`);
+  const renClash = await http('PATCH', `/api/media/categories/${cPubSame.body.category.id}`, A.token, { name: `改名-${tag}` });
+  check('rename onto another own name → 409 media_category.exists', renClash.status === 409 && renClash.body.code === 'media_category.exists', `${renClash.status}`);
   const aCats = await http('GET', '/api/media/categories?scope=mine', A.token);
-  check('A lists only own categories', aCats.body.categories.some((c: any) => c.id === aCatId) && !aCats.body.categories.some((c: any) => c.id === bCatId));
-  check('user can list public categories', (await http('GET', '/api/media/categories?scope=public', A.token)).body.categories.some((c: any) => c.id === pubCatId));
+  check('A lists only own categories (writable, ownerName)', aCats.body.categories.some((c: any) => c.id === aCatId && c.writable === true && c.ownerName === A.name) && !aCats.body.categories.some((c: any) => c.id === bCatId));
+  const pubCatForA = (await http('GET', '/api/media/categories?scope=public', A.token)).body.categories.find((c: any) => c.id === pubCatId);
+  check('user lists public categories (read-only, with description)', pubCatForA?.writable === false && pubCatForA.description === `desc ${tag}`);
+  check('user: scope=all-users → 403, scope=mine&ownerId=<B> → 403', (await http('GET', '/api/media/categories?scope=all-users', A.token)).status === 403
+    && (await http('GET', `/api/media/categories?scope=mine&ownerId=${B.id}`, A.token)).status === 403);
+  const allB = await http('GET', `/api/media/categories?scope=all-users&ownerId=${B.id}`, admin);
+  const mineB = await http('GET', `/api/media/categories?scope=mine&ownerId=${B.id}`, admin);
+  check('admin: all-users with ownerId and the older scope=mine&ownerId list B\'s categories', allB.body.categories.length === 1 && allB.body.categories[0].id === bCatId
+    && mineB.body.categories.length === 1 && mineB.body.categories[0].id === bCatId);
   check('assign B\'s category to A\'s asset → 400', (await http('PUT', `/api/media/${aId}`, A.token, { categoryId: bCatId })).status === 400);
   check('assign public category to private asset → 400', (await http('PUT', `/api/media/${aId}`, A.token, { categoryId: pubCatId })).status === 400);
   const setCat = await http('PUT', `/api/media/${aId}`, A.token, { categoryId: aCatId, name: `A-renamed-${tag}` });
@@ -260,9 +274,38 @@ try {
   check('upload with categoryId field', upCat.status === 201 && upCat.body.item.categoryId === pubCatId, `${upCat.status}`);
   const upWrongCat = await upload(A.token, 'mine', `wrong-cat-${tag}.png`, png, 'image/png', bCatId);
   check('upload into someone else\'s category → 400', upWrongCat.status === 400, `${upWrongCat.status}`);
+  // counts = assets the viewer can see: a disabled public asset counts for admins only
+  await waitDone(upCat.body.item.id, admin);
+  await http('PUT', `/api/media/${pubImg.id}`, admin, { categoryId: pubCatId });
+  await http('PUT', `/api/media/${pubImg.id}`, admin, { status: 'disabled' });
+  const cnt = async (token: string, q: string, id: string) => ((await http('GET', `/api/media/categories?${q}`, token)).body.categories as any[]).find((c) => c.id === id)?.count;
+  const counts = [await cnt(admin, 'scope=public', pubCatId), await cnt(A.token, 'scope=public', pubCatId), await cnt(A.token, 'scope=mine', aCatId)];
+  check('counts per viewer (public category: admin 2, user 1 while one asset is disabled; A\'s own 1)', counts.join() === '2,1,1', JSON.stringify(counts));
+  await http('PUT', `/api/media/${pubImg.id}`, admin, { status: 'ready' });
+  // merge: within one owner only (a category holds assets of its own owner)
+  const aCat2 = (await http('POST', '/api/media/categories', A.token, { scope: 'mine', name: `合并源-${tag}` })).body.category.id as string;
+  createdCats.push(aCat2);
+  await http('PUT', `/api/media/${aId}`, A.token, { categoryId: aCat2 });
+  check('merge into itself → 400 media_category.merge_same', (await http('POST', `/api/media/categories/${aCat2}/merge`, A.token, { into: aCat2 })).body?.code === 'media_category.merge_same');
+  const mPub = await http('POST', `/api/media/categories/${aCat2}/merge`, A.token, { into: pubCatId });
+  check('merge personal → public → 400 media_category.merge_scope (assets would change scope)', mPub.status === 400 && mPub.body.code === 'media_category.merge_scope', `${mPub.status} ${mPub.body?.code}`);
+  check('merge into B\'s category → 404', (await http('POST', `/api/media/categories/${aCat2}/merge`, A.token, { into: bCatId })).status === 404);
+  const mAdmin = await http('POST', `/api/media/categories/${aCat2}/merge`, admin, { into: bCatId });
+  check('admin: merge A\'s into B\'s → 400 merge_scope', mAdmin.status === 400 && mAdmin.body.code === 'media_category.merge_scope');
+  check('user merges a public category → 403', (await http('POST', `/api/media/categories/${pubCatId}/merge`, A.token, { into: pubCatId })).status === 403);
+  const mOk = await http('POST', `/api/media/categories/${aCat2}/merge`, A.token, { into: aCatId });
+  check('merge personal → same owner\'s: asset moved, source deleted', mOk.status === 200 && mOk.body.moved === 1
+    && (await http('GET', `/api/media/${aId}`, A.token)).body.item.categoryId === aCatId && (await http('PATCH', `/api/media/categories/${aCat2}`, A.token, { sort: 1 })).status === 404);
+  createdCats.splice(createdCats.indexOf(aCat2), 1);
+  const pub2 = (await http('POST', '/api/media/categories', admin, { scope: 'public', name: `Pub2-${tag}` })).body.category.id as string;
+  await http('PUT', `/api/media/${pubVid.id}`, admin, { categoryId: pub2 });
+  const mPubPub = await http('POST', `/api/media/categories/${pub2}/merge`, admin, { into: pubCatId });
+  check('admin merges public → public', mPubPub.status === 200 && mPubPub.body.moved === 1 && (await http('GET', `/api/media/${pubVid.id}`, admin)).body.item.categoryId === pubCatId);
+  check('public → personal → 400 merge_scope', (await http('POST', `/api/media/categories/${pubCatId}/merge`, admin, { into: aCatId })).body?.code === 'media_category.merge_scope');
   const delCat = await http('DELETE', `/api/media/categories/${aCatId}`, A.token);
   check('delete category → asset uncategorized', delCat.status === 204 && (await http('GET', `/api/media/${aId}`, A.token)).body.item.categoryId === null);
   createdCats.splice(createdCats.indexOf(aCatId), 1);
+  for (const m of [pubImg.id, pubVid.id]) await http('PUT', `/api/media/${m}`, admin, { categoryId: null });
 
   // ---------- tags + search
   const t1 = await http('PUT', `/api/media/${pubImg.id}`, admin, { tags: [`Sunset${tag}`, `beach${tag}`, `sunset${tag}`] });
@@ -354,8 +397,11 @@ try {
   await new Promise((r) => setTimeout(r, 1000));
   const audit = await db.select({ action: schema.auditLogs.action }).from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), dlike(schema.auditLogs.action, 'media.%')));
   const actions = new Set(audit.map((a) => a.action));
-  const want = ['media.upload', 'media.update', 'media.disable', 'media.enable', 'media.delete', 'media.batch_delete', 'media.favorite', 'media.unfavorite', 'media.category_create', 'media.category_update', 'media.category_delete', 'media.push'];
+  const want = ['media.upload', 'media.update', 'media.disable', 'media.enable', 'media.delete', 'media.batch_delete', 'media.favorite', 'media.unfavorite', 'media.category_create', 'media.category_update', 'media.category_delete', 'media.category_merge', 'media.push'];
   check('audit rows for media actions', want.every((w) => actions.has(w)), `missing: ${want.filter((w) => !actions.has(w)).join(', ') || 'none'}`);
+  const catAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), dlike(schema.auditLogs.action, 'media.category_%')));
+  check('category audit: names only (merge source + into), no description text', catAudit.some((a) => a.action === 'media.category_merge' && a.target === `合并源-${tag}` && (a.detail as any)?.into === `改名-${tag}`)
+    && catAudit.some((a) => a.action === 'media.category_delete' && a.target === `改名-${tag}`) && !JSON.stringify(catAudit).includes(`desc ${tag}`), JSON.stringify(catAudit.map((a) => [a.action, a.target])));
   const [upAudit] = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'media.upload'), eq(schema.auditLogs.status, 201))).limit(1);
   check('upload audit has filename + scope, no body', Boolean(upAudit?.target) && (upAudit?.detail as any)?.scope !== undefined, JSON.stringify(upAudit?.detail));
 } catch (err) {
