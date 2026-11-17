@@ -162,6 +162,13 @@
       "when": 1794915671222,
       "tag": "0022_media_processing",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794917315003,
+      "tag": "0023_content_translations",
+      "breakpoints": true
     }
   ]
 }

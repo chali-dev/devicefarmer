@@ -3,13 +3,14 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { CONTENT_STATUSES } from '../../db/schema.js';
-import { badRequest, forbidden } from '../../lib/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { distribute } from '../publish/publish.js';
 import { toPublishItems } from '../publish/routes.js';
 import {
   assertNoUnfinishedPublish, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, toContentItems, visibleContent,
 } from './content.js';
+import { getLanguageSettings, Lang, publicTranslation, translationsOf } from './languages.js';
 
 const c = schema.contents;
 const Id = z.object({ id: z.string().uuid() });
@@ -26,8 +27,19 @@ const Hints = z.object({
   facebook: z.object({ caption: z.string().max(5000).optional() }).strict().optional(),
 }).strict();
 
+/** Text-only hints for a translation (options such as YouTube privacy stay on the content). */
+const TextHints = z.object({
+  youtube: z.object({ title: z.string().trim().max(100).optional(), description: z.string().max(5000).optional() }).strict().optional(),
+  instagram: Hints.shape.instagram, tiktok: Hints.shape.tiktok, facebook: Hints.shape.facebook,
+}).strict();
+const TranslationBody = z.object({ title: z.string().trim().min(1).max(200), body: z.string().max(5000).optional(), platformHints: TextHints.optional() });
+const LangParams = z.object({ id: z.string().uuid(), lang: Lang });
+const ct = schema.contentTranslations;
+
 const Editable = {
   title: z.string().trim().min(1).max(200),
+  /** Source language (BCP-47); create defaults to the configured default source language. */
+  lang: Lang.nullable().optional(),
   body: z.string().max(5000).optional(),
   category: optText(50),
   tags: Tags.optional(),
@@ -43,6 +55,8 @@ const ListQuery = z.object({
   /** exact category, or 'none' */
   category: z.string().trim().max(50).optional(),
   tag: z.string().trim().max(32).optional(),
+  /** Available in this language: source language or an existing translation. */
+  lang: Lang.optional(),
   q: z.string().trim().max(100).optional(),
   ownerId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
@@ -91,6 +105,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     if (q.tag) {
       where.push(sql`exists (select 1 from content_tag_links l join content_tags t on t.id = l.tag_id where l.content_id = ${c.id} and lower(t.name) = ${q.tag.toLowerCase().replace(/^#+/, '')})`);
     }
+    if (q.lang) where.push(or(eq(c.lang, q.lang), sql`exists (select 1 from content_translations x where x.content_id = ${c.id} and x.lang = ${q.lang})`)!);
     if (q.q) where.push(or(ilike(c.title, like(q.q)), ilike(c.body, like(q.q)))!);
     const cond = and(...where);
     const [{ total } = { total: 0 }] = await db.select({ total: sql<number>`count(*)::int` }).from(c).where(cond);
@@ -119,6 +134,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const row = await db.transaction(async (tx) => {
       const [r] = await tx.insert(c).values({
         userId: owner.id, title: b.title, body: b.body ?? '', category: blank(b.category) ?? null, stage, status: stage,
+        lang: b.lang !== undefined ? b.lang : (await getLanguageSettings()).defaultSource,
         platformHints: b.platformHints ?? {}, createdBy: req.user.id,
       }).returning();
       await setContentMedia(tx, r!.id, media.map((m) => m.id));
@@ -133,7 +149,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/contents/:id', { schema: { params: Id } }, async (req) => {
     const row = await visibleContent(req.user, req.params.id);
     const tasks = await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, row.id)).orderBy(desc(schema.publishTasks.scheduledAt));
-    return { content: (await toContentItems([row]))[0], publishTasks: await toPublishItems(tasks, req.user) };
+    return { content: (await toContentItems([row]))[0], translations: await translationsOf(row.id), publishTasks: await toPublishItems(tasks, req.user) };
   });
 
   app.put('/api/contents/:id', { schema: { params: Id, body: UpdateBody } }, async (req) => {
@@ -148,6 +164,13 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       const cat = blank(b.category);
       if (cat !== undefined) set.category = cat;
       if (b.platformHints !== undefined) set.platformHints = b.platformHints;
+      if (b.lang !== undefined && b.lang !== locked.lang) {
+        if (b.lang) {
+          const [dup] = await tx.select({ id: ct.id }).from(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, b.lang)));
+          if (dup) throw conflict('该语言已有译文，不能作为原文语言', 'content.lang_has_translation', { lang: b.lang });
+        }
+        set.lang = b.lang;
+      }
       if (b.stage !== undefined && b.stage !== locked.stage) {
         if (b.stage === 'archived') await assertNoUnfinishedPublish(tx, cur.id, 'archive');
         set.stage = b.stage;
@@ -169,6 +192,47 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       await assertNoUnfinishedPublish(tx, cur.id, 'delete');
       await tx.delete(c).where(eq(c.id, cur.id));
     });
+    reply.code(204);
+  });
+
+  // ---------------------------------------------------------------- translations (多语言内容, written by people)
+
+  /** Language list for the editor + default source language (any signed-in user; admins edit it in settings). */
+  app.get('/api/contents/languages', async () => {
+    const { languages, defaultSource } = await getLanguageSettings();
+    return { languages, defaultSource };
+  });
+
+  app.get('/api/contents/:id/translations', { schema: { params: Id } }, async (req) => {
+    const row = await visibleContent(req.user, req.params.id);
+    return { translations: await translationsOf(row.id) };
+  });
+
+  /** Creates or replaces the content's version in `lang` (not the source language). */
+  app.put('/api/contents/:id/translations/:lang', { schema: { params: LangParams, body: TranslationBody } }, async (req, reply) => {
+    const { lang } = req.params;
+    const b = req.body;
+    const row = await db.transaction(async (tx) => {
+      const cur = await visibleContent(req.user, req.params.id, tx, true);
+      if (cur.lang === lang) throw badRequest('译文语言不能与原文语言相同', 'content.translation_same_lang', { lang });
+      const values = { title: b.title, body: b.body ?? '', platformHints: b.platformHints ?? {} };
+      const [existing] = await tx.select({ id: ct.id }).from(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, lang)));
+      const [r] = existing
+        ? await tx.update(ct).set({ ...values, updatedAt: new Date() }).where(eq(ct.id, existing.id)).returning()
+        : await tx.insert(ct).values({ contentId: cur.id, lang, ...values }).returning();
+      await tx.update(c).set({ updatedAt: new Date() }).where(eq(c.id, cur.id));
+      if (!existing) reply.code(201);
+      return r!;
+    });
+    if (req.audit) req.audit.extra = { lang };
+    return { translation: publicTranslation(row) };
+  });
+
+  app.delete('/api/contents/:id/translations/:lang', { schema: { params: LangParams } }, async (req, reply) => {
+    const cur = await visibleContent(req.user, req.params.id);
+    const gone = await db.delete(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, req.params.lang))).returning({ id: ct.id });
+    if (!gone.length) throw notFound('译文不存在', 'content.translation_not_found', { lang: req.params.lang });
+    await db.update(c).set({ updatedAt: new Date() }).where(eq(c.id, cur.id));
     reply.code(204);
   });
 

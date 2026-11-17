@@ -7,9 +7,10 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
+import { langName } from '../api/lang'
 import {
   CONTENT_STATUSES, PUBLISH_UNFINISHED,
-  type Content, type ContentHints, type ContentMedia, type ContentStatus, type ManagedUser, type PublishTaskItem,
+  type Content, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PublishTaskItem,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
@@ -33,7 +34,7 @@ const items = ref<Content[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = reactive({ current: 1, pageSize: 20 })
-const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), category: undefined as string | undefined, tag: undefined as string | undefined, ownerId: undefined as string | undefined })
+const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), category: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
 const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
 const users = ref<ManagedUser[]>([])
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
@@ -44,7 +45,7 @@ async function load() {
   try {
     const p = new URLSearchParams({ page: String(page.current), pageSize: String(page.pageSize) })
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    for (const k of ['status', 'category', 'tag', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
+    for (const k of ['status', 'category', 'tag', 'lang', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
     const r = await api<{ items: Content[]; total: number }>('GET', `/api/contents?${p}`)
     items.value = r.items
     total.value = r.total
@@ -57,8 +58,12 @@ async function loadFacets() {
   } catch (e) { message.error(errorText(e)) }
 }
 const search = () => { page.current = 1; void load() }
-function reset() { Object.assign(filters, { q: '', status: undefined, category: undefined, tag: undefined, ownerId: undefined }); search() }
-onMounted(() => { void load(); void loadFacets() })
+function reset() { Object.assign(filters, { q: '', status: undefined, category: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search() }
+/** 多语言内容: languages offered in the editor (admin setting). */
+const langCfg = ref<LanguageSettings>({ languages: [], defaultSource: null })
+async function loadLangs() { try { langCfg.value = await api<LanguageSettings>('GET', '/api/contents/languages') } catch { /* editor still works with the source only */ } }
+const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
+onMounted(() => { void load(); void loadFacets(); void loadLangs() })
 
 const columns = computed(() => [
   { title: t('content.colTitle'), key: 'title', width: 280 },
@@ -85,24 +90,68 @@ const form = reactive({
 })
 const pickerOpen = ref(false)
 
+/** Language versions in the editor ('' = source tab). Saved after the content: deletes, then changed/new versions. */
+interface TrForm { lang: string; title: string; body: string; yt: { title: string; description: string }; ig: { caption: string }; tt: { caption: string }; fb: { caption: string } }
+const trs = ref<TrForm[]>([])
+const trOrig = ref<Record<string, string>>({})
+const SRC = '_source'
+const langTab = ref(SRC)
+const currentTr = computed(() => trs.value.find((f) => f.lang === langTab.value))
+const sourceLang = ref<string | undefined>()
+const toTrForm = (x: ContentTranslation): TrForm => ({
+  lang: x.lang, title: x.title, body: x.body,
+  yt: { title: x.platformHints.youtube?.title ?? '', description: x.platformHints.youtube?.description ?? '' },
+  ig: { caption: x.platformHints.instagram?.caption ?? '' }, tt: { caption: x.platformHints.tiktok?.caption ?? '' }, fb: { caption: x.platformHints.facebook?.caption ?? '' },
+})
+const trBody = (f: TrForm) => {
+  const h: Record<string, Record<string, string>> = {}
+  const put = (p: string, o: Record<string, string>) => { const v = Object.fromEntries(Object.entries(o).filter(([, x]) => x.trim() !== '')); if (Object.keys(v).length) h[p] = v }
+  put('youtube', f.yt); put('instagram', f.ig); put('tiktok', f.tt); put('facebook', f.fb)
+  return { title: f.title.trim(), body: f.body, platformHints: h }
+}
+function fillTranslations(list: ContentTranslation[]) {
+  trs.value = list.map(toTrForm)
+  trOrig.value = Object.fromEntries(trs.value.map((f) => [f.lang, JSON.stringify(trBody(f))]))
+  if (!trs.value.some((f) => f.lang === langTab.value)) langTab.value = SRC
+}
+const addableLangs = computed(() => langCfg.value.languages.filter((l) => l !== sourceLang.value && !trs.value.some((f) => f.lang === l)))
+const sourceLangOptions = computed(() => [...new Set([...langCfg.value.languages, ...(sourceLang.value ? [sourceLang.value] : [])])]
+  .filter((l) => !trs.value.some((f) => f.lang === l)).map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
+function addLang(lang: string) {
+  trs.value.push({ lang, title: '', body: '', yt: { title: '', description: '' }, ig: { caption: '' }, tt: { caption: '' }, fb: { caption: '' } })
+  langTab.value = lang
+}
+function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
+  if (action !== 'remove') return
+  const lang = String(key)
+  confirmDanger({
+    title: t('content.lang.removeConfirm', { lang: langName(lang) }), content: t('content.lang.removeHint'), okText: t('content.lang.remove'),
+    onOk() { trs.value = trs.value.filter((f) => f.lang !== lang); if (langTab.value === lang) langTab.value = SRC },
+  })
+}
+
 function fillForm(c: Content | null) {
   const h: ContentHints = c?.platformHints ?? {}
+  sourceLang.value = c ? (c.lang ?? undefined) : (langCfg.value.defaultSource ?? undefined)
   Object.assign(form, {
     title: c?.title ?? '', body: c?.body ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
     yt: { title: h.youtube?.title ?? '', description: h.youtube?.description ?? '', privacy: h.youtube?.privacy },
     ig: { caption: h.instagram?.caption ?? '' }, tt: { caption: h.tiktok?.caption ?? '' }, fb: { caption: h.facebook?.caption ?? '' }, ownerId: undefined,
   })
 }
-function openNew() { editing.value = null; editorTasks.value = []; fillForm(null); editorOpen.value = true }
+function openNew() { editing.value = null; editorTasks.value = []; langTab.value = SRC; fillTranslations([]); fillForm(null); editorOpen.value = true }
 async function openEdit(c: Content) {
   editing.value = c
+  langTab.value = SRC
+  fillTranslations([])
   fillForm(c)
   editorOpen.value = true
   try {
-    const r = await api<{ content: Content; publishTasks: PublishTaskItem[] }>('GET', `/api/contents/${c.id}`)
+    const r = await api<{ content: Content; translations: ContentTranslation[]; publishTasks: PublishTaskItem[] }>('GET', `/api/contents/${c.id}`)
     editing.value = r.content
     editorTasks.value = r.publishTasks
     fillForm(r.content)
+    fillTranslations(r.translations)
   } catch (e) { message.error(errorText(e)) }
 }
 function moveMedia(i: number, d: number) {
@@ -133,15 +182,25 @@ function hints(): ContentHints {
 }
 
 async function save(stage: 'draft' | 'ready') {
-  if (!form.title.trim()) { message.warning(t('content.titleRequired')); return }
+  if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return }
+  const untitled = trs.value.find((f) => !f.title.trim())
+  if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return }
   saving.value = true
   try {
     const body = {
       title: form.title.trim(), body: form.body, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: hints(),
-      ...(editing.value?.stage === 'archived' ? {} : { stage }),
+      lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
-    if (editing.value) await api('PUT', `/api/contents/${editing.value.id}`, body)
-    else await api('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })
+    let id = editing.value?.id
+    if (id) {
+      // Removed versions first, so the original language may move to a language whose version was just removed.
+      for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${id}/translations/${lang}`)
+      await api('PUT', `/api/contents/${id}`, body)
+    } else id = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })).content.id
+    for (const f of trs.value) {
+      const b = trBody(f)
+      if (trOrig.value[f.lang] !== JSON.stringify(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
+    }
     message.success(t('common.saved'))
     editorOpen.value = false
     void load(); void loadFacets()
@@ -188,6 +247,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           <a-select-option value="none">{{ t('content.uncategorized') }}</a-select-option>
           <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
         </a-select>
+        <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
         <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search(); loadFacets()" />
@@ -199,6 +259,10 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           <template v-if="column.key === 'title'">
             <a @click="openEdit(record)">{{ record.title }}</a>
             <div v-if="record.tags.length" style="margin-top: 2px"><a-tag v-for="tg in record.tags" :key="tg">{{ tg }}</a-tag></div>
+            <div v-if="record.lang || record.translations.length" class="langs">
+              <a-tooltip v-if="record.lang" :title="`${t('content.lang.source')} · ${langName(record.lang)}`"><a-tag color="blue" class="lang-chip">{{ record.lang }}</a-tag></a-tooltip>
+              <a-tooltip v-for="l in record.translations" :key="l" :title="langName(l)"><a-tag class="lang-chip">{{ l }}</a-tag></a-tooltip>
+            </div>
           </template>
           <template v-else-if="column.key === 'media'"><MediaStrip :media="record.media" :size="36" :max="4" /></template>
           <template v-else-if="column.key === 'status'"><StatusTag kind="content" :status="record.status" /></template>
@@ -232,9 +296,53 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
     </a-card>
   </PageContainer>
 
-  <a-drawer
   <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg" destroy-on-close>
-    <a-form layout="vertical">
+    <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
+      <a-tab-pane :key="SRC" :closable="false">
+        <template #tab>{{ sourceLang ? langName(sourceLang) : t('content.lang.source') }}<a-tag v-if="sourceLang" class="src-tag">{{ t('content.lang.source') }}</a-tag></template>
+      </a-tab-pane>
+      <a-tab-pane v-for="f in trs" :key="f.lang" :tab="langName(f.lang)" />
+      <template #rightExtra>
+        <a-dropdown :disabled="!addableLangs.length" :trigger="['click']">
+          <a-button size="small"><template #icon><PlusOutlined /></template>{{ t('content.lang.add') }}</a-button>
+          <template #overlay>
+            <a-menu @click="({ key }: { key: string | number }) => addLang(String(key))">
+              <a-menu-item v-for="l in addableLangs" :key="l">{{ langName(l) }} ({{ l }})</a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </template>
+    </a-tabs>
+
+    <a-form v-if="currentTr" :key="currentTr.lang" layout="vertical">
+      <a-form-item :label="t('content.fieldTitle')" required>
+        <a-input v-model:value="currentTr.title" :maxlength="200" show-count :placeholder="form.title" />
+      </a-form-item>
+      <a-form-item :label="t('content.fieldBody')">
+        <a-textarea v-model:value="currentTr.body" :rows="5" :maxlength="5000" show-count :placeholder="form.body" />
+      </a-form-item>
+      <template v-if="['youtube', 'instagram', 'tiktok', 'facebook'].some((p) => platforms.isEnabled(p))">
+        <a-divider orientation="left" plain>{{ t('content.lang.translatedHints') }}</a-divider>
+        <template v-if="platforms.isEnabled('youtube')">
+          <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="currentTr.yt.title" :maxlength="100" show-count :placeholder="form.yt.title" /></a-form-item>
+          <a-form-item :label="t('content.ytDescription')"><a-textarea v-model:value="currentTr.yt.description" :rows="3" :maxlength="5000" :placeholder="form.yt.description" /></a-form-item>
+        </template>
+        <a-form-item v-if="platforms.isEnabled('instagram')">
+          <template #label><PlatformTag platform="instagram" />{{ t('content.caption') }}</template>
+          <a-textarea v-model:value="currentTr.ig.caption" :rows="3" :maxlength="2200" show-count :placeholder="form.ig.caption" />
+        </a-form-item>
+        <a-form-item v-if="platforms.isEnabled('tiktok')">
+          <template #label><PlatformTag platform="tiktok" />{{ t('content.caption') }}</template>
+          <a-textarea v-model:value="currentTr.tt.caption" :rows="3" :maxlength="2200" show-count :placeholder="form.tt.caption" />
+        </a-form-item>
+        <a-form-item v-if="platforms.isEnabled('facebook')">
+          <template #label><PlatformTag platform="facebook" />{{ t('content.caption') }}</template>
+          <a-textarea v-model:value="currentTr.fb.caption" :rows="3" :maxlength="5000" show-count :placeholder="form.fb.caption" />
+        </a-form-item>
+      </template>
+    </a-form>
+
+    <a-form v-show="!currentTr" layout="vertical">
       <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
         <a-select v-model:value="form.ownerId" allow-clear show-search option-filter-prop="label" :placeholder="t('content.ownerSelf')" :options="users.map((u) => ({ value: u.id, label: u.username }))" />
       </a-form-item>
@@ -246,12 +354,17 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         <a-textarea v-model:value="form.body" :rows="5" :maxlength="5000" show-count :placeholder="t('content.bodyPlaceholder')" />
       </a-form-item>
       <a-row :gutter="12">
-        <a-col :xs="24" :sm="12">
+        <a-col :xs="24" :sm="8">
+          <a-form-item :label="t('content.lang.sourceLang')">
+            <a-select v-model:value="sourceLang" :options="sourceLangOptions" allow-clear :placeholder="t('content.lang.notSet')" />
+          </a-form-item>
+        </a-col>
+        <a-col :xs="24" :sm="8">
           <a-form-item :label="t('content.fieldCategory')">
             <a-auto-complete v-model:value="form.category" :options="facets.categories.map((c) => ({ value: c }))" allow-clear :maxlength="50" />
           </a-form-item>
         </a-col>
-        <a-col :xs="24" :sm="12">
+        <a-col :xs="24" :sm="8">
           <a-form-item :label="t('content.fieldTags')">
             <a-select v-model:value="form.tags" mode="tags" :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
           </a-form-item>
@@ -293,7 +406,7 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       </a-collapse>
     </a-form>
 
-    <template v-if="editing && editorTasks.length">
+    <template v-if="editing && editorTasks.length && !currentTr">
       <a-divider orientation="left" plain>{{ t('content.tasksOf') }}</a-divider>
       <a-list size="small" :data-source="editorTasks">
         <template #renderItem="{ item }">
@@ -326,3 +439,10 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
   <DistributeModal v-model:open="distributeOpen" :content="distributing" @done="load" />
 </template>
 
+
+<style scoped>
+.langs { margin-top: 2px; }
+.lang-chip { font-size: 11px; line-height: 18px; padding-inline: 5px; margin-inline-end: 4px; }
+.src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
+.lang-tabs { margin-bottom: 12px; }
+</style>

@@ -287,13 +287,16 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
   'POST /api/contents': {
     action: 'content.create', target: ({ body }) => body.title as string,
-    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), stage: body.stage }),
+    detail: ({ body }) => ({ ownerId: body.ownerId, category: body.category, tags: body.tags, mediaIds: ids(body.mediaIds), stage: body.stage, lang: body.lang }),
   },
   'PUT /api/contents/:id': {
     action: ({ body }) => (body.stage === 'archived' ? 'content.archive' : 'content.update'),
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined }),
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, category: body.category, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, lang: body.lang }),
   },
   'DELETE /api/contents/:id': { action: 'content.delete' },
+  // 多语言内容: only the language is recorded, never the translated texts.
+  'PUT /api/contents/:id/translations/:lang': { action: 'content.translation_save', detail: ({ params }) => ({ lang: params.lang }) },
+  'DELETE /api/contents/:id/translations/:lang': { action: 'content.translation_delete', detail: ({ params }) => ({ lang: params.lang }) },
   'POST /api/contents/:id/distribute': {
     action: 'content.distribute',
     detail: ({ body }) => {
@@ -352,6 +355,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // The key itself is never stored in the log.
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
+  'PUT /api/settings/languages': { action: 'settings.languages', detail: ({ body }) => ({ languages: body.languages, defaultSource: body.defaultSource }) },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   // alerts (告警通知): rules
   'PUT /api/settings/alerts': {

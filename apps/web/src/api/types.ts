@@ -386,8 +386,16 @@ export interface Content {
   id: string; userId: string; ownerName: string | null; title: string; body: string; category: string | null
   stage: 'draft' | 'ready' | 'archived'; status: ContentStatus; platformHints: ContentHints
   tags: string[]; media: ContentMedia[]; publishCounts: Partial<Record<PublishStatus, number>>
+  /** Source language (BCP-47) and the languages that have a translation. */
+  lang: string | null; translations: string[]
   createdAt: string; updatedAt: string
 }
+/** 多语言内容: a human-written version of a content in another language (text fields only). */
+export interface ContentTranslation {
+  lang: string; title: string; body: string; platformHints: Omit<ContentHints, 'youtube'> & { youtube?: { title?: string; description?: string } }
+  createdAt: string; updatedAt: string
+}
+export interface LanguageSettings { languages: string[]; defaultSource: string | null }
 export interface PublishTaskItem {
   id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
   title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]

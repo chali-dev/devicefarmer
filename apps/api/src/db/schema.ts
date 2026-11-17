@@ -548,6 +548,8 @@ export const contents = pgTable('contents', {
   /** Base caption / description; publish tasks copy it unless they override it. */
   body: text('body').notNull().default(''),
   category: text('category'),
+  /** Source (original) language, BCP-47 (e.g. zh-CN). Null = not set (rows from before 多语言内容). */
+  lang: text('lang'),
   stage: text('stage', { enum: ['draft', 'ready', 'archived'] }).notNull().default('draft'),
   status: text('status', { enum: CONTENT_STATUSES }).notNull().default('draft'),
   /** Per-platform defaults, e.g. { youtube: { title, description, privacy }, instagram: { caption }, tiktok: { caption } }. */
@@ -568,6 +570,21 @@ export const contentMedia = pgTable('content_media', {
   assetId: uuid('asset_id').notNull().references(() => mediaAssets.id, { onDelete: 'cascade' }),
   position: integer('position').notNull(),
 }, (t) => [primaryKey({ columns: [t.contentId, t.assetId] }), index('content_media_asset_idx').on(t.assetId)]);
+
+/**
+ * 多语言内容: human-written versions of a content in another language (the content itself is the source,
+ * `contents.lang`). Text fields only; hints hold the per-platform caption texts (no options such as privacy).
+ */
+export const contentTranslations = pgTable('content_translations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  contentId: uuid('content_id').notNull().references(() => contents.id, { onDelete: 'cascade' }),
+  lang: text('lang').notNull(),
+  title: text('title').notNull(),
+  body: text('body').notNull().default(''),
+  platformHints: jsonb('platform_hints').$type<ContentPlatformHints>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+}, (t) => [unique('content_translations_content_lang_unique').on(t.contentId, t.lang), index('content_translations_lang_idx').on(t.lang)]);
 
 /** Tag names are unique case-insensitively; the first spelling wins (same rule as media/social tags). */
 export const contentTags = pgTable('content_tags', {
@@ -1014,6 +1031,7 @@ export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
 export type SocialAccountStats = typeof socialAccountStats.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
 export type Content = typeof contents.$inferSelect;
+export type ContentTranslation = typeof contentTranslations.$inferSelect;
 export type PublishTask = typeof publishTasks.$inferSelect;
 export type PublishLog = typeof publishLogs.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
