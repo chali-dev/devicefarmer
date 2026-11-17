@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
-  compactNumber, TRACKED_STATUS_COLOR, trackedHandle,
+  compactNumber, TRACKED_SCHEDULE_HOURS, TRACKED_STATUS_COLOR, trackedHandle,
   type ManagedUser, type TrackedAccount, type TrackedPlatform, type TrackedStatus,
 } from '../api/types'
 import { useAuthStore } from '../stores/auth'
@@ -94,10 +94,17 @@ const columns = computed(() => [
   { title: t('tracked.colCategory'), key: 'category', width: 180 },
   { title: t('tracked.metrics.followers'), key: 'followers', width: 130, align: 'right' as const },
   { title: t('tracked.lastChecked'), key: 'checked', width: 170 },
+  { title: t('collect.schedule'), key: 'schedule', width: 170 },
   { title: t('common.status'), key: 'status', width: 150 },
   ...(auth.isAdmin ? [{ title: t('tracked.owner'), key: 'owner', width: 110 }] : []),
   { title: '', key: 'ops', width: 200, align: 'right' as const },
 ])
+/** 定时采集 interval label. */
+const intervalText = (h: number | null) => (h === null ? t('collect.off') : h < 24 ? t('collect.everyHours', { n: h }) : t('collect.everyDays', { n: h / 24 }))
+const scheduleOptions = computed(() => [{ value: 0, label: t('collect.off') }, ...TRACKED_SCHEDULE_HOURS.map((h) => ({ value: h, label: intervalText(h) }))])
+async function runScheduler() {
+  try { await api('POST', '/api/collection/run'); message.info(t('collect.runQueued')); setTimeout(() => void load(true), 3000) } catch (e) { message.error(errorText(e)) }
+}
 const replace = (a: TrackedAccount) => {
   items.value = items.value.map((x) => (x.id === a.id ? a : x))
   if (detail.value?.id === a.id) detail.value = a
@@ -176,12 +183,12 @@ async function saveAdd() {
 const editOpen = ref(false)
 const editSaving = ref(false)
 const editing = ref<TrackedAccount | null>(null)
-const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', category: '', tags: [] as string[], status: 'active' as 'active' | 'paused', notes: '' })
+const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', category: '', tags: [] as string[], status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
 function openEdit(a: TrackedAccount) {
   editing.value = a
   Object.assign(editForm, {
     displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '', category: a.category ?? '', tags: [...a.tags],
-    status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '',
+    status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '', interval: a.refreshIntervalHours ?? 0,
   })
   editOpen.value = true
 }
@@ -193,6 +200,7 @@ async function saveEdit() {
       displayName: editForm.displayName, avatarUrl: editForm.avatarUrl.trim() || null, bio: editForm.bio, category: editForm.category,
       tags: editForm.tags, notes: editForm.notes,
       ...(editing.value.status === 'error' || editing.value.status !== editForm.status ? { status: editForm.status } : {}),
+      ...((editing.value.refreshIntervalHours ?? 0) !== editForm.interval ? { refreshIntervalHours: editForm.interval || null } : {}),
     })
     replace(r.account)
     message.success(t('common.saved'))
@@ -216,6 +224,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
     <template #extra>
       <a-space wrap>
         <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
+        <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
         <a-button :disabled="!items.length" @click="refreshBatch">
           {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
         </a-button>
@@ -246,7 +255,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
     </a-space>
 
     <a-table
-      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1300 }"
+      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1470 }"
       :pagination="{ current: page, pageSize: PAGE_SIZE, total, size: 'small', hideOnSinglePage: true, showSizeChanger: false, onChange: (p: number) => { page = p; load() } }"
       :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
     >
@@ -283,6 +292,14 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
           <span v-else class="muted">{{ t('tracked.never') }}</span>
           <div v-if="record.lastSource" class="muted small">{{ t(`tracked.sources.${record.lastSource}`) }}</div>
+        </template>
+        <template v-else-if="column.key === 'schedule'">
+          <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
+          <template v-else>
+            <span :class="{ muted: record.refreshIntervalHours === null }">{{ intervalText(record.refreshIntervalHours) }}</span>
+            <div v-if="record.nextRefreshAt" class="muted small">{{ t('collect.next', { time: new Date(record.nextRefreshAt).toLocaleString(dateLocale()) }) }}</div>
+            <div v-if="record.scheduleSkipCode" class="warn small">{{ t('collect.skipped', { reason: codeText(record.scheduleSkipCode, undefined, record.scheduleSkipCode) }) }}</div>
+          </template>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tooltip :title="record.status === 'error' ? codeText(record.lastErrorCode, undefined, record.lastError ?? '') : undefined">
@@ -357,6 +374,9 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <a-radio-button value="paused">{{ t('tracked.status.paused') }}</a-radio-button>
         </a-radio-group>
       </a-form-item>
+      <a-form-item :label="t('collect.interval')" :extra="t('collect.hint')">
+        <a-select v-model:value="editForm.interval" :options="scheduleOptions" :disabled="editing?.dataMode === 'manual_only'" style="width: 200px" />
+      </a-form-item>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="editForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
     </a-form>
   </a-modal>
@@ -375,6 +395,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
 .delta.up { color: var(--cp-primary); }
 .delta.down { color: var(--cp-error); }
 .star { color: var(--cp-text-quaternary); }
+.warn { color: var(--cp-warning); }
 .star.on { color: var(--cp-warning); }
 .preview { margin: -8px 0 12px; }
 </style>

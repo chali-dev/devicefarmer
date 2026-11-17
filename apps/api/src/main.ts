@@ -42,6 +42,8 @@ import { commentRoutes } from './modules/comments/routes.js'; // also registers 
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { analyticsRoutes } from './modules/analytics/routes.js';
 import { scheduleDailyAccountStats } from './modules/analytics/analytics.js'; // account-stats task handler + dashboard widget
+import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task + dashboard widget
+import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly collection tick (tracked schedules, trending)
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 import { logSink } from './modules/system/logs.js';
@@ -89,6 +91,7 @@ await app.register(contentRoutes);
 await app.register(publishRoutes);
 await app.register(commentRoutes);
 await app.register(analyticsRoutes);
+await app.register(trendingRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(dashboardRoutes);
@@ -113,12 +116,14 @@ const hourly = () => {
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
   void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
   void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
+  void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
 };
 setTimeout(() => {
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
   void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
   void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
+  void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
 }, 10_000).unref();
 const cleanupTimer = setInterval(hourly, 3600_000);
 

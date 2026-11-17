@@ -374,7 +374,10 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
       </a-tab-pane>
 
       <a-tab-pane key="templates" :tab="t('comments.tabs.templates')">
-        <a-button type="primary" style="margin-bottom: 8px" @click="openTpl()">{{ t('comments.newTemplate') }}</a-button>
+        <a-space style="margin-bottom: 8px">
+          <a-button type="primary" @click="openTpl()">{{ t('comments.newTemplate') }}</a-button>
+          <a-button @click="$router.push({ path: '/scripts', query: { kind: 'comment' } })">{{ t('scripts.manage') }}</a-button>
+        </a-space>
         <a-table :data-source="templates" :columns="tplColumns" row-key="id" size="small" :pagination="false">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'text'"><span class="pre">{{ record.text }}</span></template>

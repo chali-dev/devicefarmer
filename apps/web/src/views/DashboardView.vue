@@ -244,6 +244,19 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
           </a-card>
         </a-col>
 
+        <!-- trending (public chart data) -->
+        <a-col v-if="w.trending" :xs="24" :md="12" :xl="8">
+          <a-card size="small" :title="t('trending.title')" class="card">
+            <template #extra><router-link to="/trending">{{ t('dashboard.viewAll') }}</router-link></template>
+            <div class="muted small">{{ t('trending.widgetTop', { region: w.trending.region }) }} · {{ fmtTime(w.trending.capturedAt) }}</div>
+            <a v-for="x in w.trending.top" :key="x.videoId" :href="x.url" target="_blank" rel="noopener noreferrer" class="row link-row">
+              <span class="muted small">{{ x.rank }}</span>
+              <span class="ellipsis">{{ x.title || x.videoId }}</span>
+              <span class="muted small">{{ compactNumber(x.views) }}</span>
+            </a>
+          </a-card>
+        </a-col>
+
         <!-- media -->
         <a-col v-if="w.media" :xs="24" :md="12" :xl="8">
           <a-card size="small" :title="t('dashboard.w.media')" class="card">

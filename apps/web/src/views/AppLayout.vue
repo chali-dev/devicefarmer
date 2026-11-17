@@ -6,10 +6,8 @@ import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
-  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined,
-  ApiOutlined, DatabaseOutlined,
+  SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined, ApiOutlined, DatabaseOutlined, BookOutlined, RiseOutlined,
 } from '@ant-design/icons-vue'
-import { RiseOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import { roleText } from '../api/types'
@@ -29,7 +27,7 @@ const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('
 function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
-const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics', 'connections', 'system'] as const
+const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics', 'connections', 'system', 'scripts', 'trending'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
 /** Sub-menus (cloud devices, administration) start open. */
 const openKeys = ref<string[]>(['devices', 'admin'])
@@ -180,6 +178,14 @@ async function savePassword() {
         <a-menu-item key="comments" @click="router.push('/comments')">
           <CommentOutlined />
           <span>{{ t('nav.comments') }}</span>
+        </a-menu-item>
+        <a-menu-item key="scripts" @click="router.push('/scripts')">
+          <BookOutlined />
+          <span>{{ t('nav.scripts') }}</span>
+        </a-menu-item>
+        <a-menu-item key="trending" @click="router.push('/trending')">
+          <RiseOutlined />
+          <span>{{ t('nav.trending') }}</span>
         </a-menu-item>
         <a-menu-item key="tasks" @click="router.push('/tasks')">
           <ScheduleOutlined />

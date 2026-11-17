@@ -45,8 +45,8 @@ export interface GoogleApiErrorBody { error?: { code?: number; message?: string;
 export const googleErrorReasons = (body: unknown): string[] => ((body as GoogleApiErrorBody | null)?.error?.errors ?? []).map((e) => e.reason ?? '');
 export const GOOGLE_QUOTA_REASONS = new Set(['quotaExceeded', 'dailyLimitExceeded', 'rateLimitExceeded', 'userRateLimitExceeded']);
 
-/** GET {base}/{resource}?…&key=… with coded errors. The key never appears in thrown messages. */
-async function call<T>(resource: string, params: Record<string, string>): Promise<T> {
+/** GET {base}/{resource}?…&key=… with coded errors. The key never appears in thrown messages. Also used by 趋势热点. */
+export async function call<T>(resource: string, params: Record<string, string>): Promise<T> {
   const key = await apiKey();
   const qs = new URLSearchParams({ ...params, key });
   let res: Response;

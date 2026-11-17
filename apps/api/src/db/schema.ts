@@ -317,10 +317,17 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   lastErrorCode: text('last_error_code'),
   lastSource: text('last_source', { enum: ['api', 'manual'] }),
   notes: text('notes'),
+  /** 定时采集: refresh every N hours (null = off). The hourly collection tick enqueues `tracked-refresh` for due rows. */
+  refreshIntervalHours: integer('refresh_interval_hours'),
+  /** Next scheduled slot (set when the interval is set, advanced by the tick). */
+  nextRefreshAt: timestamp('next_refresh_at', { withTimezone: true }),
+  /** Why the last due slot was skipped (error code, e.g. tracked.paused); null when it was queued. */
+  scheduleSkipCode: text('schedule_skip_code'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [
   unique('tracked_accounts_user_platform_handle').on(t.userId, t.platform, t.handle),
+  index('tracked_accounts_next_refresh_idx').on(t.nextRefreshAt).where(sql`refresh_interval_hours is not null`),
   index('tracked_accounts_user_status_idx').on(t.userId, t.status),
   index('tracked_accounts_user_category_idx').on(t.userId, t.category),
   index('tracked_accounts_user_favorite_idx').on(t.userId, t.favorite),
@@ -761,16 +768,58 @@ export const commentLogs = pgTable('comment_logs', {
   index('comment_logs_code_idx').on(t.code, t.at),
 ]);
 
-/** Saved reply templates: private (user_id) or shared (user_id null, admin-managed). A person picks and edits one. */
+/**
+ * Saved templates (话术库): reply templates (`kind` comment) and post/caption templates (`kind` post), with an optional
+ * persona (人设) category and lowercase tags. Private (user_id) or shared (user_id null, admin-managed). A person picks and edits one.
+ */
 export const commentTemplates = pgTable('comment_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  kind: text('kind', { enum: ['comment', 'post'] }).notNull().default('comment'),
+  persona: text('persona'),
+  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   name: text('name').notNull(),
   text: text('text').notNull(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name)]);
+}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.persona)]);
+
+/**
+ * 趋势热点: one stored chart per (source, region, category, slot). Slots are `intervalHours` wide (UTC); the
+ * scheduled task is idempotent per slot and a manual refresh replaces the slot's snapshot. Old ones are purged by retention.
+ */
+export const trendingSnapshots = pgTable('trending_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  source: text('source').notNull().default('youtube'),
+  region: text('region').notNull(),
+  /** '' = all categories. */
+  categoryId: text('category_id').notNull().default(''),
+  slotAt: timestamp('slot_at', { withTimezone: true }).notNull(),
+  capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+  itemCount: integer('item_count').notNull().default(0),
+  taskId: uuid('task_id'),
+}, (t) => [
+  unique('trending_snapshots_slot').on(t.source, t.region, t.categoryId, t.slotAt),
+  index('trending_snapshots_captured_idx').on(t.capturedAt),
+]);
+
+/** Public chart entries (metadata and links only; no media is downloaded). */
+export const trendingItems = pgTable('trending_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  snapshotId: uuid('snapshot_id').notNull().references(() => trendingSnapshots.id, { onDelete: 'cascade' }),
+  rank: integer('rank').notNull(),
+  videoId: text('video_id').notNull(),
+  title: text('title'),
+  channelId: text('channel_id'),
+  channelTitle: text('channel_title'),
+  categoryId: text('category_id'),
+  views: bigint('views', { mode: 'number' }),
+  likes: bigint('likes', { mode: 'number' }),
+  comments: bigint('comments', { mode: 'number' }),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
+}, (t) => [unique('trending_items_snapshot_rank').on(t.snapshotId, t.rank)]);
 
 export interface ContentPlatformHints {
   youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' };
@@ -893,4 +942,6 @@ export type PublishLog = typeof publishLogs.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
 export type CommentTask = typeof commentTasks.$inferSelect;
 export type CommentTemplate = typeof commentTemplates.$inferSelect;
+export type TrendingSnapshot = typeof trendingSnapshots.$inferSelect;
+export type TrendingItem = typeof trendingItems.$inferSelect;
 export type Role = User['role'];

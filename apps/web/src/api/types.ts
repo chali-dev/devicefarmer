@@ -289,6 +289,8 @@ export interface TrackedAccount {
   latest: { capturedAt: string; source: 'api' | 'manual'; followers: number | null; following: number | null; posts: number | null; views: number | null } | null
   followers: number | null; followersDelta: number | null; followersPrevAt: string | null
   lastRefresh: { id: string; status: TaskStatus; error: string | null; createdAt: string; finishedAt: string | null } | null
+  /** 定时采集: hours between scheduled refreshes (null = off), next slot, why the last due slot was skipped. */
+  refreshIntervalHours: number | null; nextRefreshAt: string | null; scheduleSkipCode: string | null
 }
 export interface TrackedSnapshot {
   id: string; capturedAt: string; source: 'api' | 'manual'
@@ -425,7 +427,8 @@ export interface DashboardWidgets {
   media?: { public: DashboardMediaPart; private: DashboardMediaPart; processing: number; failed: number }
   comments?: { total: number; unread: number; pendingReview: number; awaitingOperator: number; queued: number; sent7d: number; failed7d: number }
   analytics?: DashboardAnalytics
-  perUser?:{ users: DashboardUserRow[] }
+  trending?: { regions: string[]; region: string; capturedAt: string; top: { rank: number; title: string | null; videoId: string; views: number | null; url: string }[] }
+  perUser?: { users: DashboardUserRow[] }
 }
 export interface DashboardMediaPart { count: number; bytes: number; images: number; videos: number }
 export interface DashboardUserRow {
@@ -505,7 +508,34 @@ export interface CommentLog {
   id: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; action: string; code: string | null; message: string | null
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
 }
-export interface CommentTemplate { id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string }
+export type TemplateKind = 'comment' | 'post'
+export interface CommentTemplate {
+  id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string
+  /** 话术库: reply (comment) or post/caption template, optional persona (人设) and lowercase tags. */
+  kind: TemplateKind; persona: string | null; tags: string[]
+}
+
+/** Intervals offered for 定时采集 (hours; the API accepts exactly these). */
+export const TRACKED_SCHEDULE_HOURS = [1, 2, 3, 6, 12, 24, 48, 72, 168] as const
+
+/** 趋势热点 */
+export interface TrendingSettings { regions: string[]; categoryId: string | null; intervalHours: number; maxResults: number; retentionDays: number; updatedAt: string | null }
+export interface TrendingItem {
+  id: string; rank: number; videoId: string; title: string | null; channelId: string | null; channelTitle: string | null; categoryId: string | null
+  views: number | null; likes: number | null; comments: number | null; publishedAt: string | null; tags: string[]
+  url: string; channelUrl: string | null; prevRank: number | null; rankChange: number | null; isNew: boolean
+}
+export interface TrendingSnapshotRef { id: string; region: string; categoryId: string | null; slotAt: string; capturedAt: string; itemCount: number }
+export interface TrendingData {
+  configured: boolean; notice: string | null; settings: TrendingSettings; nextSlotAt: string | null
+  regions: { id: string; region: string; categoryId: string | null; capturedAt: string; itemCount: number }[]
+  snapshot: TrendingSnapshotRef | null
+  previous: { id: string; capturedAt: string; slotAt: string } | null
+  history: { id: string; slotAt: string; capturedAt: string; itemCount: number }[]
+  lastTasks: { label: string | null; status: TaskStatus; errorCode: string | null; error: string | null; createdAt: string; finishedAt: string | null }[]
+  items: TrendingItem[]
+}
+
 
 // ---------------------------------------------------------------- account analytics (账号分析)
 export interface AnalyticsSums { followersGained: number | null; views: number | null; likes: number | null; shares: number | null; comments: number | null }

@@ -7,7 +7,8 @@ import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platforms.js';
-import { getVisibleAccount, pendingRefreshes, REF_TYPE, toPublicAccounts, upsertPosts } from './tracked.js';
+import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts, upsertPosts } from './tracked.js';
+import { firstSlot, SCHEDULE_INTERVALS } from './schedule.js';
 
 const ta = schema.trackedAccounts;
 const ts = schema.trackedAccountSnapshots;
@@ -29,7 +30,6 @@ const isUnique = (err: unknown) => {
   const e = err as { code?: string; cause?: { code?: string } };
   return e.code === '23505' || e.cause?.code === '23505';
 };
-const display = (a: Pick<TrackedAccount, 'platform' | 'handle'>) => `${platformDef(a.platform).label} ${/^UC[A-Za-z0-9_-]{22}$/.test(a.handle) ? a.handle : `@${a.handle}`}`;
 
 /** Admins see every user's rows (optionally one owner); users only their own. */
 function ownerWhere(user: AuthUser, ownerId?: string): SQL | undefined {
@@ -71,6 +71,8 @@ const UpdateBody = z.object({
   /** 'error' is set by refreshes only. */
   status: z.enum(['active', 'paused']).optional(),
   notes: optText(1000),
+  /** 定时采集 interval in hours; null = off. Only for platforms with an official API source. */
+  refreshIntervalHours: z.number().int().refine((n) => SCHEDULE_INTERVALS.includes(n), 'unsupported interval').nullable().optional(),
 });
 
 const SnapshotBody = z.object({
@@ -163,6 +165,14 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (b.tags !== undefined) set.tags = normTags(b.tags);
     if (b.favorite !== undefined) set.favorite = b.favorite;
     if (b.status !== undefined) set.status = b.status;
+    if (b.refreshIntervalHours !== undefined && b.refreshIntervalHours !== cur.refreshIntervalHours) {
+      if (b.refreshIntervalHours !== null && !platformDef(cur.platform).source) {
+        throw badRequest('该平台没有官方 API，只能手动录入，无法定时采集', 'tracked.schedule_manual_only');
+      }
+      set.refreshIntervalHours = b.refreshIntervalHours;
+      set.nextRefreshAt = b.refreshIntervalHours === null ? null : firstSlot(cur.id);
+      set.scheduleSkipCode = null;
+    }
     if (!Object.keys(set).length) throw badRequest('nothing to update', 'common.nothing_to_update');
     const [row] = await db.update(ta).set(set).where(eq(ta.id, cur.id)).returning();
     return { account: (await toPublicAccounts([row!]))[0] };
@@ -256,26 +266,13 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   // ------------------------------------------------------------ refresh (official API, async task)
-  /** Why an account can't be refreshed now, as an error code; null = OK. Manual-only accounts are fine (no-op task). */
-  async function refusal(acc: TrackedAccount, busy: Set<string>): Promise<{ code: string; message: string; status: number } | null> {
-    if (acc.status === 'paused') return { code: 'tracked.paused', message: '账号已暂停追踪', status: 409 };
-    if (busy.has(acc.id)) return { code: 'tracked.refresh_in_progress', message: '该账号正在刷新', status: 409 };
-    const src = platformDef(acc.platform).source;
-    if (src) {
-      try { await src.requireConfigured(); } catch (err) {
-        const e = err as Error & { code?: string; statusCode?: number };
-        return { code: e.code ?? 'tracked.api_not_configured', message: e.message, status: e.statusCode ?? 400 };
-      }
-    }
-    return null;
-  }
   const enqueueRefresh = (acc: TrackedAccount, userId: string) => enqueueTask('tracked-refresh', { trackedAccountId: acc.id }, userId, {
     refType: REF_TYPE, refId: acc.id, label: display(acc),
   });
 
   app.post('/api/tracked-accounts/:id/refresh', { schema: { params: Id } }, async (req, reply) => {
     const acc = await getVisibleAccount(req.user, req.params.id);
-    const no = await refusal(acc, await pendingRefreshes([acc.id]));
+    const no = await refreshRefusal(acc, await pendingRefreshes([acc.id]));
     if (no) throw new HttpError(no.status, no.message, no.code);
     const taskId = await enqueueRefresh(acc, req.user.id);
     reply.code(202);
@@ -293,7 +290,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const queued: { id: string; taskId: string; manualOnly: boolean }[] = [];
     const skipped: { id: string; code: string }[] = ids.filter((id) => !rows.some((r) => r.id === id)).map((id) => ({ id, code: 'tracked.not_found' }));
     for (const acc of rows) {
-      const no = await refusal(acc, busy);
+      const no = await refreshRefusal(acc, busy);
       if (no) { skipped.push({ id: acc.id, code: no.code }); continue; }
       queued.push({ id: acc.id, taskId: await enqueueRefresh(acc, req.user.id), manualOnly: !platformDef(acc.platform).source });
     }

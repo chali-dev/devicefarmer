@@ -21,6 +21,8 @@ const router = createRouter({
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
+        { path: 'scripts', name: 'scripts', component: () => import('../views/ScriptsView.vue') },
+        { path: 'trending', name: 'trending', component: () => import('../views/TrendingView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
         { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { admin: true } },
         // Platform integrations moved into Settings; old links keep working.
