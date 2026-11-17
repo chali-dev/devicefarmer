@@ -28,7 +28,7 @@ export interface Instance {
   netContainerId: string | null
   /** Bound pool proxy (non-secret fields only). */
   proxy: InstanceProxy | null
-  proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null } | null
+  proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null; country?: string | null; region?: string | null; city?: string | null } | null
   spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
   /** Social platforms allowed on the device; null = all. */
   allowedPlatforms: string[] | null
@@ -92,7 +92,7 @@ export interface SourcePhone {
   instance: { id: string; name: string } | null
 }
 
-export interface Profile { id: string; label: string; engine: string; gapps: boolean; available: boolean; reason: string | null }
+export interface Profile { id: string; label: string; engine: string; android: number | null; gapps: boolean; available: boolean; reason: string | null }
 
 export type TaskStatus = 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled'
 export const TASK_STATUSES: TaskStatus[] = ['pending', 'scheduled', 'running', 'success', 'failed', 'cancelled']

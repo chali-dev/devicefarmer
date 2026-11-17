@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {
   AppstoreOutlined, CameraOutlined, CompressOutlined, ExpandOutlined, PoweroffOutlined, ReloadOutlined,
-  RotateRightOutlined, SoundOutlined, UploadOutlined, ZoomInOutlined, ZoomOutOutlined,
+  RotateRightOutlined, SoundOutlined, SyncOutlined, UploadOutlined, WifiOutlined, ZoomInOutlined, ZoomOutOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -113,19 +113,40 @@ const basic = computed(() => {
     [t('cloud.created'), new Date(i.createdAt).toLocaleString(dateLocale())],
   ] as [string, string | number | null][]
 })
-const network = computed(() => {
+/** WLAN MAC read from the device (wlan0, else eth0 on redroid). */
+const macText = computed(() => actual.value?.mac ? `${actual.value.mac}${actual.value.macIf && actual.value.macIf !== 'wlan0' ? ` (${actual.value.macIf})` : ''}` : '—')
+/** Geo of the measured egress IP; before the first such check, the location configured on the proxy (marked). */
+const geoText = computed(() => {
+  const i = inst.value
+  const s = i?.proxyStatus
+  if (s?.country) return [s.country, ...[s.region, s.city].filter((x, n, a) => x && a.indexOf(x) === n)].filter(Boolean).join(' · ')
+  const conf = [i?.proxy?.country, i?.proxy?.city].filter(Boolean).join(' ')
+  return conf ? t('cloud.locationConfigured', { where: conf }) : '—'
+})
+const checking = ref(false)
+async function recheckEgress() {
+  if (!inst.value || checking.value) return
+  checking.value = true
+  try { await api('POST', `/api/instances/${inst.value.id}/proxy/check`) } // the row update arrives as an event
+  catch (e) { message.error(errorText(e)) }
+  finally { checking.value = false }
+}
+type Row = [string, string, ('geo' | undefined)?]
+const network = computed<Row[]>(() => {
   const i = inst.value
   if (!i) return []
-  if (!i.proxy) return [[t('cloud.proxy'), i.sourceId ? t('devices.ext.proxyShort') : t('devices.direct')]] as [string, string][]
+  const mac: Row = [t('cloud.mac'), macText.value]
+  if (!i.proxy) return [[t('cloud.proxy'), i.sourceId ? t('devices.ext.proxyShort') : t('devices.direct')], mac]
   const s = i.proxyStatus
   return [
     [t('cloud.proxy'), `${i.proxy.type.toUpperCase()} ${proxyLabel(i.proxy)}`],
-    [t('cloud.location'), dash([i.proxy.country, i.proxy.city].filter(Boolean).join(' '))],
+    mac,
+    [t('cloud.location'), geoText.value, 'geo'],
     [t('cloud.egressIp'), dash(s?.egressIp)],
     [t('cloud.latency'), s?.latencyMs != null ? `${s.latencyMs} ms` : '—'],
     [t('cloud.proxyState'), s ? (s.ok ? t('cloud.proxyOk') : t('cloud.proxyFailed', { error: s.error ?? '' })) : t('cloud.proxyUnchecked')],
     [t('cloud.checkedAt'), s ? new Date(s.checkedAt).toLocaleString(dateLocale()) : '—'],
-  ] as [string, string][]
+  ]
 })
 const other = computed(() => [
   [t('devices.form.locale'), dash(actual.value?.locale || inst.value?.spec.locale)],
@@ -158,9 +179,19 @@ const other = computed(() => [
             <DevicePlayer
               v-if="screenReady" ref="player" :key="`${inst.id}-${inst.containerId}`"
               :instance-id="inst.id" :width="inst.spec.width" :height="inst.spec.height" :size="size" :rotation="rotation"
+              :title="inst.name" :subtitle="inst.externalId ?? inst.id" @exit="open = false"
             >
-              <template #side>
+              <template #side="{ latency, live, color, tip }">
                 <div class="tools">
+                  <a-tooltip placement="left">
+                    <template #title>
+                      <div v-for="(line, i) in tip" :key="i">{{ line }}</div>
+                      <div v-if="!tip.length">{{ t('player.latencyPending') }}</div>
+                    </template>
+                    <div class="tool tool-static net" :class="{ idle: !live || latency == null }" :style="{ color }">
+                      <WifiOutlined /><span>{{ live && latency != null ? t('player.latencyShort', { ms: latency }) : '—' }}</span>
+                    </div>
+                  </a-tooltip>
                   <a-tooltip :title="t('cloud.volUp')" placement="left"><button class="tool" @click="key('volume_up')"><SoundOutlined /><span>{{ t('cloud.volUpShort') }}</span></button></a-tooltip>
                   <a-tooltip :title="t('cloud.volDown')" placement="left"><button class="tool" @click="key('volume_down')"><SoundOutlined /><span>{{ t('cloud.volDownShort') }}</span></button></a-tooltip>
                   <a-tooltip :title="t('cloud.powerKey')" placement="left"><button class="tool" @click="key('power')"><PoweroffOutlined /><span>{{ t('cloud.powerShort') }}</span></button></a-tooltip>
@@ -194,7 +225,17 @@ const other = computed(() => [
               <h4>{{ t('cloud.basic') }}</h4>
               <dl><template v-for="[k, v] in basic" :key="k"><dt>{{ k }}</dt><dd>{{ dash(v) }}</dd></template></dl>
               <h4>{{ t('cloud.network') }}</h4>
-              <dl><template v-for="[k, v] in network" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
+              <dl>
+                <template v-for="[k, v, kind] in network" :key="k">
+                  <dt>{{ k }}</dt>
+                  <dd>
+                    {{ v }}
+                    <a-tooltip v-if="kind === 'geo' && running" :title="t('cloud.recheckEgress')">
+                      <a-button type="link" size="small" :loading="checking" :aria-label="t('cloud.recheckEgress')" style="padding: 0 4px; height: auto" @click="recheckEgress"><SyncOutlined v-if="!checking" /></a-button>
+                    </a-tooltip>
+                  </dd>
+                </template>
+              </dl>
               <h4>{{ t('cloud.other') }}</h4>
               <dl><template v-for="[k, v] in other" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template></dl>
             </template>
@@ -253,6 +294,9 @@ const other = computed(() => [
 .tool span { font-size: 11px; line-height: 1.2; }
 .tool:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
 .tool:disabled { opacity: 0.4; cursor: default; }
+.tool-static { cursor: default; font-variant-numeric: tabular-nums; }
+.tool.tool-static:hover { background: transparent; }
+.net.idle { opacity: 0.4; }
 .panel { flex: 1; overflow: auto; padding: 4px 16px 24px; }
 h4 { margin: 18px 0 10px; font-size: 14px; font-weight: 600; color: var(--cp-text); }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; margin: 0; padding-bottom: 16px; border-bottom: 1px solid var(--cp-border-secondary); font-size: 13px; }

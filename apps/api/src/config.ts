@@ -60,8 +60,14 @@ const Env = z.object({
   SCRCPY_MAX_SIZE: z.coerce.number().int().min(0).default(1280),
   SCRCPY_MAX_FPS: z.coerce.number().int().min(1).max(120).default(30),
   SCRCPY_BIT_RATE: z.coerce.number().int().min(100_000).default(4_000_000),
-  /** For external phones behind a tunnel (BitBrowser), whose link carries far less than a LAN. */
-  SCRCPY_BIT_RATE_EXTERNAL: z.coerce.number().int().min(100_000).default(1_500_000),
+  /**
+   * For external phones behind a tunnel (BitBrowser). One adb stream there carries ~100 KB/s (~0.8 Mb/s:
+   * adb has one write in flight per stream and the tunnel's round trip is ~0.3 s), and the video is one
+   * stream: a higher bit rate backs up the encoder and the frame rate collapses on moving content.
+   */
+  SCRCPY_BIT_RATE_EXTERNAL: z.coerce.number().int().min(100_000).default(600_000),
+  /** Periodic key frame interval for external phones, seconds (scrcpy default 10). */
+  SCRCPY_KEY_INTERVAL_EXTERNAL_S: z.coerce.number().int().min(1).max(600).default(60),
   /** App library storage (imported official APKs). Not cleaned up automatically. */
   LIBRARY_DIR: z.string().default('var/library'),
   /** Asset library (素材库): local storage backend directory. The active backend is chosen in settings. */

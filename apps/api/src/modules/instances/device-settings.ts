@@ -61,6 +61,9 @@ export async function readDeviceSettings(adbPort: number) {
     'echo "androidId=$(settings get secure android_id)"',
     'echo "model=$(getprop ro.product.model)"',
     'echo "release=$(getprop ro.build.version.release)"',
+    // /sys/class/net/*/address and `ip link show <if>` are denied to shell on recent Android; the full
+    // `ip -o link` dump is not. wlan0 first (real phones), else eth0 (redroid has no Wi-Fi interface).
+    'l=$(ip -o link 2>/dev/null); for i in wlan0 eth0; do m=$(echo "$l" | grep -E "^[0-9]+: $i[:@]" | grep -o "link/ether [0-9a-f:]*" | cut -d" " -f2); if [ -n "$m" ]; then echo "mac=$m"; echo "macIf=$i"; break; fi; done',
   ].join('; '));
   const kv: Record<string, string> = {};
   for (const l of out.split(/\r?\n/)) { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1).trim(); }

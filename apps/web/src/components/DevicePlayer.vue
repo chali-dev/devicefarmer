@@ -2,6 +2,7 @@
 import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, message as toast, notification } from 'ant-design-vue'
+import { AndroidFilled } from '@ant-design/icons-vue'
 import { codeText, getToken, wsUrl } from '../api/client'
 
 const props = defineProps<{
@@ -10,6 +11,9 @@ const props = defineProps<{
   size?: string
   /** View-only rotation (clockwise); the device itself is not rotated, touches are mapped back. */
   rotation?: 0 | 90 | 180 | 270
+  /** Shown on the connecting screen (device name and a secondary line, e.g. its id). */
+  title?: string
+  subtitle?: string
 }>()
 const rot = computed(() => props.rotation ?? 0)
 const sideways = computed(() => rot.value === 90 || rot.value === 270)
@@ -23,7 +27,7 @@ const screenStyle = computed(() => {
 const canvasStyle = computed(() => sideways.value
   ? { position: 'absolute' as const, left: '50%', top: '50%', width: `calc(100% * ${props.width} / ${props.height})`, height: `calc(100% * ${props.height} / ${props.width})`, transform: `translate(-50%, -50%) rotate(${rot.value}deg)` }
   : rot.value ? { transform: `rotate(${rot.value}deg)` } : {})
-const emit = defineEmits<{ (e: 'state', s: PlayerState): void }>()
+const emit = defineEmits<{ (e: 'state', s: PlayerState): void; (e: 'exit'): void }>()
 const { t } = useI18n()
 
 export type PlayerState = 'connecting' | 'live' | 'closed' | 'error'
@@ -34,9 +38,75 @@ const state = ref<PlayerState>('connecting')
 type Stage = 'socket' | 'session' | 'frame'
 const STAGES: Stage[] = ['socket', 'session', 'frame']
 const stage = ref<Stage>('socket')
+/*
+ * Per-stage progress for the connecting screen. The stages are real (socket open → session ready →
+ * first frame); within the active stage there is no measurable progress, so its bar eases towards 95 %
+ * at a pace that fits the stage's usual duration, and jumps to 100 % when the stage really completes.
+ */
+const pct = ref<Record<Stage, number>>({ socket: 0, session: 0, frame: 0 })
+const EASE: Record<Stage, number> = { socket: 0.25, session: 0.06, frame: 0.035 }
+const overall = computed(() => Math.round((pct.value.socket + pct.value.session + pct.value.frame) / 3))
+let pctTimer: ReturnType<typeof setInterval> | null = null
+function resetProgress() {
+  pct.value = { socket: 0, session: 0, frame: 0 }
+  if (pctTimer) clearInterval(pctTimer)
+  pctTimer = setInterval(() => {
+    if (state.value !== 'connecting') return
+    const i = STAGES.indexOf(stage.value)
+    for (const [j, s] of STAGES.entries()) {
+      if (j < i) pct.value[s] = 100
+      else if (j === i) pct.value[s] = Math.min(95, pct.value[s] + (95 - pct.value[s]) * EASE[s])
+    }
+  }, 100)
+}
+function stopProgress(done: boolean) {
+  if (pctTimer) clearInterval(pctTimer)
+  pctTimer = null
+  if (done) pct.value = { socket: 100, session: 100, frame: 100 }
+}
+const stageClass = (s: Stage) => {
+  const i = STAGES.indexOf(s), cur = STAGES.indexOf(stage.value)
+  if (state.value === 'live' || i < cur) return 'done'
+  if (i === cur) return state.value === 'connecting' ? 'active' : 'failed'
+  return ''
+}
+/** Exit from the connecting/failed screen: closes the session; the parent may close its view. */
+function exit() {
+  close()
+  setState('closed', t('player.exited'))
+  emit('exit')
+}
 let liveTimer: ReturnType<typeof setTimeout> | null = null
 const message = ref('')
 const fps = ref(0)
+/**
+ * 画面延迟 estimate (ms): browser ↔ API round trip (ping/pong) + API ↔ device adb round trip (measured by
+ * the server) + the H.264 playout buffer. Roughly touch → visible result, without encode/decode time.
+ */
+const latency = ref<{ ws: number; device: number | null; buffer: number } | null>(null)
+const latencyTotal = computed(() => latency.value ? latency.value.ws + (latency.value.device ?? 0) + latency.value.buffer : null)
+/** Colour by total latency (preset palette tokens from ThemeVars): ≤100 green, ≤200 yellow, ≤400 orange, else red. */
+const latencyColor = computed(() => {
+  const ms = latencyTotal.value
+  if (ms == null || state.value !== 'live') return undefined
+  return ms <= 100 ? 'var(--cp-green)' : ms <= 200 ? 'var(--cp-yellow)' : ms <= 400 ? 'var(--cp-orange)' : 'var(--cp-red)'
+})
+/** Tooltip lines: latency breakdown (or "measuring") + fps. */
+const latencyTipLines = computed(() => {
+  if (state.value !== 'live') return []
+  const l = latency.value
+  return [
+    l ? t('player.latencyTip', { ws: l.ws, device: l.device ?? '-', buffer: l.buffer }) : t('player.latencyPending'),
+    t('player.fpsTip', { fps: fps.value }),
+  ]
+})
+let pingTimer: ReturnType<typeof setInterval> | null = null
+const PING_MS = 2000
+function onPong(msg: { t: number; deviceMs: number | null }) {
+  const ws = Math.max(0, Math.round(performance.now() - msg.t))
+  const buffer = source.value === 'scrcpy' ? Math.round(playoutDelay(performance.now())) : 0
+  latency.value = { ws, device: msg.deviceMs ?? null, buffer }
+}
 
 /**
  * Screen sources: 'stf' (标准, JPEG frames from STF), 'scrcpy' (高速, H.264 from scrcpy-server, decoded
@@ -80,6 +150,7 @@ let binMode: 'jpeg' | 'h264' = 'jpeg'
 
 function setState(s: PlayerState, msg = '') {
   state.value = s
+  if (s !== 'connecting') stopProgress(s === 'live')
   message.value = msg
   emit('state', s)
 }
@@ -101,31 +172,52 @@ let codec = ''
 let avcConfig: Uint8Array | null = null
 let needKey = true
 let rafId = 0
-const MAX_DECODE_QUEUE = 4
+/*
+ * Decoder backlog limit. Over a tunnel frames arrive in bursts (~8 at once), so this must sit well above
+ * a burst: past it, delta frames are dropped and a fresh key frame is requested (scrcpy's own key frame
+ * interval is 10 s, far too long to wait for).
+ */
+const MAX_DECODE_QUEUE = 30
+/** Asks the server for a key frame, at most once a second. */
+let lastKeyReq = 0
+function wantKeyFrame() {
+  needKey = true
+  const now = performance.now()
+  if (now - lastKeyReq < 1000) return
+  lastKeyReq = now
+  send({ type: 'keyFrame' })
+}
 
 /*
  * Playout buffer. Through a high-latency adb link (BitBrowser's SSH tunnel, ~0.3 s RTT, no adb
  * `delayed_ack`) frames arrive in bursts, one burst per round trip; painting only the newest frame per
  * display refresh then shows ~5-7 fps although ~20 arrive. So frames are shown at their own pts cadence,
- * delayed by the recent worst lateness (max of arrival - pts over JITTER_WINDOW_MS). On a smooth link
- * (local redroid) that lateness is flat and the added delay stays near zero. Bounded by MAX_JITTER_MS.
+ * delayed by the recent lateness (arrival - pts over JITTER_WINDOW_MS). On a smooth link (local redroid)
+ * that lateness is flat and the added delay stays near zero. Bounded by MAX_JITTER_MS.
+ * The delay follows the JITTER_PERCENTILE of delta frames, not the maximum: key frames (~40 KB) need
+ * several adb round trips there (measured ~0.6 s late) and would hold the whole stream back for seconds
+ * after each one; a frame later than the delay is simply shown as soon as it is decoded.
  */
 const JITTER_WINDOW_MS = 2000
-const MAX_JITTER_MS = 600
+const MAX_JITTER_MS = 400
+const JITTER_PERCENTILE = 0.9
+/** pts of key frames sent to the decoder (not part of the lateness estimate). */
+const keyPts = new Set<number>()
 let frames_q: VideoFrame[] = []
 let lateness: { at: number; ms: number }[] = []
 let minLate = Infinity
 function playoutDelay(now: number): number {
   while (lateness.length && now - lateness[0]!.at > JITTER_WINDOW_MS) lateness.shift()
-  let max = 0
-  for (const l of lateness) if (l.ms > max) max = l.ms
-  return Math.min(MAX_JITTER_MS, max)
+  if (!lateness.length) return 0
+  const sorted = lateness.map((l) => l.ms).sort((a, b) => a - b)
+  return Math.min(MAX_JITTER_MS, sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * JITTER_PERCENTILE))]!)
 }
 function clearQueue() {
   for (const f of frames_q) f.close()
   frames_q = []
   lateness = []
   minLate = Infinity
+  keyPts.clear()
 }
 
 function closeDecoder() {
@@ -143,7 +235,7 @@ function onDecoded(f: VideoFrame) {
   const raw = now - f.timestamp / 1000
   // pts restart with the encoder (rotation, reset for a late joiner): start the estimate over.
   if (raw < minLate || raw - minLate > 5000) { if (raw - minLate > 5000) lateness = []; minLate = raw }
-  lateness.push({ at: now, ms: raw - minLate })
+  if (!keyPts.delete(f.timestamp)) lateness.push({ at: now, ms: raw - minLate })
   frames_q.push(f)
   if (!rafId) rafId = requestAnimationFrame(paintDue)
 }
@@ -174,7 +266,7 @@ function ensureDecoder(): VideoDecoder | null {
   if (!codec) return null
   decoder = new VideoDecoder({
     output: onDecoded,
-    error: () => { decoder = null; needKey = true }, // recovers at the next key frame
+    error: () => { decoder = null; wantKeyFrame() }, // recovers at the next key frame
   })
   decoder.configure({ codec, optimizeForLatency: true })
   needKey = true
@@ -204,11 +296,14 @@ function onH264(buf: ArrayBuffer) {
   const key = (flags & 2) !== 0
   const d = ensureDecoder()
   if (!d) return
-  if (!key && (needKey || d.decodeQueueSize > MAX_DECODE_QUEUE)) { needKey = true; return } // wait for a key frame
+  if (!key && needKey) return // waiting for a key frame
+  if (!key && d.decodeQueueSize > MAX_DECODE_QUEUE) { wantKeyFrame(); return }
   let payload = data
   if (key && avcConfig) { payload = new Uint8Array(avcConfig.length + data.length); payload.set(avcConfig); payload.set(data, avcConfig.length) }
   try {
-    d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Number(v.getBigUint64(1)), data: payload }))
+    const pts = Number(v.getBigUint64(1))
+    if (key) { keyPts.add(pts); if (keyPts.size > 16) keyPts.delete(keyPts.values().next().value!) }
+    d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: pts, data: payload }))
     if (key) needKey = false
   } catch { closeDecoder() }
 }
@@ -258,6 +353,7 @@ function connect() {
   close()
   stage.value = 'socket'
   setState('connecting')
+  resetProgress()
   ws = new WebSocket(wsUrl(`/api/instances/${props.instanceId}/session`))
   ws.binaryType = 'arraybuffer'
   ws.onopen = () => { stage.value = 'session'; ws?.send(JSON.stringify({ type: 'auth', token: getToken() })) }
@@ -271,8 +367,12 @@ function connect() {
     if (msg.type === 'ready') {
       stage.value = 'frame'
       liveTimer = setTimeout(goLive, 3000)
+      const ping = () => send({ type: 'ping', t: performance.now() })
+      ping()
+      pingTimer = setInterval(ping, PING_MS)
       if (preferred.value === 'scrcpy' && !secureWanted) send({ type: 'screenSource', source: 'scrcpy' })
     }
+    else if (msg.type === 'pong') onPong(msg)
     else if (msg.type === 'video') onVideoInfo(msg)
     else if (msg.type === 'screenSource') {
       source.value = msg.source
@@ -297,6 +397,9 @@ function close() {
   liveTimer = null
   if (fpsTimer) clearInterval(fpsTimer)
   fpsTimer = null
+  if (pingTimer) clearInterval(pingTimer)
+  pingTimer = null
+  latency.value = null
   if (ws) { ws.onclose = null; ws.close(1000) }
   ws = null
   closeDecoder()
@@ -385,7 +488,7 @@ function typeSecure(text: string) { send({ type: 'typeSecure', text }) }
 defineExpose({ key, paste, typeSecure, reconnect: connect, state })
 
 onMounted(connect)
-onBeforeUnmount(close)
+onBeforeUnmount(() => { close(); stopProgress(false) })
 watch(() => props.instanceId, connect)
 </script>
 
@@ -408,25 +511,40 @@ watch(() => props.instanceId, connect)
         @contextmenu.prevent="key('back')"
       />
       <div v-if="state !== 'live'" class="overlay">
-        <div v-if="state === 'connecting'" class="steps">
-          <a-spin />
-          <div v-for="(s, i) in STAGES" :key="s" class="step" :class="{ done: i < STAGES.indexOf(stage), active: s === stage }">
-            <span class="dot">{{ i < STAGES.indexOf(stage) ? '✓' : i + 1 }}</span>{{ t(`player.stage.${s}`) }}
+        <div class="conn">
+          <div class="conn-logo" :class="{ spinning: state === 'connecting' }"><AndroidFilled /></div>
+          <div v-if="title" class="conn-title">{{ title }}</div>
+          <div v-if="subtitle" class="conn-sub">{{ subtitle }}</div>
+          <a-progress :percent="overall" :show-info="false" :status="state === 'connecting' ? 'active' : 'exception'" size="small" class="conn-bar" />
+          <div class="conn-steps">
+            <div v-for="s in STAGES" :key="s" class="conn-step" :class="stageClass(s)">
+              <span>{{ t(`player.stage.${s}`) }}</span><span class="conn-pct">{{ Math.round(pct[s]) }}%</span>
+            </div>
+          </div>
+          <div v-if="state !== 'connecting'" class="conn-msg">{{ message || t('player.disconnected') }}</div>
+          <div class="conn-actions">
+            <a-button v-if="state !== 'connecting'" size="small" type="primary" @click="connect">{{ t('player.reconnect') }}</a-button>
+            <a-button size="small" :type="state === 'connecting' ? 'primary' : 'default'" @click="exit">{{ t('player.exit') }}</a-button>
           </div>
         </div>
-        <template v-else>
-          <div class="overlay-msg">{{ message || t('player.disconnected') }}</div>
-          <a-button size="small" type="primary" @click="connect">{{ t('player.reconnect') }}</a-button>
-        </template>
       </div>
     </div>
-    <slot name="side" />
+    <slot
+      name="side" :latency="state === 'live' ? latencyTotal : null" :detail="latency" :fps="fps" :live="state === 'live'"
+      :color="latencyColor" :tip="latencyTipLines"
+    />
     </div>
     <div class="nav">
       <a-tooltip :title="t('player.back')"><a-button shape="circle" @click="key('back')">◁</a-button></a-tooltip>
       <a-tooltip :title="t('player.home')"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
       <a-tooltip :title="t('player.recents')"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
-      <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
+      <template v-if="!$slots.side">
+        <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
+        <a-tooltip v-if="state === 'live' && latency">
+          <template #title><div v-for="(line, i) in latencyTipLines" :key="i">{{ line }}</div></template>
+          <span class="fps latency" :style="{ color: latencyColor }">{{ t('player.latency', { ms: latencyTotal }) }}</span>
+        </a-tooltip>
+      </template>
       <a-tooltip :title="canH264 ? t('player.sourceTip') : t('player.noWebCodecs')">
         <a-radio-group
           size="small" button-style="solid" :value="secureView ? undefined : source"
@@ -459,17 +577,31 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; outline:
 canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--cp-primary); }
 .overlay {
   position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px;
-  align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); color: #fff; padding: 16px; text-align: center;
+  align-items: center; justify-content: center; padding: 16px; text-align: center; color: var(--cp-text);
+  background: radial-gradient(circle at 30% 20%, var(--cp-primary-bg), transparent 60%), var(--cp-bg-container);
 }
-.overlay-msg { font-size: 13px; }
-.steps { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; font-size: 13px; }
-.steps :deep(.ant-spin) { align-self: center; margin-bottom: 6px; }
-.step { display: flex; gap: 8px; align-items: center; opacity: 0.5; }
-.step.done { opacity: 0.8; }
-.step.active { opacity: 1; font-weight: 600; }
-.dot { width: 18px; height: 18px; border-radius: 50%; border: 1px solid currentColor; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+.conn { width: min(320px, 100%); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.conn-logo {
+  width: 72px; height: 72px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 8px;
+  font-size: 34px; color: var(--cp-primary); background: var(--cp-primary-bg); position: relative;
+}
+.conn-logo::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2px dotted var(--cp-primary); opacity: 0.5; }
+.conn-logo.spinning::after { animation: conn-spin 3s linear infinite; }
+@keyframes conn-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .conn-logo.spinning::after { animation: none; } }
+.conn-title { font-size: 16px; font-weight: 600; }
+.conn-sub { font-size: 12px; color: var(--cp-text-quaternary); word-break: break-all; }
+.conn-bar { width: 100%; margin: 10px 0 6px; }
+.conn-steps { width: 100%; display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.conn-step { display: flex; justify-content: space-between; color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; }
+.conn-step.done { color: var(--cp-text-quaternary); }
+.conn-step.active { color: var(--cp-primary); font-weight: 600; }
+.conn-step.failed { color: var(--cp-error); font-weight: 600; }
+.conn-msg { font-size: 12px; color: var(--cp-error); margin-top: 6px; word-break: break-word; }
+.conn-actions { display: flex; gap: 8px; margin-top: 14px; }
 .nav { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; }
 .fps { width: 52px; color: var(--cp-text-tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.latency { width: auto; min-width: 92px; cursor: default; }
 </style>
 
 <style>

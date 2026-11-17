@@ -28,11 +28,34 @@ const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('screenSource'), source: z.enum(['stf', 'secure', 'scrcpy']) }),
   // Reads the device clipboard (scrcpy source only).
   z.object({ type: z.literal('getClipboard') }),
+  // Latency probe: answered at once with {type:'pong', t, deviceMs} (deviceMs = API ↔ device adb round trip).
+  z.object({ type: z.literal('ping'), t: z.number() }),
+  // The browser dropped H.264 frames (decoder backlog) and needs a fresh key frame (scrcpy source only).
+  z.object({ type: z.literal('keyFrame') }),
 ]);
 
 const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
 
 const MAX_BUFFERED = 2 * 1024 * 1024; // drop frames for slow clients instead of queueing
+
+/**
+ * API ↔ device round trip per adb port (a no-op `adb shell`), measured at most every DEVICE_RTT_TTL_MS
+ * and shared by all viewers of the device, so pings don't add traffic on narrow tunnels.
+ */
+const DEVICE_RTT_TTL_MS = 5000;
+const deviceRtt = new Map<number, { at: number; ms: number | null; inflight: boolean }>();
+function deviceRttMs(port: number): number | null {
+  const e = deviceRtt.get(port) ?? { at: 0, ms: null, inflight: false };
+  deviceRtt.set(port, e);
+  if (!e.inflight && Date.now() - e.at > DEVICE_RTT_TTL_MS) {
+    e.inflight = true;
+    const t = performance.now();
+    adb.shell(port, 'true', 5000)
+      .then(() => { e.ms = Math.round(performance.now() - t); }, () => { e.ms = null; })
+      .finally(() => { e.at = Date.now(); e.inflight = false; });
+  }
+  return e.ms;
+}
 
 function screenUrl(url: string): string {
   if (!config.STF_SCREEN_HOST) return url;
@@ -141,6 +164,8 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         }
         else if (msg.type === 'key') { if (!sc?.key(msg.action, msg.key)) await stf.key(channel!, msg.action, msg.key); }
         else if (msg.type === 'paste') { if (sc) sc.paste(msg.text); else await stf.paste(channel!, msg.text); send({ type: 'pasted' }); }
+        else if (msg.type === 'ping') send({ type: 'pong', t: msg.t, deviceMs: deviceRttMs(adbPort) });
+        else if (msg.type === 'keyFrame') sc?.requestKeyFrame();
         else if (msg.type === 'getClipboard') {
           if (!sc) return send({ type: 'error', message: 'device clipboard needs the scrcpy source', code: 'player.clipboard_needs_scrcpy' });
           // Content is only forwarded to this (control-authorised) viewer, never logged.

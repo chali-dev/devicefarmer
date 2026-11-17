@@ -73,16 +73,30 @@ export class NetworkSidecar {
       't1=$(cut -d" " -f1 /proc/uptime)',
       'nslookup -timeout=6 www.google.com >/dev/null 2>&1 && dns=1 || dns=0',
       'echo "ip=$ip"; echo "t0=$t0"; echo "t1=$t1"; echo "dns=$dns"',
+      // Geo of the egress IP, best effort (rate limits must not fail the check); one line of JSON.
+      'if [ -n "$ip" ]; then echo "geo=$(wget -qO- -T 8 https://ipinfo.io/json 2>/dev/null | tr -d \'\\n\')"; fi',
     ].join('; ');
     const checkedAt = new Date().toISOString();
     try {
       const r = await this.host.helper(['sh', '-c', script], [], { netContainerId, timeoutMs: 40_000 });
-      const kv = Object.fromEntries(r.out.split(/\r?\n/).map((l) => l.split('=')).filter((p) => p.length === 2).map(([k, v]) => [k!.trim(), v!.trim()]));
+      const kv: Record<string, string> = {};
+      for (const l of r.out.split(/\r?\n/)) { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
       const ip = /^\d{1,3}(\.\d{1,3}){3}$/.test(kv.ip ?? '') ? kv.ip! : null;
       const latencyMs = ip ? Math.round((Number(kv.t1) - Number(kv.t0)) * 1000) : null;
-      return { checkedAt, ok: Boolean(ip), egressIp: ip, latencyMs, dnsOk: kv.dns === '1', error: ip ? null : 'no egress through proxy (blocked or proxy unreachable)' };
+      return { checkedAt, ok: Boolean(ip), egressIp: ip, latencyMs, dnsOk: kv.dns === '1', error: ip ? null : 'no egress through proxy (blocked or proxy unreachable)', ...geoOf(kv.geo, ip) };
     } catch (err) {
       return { checkedAt, ok: false, egressIp: null, latencyMs: null, dnsOk: false, error: (err as Error).message };
     }
   }
+}
+
+/** country/region/city from ipinfo's JSON, only if it describes the IP we saw (ipinfo answers for the caller). */
+function geoOf(raw: string | undefined, ip: string | null): { country: string | null; region: string | null; city: string | null } | Record<string, never> {
+  if (!raw || !ip) return {};
+  try {
+    const g = JSON.parse(raw) as Record<string, unknown>;
+    if (g.ip !== ip) return {};
+    const str = (v: unknown) => (typeof v === 'string' && v ? v.slice(0, 80) : null);
+    return { country: str(g.country), region: str(g.region), city: str(g.city) };
+  } catch { return {}; }
 }

@@ -11,6 +11,8 @@ export type TaskOpName = 'media-process' | 'tracked-refresh';
 export type OpName = DeviceOpName | TaskOpName;
 /** Task payload of the device ops (stored in tasks.payload; ids and paths only, no secrets). */
 export interface OpJob {
+  /** create: app library ids to install afterwards (omitted = the preinstall-flagged apps) */
+  appIds?: string[];
   /** install-apk: one app = base + splits */
   apkPaths?: string[]; sizes?: number[];
   /** uninstall-app, import-app */
@@ -44,7 +46,7 @@ export async function enqueueTask(op: TaskOpName, extra: OpJob & Record<string, 
 }
 
 const RUN: Record<DeviceOpName, (id: string, p: OpJob) => Promise<void>> = {
-  create: (id) => opCreate(id),
+  create: (id, p) => opCreate(id, p.appIds),
   start: (id) => opStart(id),
   stop: (id) => opStop(id),
   restart: (id) => opRestart(id),

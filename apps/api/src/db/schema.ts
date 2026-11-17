@@ -780,6 +780,10 @@ export interface ProxyStatus {
   latencyMs: number | null;
   dnsOk: boolean;
   error: string | null;
+  /** Geo of the egress IP (ipinfo.io, looked up through the same path); absent on older checks or when the lookup failed. */
+  country?: string | null;
+  region?: string | null;
+  city?: string | null;
 }
 
 /** Result of checking a pool proxy from the API host (egress IP + geo through the proxy). */

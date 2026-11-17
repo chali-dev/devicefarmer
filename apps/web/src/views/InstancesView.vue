@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { DownOutlined, ExclamationCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { CheckCircleFilled, DownOutlined, ExclamationCircleOutlined, FacebookFilled, InstagramFilled, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, YoutubeFilled } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
-import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
+import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
@@ -203,9 +203,45 @@ const form = reactive({ proxyMode: 'auto' as 'auto' | 'none' | 'pick', proxyIds:
 // Free pool proxies for the create form (each device gets its own proxy).
 const freeProxies = ref<PoolProxy[]>([])
 const freeUsable = computed(() => freeProxies.value.filter((p) => p.status !== 'failed').length)
+/** Version chip text; the image (GMS or not) is in the chip's tag and tooltip. */
+const androidLabel = (p: Profile) => p.android ? `Android ${p.android}` : t('devices.form.emulator')
+
+/*
+ * Apps to install on the new devices, from the app library (official APKs imported from a device).
+ * For now only these platforms are offered; each is greyed out until the library holds its package.
+ * Initially picked: the ones flagged for preinstall in the library.
+ */
+const RECOMMENDED: { key: string; name: string; pkgs: string[]; icon: Component }[] = [
+  { key: 'instagram', name: 'Instagram', pkgs: ['com.instagram.android'], icon: InstagramFilled },
+  { key: 'youtube', name: 'YouTube', pkgs: ['com.google.android.youtube'], icon: YoutubeFilled },
+  { key: 'facebook', name: 'Facebook', pkgs: ['com.facebook.katana', 'com.facebook.lite'], icon: FacebookFilled },
+]
+const libApps = ref<LibraryApp[]>([])
+const pickedApps = ref<string[]>([])
+const appTiles = computed(() => {
+  const latest = new Map<string, LibraryApp>() // the API lists newest first per package
+  for (const a of libApps.value) if (!latest.has(a.package)) latest.set(a.package, a)
+  return RECOMMENDED.map((r) => {
+    const pkg = r.pkgs.find((p) => latest.has(p))
+    return { key: r.key, name: r.name, icon: r.icon, app: pkg ? latest.get(pkg)! : null }
+  })
+})
+function toggleApp(a: LibraryApp | null) {
+  if (!a) return
+  pickedApps.value = pickedApps.value.includes(a.id) ? pickedApps.value.filter((x) => x !== a.id) : [...pickedApps.value, a.id]
+}
+async function loadLibrary() {
+  try {
+    libApps.value = (await api<{ apps: LibraryApp[] }>('GET', '/api/library')).apps
+    pickedApps.value = appTiles.value.flatMap((x) => (x.app?.preinstall ? [x.app.id] : []))
+  } catch (e) { libApps.value = []; pickedApps.value = []; message.error(errorText(e)) }
+}
+
 async function openCreate() {
   createOpen.value = true
   form.proxyIds = []
+  if (!profiles.value.find((p) => p.id === form.profile)?.available) form.profile = profiles.value.find((p) => p.available)?.id ?? form.profile
+  void loadLibrary()
   try {
     freeProxies.value = (await api<{ proxies: PoolProxy[] }>('GET', '/api/proxies?bound=free')).proxies
     if (form.proxyMode === 'auto' && !freeUsable.value) form.proxyMode = 'none'
@@ -225,7 +261,8 @@ async function submitCreate() {
     const r = await store.create({
       proxyMode: form.proxyMode, ...(form.proxyMode === 'pick' ? { proxyIds: form.proxyIds } : {}),
       ...(form.locale ? { locale: form.locale } : {}), ...(form.timezone ? { timezone: form.timezone } : {}), ...(form.deviceName ? { deviceName: form.deviceName } : {}),
-      profile: form.profile, count: form.count, namePrefix: form.namePrefix, width, height, dpi, ...(form.memoryMb ? { memoryMb: form.memoryMb } : {}) })
+      profile: form.profile, count: form.count, namePrefix: form.namePrefix, width, height, dpi, ...(form.memoryMb ? { memoryMb: form.memoryMb } : {}),
+      appIds: pickedApps.value })
     message.success(t('devices.submittedCreate', { names: r.instances.map((i) => i.name).join(t('common.listSep')) }))
     createOpen.value = false
   } catch (e) {
@@ -550,9 +587,9 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
     </div>
   </div>
 
-  <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :confirm-loading="creating" :ok-text="kind === 'local' ? t('common.create') : t('devices.ext.addN', { n: pickedPhones.length })" :cancel-text="t('common.cancel')" :width="kind === 'local' ? 520 : 760" @ok="submitCreate">
+  <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :width="800" class="create-modal">
     <a-form-item :label="t('devices.ext.kind')" style="margin-bottom: 16px">
-      <a-radio-group v-model:value="kind">
+      <a-radio-group v-model:value="kind" button-style="solid">
         <a-radio-button value="local">{{ t('devices.ext.kinds.local') }}</a-radio-button>
         <a-radio-button value="bitbrowser">{{ t('devices.ext.kinds.bitbrowser') }}</a-radio-button>
       </a-radio-group>
@@ -586,47 +623,76 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         </template>
       </a-table>
     </template>
-    <a-form v-else layout="vertical">
-      <a-form-item :label="t('devices.colImage')">
-        <a-select v-model:value="form.profile">
-          <a-select-option v-for="p in profiles" :key="p.id" :value="p.id" :disabled="!p.available">
-            {{ profileLabel(p.id, p.label) }}<span v-if="!p.available" class="muted">{{ t('devices.form.unavailable', { reason: p.reason ?? '' }) }}</span>
-          </a-select-option>
-        </a-select>
+    <a-form v-else layout="vertical" class="create-form">
+      <a-form-item :label="t('devices.form.android')">
+        <div class="chips">
+          <a-tooltip v-for="p in profiles" :key="p.id" :title="p.available ? profileLabel(p.id, p.label) : t('devices.form.unavailable', { reason: p.reason ?? '' })">
+            <button type="button" class="chip" :class="{ active: form.profile === p.id }" :disabled="!p.available" @click="form.profile = p.id">
+              {{ androidLabel(p) }}<span v-if="p.gapps" class="chip-tag">GMS</span>
+            </button>
+          </a-tooltip>
+        </div>
       </a-form-item>
-      <a-form-item :label="t('devices.form.count')" :extra="t('devices.form.countHint')">
-        <a-input-number v-model:value="form.count" :min="1" :max="20" style="width: 100%" />
+      <a-form-item :label="t('devices.form.apps')" :extra="t('devices.form.appsHint')">
+        <div class="app-tiles">
+          <a-tooltip v-for="a in appTiles" :key="a.key" :title="a.app ? `${a.app.package} ${a.app.versionName ?? a.app.versionCode}` : t('devices.form.appMissing', { name: a.name })">
+            <button type="button" class="app-tile" :class="{ active: a.app && pickedApps.includes(a.app.id) }" :disabled="!a.app" @click="toggleApp(a.app)">
+              <span class="app-icon"><component :is="a.icon" /></span>
+              <span class="app-name">{{ a.name }}</span>
+              <CheckCircleFilled v-if="a.app && pickedApps.includes(a.app.id)" class="app-tick" />
+            </button>
+          </a-tooltip>
+        </div>
       </a-form-item>
-      <a-form-item :label="t('devices.form.proxy')"
+      <a-form-item :label="t('devices.form.proxyIp')"
         :extra="form.proxyMode === 'auto' ? t('devices.form.proxyAutoHint', { n: freeUsable }) : form.proxyMode === 'pick' ? t('devices.form.proxyPickHint', { count: form.count }) : t('devices.form.proxyNoneHint')">
-        <a-radio-group v-model:value="form.proxyMode">
-          <a-radio-button value="auto">{{ t('devices.form.proxyAuto') }}</a-radio-button>
-          <a-radio-button value="pick">{{ t('devices.form.proxyPick') }}</a-radio-button>
-          <a-radio-button value="none">{{ t('devices.form.proxyNone') }}</a-radio-button>
-        </a-radio-group>
+        <a-select v-model:value="form.proxyMode" style="width: 260px" :options="[
+          { value: 'none', label: t('devices.form.proxyNoneOpt') },
+          { value: 'auto', label: t('devices.form.proxyAutoOpt', { n: freeUsable }), disabled: !freeUsable },
+          { value: 'pick', label: t('devices.form.proxyPickOpt'), disabled: !freeProxies.length },
+        ]" />
         <a-select
           v-if="form.proxyMode === 'pick'" v-model:value="form.proxyIds" mode="multiple" show-search option-filter-prop="label"
           :options="freeProxies.map(proxyOption)" :placeholder="t('devices.form.proxyPickPlaceholder')" style="margin-top: 8px; width: 100%"
           :status="form.proxyIds.length && form.proxyIds.length !== form.count ? 'warning' : undefined"
         />
       </a-form-item>
-      <a-form-item :label="t('devices.form.prefix')" :extra="t('devices.form.prefixHint')">
-        <a-input v-model:value="form.namePrefix" />
-      </a-form-item>
-      <a-form-item :label="t('devices.colResolution')">
-        <a-select v-model:value="form.preset">
-          <a-select-option v-for="(_, k) in PRESETS" :key="k" :value="k">{{ k }}</a-select-option>
-        </a-select>
-      </a-form-item>
-      <a-row :gutter="12">
-        <a-col :span="8"><a-form-item :label="t('devices.form.locale')"><a-select v-model:value="form.locale" allow-clear show-search :placeholder="t('common.default')" :options="LOCALES.map((l) => ({ value: l, label: l }))" /></a-form-item></a-col>
-        <a-col :span="8"><a-form-item :label="t('devices.form.timezone')"><a-select v-model:value="form.timezone" allow-clear show-search :placeholder="t('common.default')" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" /></a-form-item></a-col>
-        <a-col :span="8"><a-form-item :label="t('devices.form.deviceName')"><a-input v-model:value="form.deviceName" :placeholder="t('common.optional')" :maxlength="40" /></a-form-item></a-col>
-      </a-row>
-      <a-form-item :label="t('devices.form.memory')">
-        <a-input-number v-model:value="form.memoryMb" :min="1024" :max="16384" :step="512" :placeholder="t('devices.form.unlimited')" style="width: 100%" />
-      </a-form-item>
+      <a-collapse ghost class="more">
+        <a-collapse-panel key="more" :header="t('devices.form.more')">
+          <a-row :gutter="12">
+            <a-col :xs="24" :sm="12"><a-form-item :label="t('devices.form.prefix')" :extra="t('devices.form.prefixHint')"><a-input v-model:value="form.namePrefix" /></a-form-item></a-col>
+            <a-col :xs="24" :sm="12">
+              <a-form-item :label="t('devices.colResolution')">
+                <a-select v-model:value="form.preset">
+                  <a-select-option v-for="(_, k) in PRESETS" :key="k" :value="k">{{ k }}</a-select-option>
+                </a-select>
+              </a-form-item>
+            </a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :xs="24" :sm="8"><a-form-item :label="t('devices.form.locale')"><a-select v-model:value="form.locale" allow-clear show-search :placeholder="t('common.default')" :options="LOCALES.map((l) => ({ value: l, label: l }))" /></a-form-item></a-col>
+            <a-col :xs="24" :sm="8"><a-form-item :label="t('devices.form.timezone')"><a-select v-model:value="form.timezone" allow-clear show-search :placeholder="t('common.default')" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" /></a-form-item></a-col>
+            <a-col :xs="24" :sm="8"><a-form-item :label="t('devices.form.deviceName')"><a-input v-model:value="form.deviceName" :placeholder="t('common.optional')" :maxlength="40" /></a-form-item></a-col>
+          </a-row>
+          <a-form-item :label="t('devices.form.memory')" style="margin-bottom: 0">
+            <a-input-number v-model:value="form.memoryMb" :min="1024" :max="16384" :step="512" :placeholder="t('devices.form.unlimited')" style="width: 220px" />
+          </a-form-item>
+        </a-collapse-panel>
+      </a-collapse>
     </a-form>
+    <template #footer>
+      <div class="create-footer">
+        <template v-if="kind === 'local'">
+          <span>{{ t('devices.form.count') }}</span>
+          <a-tooltip :title="t('devices.form.countHint')"><a-input-number v-model:value="form.count" :min="1" :max="20" style="width: 110px" /></a-tooltip>
+        </template>
+        <span style="flex: 1" />
+        <a-button @click="createOpen = false">{{ t('common.cancel') }}</a-button>
+        <a-button type="primary" size="large" :loading="creating" :disabled="kind !== 'local' && !pickedPhones.length" @click="submitCreate">
+          {{ kind === 'local' ? t('devices.form.confirmCreate') : t('devices.ext.addN', { n: pickedPhones.length }) }}
+        </a-button>
+      </div>
+    </template>
   </a-modal>
 
   <a-modal v-model:open="srcEdit.open" :title="srcEdit.id ? t('devices.ext.editSource') : t('devices.ext.newSource')" :confirm-loading="srcEdit.saving" :ok-text="t('devices.ext.saveTest')" :cancel-text="t('common.cancel')" @ok="saveSource">
@@ -670,6 +736,26 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 </template>
 
 <style scoped>
+.create-form :deep(.ant-form-item-label > label) { font-weight: 600; }
+.chips, .app-tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--cp-border-secondary); background: var(--cp-bg-container); color: var(--cp-text); font: inherit;
+}
+.chip:hover:not(:disabled), .app-tile:hover:not(:disabled) { border-color: var(--cp-primary); }
+.chip.active, .app-tile.active { border-color: var(--cp-primary); color: var(--cp-primary); background: var(--cp-primary-bg); }
+.chip:disabled, .app-tile:disabled { cursor: not-allowed; color: var(--cp-text-quaternary); background: var(--cp-fill-alter); }
+.chip-tag { font-size: 11px; padding: 0 4px; border-radius: 4px; border: 1px solid currentColor; opacity: 0.8; }
+.app-tile {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 76px; padding: 8px 4px 6px;
+  border: 1px solid var(--cp-border-secondary); border-radius: 10px; background: var(--cp-bg-container); color: var(--cp-text); cursor: pointer; font: inherit;
+}
+.app-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; background: var(--cp-fill-alter); }
+.app-name { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-tick { position: absolute; top: 4px; right: 4px; font-size: 12px; }
+.app-tile:disabled .app-icon { opacity: 0.5; }
+.more { margin: 0 -16px; }
+.create-footer { display: flex; align-items: center; gap: 12px; }
 .cloud { display: flex; flex-direction: column; gap: 12px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--cp-bg-container); border-radius: 8px; }
 .search { width: min(340px, 100%); }

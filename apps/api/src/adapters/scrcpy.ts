@@ -29,7 +29,11 @@ const PTS_MASK = PACKET_FLAG_KEY_FRAME - 1n;
 const MAX_PACKET = 16 * 1024 * 1024;
 const INJECT_TEXT_MAX_BYTES = 300;
 
-export interface ScrcpyOptions { maxSize: number; maxFps: number; bitRate: number }
+export interface ScrcpyOptions {
+  maxSize: number; maxFps: number; bitRate: number
+  /** Seconds between periodic key frames (scrcpy's default is 10); RESET_VIDEO still forces one at once. */
+  keyFrameIntervalS?: number
+}
 export interface VideoPacket { config: boolean; key: boolean; pts: bigint; data: Buffer }
 
 /** Android MotionEvent actions used by inject-touch. */
@@ -150,6 +154,8 @@ export class ScrcpyServer extends EventEmitter {
       'video_codec=h264', `max_size=${this.opts.maxSize}`, `max_fps=${this.opts.maxFps}`, `video_bit_rate=${this.opts.bitRate}`,
       // read the clipboard on request (polled by the hub) instead of autosync, so a viewer can also ask for it
       'clipboard_autosync=false',
+      // MediaFormat KEY_I_FRAME_INTERVAL (scrcpy applies codec options after its own default)
+      ...(this.opts.keyFrameIntervalS ? [`video_codec_options=i-frame-interval:int=${this.opts.keyFrameIntervalS}`] : []),
       // keep the versioned jar (cleanup=true deletes it at start), never wake/turn off the screen, no device name packet
       'cleanup=false', 'power_on=false', 'send_device_meta=false',
     ];

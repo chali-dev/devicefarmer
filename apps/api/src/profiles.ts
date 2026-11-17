@@ -4,6 +4,8 @@ export interface Profile {
   id: string;
   label: string;
   engine: 'redroid' | 'emulator';
+  /** Android major version (shown as the version chip when creating devices); null = depends on the image. */
+  android: number | null;
   image: string | undefined;
   /** Ships Google Play services (enables Google health checks in the UI). */
   gapps: boolean;
@@ -17,11 +19,11 @@ export interface Profile {
 
 /** Image catalog. Instances keep their profile id; images are resolved at create time. */
 export const PROFILES: Profile[] = [
-  { id: 'redroid-12', label: 'Redroid 12（AOSP，无 Google 服务）', engine: 'redroid', image: config.REDROID_IMAGE, gapps: false, requiresKvm: false, memEstimateMb: 700 },
-  { id: 'redroid-13-gapps', label: 'Redroid 13 + MindTheGapps（Google 服务）', engine: 'redroid', image: config.REDROID_GAPPS_IMAGE, gapps: true, requiresKvm: false, memEstimateMb: 1100 },
-  { id: 'redroid-16-gapps', label: 'Redroid 16 + MindTheGapps（Google 服务）', engine: 'redroid', image: config.REDROID16_GAPPS_IMAGE, gapps: true, requiresKvm: false, memEstimateMb: 1400,
+  { id: 'redroid-12', label: 'Redroid 12（AOSP，无 Google 服务）', engine: 'redroid', android: 12, image: config.REDROID_IMAGE, gapps: false, requiresKvm: false, memEstimateMb: 700 },
+  { id: 'redroid-13-gapps', label: 'Redroid 13 + MindTheGapps（Google 服务）', engine: 'redroid', android: 13, image: config.REDROID_GAPPS_IMAGE, gapps: true, requiresKvm: false, memEstimateMb: 1100 },
+  { id: 'redroid-16-gapps', label: 'Redroid 16 + MindTheGapps（Google 服务）', engine: 'redroid', android: 16, image: config.REDROID16_GAPPS_IMAGE, gapps: true, requiresKvm: false, memEstimateMb: 1400,
     blockedReason: '宿主内核缺少 ashmem：redroid 16 的图形分配器依赖 ashmem，Linux 5.18+ 已移除（见 docs/06-android-upgrade-plan.md）' },
-  { id: 'emulator-playstore', label: 'Google Emulator（Play Store 镜像，需 x86_64 + KVM）', engine: 'emulator', image: config.EMULATOR_IMAGE, gapps: true, requiresKvm: true, memEstimateMb: 3072 },
+  { id: 'emulator-playstore', label: 'Google Emulator（Play Store 镜像，需 x86_64 + KVM）', engine: 'emulator', android: null, image: config.EMULATOR_IMAGE, gapps: true, requiresKvm: true, memEstimateMb: 3072 },
 ];
 
 export function getProfile(id: string): Profile | undefined {

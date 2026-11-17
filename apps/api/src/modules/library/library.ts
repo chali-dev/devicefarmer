@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../../config.js';
@@ -53,6 +53,14 @@ export async function preinstallApps(): Promise<LibraryApp[]> {
   const rows = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.preinstall, true)).orderBy(desc(schema.libraryApps.createdAt));
   const seen = new Set<string>();
   return rows.filter((r) => (seen.has(r.package) ? false : (seen.add(r.package), true)));
+}
+
+/** Library entries by id, one per package (a later id of the same package is skipped). Missing ids are ignored. */
+export async function libraryAppsByIds(ids: string[]): Promise<LibraryApp[]> {
+  if (!ids.length) return [];
+  const rows = await db.select().from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids));
+  const seen = new Set<string>();
+  return ids.map((id) => rows.find((r) => r.id === id)).filter((r): r is LibraryApp => !!r && (seen.has(r.package) ? false : (seen.add(r.package), true)));
 }
 
 export async function removeLibraryApp(app: LibraryApp): Promise<void> {

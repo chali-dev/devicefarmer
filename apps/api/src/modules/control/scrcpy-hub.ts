@@ -31,6 +31,8 @@ export interface ScrcpyHandle {
   type(text: string): void;
   /** Current device clipboard text ('' when empty: the server does not answer then). */
   getClipboard(): Promise<string>;
+  /** A fresh key frame for everyone (rate-limited), e.g. after the browser dropped frames. */
+  requestKeyFrame(): void;
   leave(): void;
 }
 
@@ -65,6 +67,9 @@ class Share {
     this.server = new ScrcpyServer(adb, adbPort, path.resolve(config.SCRCPY_SERVER_PATH), {
       maxSize: config.SCRCPY_MAX_SIZE, maxFps: config.SCRCPY_MAX_FPS,
       bitRate: external ? config.SCRCPY_BIT_RATE_EXTERNAL : config.SCRCPY_BIT_RATE,
+      // A key frame (~40 KB) takes several round trips through the tunnel and stalls the picture each
+      // time; viewers that need one (late join, dropped frames) request it with RESET_VIDEO anyway.
+      ...(external ? { keyFrameIntervalS: config.SCRCPY_KEY_INTERVAL_EXTERNAL_S } : {}),
     });
     this.server.on('packet', (p: VideoPacket) => this.onPacket(p));
     this.server.on('clipboard', (text: string) => this.onClipboard(text));
@@ -219,6 +224,9 @@ export async function joinScrcpy(adbPort: number, viewer: ScrcpyViewer, external
         sh.clipWaiters.push(done);
         srv.send(encodeGetClipboard());
       });
+    },
+    requestKeyFrame() {
+      sh.requestKeyFrame();
     },
     leave() {
       if (left) return;

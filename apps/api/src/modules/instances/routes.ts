@@ -61,6 +61,11 @@ const CreateBody = z.object({
   height: z.number().int().min(480).max(3840).default(1280),
   dpi: z.number().int().min(120).max(640).default(320),
   memoryMb: z.number().int().min(1024).max(16384).optional(),
+  /**
+   * App library entries to install on the new devices. Omitted = the library's preinstall-flagged apps
+   * (as before); [] = none.
+   */
+  appIds: z.array(z.string().uuid()).max(50).optional(),
   /** Skip the host memory check */
   force: z.boolean().optional(),
 }).extend(DeviceSettings.shape);
@@ -71,7 +76,7 @@ async function profileAvailability() {
   return PROFILES.map((p) => {
     const reasons = [p.blockedReason, !p.image && '未配置镜像', p.requiresKvm && !kvm && '宿主机没有 /dev/kvm（需要 x86_64 Linux + KVM）'].filter(Boolean);
     const reason = reasons.length ? reasons.join('；') : null;
-    return { id: p.id, label: p.label, engine: p.engine, gapps: p.gapps, available: !reason, reason };
+    return { id: p.id, label: p.label, engine: p.engine, android: p.android, gapps: p.gapps, available: !reason, reason };
   });
 }
 
@@ -150,6 +155,11 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
       const free = await countFreeUsable();
       if (free < b.count) throw conflict(`空闲可用代理不足：需要 ${b.count} 个，当前 ${free} 个`, 'proxy.not_enough_free', { need: b.count, free });
     }
+    if (b.appIds?.length) {
+      const ids = [...new Set(b.appIds)];
+      const found = await db.select({ id: schema.libraryApps.id }).from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids));
+      if (found.length !== ids.length) throw badRequest('应用库中找不到所选应用', 'library.not_found');
+    }
     // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
     if (!b.force) {
       const freeMb = await dockerHost.memAvailableMb();
@@ -184,7 +194,8 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     });
     if (b.proxyMode !== 'none' && req.audit) req.audit.extra = { proxyIds: rows.map((r) => r.proxyId) };
     const taskIds = [];
-    for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id));
+    const appIds = b.appIds ? [...new Set(b.appIds)] : undefined;
+    for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id, appIds ? { appIds } : {}));
     reply.code(202);
     return { instances: await publicInstances(rows), taskIds };
   });

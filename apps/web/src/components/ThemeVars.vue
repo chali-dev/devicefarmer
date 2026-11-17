@@ -28,6 +28,11 @@ watchEffect(() => {
     '--cp-warning': t.colorWarning,
     '--cp-success': t.colorSuccess,
     '--cp-mask': t.colorBgMask,
+    // preset palette (shade 6) for graded indicators, e.g. the remote-control latency
+    '--cp-green': t['green-6'],
+    '--cp-yellow': t['yellow-6'],
+    '--cp-orange': t['orange-6'],
+    '--cp-red': t['red-6'],
   }
   const root = document.documentElement
   for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v)

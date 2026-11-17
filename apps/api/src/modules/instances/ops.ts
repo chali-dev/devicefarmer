@@ -1,7 +1,7 @@
 import type { Instance } from '../../db/schema.js';
 import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
-import { importFromDevice, libraryApks, preinstallApps } from '../library/library.js';
+import { importFromDevice, libraryApks, libraryAppsByIds, preinstallApps } from '../library/library.js';
 import { enqueue } from './queue.js';
 import { getMedia, withMediaFile } from '../media/media.js';
 import { mediaTarget } from '../../adapters/adb.js';
@@ -158,7 +158,7 @@ async function refreshProxyStatus(inst: Instance): Promise<void> {
   await updateInstance(inst.id, { proxyStatus: await network.check(inst.netContainerId) });
 }
 
-export async function opCreate(id: string): Promise<void> {
+export async function opCreate(id: string, appIds?: string[]): Promise<void> {
   let inst = await mustGet(id);
   if (isExternal(inst)) return extCreate(id);
   await updateInstance(id, { status: 'creating', lastError: null });
@@ -168,7 +168,7 @@ export async function opCreate(id: string): Promise<void> {
   await attachDevice(await mustGet(id));
   await refreshProxyStatus(await mustGet(id));
   // Preinstall library apps as separate, visible tasks (a failed install doesn't fail the create).
-  for (const app of await preinstallApps()) {
+  for (const app of appIds ? await libraryAppsByIds(appIds) : await preinstallApps()) {
     await enqueue('install-apk', inst, inst.createdBy, libraryApks(app), `预装 ${app.package} ${app.versionName ?? app.versionCode}`);
   }
 }
