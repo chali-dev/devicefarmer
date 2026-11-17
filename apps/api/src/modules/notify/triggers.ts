@@ -3,7 +3,6 @@ import { db, schema } from '../../db/index.js';
 import type { Instance, PlatformConnection, PublishTask, SocialAccount, Task } from '../../db/schema.js';
 import { onTaskFailed } from '../tasks/core.js';
 import { notify, recover } from './notify.js';
-import { TELEGRAM_TASK } from './telegram.js';
 
 /**
  * Alert triggers: the kind-specific mapping from a state transition to notify()/recover(). Each is called
@@ -63,14 +62,14 @@ export async function publishFailed(row: Pick<PublishTask, 'id' | 'attemptNo' | 
 
 /**
  * Generic task failure. Skipped: types with their own alert (publish, account check, device lifecycle ops →
- * device.down). Keyed per type + device/object, so a repeating failure is reported once per cooldown.
- * A failed Telegram delivery is reported in-app only (never through Telegram again).
+ * device.down; alert channel deliveries → channel.failed, in-app only, so a broken channel never loops).
+ * Keyed per type + device/object, so a repeating failure is reported once per cooldown.
  */
 const OWN_ALERT = new Set(['publish', 'social-account-check', 'create', 'start', 'stop', 'restart', 'delete', 'set-proxy']);
 onTaskFailed(async (task: Task) => {
-  if (OWN_ALERT.has(task.type)) return;
+  if (OWN_ALERT.has(task.type) || task.type.startsWith('notify-')) return;
   await notify({
     kind: 'task.failed', refId: task.id, key: `${task.type}:${task.instanceId ?? task.refId ?? task.id}`,
-    params: { type: task.type, label: task.instanceName, code: task.errorCode }, inAppOnly: task.type === TELEGRAM_TASK,
+    params: { type: task.type, label: task.instanceName, code: task.errorCode },
   });
 });

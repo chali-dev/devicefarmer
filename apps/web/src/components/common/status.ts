@@ -34,6 +34,7 @@ export const STATUS_FAMILIES = {
   commentReply: { colors: COMMENT_REPLY_STATUS_COLOR, label: prefixed('comments.replyStatus') },
   media: { colors: MEDIA_STATUS_COLOR, label: prefixed('media.statuses') },
   backup: { colors: BACKUP_STATUS_COLOR, label: prefixed('sysadmin.backup.status') },
+  alertChannel: { colors: { ok: 'success', failed: 'error', never: 'default' }, label: prefixed('alertChannels.result') },
 } satisfies Record<string, StatusFamily>
 
 export type StatusKind = keyof typeof STATUS_FAMILIES
