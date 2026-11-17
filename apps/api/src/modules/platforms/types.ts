@@ -17,6 +17,8 @@ export interface PlatformCapabilities {
   commentsRead: boolean;
   commentsReply: boolean;
   profileStats: boolean;
+  /** fetchAccountStats returns counters and/or day activity for 账号分析. */
+  accountStats: boolean;
 }
 
 /** Admin-configured app credentials of one platform (decrypted; only ever used server-side). */
@@ -67,6 +69,27 @@ export interface OwnProfile {
   views: number | null;
   /** Instagram: BUSINESS / MEDIA_CREATOR (personal accounts cannot use the API). */
   accountType?: string | null;
+}
+
+/** Day activity as the platform reports it (null = not reported). */
+export interface DayActivity { day: string; views: number | null; likes: number | null; shares: number | null; comments: number | null }
+
+/**
+ * Own-account numbers for 账号分析 (only what the official API returns with the granted scopes).
+ * Counters are current readings; totalViews/totalLikes are lifetime totals where the platform has no
+ * per-day numbers. `missing` = metrics left out because the connection lacks `missingScopes`
+ * (re-authorise to grant them); that is a coded, non-fatal result (analytics.scope_missing).
+ */
+export interface AccountStats {
+  followers: number | null;
+  following: number | null;
+  posts: number | null;
+  totalViews: number | null;
+  totalLikes: number | null;
+  /** By UTC day (YYYY-MM-DD), only days the platform reported. */
+  days: DayActivity[];
+  missing: string[];
+  missingScopes: string[];
 }
 
 export interface PublishInput {
@@ -123,6 +146,8 @@ export interface PlatformAdapter {
     revoke?(app: PlatformApp, accessToken: string, refreshToken: string | null): Promise<void>;
   };
   fetchOwnProfile(a: Authed): Promise<OwnProfile>;
+  /** Counters + day activity for `days` (UTC YYYY-MM-DD, oldest first). Scope gaps are reported in `missing`, not thrown. */
+  fetchAccountStats(a: Authed, days: string[]): Promise<AccountStats>;
   /** Why the API cannot publish this input (coded message), or null when it can. */
   publishUnavailableReason(input: PublishInput, options: PlatformAppOptions): Promise<{ code: string; message: string } | null>;
   publish(a: Authed, input: PublishInput): Promise<PublishResult>;

@@ -173,7 +173,7 @@ try {
     !ci.url.searchParams.has('code_challenge') && ci.url.searchParams.get('redirect_uri') === `${config.WEB_ORIGIN}/api/platforms/instagram/callback`, ci.r.text);
   const ct = await connect(A, 'tiktok', ta);
   check('TikTok connect → Login Kit URL with client_key and user.info.basic,video.upload',
-    ct.url?.origin === 'https://www.tiktok.com' && ct.url.searchParams.get('client_key') === `aw${tag}dummykey` && ct.url.searchParams.get('scope') === 'user.info.basic,video.upload', ct.r.text);
+    ct.url?.origin === 'https://www.tiktok.com' && ct.url.searchParams.get('client_key') === `aw${tag}dummykey` && ct.url.searchParams.get('scope') === 'user.info.basic,user.info.stats,video.upload', ct.r.text);
   r = (await connect(A, 'youtube', yb)).r;
   check('user A: connect B\'s account → 404', r.status === 404 && r.body.code === 'social.not_found', r.text);
   r = (await connect(A, 'youtube', ia)).r;

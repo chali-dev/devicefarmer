@@ -424,7 +424,8 @@ export interface DashboardWidgets {
   }
   media?: { public: DashboardMediaPart; private: DashboardMediaPart; processing: number; failed: number }
   comments?: { total: number; unread: number; pendingReview: number; awaitingOperator: number; queued: number; sent7d: number; failed7d: number }
-  perUser?: { users: DashboardUserRow[] }
+  analytics?: DashboardAnalytics
+  perUser?:{ users: DashboardUserRow[] }
 }
 export interface DashboardMediaPart { count: number; bytes: number; images: number; videos: number }
 export interface DashboardUserRow {
@@ -505,3 +506,34 @@ export interface CommentLog {
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
 }
 export interface CommentTemplate { id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string }
+
+// ---------------------------------------------------------------- account analytics (账号分析)
+export interface AnalyticsSums { followersGained: number | null; views: number | null; likes: number | null; shares: number | null; comments: number | null }
+export interface AnalyticsAccount {
+  id: string; userId: string; ownerName: string | null; platform: string; handle: string; displayName: string | null
+  /** platform_connections.status, null = no official API connection (manual entry). */
+  connection: 'connected' | 'expired' | 'revoked' | 'error' | null
+  latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: 'api' | 'manual' } | null
+  /** Metrics the API could not provide (connection lacks a scope). */
+  missing: string[]
+  lastRun: { id: string; status: TaskStatus; errorCode: string | null; error: string | null; createdAt: string; finishedAt: string | null } | null
+}
+export interface AnalyticsSummary {
+  from: string; to: string
+  days: ({ day: string } & AnalyticsSums)[]
+  totals: AnalyticsSums & { accounts: number; withData: number; followers: number }
+  accounts: (AnalyticsAccount & { range: AnalyticsSums })[]
+}
+export interface AnalyticsDay extends Partial<AnalyticsSums> {
+  day: string; source: 'api' | 'manual' | null
+  followers?: number | null; following?: number | null; posts?: number | null; totalViews?: number | null; totalLikes?: number | null
+}
+export interface AnalyticsSeries { account: AnalyticsAccount; apiStats: boolean; from: string; to: string; days: AnalyticsDay[] }
+export interface DashboardAnalytics {
+  accounts: number; withData: number; followers: number
+  followersGained7d: number | null; views7d: number | null; shares7d: number | null
+  trend: { day: string; followersGained: number | null; views: number | null; shares: number | null }[]
+  top: { id: string; platform: string; handle: string; displayName: string | null; followers: number | null; gain: number | null }[]
+}
+/** Local-midnight timestamp of a YYYY-MM-DD day (chart x values; the day itself is UTC on the server). */
+export const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y!, m! - 1, dd!).getTime() }

@@ -106,6 +106,8 @@ const Env = z.object({
   GOOGLE_OAUTH_TOKEN_URL: z.string().url().default('https://oauth2.googleapis.com/token'),
   GOOGLE_OAUTH_REVOKE_URL: z.string().url().default('https://oauth2.googleapis.com/revoke'),
   YOUTUBE_UPLOAD_BASE: z.string().url().default('https://www.googleapis.com/upload/youtube/v3'),
+  /** 账号分析: YouTube Analytics API v2 (per-day channel metrics). */
+  YOUTUBE_ANALYTICS_BASE: z.string().url().default('https://youtubeanalytics.googleapis.com/v2'),
   INSTAGRAM_AUTH_URL: z.string().url().default('https://www.instagram.com/oauth/authorize'),
   INSTAGRAM_TOKEN_URL: z.string().url().default('https://api.instagram.com/oauth/access_token'),
   /** Unversioned = the app's default Graph API version; set e.g. https://graph.instagram.com/v24.0 to pin one. */

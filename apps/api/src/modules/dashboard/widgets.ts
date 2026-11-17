@@ -2,6 +2,7 @@ import { and, count, desc, eq, gte, inArray, isNull, lt, sql, type Column, type 
 import type { Instance } from '../../db/schema.js';
 import { db, schema } from '../../db/index.js';
 import { hostCapacity } from '../../health.js';
+import { counterDeltas } from '../../lib/counter-deltas.js';
 import { isAdmin } from '../auth/rbac.js';
 import { EXCEPTION_SQL } from '../social/social.js';
 import { visibleTasks } from '../tasks/routes.js';
@@ -103,25 +104,17 @@ registerDashboardWidget('tracked', async (ctx) => {
   const [rows, gains] = await Promise.all([
     db.select({ k: ta.status, n: count() }).from(ta).where(own(ctx, ta.userId)).groupBy(ta.status),
     // Gain over 7 days: latest follower count minus the baseline (last snapshot at or before the window start,
-    // else the first one inside the window). Only accounts with a newer snapshot than the baseline count.
+    // else the first one inside the window), see counterDeltas.
     db.execute<{ id: string; platform: string; handle: string; display_name: string | null; followers: string; gain: string }>(sql`
       with v as (select a.id, a.platform, a.handle, a.display_name from tracked_accounts a where ${scope}),
-      cur as (select distinct on (s.tracked_account_id) s.tracked_account_id id, s.followers, s.captured_at
-        from tracked_account_snapshots s join v on v.id = s.tracked_account_id
-        where s.followers is not null and s.captured_at <= ${at(ctx.now)} order by s.tracked_account_id, s.captured_at desc, s.id desc),
-      base as (select distinct on (s.tracked_account_id) s.tracked_account_id id, s.followers, s.captured_at
-        from tracked_account_snapshots s join v on v.id = s.tracked_account_id
-        where s.followers is not null and s.captured_at <= ${at(since)} order by s.tracked_account_id, s.captured_at desc, s.id desc),
-      first_in as (select distinct on (s.tracked_account_id) s.tracked_account_id id, s.followers, s.captured_at
-        from tracked_account_snapshots s join v on v.id = s.tracked_account_id
-        where s.followers is not null and s.captured_at > ${at(since)} and s.captured_at <= ${at(ctx.now)} order by s.tracked_account_id, s.captured_at asc, s.id asc)
-      select v.id, v.platform, v.handle, v.display_name, cur.followers::float8 as followers,
-        (cur.followers - coalesce(base.followers, first_in.followers))::float8 as gain
-      from v join cur on cur.id = v.id left join base on base.id = v.id left join first_in on first_in.id = v.id
-      where coalesce(base.followers, first_in.followers) is not null
-        and cur.captured_at > coalesce(base.captured_at, first_in.captured_at)
-        and cur.followers - coalesce(base.followers, first_in.followers) > 0
-      order by gain desc, v.handle asc limit 5`),
+      d as ${counterDeltas({
+        table: 'tracked_account_snapshots', key: 'tracked_account_id', at: 'captured_at', value: 'followers', tie: 'id',
+        where: sql`tracked_account_id in (select id from v) and captured_at <= ${at(ctx.now)}`,
+      })},
+      g as (select d.id, sum(d.delta) filter (where d.at > ${at(since)}) as gain, (array_agg(d.value order by d.at desc))[1] as followers from d group by d.id)
+      select v.id, v.platform, v.handle, v.display_name, g.followers, g.gain::float8 as gain
+      from v join g on g.id = v.id where g.gain > 0
+      order by g.gain desc, v.handle asc limit 5`),
   ]);
   const byStatus = tally(rows);
   return {

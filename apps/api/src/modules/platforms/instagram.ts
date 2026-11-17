@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../../config.js';
 import type { HttpError } from '../../lib/errors.js';
 import { mediaUrlProblem, publicMediaUrl } from './media-url.js';
-import { expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes } from './http.js';
+import { dayStartSec, expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
 import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet } from './types.js';
 
 /**
@@ -10,7 +10,8 @@ import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet }
  * the Facebook Login variant because it needs no linked Facebook Page and is Meta's current path for
  * professional accounts. Works only for Business and Creator accounts (personal accounts are refused
  * by Meta). Permissions (need Meta App Review for other people's accounts):
- *   instagram_business_basic, instagram_business_content_publish, instagram_business_manage_comments.
+ *   instagram_business_basic, instagram_business_content_publish, instagram_business_manage_comments,
+ *   instagram_business_manage_insights (账号分析; optional for existing connections).
  * Tokens: code → short-lived token (1 h) → long-lived token (60 days), refreshed with
  * ig_refresh_token (the token refreshes itself; there is no separate refresh token and no revoke
  * endpoint, so disconnect only deletes it here). No PKCE in this flow (confidential client + state).
@@ -18,7 +19,10 @@ import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet }
  * Images must be JPEG. Limit: 100 API-published posts per 24 h per account.
  */
 const NAME = 'Instagram';
-const SCOPES = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_comments'];
+/** Account insights (账号分析: views/likes/comments/shares per day). Connections made without it still work (scope missing). */
+const INSIGHTS_SCOPE = 'instagram_business_manage_insights';
+const SCOPES = ['instagram_business_basic', 'instagram_business_content_publish', 'instagram_business_manage_comments', INSIGHTS_SCOPE];
+const INSIGHT_METRICS = ['views', 'likes', 'comments', 'shares'] as const;
 const POLL_MS = 5000;
 const POLL_MAX_MS = 10 * 60_000;
 
@@ -85,7 +89,7 @@ export const instagramAdapter: PlatformAdapter = {
   name: NAME,
   capabilities: () => ({
     publishVideo: true, publishImage: true, publishCarousel: true, draftOnly: false, needsPublicMediaUrl: true,
-    commentsRead: true, commentsReply: true, profileStats: true,
+    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true,
   }),
 
   oauth: {
@@ -133,6 +137,33 @@ export const instagramAdapter: PlatformAdapter = {
       externalAccountId: String(id), name: me.name ?? me.username ?? null, handle: me.username ?? null,
       avatarUrl: me.profile_picture_url?.startsWith('https://') ? me.profile_picture_url : null,
       followers: num(me.followers_count), posts: num(me.media_count), views: null, accountType: me.account_type ?? null,
+    };
+  },
+
+  /**
+   * Counters from the profile (basic scope); per-day views/likes/comments/shares from account insights
+   * (`metric_type=total_value` over one UTC day each; needs instagram_business_manage_insights).
+   */
+  async fetchAccountStats(a, days) {
+    const me = await graph<{ followers_count?: number; follows_count?: number; media_count?: number }>(a, 'GET', 'me', { fields: 'followers_count,follows_count,media_count' });
+    const now = Math.floor(Date.now() / 1000);
+    type Insights = { data?: { name?: string; total_value?: { value?: number } }[] };
+    const activity = await withOptionalScope(a, INSIGHTS_SCOPE, async () => {
+      const out = [];
+      for (const day of days) {
+        const since = dayStartSec(day);
+        if (since > now) continue;
+        const r = await graph<Insights>(a, 'GET', `${igUser(a)}/insights`, {
+          metric: INSIGHT_METRICS.join(','), period: 'day', metric_type: 'total_value', since: String(since), until: String(Math.min(since + 86400, now)),
+        });
+        const v = (m: string) => num(r.data?.find((x) => x.name === m)?.total_value?.value);
+        out.push({ day, views: v('views'), likes: v('likes'), shares: v('shares'), comments: v('comments') });
+      }
+      return out;
+    });
+    return {
+      followers: num(me.followers_count), following: num(me.follows_count), posts: num(me.media_count), totalViews: null, totalLikes: null,
+      days: activity ?? [], missing: activity ? [] : [...INSIGHT_METRICS], missingScopes: activity ? [] : [INSIGHTS_SCOPE],
     };
   },
 

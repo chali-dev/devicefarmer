@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HttpError, type ErrorParams } from '../../lib/errors.js';
+import type { Authed } from './types.js';
 
 /** Coded platform error (`errors.platform.<code>` in the web UI). */
 export const platformError = (status: number, code: string, message: string, params?: ErrorParams) =>
@@ -111,3 +112,22 @@ export function oauthTokenError(platform: string, res: Response, body: unknown, 
 export const expiresIn = (sec: unknown): Date | null => (num(sec) ? new Date(Date.now() + num(sec)! * 1000) : null);
 
 export const splitScopes = (s: unknown, sep = /[\s,]+/): string[] => (typeof s === 'string' ? s.split(sep).map((x) => x.trim()).filter(Boolean) : []);
+
+/**
+ * Runs an optional call that needs `scope`. Returns null (= scope missing, non-fatal) when the
+ * connection's granted scopes are known and lack it, or when the platform answers permission_missing.
+ * Connections made before a scope was added keep working this way.
+ */
+export async function withOptionalScope<T>(a: Authed, scope: string, fn: () => Promise<T>): Promise<T | null> {
+  const granted = a.connection.scopes;
+  if (granted.length && !granted.includes(scope)) return null;
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof HttpError && err.code === 'platform.permission_missing') return null;
+    throw err;
+  }
+}
+
+/** Unix seconds of a UTC day's start (YYYY-MM-DD). */
+export const dayStartSec = (day: string) => Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000);
