@@ -40,6 +40,8 @@ import './modules/publish/publish.js'; // registers the publish task handler + m
 import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-sync / comment-reply task handlers
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
+import { analyticsRoutes } from './modules/analytics/routes.js';
+import { scheduleDailyAccountStats } from './modules/analytics/analytics.js'; // account-stats task handler + dashboard widget
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 
@@ -83,6 +85,7 @@ await app.register(platformRoutes);
 await app.register(contentRoutes);
 await app.register(publishRoutes);
 await app.register(commentRoutes);
+await app.register(analyticsRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(dashboardRoutes);
@@ -104,10 +107,12 @@ const hourly = () => {
   void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+  void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
 };
 setTimeout(() => {
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+  void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
 }, 10_000).unref();
 const cleanupTimer = setInterval(hourly, 3600_000);
 

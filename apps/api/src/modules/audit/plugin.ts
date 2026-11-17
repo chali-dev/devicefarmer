@@ -320,6 +320,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared }) },
   'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
+  // account analytics (账号分析)
+  'POST /api/analytics/accounts/:id/stats': {
+    action: 'analytics.stats_add', detail: ({ body }) => ({ day: body.day, fields: Object.keys(body).filter((k) => k !== 'day' && body[k] !== undefined) }),
+  },
+  'DELETE /api/analytics/accounts/:id/stats/:day': { action: 'analytics.stats_delete', detail: ({ params }) => ({ day: params.day }) },
+  'POST /api/analytics/accounts/:id/refresh': { action: 'analytics.refresh' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
@@ -366,7 +372,7 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
       .from(schema.proxies).where(eq(schema.proxies.id, id));
     return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
   }
-  if (pattern.startsWith('/api/social/accounts/:id') || pattern.startsWith('/api/platforms/accounts/:id')) {
+  if (pattern.startsWith('/api/social/accounts/:id') || pattern.startsWith('/api/platforms/accounts/:id') || pattern.startsWith('/api/analytics/accounts/:id')) {
     const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
     return r ? `${r.platform} @${r.handle}` : null;
   }

@@ -8,6 +8,7 @@ import {
   AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
   SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined,
 } from '@ant-design/icons-vue'
+import { RiseOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import { roleText } from '../api/types'
@@ -27,7 +28,7 @@ const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('
 function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
-const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit'] as const
+const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics'] as const
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
 /** Sub-menus (cloud devices, administration) start open. */
 const openKeys = ref<string[]>(['devices', 'admin'])
@@ -154,6 +155,10 @@ async function savePassword() {
         <a-menu-item key="tracked" @click="router.push('/tracked')">
           <EyeOutlined />
           <span>{{ t('nav.tracked') }}</span>
+        </a-menu-item>
+        <a-menu-item key="analytics" @click="router.push('/analytics')">
+          <RiseOutlined />
+          <span>{{ t('nav.analytics') }}</span>
         </a-menu-item>
         <a-menu-item key="media" @click="router.push('/media')">
           <PictureOutlined />

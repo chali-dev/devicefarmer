@@ -3,7 +3,7 @@ import { config } from '../../config.js';
 import type { HttpError } from '../../lib/errors.js';
 import { withMediaFile } from '../media/media.js';
 import { GOOGLE_QUOTA_REASONS, googleErrorReasons, type GoogleApiErrorBody } from '../tracked/youtube.js';
-import { expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes } from './http.js';
+import { expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
 import type { Authed, PlatformAdapter, PlatformComment, PublishInput, TokenSet } from './types.js';
 
 /**
@@ -20,7 +20,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.force-ssl',
   'https://www.googleapis.com/auth/youtube.readonly',
+  // 账号分析: YouTube Analytics API per-day views/likes/shares/comments. Connections made without it still work.
+  'https://www.googleapis.com/auth/yt-analytics.readonly',
 ];
+const ANALYTICS_SCOPE = SCOPES[3]!;
+const ANALYTICS_METRICS = ['views', 'likes', 'shares', 'comments'] as const;
 const CHUNK = 8 * 1024 * 1024; // multiple of 256 KiB, as the resumable protocol requires
 
 function apiError(res: Response, body: unknown, msg: (raw: string | undefined) => string): HttpError {
@@ -81,7 +85,7 @@ export const youtubeAdapter: PlatformAdapter = {
   name: NAME,
   capabilities: () => ({
     publishVideo: true, publishImage: false, publishCarousel: false, draftOnly: false, needsPublicMediaUrl: false,
-    commentsRead: true, commentsReply: true, profileStats: true,
+    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true,
   }),
 
   oauth: {
@@ -134,6 +138,38 @@ export const youtubeAdapter: PlatformAdapter = {
       followers: ch.statistics?.hiddenSubscriberCount ? null : num(ch.statistics?.subscriberCount),
       posts: num(ch.statistics?.videoCount),
       views: num(ch.statistics?.viewCount),
+    };
+  },
+
+  /**
+   * Counters from channels.list (subscribers, videos, lifetime views); per-day activity from the
+   * YouTube Analytics API (reports, ids=channel==MINE, dimensions=day). Google reports days in
+   * Pacific time with a delay of ~2 days, so recent days may be absent (they are filled by later runs).
+   */
+  async fetchAccountStats(a, days) {
+    const r = await api<{ items?: Channel[] }>(a, 'GET', 'channels', { part: 'statistics', mine: 'true' });
+    const ch = r.items?.[0];
+    if (!ch) throw platformError(400, 'no_channel', '该 Google 账号没有 YouTube 频道', { platform: NAME });
+    const activity = days.length ? await withOptionalScope(a, ANALYTICS_SCOPE, async () => {
+      const q = new URLSearchParams({
+        ids: 'channel==MINE', startDate: days[0]!, endDate: days[days.length - 1]!, metrics: ANALYTICS_METRICS.join(','), dimensions: 'day', sort: 'day',
+      });
+      const { body } = await platformFetch(`${config.YOUTUBE_ANALYTICS_BASE}/reports?${q}`, {
+        headers: { authorization: `Bearer ${a.accessToken}`, accept: 'application/json' },
+      }, { platform: NAME, secrets: [a.accessToken], signal: a.signal, limiterKey: a.connection.id, mapError: apiError });
+      const rep = body as { columnHeaders?: { name?: string }[]; rows?: unknown[][] };
+      const col = (n: string) => (rep.columnHeaders ?? []).findIndex((h) => h.name === n);
+      const at = { day: col('day'), views: col('views'), likes: col('likes'), shares: col('shares'), comments: col('comments') };
+      const cell = (row: unknown[], i: number) => (i < 0 ? null : num(row[i]));
+      return (rep.rows ?? []).filter((row) => typeof row[at.day] === 'string').map((row) => ({
+        day: String(row[at.day]), views: cell(row, at.views), likes: cell(row, at.likes), shares: cell(row, at.shares), comments: cell(row, at.comments),
+      }));
+    }) : [];
+    const s = ch.statistics;
+    return {
+      followers: s?.hiddenSubscriberCount ? null : num(s?.subscriberCount), following: null, posts: num(s?.videoCount),
+      totalViews: num(s?.viewCount), totalLikes: null,
+      days: activity ?? [], missing: activity ? [] : [...ANALYTICS_METRICS], missingScopes: activity ? [] : [ANALYTICS_SCOPE],
     };
   },
 

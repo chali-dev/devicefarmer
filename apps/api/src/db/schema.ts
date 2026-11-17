@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, doublePrecision, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', ['admin', 'user']);
 
@@ -481,6 +481,34 @@ export const platformConnections = pgTable('platform_connections', {
 ]);
 
 /**
+ * Account analytics (账号分析): one row per own social account and UTC day. Two kinds of values:
+ * - counters, read at `captured_at` (the latest reading of the day wins): followers, following, posts,
+ *   and lifetime totals where the platform only reports those (`total_views` YouTube, `total_likes` TikTok);
+ * - day activity as the platform reports it for that day: views, likes, shares, comments.
+ * Per-day gains are differences between readings (lib/counter-deltas.ts, shared with tracked accounts);
+ * views/likes per day fall back to the difference of the lifetime totals. `missing` lists metrics the
+ * API could not provide because the connection lacks a scope. source api|manual like tracked snapshots.
+ */
+export const socialAccountStats = pgTable('social_account_stats', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  socialAccountId: uuid('social_account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  day: date('day', { mode: 'string' }).notNull(),
+  capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
+  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  followers: bigint('followers', { mode: 'number' }),
+  following: bigint('following', { mode: 'number' }),
+  posts: bigint('posts', { mode: 'number' }),
+  totalViews: bigint('total_views', { mode: 'number' }),
+  totalLikes: bigint('total_likes', { mode: 'number' }),
+  views: bigint('views', { mode: 'number' }),
+  likes: bigint('likes', { mode: 'number' }),
+  shares: bigint('shares', { mode: 'number' }),
+  comments: bigint('comments', { mode: 'number' }),
+  missing: text('missing').array().notNull().default(sql`'{}'::text[]`),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+}, (t) => [unique('social_account_stats_account_day').on(t.socialAccountId, t.day)]);
+
+/**
  * Content management (内容管理, P3). A content is private to its owner (`user_id`; admins see all). Media are
  * references to media_assets (never copies), ordered by `position`. `stage` is what the editor sets
  * (draft / ready / archived); `status` is derived from the stage and the content's publish tasks
@@ -822,6 +850,7 @@ export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
 export type PlatformConnection = typeof platformConnections.$inferSelect;
 export type TrackedAccount = typeof trackedAccounts.$inferSelect;
 export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
+export type SocialAccountStats = typeof socialAccountStats.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
 export type Content = typeof contents.$inferSelect;
 export type PublishTask = typeof publishTasks.$inferSelect;

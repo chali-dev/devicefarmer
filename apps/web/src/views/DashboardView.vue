@@ -5,7 +5,7 @@ import { ReloadOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import {
-  compactNumber, taskStatusText, taskText, trackedHandle,
+  compactNumber, dayTs, taskStatusText, taskText, trackedHandle,
   type DashboardResponse, type DashboardUserRow, type ManagedUser,
 } from '../api/types'
 import { fmtSize } from '../components/media/media'
@@ -66,7 +66,6 @@ onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer); if (poll) clearIn
 const w = computed(() => data.value?.widgets ?? {})
 const has = (k: string) => !!data.value?.order.includes(k)
 const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
-const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y!, m! - 1, dd!).getTime() }
 const trendPoints = computed(() => (w.value.publishing?.trend ?? []).map((r) => ({ t: dayTs(r.day), v: r.published })))
 const trendFailed = computed(() => (w.value.publishing?.trend ?? []).reduce((s, r) => s + r.failed, 0))
 const trendPublished = computed(() => (w.value.publishing?.trend ?? []).reduce((s, r) => s + r.published, 0))
@@ -186,6 +185,26 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             <div v-for="g in w.tracked.topGainers" :key="g.id" class="row">
               <PlatformTag :platform="g.platform" />
               <span class="ellipsis">{{ g.displayName || trackedHandle(g) }}</span>
+              <span class="gain">+{{ compactNumber(g.gain) }}</span>
+              <span class="muted small">{{ compactNumber(g.followers) }}</span>
+            </div>
+          </a-card>
+        </a-col>
+
+        <!-- account analytics (账号分析) -->
+        <a-col v-if="w.analytics" :xs="24" :md="12" :xl="8">
+          <a-card size="small" :title="t('dashboard.w.analytics')" class="card">
+            <template #extra><router-link to="/analytics">{{ t('dashboard.viewAll') }}</router-link></template>
+            <div class="grid4">
+              <StatLink :label="t('analytics.metrics.followers')" :value="compactNumber(w.analytics.followers)" to="/analytics" />
+              <StatLink :label="t('analytics.gained7d')" :value="w.analytics.followersGained7d === null ? '—' : `${w.analytics.followersGained7d > 0 ? '+' : ''}${compactNumber(w.analytics.followersGained7d)}`" to="/analytics" />
+              <StatLink :label="t('analytics.views7d')" :value="compactNumber(w.analytics.views7d)" to="/analytics" />
+              <StatLink :label="t('analytics.shares7d')" :value="compactNumber(w.analytics.shares7d)" to="/analytics" />
+            </div>
+            <LineChart :points="w.analytics.trend.map((d) => ({ t: dayTs(d.day), v: d.followersGained ?? 0 }))" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('analytics.perDay.followersGained')" />
+            <div v-for="g in w.analytics.top" :key="g.id" class="row">
+              <PlatformTag :platform="g.platform" />
+              <span class="ellipsis">{{ g.displayName || `@${g.handle}` }}</span>
               <span class="gain">+{{ compactNumber(g.gain) }}</span>
               <span class="muted small">{{ compactNumber(g.followers) }}</span>
             </div>

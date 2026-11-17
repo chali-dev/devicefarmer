@@ -71,6 +71,10 @@ const EXACT: Record<string, string> = {
   'previous attempt interrupted while sending: not sent again': 'sendUncertain',
   'the comment was already replied to': 'alreadyReplied',
   'test handler running': 'testRunning',
+  'no official stats API for this platform: manual entry only': 'statsNoApi',
+  'no official API connection: manual entry only, nothing changed': 'statsNoConnection',
+  'stats stored': 'statsStored',
+  'scope missing: re-authorise the account to get these metrics': 'statsScopeMissing',
 }
 
 const RULES: Rule[] = [

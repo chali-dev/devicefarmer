@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../../config.js';
 import type { HttpError } from '../../lib/errors.js';
 import { withMediaFile } from '../media/media.js';
-import { expiresIn, oauthTokenError, platformError, platformFetch, scrub, splitScopes } from './http.js';
+import { expiresIn, num, oauthTokenError, platformError, platformFetch, scrub, splitScopes, withOptionalScope } from './http.js';
 import type { Authed, PlatformAdapter, PlatformAppOptions, PublishInput, TokenSet } from './types.js';
 
 /**
@@ -27,7 +27,9 @@ const MIN_CHUNK = 5 * 1024 * 1024;
 const MAX_SINGLE = 64 * 1024 * 1024;
 const CHUNK = 10 * 1024 * 1024;
 
-const scopes = (o: PlatformAppOptions) => ['user.info.basic', 'video.upload', ...(o.directPost ? ['video.publish'] : [])];
+/** 账号分析: follower/following/likes/video counts. Connections made without it still work (scope missing). */
+const STATS_SCOPE = 'user.info.stats';
+const scopes = (o: PlatformAppOptions) => ['user.info.basic', STATS_SCOPE, 'video.upload', ...(o.directPost ? ['video.publish'] : [])];
 
 interface TtError { error?: { code?: string; message?: string; log_id?: string } }
 
@@ -98,7 +100,7 @@ export const tiktokAdapter: PlatformAdapter = {
   name: NAME,
   capabilities: (o) => ({
     publishVideo: true, publishImage: false, publishCarousel: false, draftOnly: !o.directPost, needsPublicMediaUrl: false,
-    commentsRead: false, commentsReply: false, profileStats: false,
+    commentsRead: false, commentsReply: false, profileStats: false, accountStats: true,
   }),
 
   oauth: {
@@ -137,6 +139,21 @@ export const tiktokAdapter: PlatformAdapter = {
     return {
       externalAccountId: u.open_id, name: u.display_name ?? null, handle: null,
       avatarUrl: u.avatar_url?.startsWith('https://') ? u.avatar_url : null, followers: null, posts: null, views: null,
+    };
+  },
+
+  /**
+   * Counters only (user.info.stats): followers, following, videos and lifetime likes received. TikTok's
+   * official API has no account-level views/shares per day (only per video), so those stay empty.
+   */
+  async fetchAccountStats(a) {
+    type U = { follower_count?: number; following_count?: number; likes_count?: number; video_count?: number };
+    const u = await withOptionalScope(a, STATS_SCOPE, async () => (await api<{ user?: U }>(
+      a, `/v2/user/info/?${new URLSearchParams({ fields: 'open_id,follower_count,following_count,likes_count,video_count' })}`, undefined, 'GET',
+    )).user ?? {});
+    return {
+      followers: num(u?.follower_count), following: num(u?.following_count), posts: num(u?.video_count), totalViews: null, totalLikes: num(u?.likes_count),
+      days: [], missing: u ? [] : ['followers', 'following', 'posts', 'totalLikes'], missingScopes: u ? [] : [STATS_SCOPE],
     };
   },
 

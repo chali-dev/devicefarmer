@@ -17,6 +17,7 @@ const router = createRouter({
         { path: 'media', name: 'media', component: () => import('../views/MediaView.vue') },
         { path: 'social', name: 'social', component: () => import('../views/SocialAccountsView.vue') },
         { path: 'tracked', name: 'tracked', component: () => import('../views/TrackedAccountsView.vue') },
+        { path: 'analytics', name: 'analytics', component: () => import('../views/AnalyticsView.vue') },
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },

@@ -2,7 +2,7 @@ import type { SocialAccount } from '../../db/schema.js';
 import { appOptions, isConfigured } from './credentials.js';
 import { connectionFor, withConnection } from './connections.js';
 import { adapterById, requireAdapter } from './index.js';
-import type { Authed, CommentPage, PublishInput, PublishResult } from './types.js';
+import type { AccountStats, Authed, CommentPage, PublishInput, PublishResult } from './types.js';
 
 /**
  * Entry points for other modules (publish scheduler, comments). They take ids/rows, never tokens.
@@ -45,6 +45,12 @@ export async function apiListComments(account: SocialAccount, cursor: string | n
 export async function apiReplyToComment(account: SocialAccount, commentId: string, text: string, opts: CallOpts = {}): Promise<{ id: string }> {
   const adapter = requireAdapter(account.platform);
   return withConnection(account.id, (a) => adapter.replyToComment(a, commentId, text), opts);
+}
+
+/** Own-account counters + day activity (账号分析) for UTC `days`; scope gaps come back in `missing`. */
+export async function apiAccountStats(account: SocialAccount, days: string[], opts: CallOpts = {}): Promise<AccountStats> {
+  const adapter = requireAdapter(account.platform);
+  return withConnection(account.id, (a) => adapter.fetchAccountStats(a, days), opts);
 }
 
 /** Capabilities of the account's platform given the admin's app options (null = no adapter). */
