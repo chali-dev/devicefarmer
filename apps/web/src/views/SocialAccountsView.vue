@@ -336,7 +336,6 @@ const groupColumns = computed(() => [
 <template>
   <PageContainer :title="t('social.title')">
     <template #extra>
-      <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'social' } })">{{ t('social.limits') }}</a-button>
       <a-button @click="groupsOpen = true">{{ t('social.groups') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
     </template>
