@@ -11,11 +11,12 @@ import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
+import { checkEgress } from './egress.js';
 import { enqueue, type DeviceOpName } from './queue.js';
 import { getInstance, publicInstance, publicInstances, publishInstance, updateInstance } from './repo.js';
 import { assignFreeProxies, countFreeUsable, isUniqueViolation, lockFreeProxies } from '../proxies/pool.js';
 import { getProfile, PROFILES } from '../../profiles.js';
-import { adb, dockerHost, network } from '../../services.js';
+import { adb, dockerHost } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
 import { DeviceSettings, readDeviceSettings } from './device-settings.js';
 import { prepareUpload } from '../apps/package.js';
@@ -371,15 +372,13 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instance: await publicInstance(row!) };
   });
 
-  /** Egress check from inside the instance's network namespace (same path as Android traffic). */
+  /** Egress check: from the instance's network namespace, or on an external phone itself over adb (see egress.ts). */
   app.post('/api/instances/:id/proxy/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
-    if (!inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建', 'proxy.no_net_container');
+    if (!inst.sourceId && !inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建', 'proxy.no_net_container');
     if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
-    const proxyStatus = await network.check(inst.netContainerId);
-    await updateInstance(inst.id, { proxyStatus });
-    return { proxyStatus };
+    return { proxyStatus: await checkEgress(inst) };
   });
 };

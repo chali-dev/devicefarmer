@@ -7,7 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
-import { BUSY_STATUSES, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
+import { BUSY_STATUSES, egressGeo, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
@@ -47,6 +47,7 @@ const columns = computed(() => [
   ...(auth.isAdmin ? [{ title: t('devices.colOwners'), key: 'owners', width: 200 }] : []),
   { title: t('common.device'), key: 'device', width: 220 },
   { title: t('devices.colNet'), key: 'net', width: 170 },
+  { title: t('devices.colEgress'), key: 'egress', width: 170 },
   { title: t('devices.colAdbPort'), dataIndex: 'adbPort', key: 'adbPort', width: 100 },
   { title: t('devices.colResolution'), key: 'spec', width: 140 },
   actionColumn(190),
@@ -369,11 +370,14 @@ async function submitExternal() {
 }
 
 function netTitle(i: Instance) {
-  if (!i.proxy) return ''
-  const egress = i.proxyStatus?.egressIp ? t('devices.egress', { ip: i.proxyStatus.egressIp }) : ''
+  const s = i.proxyStatus
+  const egress = s?.egressIp ? t('devices.egress', { ip: s.egressIp }) + (egressGeo(s) ? ` (${egressGeo(s)})` : '') : ''
+  if (!i.proxy) return i.sourceId ? `${t('devices.ext.proxyShort')}${egress}` : ''
   const where = [i.proxy.country, i.proxy.city].filter(Boolean).join(' ')
   return `${i.proxy.type}://${i.proxy.host}:${i.proxy.port}${where ? ` · ${where}` : ''}${egress}`
 }
+/** Country for the compact badges: measured egress first, else the one configured on the pool proxy. */
+const countryOf = (i: Instance) => i.proxyStatus?.country ?? i.proxy?.country ?? null
 
 function deviceText(i: Instance) {
   if (i.status !== 'running') return null
@@ -518,6 +522,15 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <span v-else-if="record.sourceId" class="muted">{{ t('devices.ext.proxyShort') }}</span>
             <span v-else class="muted">{{ t('devices.direct') }}</span>
           </template>
+          <template v-else-if="column.key === 'egress'">
+            <a-tooltip v-if="record.proxyStatus" :title="[egressGeo(record.proxyStatus), record.proxyStatus.error, new Date(record.proxyStatus.checkedAt).toLocaleString(dateLocale())].filter(Boolean).join(' · ')">
+              <a-space :size="4">
+                <a-tag v-if="record.proxyStatus.country" :color="record.proxyStatus.ok ? 'blue' : 'red'" style="margin: 0">{{ record.proxyStatus.country }}</a-tag>
+                <span :class="{ faint: !record.proxyStatus.ok }">{{ record.proxyStatus.egressIp ?? t('devices.egressNone') }}</span>
+              </a-space>
+            </a-tooltip>
+            <span v-else class="faint">—</span>
+          </template>
           <template v-else-if="column.key === 'spec'">
             {{ record.spec.width }}×{{ record.spec.height }}
           </template>
@@ -554,7 +567,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
               <a-checkbox :checked="selectedKeys.includes(i.id)" @click.stop @change="(e: any) => toggleOne(i.id, e.target.checked)" />
               <div class="item-main">
                 <div class="ellipsis">{{ i.name }}</div>
-                <div class="ellipsis muted small">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}<template v-if="i.proxy"> · {{ i.proxy.country ?? proxyLabel(i.proxy) }}</template></div>
+                <div class="ellipsis muted small">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}<template v-if="countryOf(i) || i.proxy"> · {{ countryOf(i) ?? proxyLabel(i.proxy!) }}</template></div>
               </div>
               <StatusTag :status="i.status" />
             </div>
@@ -592,7 +605,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
               </DeviceThumb>
               <div class="badges">
                 <span class="badge">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}</span>
-                <span v-if="i.proxy" class="badge" :class="{ bad: i.proxyStatus && !i.proxyStatus.ok }" :title="netTitle(i)">{{ i.proxy.country ?? i.proxy.type.toUpperCase() }}</span>
+                <span v-if="i.proxy || countryOf(i)" class="badge" :class="{ bad: i.proxyStatus && !i.proxyStatus.ok }" :title="netTitle(i)">{{ countryOf(i) ?? i.proxy!.type.toUpperCase() }}</span>
               </div>
               <div v-if="i.status === 'running'" class="hover"><span>{{ t('cloud.clickToControl') }}</span></div>
             </div>

@@ -83,6 +83,9 @@ export interface ProxyImportResult { dryRun: boolean; results: ProxyImportLine[]
 
 /** Short display of a device's / pool proxy. */
 export const proxyLabel = (p: { label: string | null; host: string; port: number }) => p.label || `${p.host}:${p.port}`
+/** Measured egress location: "IN · Maharashtra · Mumbai" (repeated parts dropped), or '' before a check with geo. */
+export const egressGeo = (s: Instance['proxyStatus'] | undefined) =>
+  s?.country ? [s.country, s.region, s.city].filter((x, n, a) => x && a.indexOf(x) === n).join(' · ') : ''
 
 /** Device source (设备来源): where external phones come from, e.g. a BitBrowser client. */
 export interface SourceHealth { ok: boolean | null; lastOkAt: string | null; failingSince: string | null; lastError: string | null; lastErrorCode: string | null }

@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
+import { egressGeo, proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
@@ -356,22 +356,20 @@ const appColumns = computed(() => [
             </a-table>
           </a-card>
 
-          <a-card v-if="isExternal" :bordered="false" :title="t('detail.proxy.title')">
-            <span class="muted">{{ t('devices.ext.proxyHint') }}</span>
-          </a-card>
-          <a-card v-else :bordered="false">
+          <a-card :bordered="false">
             <template #title>
               <a-space :size="4">
                 {{ t('detail.proxy.title') }}
-                <a-tooltip :title="t('detail.proxy.killSwitch')"><QuestionCircleOutlined class="muted" /></a-tooltip>
+                <a-tooltip :title="isExternal ? t('devices.ext.proxyHint') : t('detail.proxy.killSwitch')"><QuestionCircleOutlined class="muted" /></a-tooltip>
               </a-space>
             </template>
             <template #extra>
-              <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || !inst.netContainerId" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
+              <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || (!isExternal && !inst.netContainerId)" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
             </template>
             <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
               <a-descriptions-item :label="t('detail.proxy.current')" :span="2">
-                <a-space v-if="inst.proxy" wrap :size="4">
+                <span v-if="isExternal">{{ t('devices.ext.proxyShort') }}</span>
+                <a-space v-else-if="inst.proxy" wrap :size="4">
                   <a-tag>{{ inst.proxy.type.toUpperCase() }}</a-tag>
                   <span>{{ proxyLabel(inst.proxy) }}</span>
                   <span class="muted">{{ inst.proxy.host }}:{{ inst.proxy.port }}</span>
@@ -387,13 +385,14 @@ const appColumns = computed(() => [
                   <a-tag :color="inst.proxyStatus.ok ? 'success' : 'error'">{{ inst.proxyStatus.ok ? t('detail.proxy.ok') : t('detail.proxy.blocked') }}</a-tag>
                 </a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.egressIp')">{{ inst.proxyStatus.egressIp ?? '—' }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.egressLocation')" :span="2">{{ egressGeo(inst.proxyStatus) || '—' }}</a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.latency')">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.dns')">{{ inst.proxyStatus.dnsOk ? t('detail.proxy.ok') : t('detail.proxy.dnsFailed') }}</a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.checkedAt')" :span="inst.proxyStatus.error ? 1 : 2">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
                 <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
               </template>
             </a-descriptions>
-            <a-space v-if="auth.isAdmin" wrap style="margin-top: 12px">
+            <a-space v-if="auth.isAdmin && !isExternal" wrap style="margin-top: 12px">
               <a-select
                 v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
                 :disabled="busy" style="width: 320px; max-width: 100%"
@@ -403,7 +402,7 @@ const appColumns = computed(() => [
               <a-button v-if="inst.proxy" danger :loading="proxySaving" :disabled="busy" @click="unbindProxy">{{ t('detail.proxy.unbind') }}</a-button>
               <a-button type="link" @click="router.push('/proxies')">{{ t('detail.proxy.manage') }}</a-button>
             </a-space>
-            <div v-else class="muted" style="margin-top: 12px">{{ t('detail.proxy.adminOnly') }}</div>
+            <div v-else-if="!isExternal" class="muted" style="margin-top: 12px">{{ t('detail.proxy.adminOnly') }}</div>
           </a-card>
 
           <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
