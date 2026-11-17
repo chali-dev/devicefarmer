@@ -10,3 +10,10 @@ export function canonicalLang(code: string): string | null {
   if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(code.trim())) return null
   try { return Intl.getCanonicalLocales(code.trim())[0] ?? null } catch { return null }
 }
+
+/** Common languages/locales for social media, offered in Settings → 多语言 (any other valid code can be typed). */
+export const COMMON_LANGS = [
+  'zh-CN', 'zh-TW', 'zh-HK', 'en', 'en-US', 'en-GB', 'en-IN', 'es', 'es-MX', 'pt-BR', 'pt-PT', 'fr', 'de', 'it', 'nl', 'pl',
+  'ru', 'uk', 'tr', 'ar', 'fa', 'he', 'hi', 'bn', 'ur', 'ta', 'te', 'mr', 'pa', 'ja', 'ko', 'id', 'ms', 'th', 'vi', 'fil',
+  'km', 'my', 'sw', 'el', 'cs', 'ro', 'hu', 'sv',
+]

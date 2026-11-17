@@ -61,7 +61,7 @@ const en: Messages = {
   },
   nav: {
     dashboard: 'Dashboard',
-    settings: 'Settings',
+    settings: 'System settings',
     group: { devices: 'Cloud phones', matrix: 'Media matrix', content: 'Content centre', system: 'System' },
     instances: 'Cloud phones',
     library: 'App Library',
@@ -1646,9 +1646,10 @@ const en: Messages = {
     languages: {
       title: 'Content languages',
       list: 'Languages offered in the editor',
-      listPlaceholder: 'Type a language code, e.g. en, hi, pt-BR',
+      listPlaceholder: 'Search or type a language code, e.g. hi, pt-BR',
       defaultSource: 'Default original language for new content',
       invalid: 'Invalid language code: {code}',
+      removeDefault: 'Remove the default original language {lang}?',
     },
     publish: {
       maxAttempts: 'Default max attempts',
@@ -2023,7 +2024,7 @@ const en: Messages = {
   },
   alertChannels: {
     subtitle: 'Send alerts to one or more external channels (Telegram bots for now). Each alert is de-duplicated by the cooldown first, then delivered to every matching enabled channel.',
-    rulesLink: 'In-app notifications and the cooldown are set in Settings → Alerts',
+    rulesLink: 'In-app notifications and the cooldown are set in System settings → Alerts',
     add: 'New channel',
     edit: 'Edit channel',
     colName: 'Name',

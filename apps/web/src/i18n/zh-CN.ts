@@ -62,7 +62,7 @@ const zhCN = {
   },
   nav: {
     dashboard: '概览',
-    settings: '设置',
+    settings: '系统设置',
     group: { devices: '云手机管理', matrix: '媒体矩阵', content: '内容中心', system: '系统管理' },
     instances: '云机管理',
     library: '应用库',
@@ -1648,9 +1648,10 @@ const zhCN = {
     languages: {
       title: '内容语言',
       list: '编辑器可选语言',
-      listPlaceholder: '输入语言代码，如 en、hi、pt-BR',
+      listPlaceholder: '搜索或输入语言代码，如 hi、pt-BR',
       defaultSource: '新内容默认原文语言',
       invalid: '无效的语言代码：{code}',
+      removeDefault: '移除默认原文语言 {lang}？',
     },
     publish: {
       maxAttempts: '默认最大尝试次数',
@@ -2025,7 +2026,7 @@ const zhCN = {
   },
   alertChannels: {
     subtitle: '把告警发到一个或多个外部通道（目前支持 Telegram 机器人）。同一告警先按冷却时间去重，再分发到所有匹配的已启用通道。',
-    rulesLink: '站内通知和冷却时间在“设置 → 告警通知”中配置',
+    rulesLink: '站内通知和冷却时间在“系统设置 → 告警通知”中配置',
     add: '新建通道',
     edit: '编辑通道',
     colName: '名称',
