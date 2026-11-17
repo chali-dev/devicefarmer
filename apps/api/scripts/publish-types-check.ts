@@ -22,6 +22,7 @@ import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { sealSecret } from '../src/lib/secret-box.js';
 import { instagramAdapter, singleContainerParams } from '../src/modules/platforms/instagram.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -40,7 +41,7 @@ async function http<T = any>(method: string, p: string, token?: string, body?: u
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await http('POST', '/api/auth/login', undefined, { username, password });
+  const r = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username, password }));
   if (!r.body?.token) throw new Error(`login ${username} failed: ${r.status}`);
   return r.body.token;
 }

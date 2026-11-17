@@ -6,6 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { withCaptcha } from './lib/login.js';
 
 const API = 'http://127.0.0.1:3000';
 const apk = process.argv[2];
@@ -22,7 +23,7 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
   const t0 = Date.now();
   for (;;) { const v = await fn().catch(() => null); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${label}`); await new Promise((r) => setTimeout(r, 2000)); }
 }
-const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }) })).json()).token;
+const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD })) })).json()).token;
 const task = (id: string) => waitFor('task', async () => {
   const t = (await http('GET', '/api/tasks?limit=200', T)).body.tasks.find((x: any) => x.id === id);
   return t && ['success', 'failed'].includes(t.status) ? t : null;
@@ -58,7 +59,7 @@ try {
   check('other file types refused', up.status === 400 && up.body?.code === 'apps.unsupported_type');
   const uname = `libup${Date.now() % 1e6}`;
   const cu = await http('POST', '/api/users', T, { username: uname, password: 'test-pass-123', role: 'user' });
-  const UT: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: uname, password: 'test-pass-123' }) })).json()).token;
+  const UT: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: uname, password: 'test-pass-123' })) })).json()).token;
   up = await upload(UT, apkBytes, 'user.apk');
   check('non-admin upload refused (403 library.upload_admin_only)', up.status === 403 && up.body?.code === 'library.upload_admin_only');
   await http('DELETE', `/api/users/${cu.body.user.id}`, T);

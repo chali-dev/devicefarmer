@@ -19,6 +19,15 @@ const Env = z.object({
   JWT_SECRET: z.string().min(16),
   ADMIN_USERNAME: z.string().default('admin'),
   ADMIN_PASSWORD: z.string().min(8).optional(),
+  /**
+   * Slider puzzle captcha on login (modules/auth/captcha.ts). `on` (default) everywhere, dev included;
+   * `off` only for special deployments (e.g. behind an SSO gateway that already guards the login).
+   * Challenges live LOGIN_CAPTCHA_TTL_SEC in Redis; GET /api/auth/captcha allows LOGIN_CAPTCHA_RATE
+   * challenges per client IP and minute.
+   */
+  LOGIN_CAPTCHA: z.enum(['on', 'off']).default('on'),
+  LOGIN_CAPTCHA_TTL_SEC: z.coerce.number().int().min(10).max(900).default(120),
+  LOGIN_CAPTCHA_RATE: z.coerce.number().int().min(1).default(60),
 
   DOCKER_HOST: z.string().default('unix:///var/run/docker.sock'),
   REDROID_IMAGE: z.string().default('redroid/redroid:12.0.0_64only-latest'),

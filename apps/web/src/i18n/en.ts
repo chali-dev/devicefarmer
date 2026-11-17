@@ -115,6 +115,14 @@ const en: Messages = {
     login: 'Log in',
     enterUsername: 'Enter your username',
     enterPassword: 'Enter your password',
+    captcha: {
+      label: 'Puzzle verification slider',
+      hint: 'Drag the slider to complete the puzzle',
+      refresh: 'New puzzle',
+      retry: 'Click to retry',
+      verified: 'Verified',
+      failed: 'The piece did not fit, please try again',
+    },
   },
   roles: {
     admin: 'Admin',
@@ -2188,6 +2196,10 @@ const en: Messages = {
       admin_only: 'Only administrators can do this',
       role_forbidden: 'Your role is not allowed to perform this device action',
       no_instance_access: 'You have no access to this device',
+      captcha_required: 'Please complete the puzzle first',
+      captcha_invalid: 'Puzzle verification failed, please try again',
+      captcha_expired: 'The puzzle has expired, please solve a new one',
+      captcha_rate_limited: 'Too many puzzles requested, please try again later',
     },
     users: {
       not_found: 'User not found',

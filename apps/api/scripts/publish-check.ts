@@ -21,6 +21,7 @@ import { parseJson } from '../src/modules/platforms/http.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type (for the idempotency checks below)
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
+import { withCaptcha } from './lib/login.js';
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -37,7 +38,7 @@ async function http<T = any>(method: string, p: string, token?: string, body?: u
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username, password })) });
   return (await r.json()).token;
 }
 async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 60_000): Promise<T> {

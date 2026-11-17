@@ -24,6 +24,7 @@ import { sealSecret } from '../src/lib/secret-box.js';
 import { POST_PAGES, scheduleDailyAccountStats, upsertAccountPosts } from '../src/modules/analytics/analytics.js';
 import { collectOwnPosts } from '../src/modules/platforms/instagram.js';
 import { createTask } from '../src/modules/tasks/core.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const results: [string, boolean][] = [];
@@ -41,7 +42,7 @@ async function http<T = any>(method: string, path: string, token: string | null,
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username, password })) });
   return (await r.json()).token;
 }
 async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 60_000): Promise<T> {

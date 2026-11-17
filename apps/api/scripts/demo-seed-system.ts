@@ -20,6 +20,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const VAR = path.resolve(import.meta.dirname, '../var');
@@ -53,7 +54,7 @@ async function http<T = any>(method: string, p: string, token: string | null, bo
   return { status: res.status, body: json as T, text: buf.toString('utf8'), headers: res.headers };
 }
 async function login(username: string, password: string): Promise<string | null> {
-  const r = await http('POST', '/api/auth/login', null, { username, password });
+  const r = await http('POST', '/api/auth/login', null, await withCaptcha(API, { username, password }));
   return r.status === 200 ? r.body.token : null;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -433,7 +434,7 @@ async function verify() {
   }
   info('users.last_admin is not reachable while the built-in admin exists (it can be neither disabled nor demoted)');
   check('demo-disabled is disabled', U('demo-disabled')?.disabled === true);
-  r = await http('POST', '/api/auth/login', null, { username: 'demo-disabled', password: opsCreds['demo-disabled'] ?? 'x' });
+  r = await http('POST', '/api/auth/login', null, await withCaptcha(API, { username: 'demo-disabled', password: opsCreds['demo-disabled'] ?? 'x' }));
   check('a disabled user cannot log in', r.status === 401 || r.status === 403, `${r.status} ${r.body?.code}`);
   // throw-away user: enable/disable/reset/delete
   const tmpName = `demo-tmp-${randomBytes(3).toString('hex')}`;

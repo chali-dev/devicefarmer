@@ -22,6 +22,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const CRED_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../var/demo-credentials.txt');
@@ -48,7 +49,7 @@ async function must<T = any>(method: string, path: string, token: string, body?:
   return r.body;
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await http('POST', '/api/auth/login', null, { username, password });
+  const r = await http('POST', '/api/auth/login', null, await withCaptcha(API, { username, password }));
   if (r.status !== 200 || !r.body?.token) throw new Error(`login ${username} failed (${r.status})`);
   return r.body.token;
 }

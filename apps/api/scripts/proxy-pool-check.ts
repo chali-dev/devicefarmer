@@ -19,6 +19,7 @@ import net from 'node:net';
 import { inArray, like, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { assignFreeProxies, countFreeUsable, isUniqueViolation } from '../src/modules/proxies/pool.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const [PHOST, PPORT] = (process.env.POOL_TEST_PROXY ?? '127.0.0.1:18090').split(':') as [string, string];
@@ -35,7 +36,7 @@ async function http<T = any>(method: string, path: string, token: string, body?:
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
-  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) });
+  const r = await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username, password })) });
   return (await r.json()).token;
 }
 async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 60_000): Promise<T> {

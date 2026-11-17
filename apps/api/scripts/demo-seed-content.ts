@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
+import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const VAR = path.resolve('var');
@@ -193,7 +194,7 @@ export async function http<T = any>(method: string, p: string, token?: string, b
   return { status: res.status, body: json as T, text };
 }
 export async function login(username: string, password: string): Promise<string> {
-  const r = await http('POST', '/api/auth/login', undefined, { username, password });
+  const r = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username, password }));
   if (r.status !== 200 || !r.body?.token) throw new Error(`login ${username} failed: ${r.status} ${r.body?.code ?? ''}`);
   return r.body.token;
 }

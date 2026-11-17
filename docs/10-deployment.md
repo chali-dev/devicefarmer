@@ -111,6 +111,7 @@ GitHub → Actions → **Deploy** → Run workflow：
 
 - `/api/ready`（新增，无需登录）：只检查 API 自身 + Postgres + Redis，返回 `version`、`color`、`background`（leader / standby / always）。切换和容器 healthcheck 用它。
 - `/api/health`：还要求 STF、adb、Docker 正常。可以在 `deploy.env` 里把 `READY_PATH` 改成 `/api/health`，但那样 STF 出问题时就无法部署（包括修复它的部署）。
+- 两个检查都不需要登录，所以登录页的拼图验证（`LOGIN_CAPTCHA`，默认 `on`）不影响部署。验证题存在 Redis（蓝绿两色共用），切换期间拿到的题在新颜色上同样有效。`GET /api/auth/captcha` 按客户端 IP 限流（`LOGIN_CAPTCHA_RATE`/分钟，默认 60）：经同机 Caddy 转发时取 `X-Forwarded-For` 的最后一项（Caddy 填的真实地址），直连时取对端地址。只有已有其他登录防护（例如前置 SSO 网关）的特殊部署才在 `app.env` 设 `LOGIN_CAPTCHA=off`。
 
 ## 6. 排障
 

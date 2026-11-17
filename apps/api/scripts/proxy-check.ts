@@ -11,6 +11,7 @@ import { eq } from 'drizzle-orm';
 import WebSocket from 'ws';
 import { dockerFromEnv } from '../src/adapters/runtime/docker.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const DATA_ROOT = process.env.INSTANCE_DATA_ROOT ?? '/srv/cloudphone/instances';
@@ -37,7 +38,7 @@ async function proxyLogSince(sinceSec: number): Promise<string> {
   return buf.toString('utf8');
 }
 
-const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }) })).json()).token;
+const T: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD })) })).json()).token;
 const tp = await docker.getContainer('cp-testproxy').inspect();
 if (!tp.State.Running) await docker.getContainer('cp-testproxy').start();
 const PIP = (await docker.getContainer('cp-testproxy').inspect()).NetworkSettings.Networks.bridge!.IPAddress;

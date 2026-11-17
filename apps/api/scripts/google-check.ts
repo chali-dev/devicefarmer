@@ -8,6 +8,7 @@ import Docker from 'dockerode';
 import fs from 'node:fs';
 import WebSocket from 'ws';
 import { dockerFromEnv } from '../src/adapters/runtime/docker.js';
+import { withCaptcha } from './lib/login.js';
 
 const API = 'http://127.0.0.1:3000';
 const docker: Docker = dockerFromEnv(process.env.DOCKER_HOST!);
@@ -45,7 +46,7 @@ async function stats(containerId: string) {
   return `mem=${(mem / 1048576).toFixed(0)}MiB cpu=${cpu.toFixed(1)}%`;
 }
 
-const login = await http('POST', '/api/auth/login', undefined, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD });
+const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
 const T: string = login.body.token;
 
 // 1. profiles + KVM detection
