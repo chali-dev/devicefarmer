@@ -10,6 +10,8 @@ import type { PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
 import MediaStrip from '../content/MediaStrip.vue'
+import PlatformTextTabs from '../content/PlatformTextTabs.vue'
+import { textMax } from '../social/platformMeta'
 import PlatformTag from '../social/PlatformTag.vue'
 import PostTypeTag from './PostTypeTag.vue'
 
@@ -75,15 +77,21 @@ async function submitTime() {
 
 // edit texts
 const editOpen = ref(false)
-const editForm = reactive({ title: '', caption: '', hashtags: [] as string[] })
+const editForm = reactive({ title: '', hashtags: [] as string[] })
+/** One text tab: the task's platform (same layout as the content editor). */
+const editText = reactive<Record<string, string>>({})
+const editTab = ref('')
+const editTabs = computed(() => (task.value ? [{ key: task.value.platform, platform: task.value.platform, max: textMax(task.value.platform) }] : []))
 function openEdit() {
-  Object.assign(editForm, { title: task.value?.title ?? '', caption: task.value?.caption ?? '', hashtags: [...(task.value?.hashtags ?? [])] })
+  Object.assign(editForm, { title: task.value?.title ?? '', hashtags: [...(task.value?.hashtags ?? [])] })
+  editTab.value = task.value?.platform ?? ''
+  editText[editTab.value] = task.value?.caption ?? ''
   editOpen.value = true
 }
 async function submitEdit() {
   editOpen.value = false
   await act(() => api('PATCH', `/api/publish/tasks/${task.value!.id}`, {
-    ...(task.value?.platform === 'youtube' ? { title: editForm.title } : {}), caption: editForm.caption, hashtags: editForm.hashtags,
+    ...(task.value?.platform === 'youtube' ? { title: editForm.title } : {}), caption: editText[editTab.value] ?? '', hashtags: editForm.hashtags,
   }), t('common.saved'))
 }
 
@@ -219,7 +227,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
     <a-modal v-model:open="editOpen" :title="t('publish.edit')" :width="MODAL_WIDTH.md" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="submitEdit">
       <a-form layout="vertical">
         <a-form-item v-if="task?.platform === 'youtube'" :label="t('distribute.titleOverride')"><a-input v-model:value="editForm.title" :maxlength="100" /></a-form-item>
-        <a-form-item :label="t('distribute.captionOverride')"><a-textarea v-model:value="editForm.caption" :rows="4" /></a-form-item>
+        <a-form-item :label="t('content.caption')"><PlatformTextTabs v-model:active="editTab" :tabs="editTabs" :values="editText" :rows="5" /></a-form-item>
         <a-form-item :label="t('distribute.hashtags')"><a-select v-model:value="editForm.hashtags" mode="tags" :token-separators="[',', ' ']" /></a-form-item>
       </a-form>
     </a-modal>

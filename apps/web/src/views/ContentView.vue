@@ -2,7 +2,7 @@
 import { dateLocale } from '../i18n'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
@@ -19,9 +19,11 @@ import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } fro
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
-import TemplateInsert, { type InsertTarget } from '../components/content/TemplateInsert.vue'
+import PlatformTextTabs, { type TextTab } from '../components/content/PlatformTextTabs.vue'
+import TemplateInsert from '../components/content/TemplateInsert.vue'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
+import { platformName, textField, textMax } from '../components/social/platformMeta'
 import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
 
@@ -85,41 +87,85 @@ const editorOpen = ref(false)
 const saving = ref(false)
 const editing = ref<Content | null>(null)
 const editorTasks = ref<PublishTaskItem[]>([])
+/** Platform hints as plain records; hints of platforms without a tab stay as loaded (and are saved again). */
+type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
-  title: '', body: '', category: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[],
-  yt: { title: '', description: '', privacy: undefined as 'public' | 'unlisted' | 'private' | undefined }, ig: { caption: '' }, tt: { caption: '' }, fb: { caption: '' }, ownerId: undefined as string | undefined,
+  title: '', category: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[], ownerId: undefined as string | undefined,
+  texts: {} as Record<string, string>, hints: {} as Hints,
 })
 const pickerOpen = ref(false)
 
+/**
+ * 平台文案 tabs: one text box per enabled platform. The first tab is the body (the text every platform uses);
+ * the others are that platform's override (empty = the body). Without enabled platforms there is one body tab ('').
+ */
+const textPlatforms = computed(() => platforms.scope.enabled.map((p) => p.id))
+const primary = computed(() => textPlatforms.value[0] ?? '')
+const textTab = ref('')
+const str = (v: unknown) => (typeof v === 'string' ? v : '')
+const copyHints = (h: unknown): Hints => JSON.parse(JSON.stringify(h ?? {})) as Hints
+function cleanHints(h: Hints): Hints {
+  const out: Hints = {}
+  for (const [p, o] of Object.entries(h)) {
+    const v = Object.fromEntries(Object.entries(o ?? {}).filter(([, x]) => x !== undefined && x.trim() !== ''))
+    if (Object.keys(v).length) out[p] = v
+  }
+  return out
+}
+/** Texts per tab. An older content may carry an override for the first platform: that tab shows it, since it is what gets published. */
+function splitTexts(body: string, h: Hints): Record<string, string> {
+  const p = primary.value
+  const own = p ? str(h[p]?.[textField(p)]) : ''
+  const out: Record<string, string> = { [p]: own.trim() ? own : body }
+  for (const q of textPlatforms.value.slice(1)) out[q] = str(h[q]?.[textField(q)])
+  return out
+}
+/** Back to body + hints: the first tab is the body (its own override is cleared), the other tabs are overrides. */
+function joinTexts(texts: Record<string, string>, base: Hints): { body: string; platformHints: Hints } {
+  const h = copyHints(base)
+  const p = primary.value
+  if (p && h[p]) delete h[p][textField(p)]
+  for (const q of textPlatforms.value.slice(1)) (h[q] ??= {})[textField(q)] = texts[q] ?? ''
+  return { body: texts[p] ?? '', platformHints: cleanHints(h) }
+}
+function textTabs(primaryPlaceholder?: string): TextTab[] {
+  const p = primary.value
+  if (!p) return [{ key: '', platform: null, label: t('content.caption'), max: 5000, placeholder: primaryPlaceholder }]
+  return textPlatforms.value.map((q, i) => ({
+    key: q, platform: q, max: textMax(q), placeholder: i === 0 ? primaryPlaceholder : t('content.useText', { name: platformName(p) }),
+  }))
+}
+const sourceTabs = computed(() => textTabs())
+
 /** Language versions in the editor ('' = source tab). Saved after the content: deletes, then changed/new versions. */
-interface TrForm { lang: string; title: string; body: string; yt: { title: string; description: string }; ig: { caption: string }; tt: { caption: string }; fb: { caption: string } }
+interface TrForm { lang: string; title: string; texts: Record<string, string>; hints: Hints }
 const trs = ref<TrForm[]>([])
 const trOrig = ref<Record<string, string>>({})
 const SRC = '_source'
 const langTab = ref(SRC)
 const currentTr = computed(() => trs.value.find((f) => f.lang === langTab.value))
+const trTabs = computed(() => textTabs(form.texts[primary.value]))
 const sourceLang = ref<string | undefined>()
-const toTrForm = (x: ContentTranslation): TrForm => ({
-  lang: x.lang, title: x.title, body: x.body,
-  yt: { title: x.platformHints.youtube?.title ?? '', description: x.platformHints.youtube?.description ?? '' },
-  ig: { caption: x.platformHints.instagram?.caption ?? '' }, tt: { caption: x.platformHints.tiktok?.caption ?? '' }, fb: { caption: x.platformHints.facebook?.caption ?? '' },
-})
-const trBody = (f: TrForm) => {
-  const h: Record<string, Record<string, string>> = {}
-  const put = (p: string, o: Record<string, string>) => { const v = Object.fromEntries(Object.entries(o).filter(([, x]) => x.trim() !== '')); if (Object.keys(v).length) h[p] = v }
-  put('youtube', f.yt); put('instagram', f.ig); put('tiktok', f.tt); put('facebook', f.fb)
-  return { title: f.title.trim(), body: f.body, platformHints: h }
+/** Key-order independent JSON, to tell changed versions apart. */
+const stable = (v: unknown): string => (v && typeof v === 'object' && !Array.isArray(v)
+  ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}`
+  : JSON.stringify(v))
+const toTrForm = (x: ContentTranslation): TrForm => {
+  const hints = copyHints(x.platformHints)
+  hints.youtube ??= {}
+  return { lang: x.lang, title: x.title, texts: splitTexts(x.body, hints), hints }
 }
+const trBody = (f: TrForm) => ({ title: f.title.trim(), ...joinTexts(f.texts, f.hints) })
 function fillTranslations(list: ContentTranslation[]) {
   trs.value = list.map(toTrForm)
-  trOrig.value = Object.fromEntries(trs.value.map((f) => [f.lang, JSON.stringify(trBody(f))]))
+  trOrig.value = Object.fromEntries(list.map((x) => [x.lang, stable({ title: x.title.trim(), body: x.body, platformHints: cleanHints(copyHints(x.platformHints)) })]))
   if (!trs.value.some((f) => f.lang === langTab.value)) langTab.value = SRC
 }
 const addableLangs = computed(() => langCfg.value.languages.filter((l) => l !== sourceLang.value && !trs.value.some((f) => f.lang === l)))
 const sourceLangOptions = computed(() => [...new Set([...langCfg.value.languages, ...(sourceLang.value ? [sourceLang.value] : [])])]
   .filter((l) => !trs.value.some((f) => f.lang === l)).map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
 function addLang(lang: string) {
-  trs.value.push({ lang, title: '', body: '', yt: { title: '', description: '' }, ig: { caption: '' }, tt: { caption: '' }, fb: { caption: '' } })
+  trs.value.push({ lang, title: '', texts: splitTexts('', {}), hints: { youtube: {} } })
   langTab.value = lang
 }
 function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
@@ -132,18 +178,26 @@ function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
 }
 
 function fillForm(c: Content | null) {
-  const h: ContentHints = c?.platformHints ?? {}
+  const hints = copyHints(c?.platformHints)
+  hints.youtube ??= {}
   sourceLang.value = c ? (c.lang ?? undefined) : (langCfg.value.defaultSource ?? undefined)
   Object.assign(form, {
-    title: c?.title ?? '', body: c?.body ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
-    yt: { title: h.youtube?.title ?? '', description: h.youtube?.description ?? '', privacy: h.youtube?.privacy },
-    ig: { caption: h.instagram?.caption ?? '' }, tt: { caption: h.tiktok?.caption ?? '' }, fb: { caption: h.facebook?.caption ?? '' }, ownerId: undefined,
+    title: c?.title ?? '', category: c?.category ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])], ownerId: undefined,
+    texts: splitTexts(c?.body ?? '', hints), hints,
   })
 }
-function openNew() { editing.value = null; editorTasks.value = []; langTab.value = SRC; fillTranslations([]); fillForm(null); editorOpen.value = true }
+/** The tabs depend on the enabled platforms, so they must be known before the form is filled. */
+const platformsReady = () => platforms.load().catch(() => undefined)
+async function openNew() {
+  await platformsReady()
+  editing.value = null; editorTasks.value = []; langTab.value = SRC; textTab.value = primary.value
+  fillTranslations([]); fillForm(null); editorOpen.value = true
+}
 async function openEdit(c: Content) {
+  await platformsReady()
   editing.value = c
   langTab.value = SRC
+  textTab.value = primary.value
   fillTranslations([])
   fillForm(c)
   editorOpen.value = true
@@ -161,26 +215,13 @@ function moveMedia(i: number, d: number) {
   m.splice(i + d, 0, x!)
   form.media = m
 }
-/** 话术库: puts a post template's text into one field; the person edits it before saving. */
-function insertTemplate(target: InsertTarget, text: string, replace: boolean) {
-  const join = (cur: string) => (replace || !cur.trim() ? text : `${cur.replace(/\s+$/, '')}\n\n${text}`)
-  if (target === 'body') form.body = join(form.body)
-  else if (target === 'ytDescription') form.yt.description = join(form.yt.description)
-  else if (target === 'igCaption') form.ig.caption = join(form.ig.caption)
-  else if (target === 'ttCaption') form.tt.caption = join(form.tt.caption)
-  else form.fb.caption = join(form.fb.caption)
+/** 话术库: puts a post template's text into the current text tab; the person edits it before saving. */
+function insertTemplate(text: string, replace: boolean) {
+  const texts = currentTr.value?.texts ?? form.texts
+  const cur = texts[textTab.value] ?? ''
+  texts[textTab.value] = replace || !cur.trim() ? text : `${cur.replace(/\s+$/, '')}\n\n${text}`
 }
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
-
-function hints(): ContentHints {
-  const clean = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== '')) as Partial<T>
-  const out: ContentHints = {}
-  const yt = clean(form.yt); if (Object.keys(yt).length) out.youtube = yt
-  const ig = clean(form.ig); if (Object.keys(ig).length) out.instagram = ig
-  const tt = clean(form.tt); if (Object.keys(tt).length) out.tiktok = tt
-  const fb = clean(form.fb); if (Object.keys(fb).length) out.facebook = fb
-  return out
-}
 
 async function save(stage: 'draft' | 'ready') {
   if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return }
@@ -188,8 +229,9 @@ async function save(stage: 'draft' | 'ready') {
   if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return }
   saving.value = true
   try {
+    const { body: text, platformHints } = joinTexts(form.texts, form.hints)
     const body = {
-      title: form.title.trim(), body: form.body, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: hints(),
+      title: form.title.trim(), body: text, category: form.category ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
       lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
     let id = editing.value?.id
@@ -200,14 +242,13 @@ async function save(stage: 'draft' | 'ready') {
     } else id = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId ? { ownerId: form.ownerId } : {}) })).content.id
     for (const f of trs.value) {
       const b = trBody(f)
-      if (trOrig.value[f.lang] !== JSON.stringify(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
+      if (trOrig.value[f.lang] !== stable(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
     }
     message.success(t('common.saved'))
     editorOpen.value = false
     void load(); void loadFacets()
   } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
 }
-
 // ---------------------------------------------------------------- actions
 const distributeOpen = ref(false)
 const distributing = ref<Content | null>(null)
@@ -323,28 +364,16 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       <a-form-item :label="t('content.fieldTitle')" required>
         <a-input v-model:value="currentTr.title" :maxlength="200" show-count :placeholder="form.title" />
       </a-form-item>
-      <a-form-item :label="t('content.fieldBody')">
-        <a-textarea v-model:value="currentTr.body" :rows="5" :maxlength="5000" show-count :placeholder="form.body" />
+      <a-form-item :label="t('content.caption')">
+        <PlatformTextTabs v-model:active="textTab" :tabs="trTabs" :values="currentTr.texts">
+          <template #extra><TemplateInsert @insert="insertTemplate" /></template>
+          <template #default="{ tab }">
+            <a-form-item v-if="tab.key === 'youtube'" :label="t('content.ytTitle')" class="tab-field">
+              <a-input v-model:value="currentTr.hints.youtube!.title" :maxlength="100" show-count :placeholder="form.hints.youtube?.title || currentTr.title || form.title" />
+            </a-form-item>
+          </template>
+        </PlatformTextTabs>
       </a-form-item>
-      <template v-if="['youtube', 'instagram', 'tiktok', 'facebook'].some((p) => platforms.isEnabled(p))">
-        <a-divider orientation="left" plain>{{ t('content.lang.translatedHints') }}</a-divider>
-        <template v-if="platforms.isEnabled('youtube')">
-          <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="currentTr.yt.title" :maxlength="100" show-count :placeholder="form.yt.title" /></a-form-item>
-          <a-form-item :label="t('content.ytDescription')"><a-textarea v-model:value="currentTr.yt.description" :rows="3" :maxlength="5000" :placeholder="form.yt.description" /></a-form-item>
-        </template>
-        <a-form-item v-if="platforms.isEnabled('instagram')">
-          <template #label><PlatformTag platform="instagram" />{{ t('content.caption') }}</template>
-          <a-textarea v-model:value="currentTr.ig.caption" :rows="3" :maxlength="2200" show-count :placeholder="form.ig.caption" />
-        </a-form-item>
-        <a-form-item v-if="platforms.isEnabled('tiktok')">
-          <template #label><PlatformTag platform="tiktok" />{{ t('content.caption') }}</template>
-          <a-textarea v-model:value="currentTr.tt.caption" :rows="3" :maxlength="2200" show-count :placeholder="form.tt.caption" />
-        </a-form-item>
-        <a-form-item v-if="platforms.isEnabled('facebook')">
-          <template #label><PlatformTag platform="facebook" />{{ t('content.caption') }}</template>
-          <a-textarea v-model:value="currentTr.fb.caption" :rows="3" :maxlength="5000" show-count :placeholder="form.fb.caption" />
-        </a-form-item>
-      </template>
     </a-form>
 
     <a-form v-show="!currentTr" layout="vertical">
@@ -354,9 +383,23 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       <a-form-item :label="t('content.fieldTitle')" required>
         <a-input v-model:value="form.title" :maxlength="200" show-count />
       </a-form-item>
-      <a-form-item :label="t('content.fieldBody')">
-        <template #extra><TemplateInsert style="margin-top: 4px" @insert="insertTemplate" /></template>
-        <a-textarea v-model:value="form.body" :rows="5" :maxlength="5000" show-count :placeholder="t('content.bodyPlaceholder')" />
+      <a-form-item :label="t('content.caption')">
+        <PlatformTextTabs v-model:active="textTab" :tabs="sourceTabs" :values="form.texts">
+          <template #extra><TemplateInsert @insert="insertTemplate" /></template>
+          <template #default="{ tab }">
+            <a-row v-if="tab.key === 'youtube'" :gutter="12" class="tab-field">
+              <a-col :xs="24" :sm="16">
+                <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="form.hints.youtube!.title" :maxlength="100" show-count :placeholder="form.title" /></a-form-item>
+              </a-col>
+              <a-col :xs="24" :sm="8">
+                <a-form-item :label="t('content.ytPrivacy')">
+                  <a-select v-model:value="form.hints.youtube!.privacy" allow-clear :placeholder="t('distribute.privacyOpt.private')"
+                    :options="['public', 'unlisted', 'private'].map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+          </template>
+        </PlatformTextTabs>
       </a-form-item>
       <a-row :gutter="12">
         <a-col :xs="24" :sm="8">
@@ -379,36 +422,6 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
         <a-button style="margin-top: 8px" :disabled="form.media.length >= 20" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
       </a-form-item>
-      <a-collapse ghost>
-        <a-collapse-panel key="hints">
-          <template #header>
-            {{ t('content.hints') }}
-            <a-tooltip :title="t('content.hintsHelp')"><QuestionCircleOutlined class="muted" style="margin-left: 4px" /></a-tooltip>
-          </template>
-          <!-- Hints of disabled platforms stay in the form (and are saved) but are not shown. -->
-          <template v-if="platforms.isEnabled('youtube')">
-            <a-divider orientation="left" plain><PlatformTag platform="youtube" /></a-divider>
-            <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="form.yt.title" :maxlength="100" show-count /></a-form-item>
-            <a-form-item :label="t('content.ytDescription')"><a-textarea v-model:value="form.yt.description" :rows="3" :maxlength="5000" /></a-form-item>
-            <a-form-item :label="t('content.ytPrivacy')">
-              <a-select v-model:value="form.yt.privacy" allow-clear style="width: 200px" :placeholder="t('distribute.privacyOpt.private')"
-                :options="['public', 'unlisted', 'private'].map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
-            </a-form-item>
-          </template>
-          <template v-if="platforms.isEnabled('instagram')">
-            <a-divider orientation="left" plain><PlatformTag platform="instagram" /></a-divider>
-            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.ig.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
-          </template>
-          <template v-if="platforms.isEnabled('tiktok')">
-            <a-divider orientation="left" plain><PlatformTag platform="tiktok" /></a-divider>
-            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.tt.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
-          </template>
-          <template v-if="platforms.isEnabled('facebook')">
-            <a-divider orientation="left" plain><PlatformTag platform="facebook" /></a-divider>
-            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.fb.caption" :rows="3" :maxlength="5000" show-count /></a-form-item>
-          </template>
-        </a-collapse-panel>
-      </a-collapse>
     </a-form>
 
     <template v-if="editing && editorTasks.length && !currentTr">
@@ -451,4 +464,5 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 .lang-chip { font-size: 11px; line-height: 18px; padding-inline: 5px; margin-inline-end: 4px; }
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
 .lang-tabs { margin-bottom: 12px; }
+.tab-field { margin-top: 16px; margin-bottom: 0; }
 </style>
