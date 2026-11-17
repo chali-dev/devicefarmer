@@ -212,6 +212,8 @@ try {
   // content + publish
   r = await clean('/api/contents', '/api/contents');
   check('A: contents = A\'s content, targets = A\'s account only', r.body.items.length === 1 && r.body.items[0].targets.every((x: any) => x.id === a.account));
+  check('A: list 媒体号 (publishAccounts) = A\'s account only, though the admin also distributed it to B\'s',
+    r.body.items[0]?.publishAccounts?.length === 1 && r.body.items[0].publishAccounts[0].id === a.account && !!r.body.items[0].nextPublishAt, r.text.slice(0, 300));
   await clean('/api/contents?ownerId=<B>', `/api/contents?ownerId=${uB}`, 403);
   r = await clean('/api/contents/<A> (admin also distributed it to B\'s account)', `/api/contents/${a.content}`);
   check('A: content detail lists only A\'s publish task', r.body.publishTasks?.length === 1 && r.body.publishTasks[0].accountId === a.account, r.text.slice(0, 300));
@@ -297,6 +299,9 @@ try {
   check('admin: analytics summary for B has B\'s account', r.status === 200 && r.text.includes(b.account));
   r = await http('GET', `/api/contents/${a.content}`, T);
   check('admin: A\'s content detail lists both publish tasks', r.body.publishTasks?.length === 2);
+  r = await http('GET', `/api/contents?ownerId=${uA}`, T);
+  { const acc = (r.body.items?.[0]?.publishAccounts ?? []).map((x: any) => x.id);
+    check('admin: list 媒体号 of A\'s content = A\'s and B\'s accounts', acc.length === 2 && acc.includes(a.account) && acc.includes(b.account), r.text.slice(0, 300)); }
   r = await http('GET', `/api/publish/tasks?ownerId=${uB}`, T);
   check('admin: publish tasks for B = 2', r.body.total === 2);
   r = await http('GET', `/api/comments?ownerId=${uB}`, T);
