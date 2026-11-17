@@ -126,7 +126,7 @@ GitHub → Actions → **Deploy** → Run workflow：
 
 ## 7. 文件
 
-- `.github/workflows/deploy.yml`：手动触发的 deploy / rollback。
+- `.github/workflows/deploy.yml`：手动触发的 deploy / rollback。所有 workflow 只允许手动触发（`workflow_dispatch`），不要再加 push / PR / 定时等自动触发；同一时间只运行一个部署，且只保留 1 个排队任务，再触发会替换排队中的那个。
 - `deploy/docker/{api,web}.Dockerfile`、`deploy/docker/web.Caddyfile`、`.dockerignore`
 - `deploy/compose.shared.yml`（Postgres、Redis、Caddy）、`deploy/compose.app.yml`（一种颜色）、`deploy/caddy/Caddyfile`
 - `deploy/deploy.sh`、`rollback.sh`、`status.sh`、`lib.sh`；模板 `deploy.env.example`、`app.env.example`；`stf.override.yml`

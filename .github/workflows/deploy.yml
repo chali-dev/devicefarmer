@@ -1,5 +1,8 @@
 # Manual blue-green deploy / rollback (docs/10-deployment.md).
-# Branch: GitHub's "Use workflow from" selector. Secrets and required reviewers live in the GitHub Environment.
+# Branch or tag: GitHub's "Use workflow from" selector; github.sha / github.ref_name are that ref's head, so no
+# ref input is needed. Secrets and required reviewers live in the GitHub Environment.
+# Manual trigger only (workflow_dispatch). Do not add push / pull_request / schedule / workflow_run or any other
+# automatic trigger: every run must be started by a person.
 name: Deploy
 
 on:
@@ -24,9 +27,11 @@ on:
         type: environment
         default: production
 
-# Never two deploys/rollbacks for the same environment at once; a queued run waits, nothing is cancelled.
+# One fixed group for every deploy / rollback (all environments): never two at once, a running one is never
+# cancelled. Note GitHub keeps only ONE pending run per group: starting another while one is already waiting
+# replaces (cancels) the waiting one, so runs are not all queued — wait for the pending run before starting a new one.
 concurrency:
-  group: deploy-${{ inputs.environment }}
+  group: deploy
   cancel-in-progress: false
 
 permissions:

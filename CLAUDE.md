@@ -64,7 +64,7 @@ Scripts that create devices are refused by the capacity check when the 4 GiB VM 
 
 ## Production deployment (docs/10-deployment.md)
 
-Blue-green on one Linux host with Docker Compose: shared Postgres/Redis/Caddy (`deploy/compose.shared.yml`) + STF (`infra/stf` + `deploy/stf.override.yml`); each colour = api + web of one version (`deploy/compose.app.yml`, host networking, per-colour loopback ports). Images `ghcr.io/<owner>/<repo>-{api,web}:<version>` from `deploy/docker/*.Dockerfile` (context = repo root). GitHub: Actions → Deploy (`.github/workflows/deploy.yml`, manual; branch via "Use workflow from", `action` deploy|rollback, `version`, `rollback_steps` 1|2, `environment`).
+Blue-green on one Linux host with Docker Compose: shared Postgres/Redis/Caddy (`deploy/compose.shared.yml`) + STF (`infra/stf` + `deploy/stf.override.yml`); each colour = api + web of one version (`deploy/compose.app.yml`, host networking, per-colour loopback ports). Images `ghcr.io/<owner>/<repo>-{api,web}:<version>` from `deploy/docker/*.Dockerfile` (context = repo root). GitHub: Actions → Deploy (`.github/workflows/deploy.yml`, manual; branch via "Use workflow from", `action` deploy|rollback, `version`, `rollback_steps` 1|2, `environment`). GitHub workflows are manual only (`workflow_dispatch`); never add push/PR/schedule/workflow_run triggers back. Deploy runs share one concurrency group `deploy` (no cancel-in-progress; GitHub keeps only one pending run per group, a newer one replaces it).
 
 ```bash
 /srv/cloudphone/deploy/deploy.sh <version>   # migrate once → start idle colour → /api/ready → caddy reload → drain → stop old
