@@ -8,6 +8,7 @@ import { adb, dockerHost, network, stf } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
 import { updateInstance } from '../instances/repo.js';
 import { sourceOf } from '../sources/index.js';
+import { noteAdbRtt } from '../system/connections.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 const GOOGLE_CHECK_MS = 60_000;
@@ -34,6 +35,7 @@ async function observeAdb(log: FastifyBaseLogger, inst: Instance, adbStates: Adb
     await stf.claim(serial).catch((err) => log.warn({ err, serial }, 'claim failed'));
   }
   if (adbState === 'disconnected') adbState = 'offline';
+  if (adbState === 'device') noteAdbRtt(inst.id, inst.adbPort); // connection monitoring, at most once a minute
   if (inst.adbState !== adbState) patch.adbState = adbState;
   if (inst.bootCompleted !== booted) patch.bootCompleted = booted;
   if (inst.stfReady !== stfReady) patch.stfReady = stfReady;

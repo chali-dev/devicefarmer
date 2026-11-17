@@ -118,6 +118,15 @@ const Env = z.object({
   PUBLISH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
   PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10 * 60_000),
   PUBLISH_RETRY_BACKOFF_MS: z.coerce.number().int().min(100).default(30_000),
+  /**
+   * System management (modules/system). Database backups run `${PG_DUMP_CMD} --format=custom …` with the
+   * password only in PGPASSWORD (never argv). PG_DUMP_CMD is split on spaces; its major version must be ≥ the
+   * server's, e.g. `env -u DOCKER_HOST docker exec -i -e PGPASSWORD cloudphone-dev-postgres-1 pg_dump` (dev).
+   */
+  PG_DUMP_CMD: z.string().min(1).default('pg_dump'),
+  /** API log files (one per UTC day, retention in settings) and the in-memory ring of recent lines. */
+  LOG_DIR: z.string().default('var/logs'),
+  LOG_RING_SIZE: z.coerce.number().int().min(100).max(100_000).default(5000),
   /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
   TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });

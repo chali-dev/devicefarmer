@@ -4,7 +4,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 
 /** Safety net: any key matching this is dropped from `detail`, at any depth. */
-const SENSITIVE_KEY = /pass|secret|token|key|credential|authorization/i;
+export const SENSITIVE_KEY = /pass|secret|token|key|credential|authorization/i;
 const MAX_DEPTH = 6;
 const MAX_ARRAY = 100;
 const MAX_STRING = 500;

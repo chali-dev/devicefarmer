@@ -807,6 +807,41 @@ export interface GoogleHealth {
   googleAccounts: number;
 }
 
+/**
+ * Database backups (数据库备份, modules/system/backup.ts): one row per pg_dump run (custom format), the file
+ * lives in the storage backend that was active then (`storage`) under `key` (backups/…). Restore is manual.
+ */
+export const dbBackups = pgTable('db_backups', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  status: text('status', { enum: ['running', 'ok', 'failed'] }).notNull().default('running'),
+  trigger: text('trigger', { enum: ['manual', 'scheduled'] }).notNull(),
+  storage: text('storage', { enum: ['local', 's3'] }).notNull(),
+  key: text('key').notNull(),
+  size: bigint('size', { mode: 'number' }),
+  error: text('error'),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+}, (t) => [index('db_backups_created_idx').on(t.createdAt)]);
+export type DbBackup = typeof dbBackups.$inferSelect;
+
+/**
+ * Device connection history (连线监控): one row per change of a device's `status` or `adb_state`, written by
+ * modules/instances/repo.ts (updateInstance). `status` is the device status after the change. Bounded by
+ * a retention period and a row cap (modules/system/connections.ts, hourly).
+ */
+export const instanceStatusEvents = pgTable('instance_status_events', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  instanceId: uuid('instance_id').notNull().references(() => instances.id, { onDelete: 'cascade' }),
+  field: text('field', { enum: ['status', 'adb'] }).notNull(),
+  from: text('from'),
+  to: text('to'),
+  status: text('status').notNull(),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index('instance_status_events_instance_at_idx').on(t.instanceId, t.at), index('instance_status_events_at_idx').on(t.at)]);
+export type InstanceStatusEvent = typeof instanceStatusEvents.$inferSelect;
+
 export type User = typeof users.$inferSelect;
 export type Instance = typeof instances.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
