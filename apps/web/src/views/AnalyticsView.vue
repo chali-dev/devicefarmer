@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { message, Modal } from 'ant-design-vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../api/client'
 import {
-  compactNumber, dayTs, TASK_STATUS_COLOR, taskStatusText,
+  compactNumber, dayTs,
   type AnalyticsAccount, type AnalyticsSeries, type AnalyticsSummary, type ManagedUser,
 } from '../api/types'
-import StatLink from '../components/dashboard/StatLink.vue'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import TrendCharts from '../components/analytics/TrendCharts.vue'
 import { useAuthStore } from '../stores/auth'
@@ -80,7 +82,7 @@ const columns = computed(() => [
   { title: t('analytics.metrics.views'), key: 'views', width: 100, align: 'right' as const },
   { title: t('analytics.metrics.shares'), key: 'shares', width: 100, align: 'right' as const },
   { title: t('analytics.colSource'), key: 'source', width: 200 },
-  { title: '', key: 'ops', width: 200, align: 'right' as const },
+  actionColumn(200),
 ])
 
 // ---- detail (one account)
@@ -94,8 +96,8 @@ const detailRows = computed(() => [...(detail.value?.days ?? [])].reverse().filt
 function removeDay(day: string) {
   const id = detail.value?.account.id
   if (!id) return
-  Modal.confirm({
-    title: t('analytics.deleteDayConfirm', { day: fmtDay(day) }), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('analytics.deleteDayConfirm', { day: fmtDay(day) }),
     async onOk() {
       try { await api('DELETE', `/api/analytics/accounts/${id}/stats/${day}`); await load(true) } catch (e) { message.error(errorText(e)) }
     },
@@ -132,46 +134,57 @@ async function saveEntry() {
   finally { entrySaving.value = false }
 }
 const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label: u.username })))
+const totalStats = computed(() => {
+  const x = data.value?.totals
+  if (!x) return []
+  const gained = x.followersGained ?? 0
+  return [
+    { key: 'accounts', title: t('analytics.accounts'), value: String(x.accounts) },
+    { key: 'followers', title: t('analytics.metrics.followers'), value: compactNumber(x.followers) },
+    { key: 'gained', title: t('analytics.gained'), value: signed(x.followersGained), tone: gained > 0 ? 'var(--cp-success)' : undefined },
+    { key: 'views', title: t('analytics.metrics.views'), value: compactNumber(x.views) },
+    { key: 'shares', title: t('analytics.metrics.shares'), value: compactNumber(x.shares) },
+    { key: 'likes', title: t('analytics.metrics.likes'), value: compactNumber(x.likes) },
+    { key: 'comments', title: t('analytics.metrics.comments'), value: compactNumber(x.comments) },
+  ]
+})
+const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? undefined : apiStats ? t('analytics.manualHintConnect') : t('analytics.manualHintNoApi'))
 </script>
 
 <template>
-  <a-card :title="t('analytics.title')" size="small">
-    <template #extra>
-      <a-space wrap>
-        <a-radio-group v-model:value="range" button-style="solid" size="small">
+  <PageContainer :title="t('analytics.title')" :subtitle="data ? t('analytics.rangeHint', { from: fmtDay(data.from), to: fmtDay(data.to) }) : undefined">
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @refresh="load()">
+        <a-radio-group v-model:value="range" button-style="solid">
           <a-radio-button v-for="r in RANGES" :key="r" :value="r">{{ t('analytics.lastDays', { n: r }) }}</a-radio-button>
         </a-radio-group>
-        <a-button size="small" :loading="loading" @click="load()"><ReloadOutlined /> {{ t('common.refresh') }}</a-button>
-      </a-space>
-    </template>
-    <a-space wrap style="margin-bottom: 12px">
-      <a-select v-model:value="platform" :placeholder="t('analytics.platform')" allow-clear style="width: 140px">
-        <a-select-option v-for="p in platforms.scope.enabled" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" /></a-select-option>
-      </a-select>
-      <a-select v-if="auth.isAdmin" v-model:value="ownerId" :placeholder="t('analytics.owner')" allow-clear show-search option-filter-prop="label" style="width: 160px" :options="userOptions" />
-      <span v-if="data" class="muted small">{{ t('analytics.rangeHint', { from: fmtDay(data.from), to: fmtDay(data.to) }) }}</span>
-    </a-space>
+        <a-select v-model:value="platform" :placeholder="t('analytics.platform')" allow-clear style="width: 140px">
+          <a-select-option v-for="p in platforms.scope.enabled" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" /></a-select-option>
+        </a-select>
+        <a-select v-if="auth.isAdmin" v-model:value="ownerId" :placeholder="t('analytics.owner')" allow-clear show-search option-filter-prop="label" style="width: 160px" :options="userOptions" />
+      </SearchBar>
+      <a-row v-if="data" :gutter="[16, 16]">
+        <a-col v-for="s in totalStats" :key="s.key" flex="1 0 120px">
+          <a-statistic :title="s.title" :value="s.value" :value-style="s.tone ? { color: s.tone } : undefined" />
+        </a-col>
+      </a-row>
+      <a-skeleton v-else-if="loading" active :paragraph="{ rows: 1 }" />
+    </a-card>
 
-    <a-spin :spinning="loading && !data">
-      <template v-if="data">
-        <div class="stats">
-          <StatLink :label="t('analytics.accounts')" :value="data.totals.accounts" />
-          <StatLink :label="t('analytics.metrics.followers')" :value="compactNumber(data.totals.followers)" />
-          <StatLink :label="t('analytics.gained')" :value="signed(data.totals.followersGained)" :tone="(data.totals.followersGained ?? 0) > 0 ? 'success' : undefined" />
-          <StatLink :label="t('analytics.metrics.views')" :value="compactNumber(data.totals.views)" />
-          <StatLink :label="t('analytics.metrics.shares')" :value="compactNumber(data.totals.shares)" />
-          <StatLink :label="t('analytics.metrics.likes')" :value="compactNumber(data.totals.likes)" />
-          <StatLink :label="t('analytics.metrics.comments')" :value="compactNumber(data.totals.comments)" />
-        </div>
-        <div class="section-title">{{ t('analytics.trendAll') }}</div>
+    <template v-if="data">
+      <a-card :bordered="false" :title="t('analytics.trendAll')">
         <TrendCharts :days="data.days" />
+      </a-card>
 
-        <a-table :data-source="data.accounts" :columns="columns" row-key="id" size="middle" :scroll="{ x: 1100 }" style="margin-top: 16px"
-          :pagination="data.accounts.length > 20 ? { pageSize: 20, size: 'small' } : false" :locale="{ emptyText: t('analytics.empty') }">
+      <a-card :bordered="false">
+        <a-table :data-source="data.accounts" :columns="columns" row-key="id" :size="TABLE_SIZE" :scroll="{ x: 1170 }" :loading="loading"
+          :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('analytics.empty') }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'account'">
-              <PlatformTag :platform="record.platform" />
-              <a class="name" @click="openDetail(record as AnalyticsAccount)">{{ handle(record as AnalyticsAccount) }}</a>
+              <a-space :size="6">
+                <PlatformTag :platform="record.platform" />
+                <a @click="openDetail(record as AnalyticsAccount)">{{ handle(record as AnalyticsAccount) }}</a>
+              </a-space>
             </template>
             <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
             <template v-else-if="column.key === 'followers'">
@@ -193,7 +206,7 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
               </a-tooltip>
               <div v-if="record.lastRun" class="small">
                 <a-tooltip :title="record.lastRun.status === 'failed' ? codeText(record.lastRun.errorCode, undefined, record.lastRun.error ?? '') : undefined">
-                  <a-tag :color="TASK_STATUS_COLOR[record.lastRun.status as keyof typeof TASK_STATUS_COLOR]">{{ taskStatusText(record.lastRun.status) }}</a-tag>
+                  <StatusTag kind="task" :status="record.lastRun.status" />
                 </a-tooltip>
                 <span class="muted">{{ new Date(record.lastRun.finishedAt ?? record.lastRun.createdAt).toLocaleString(dateLocale()) }}</span>
               </div>
@@ -207,25 +220,31 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
             </template>
           </template>
         </a-table>
-      </template>
-    </a-spin>
-    <div class="faint small" style="margin-top: 8px">{{ t('analytics.hint') }}</div>
-  </a-card>
+      </a-card>
+    </template>
+  </PageContainer>
 
-  <a-drawer v-model:open="detailOpen" :title="detail ? handle(detail.account) : ''" :width="760" destroy-on-close>
-    <template v-if="detail">
-      <a-space wrap style="margin-bottom: 12px">
-        <PlatformTag :platform="detail.account.platform" />
-        <span class="muted">{{ t('analytics.rangeHint', { from: fmtDay(detail.from), to: fmtDay(detail.to) }) }}</span>
-        <a-button v-if="canRefresh(detail.account)" size="small" :loading="busy(detail.account)" @click="refresh(detail.account)">{{ t('analytics.refreshNow') }}</a-button>
-        <a-button size="small" @click="openEntry(detail.account)">{{ t('analytics.enter') }}</a-button>
+  <a-drawer v-model:open="detailOpen" :title="detail ? handle(detail.account) : ''" :width="DRAWER_WIDTH.lg" destroy-on-close>
+    <template v-if="detail" #extra>
+      <a-space>
+        <a-button v-if="canRefresh(detail.account)" :loading="busy(detail.account)" @click="refresh(detail.account)">{{ t('analytics.refreshNow') }}</a-button>
+        <a-button type="primary" @click="openEntry(detail.account)">{{ t('analytics.enter') }}</a-button>
       </a-space>
-      <a-alert v-if="detail.account.missing.length" type="warning" show-icon style="margin-bottom: 12px"
+    </template>
+    <template v-if="detail">
+      <a-space wrap class="drawer-head">
+        <PlatformTag :platform="detail.account.platform" />
+        <a-tooltip :title="sourceTip(detail.account, detail.apiStats)">
+          <a-tag v-if="detail.account.connection === 'connected'" color="success">{{ t('analytics.sourceApi') }}</a-tag>
+          <a-tag v-else-if="detail.account.connection" color="warning">{{ t('analytics.sourceExpired') }}</a-tag>
+          <a-tag v-else>{{ t('analytics.sourceManual') }}</a-tag>
+        </a-tooltip>
+        <span class="muted">{{ t('analytics.rangeHint', { from: fmtDay(detail.from), to: fmtDay(detail.to) }) }}</span>
+      </a-space>
+      <a-alert v-if="detail.account.missing.length" type="warning" show-icon class="drawer-head"
         :message="t('analytics.missingHint', { metrics: detail.account.missing.map((m) => t(`analytics.metrics.${m}`)).join(', ') })" />
-      <a-alert v-if="!detail.account.connection" type="info" show-icon style="margin-bottom: 12px"
-        :message="detail.apiStats ? t('analytics.manualHintConnect') : t('analytics.manualHintNoApi')" />
       <TrendCharts :days="detail.days" :height="140" />
-      <div class="section-title">{{ t('analytics.dayRows') }}</div>
+      <a-divider orientation="left" plain>{{ t('analytics.dayRows') }}</a-divider>
       <a-table :data-source="detailRows" row-key="day" size="small" :pagination="false" :scroll="{ x: 700 }" :locale="{ emptyText: t('analytics.noRows') }"
         :columns="[
           { title: t('analytics.day'), key: 'day', width: 110 },
@@ -236,7 +255,7 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
           { title: t('analytics.metrics.shares'), key: 'shares', align: 'right' },
           { title: t('analytics.metrics.comments'), key: 'comments', align: 'right' },
           { title: t('analytics.colSource'), key: 'source', width: 80 },
-          { title: '', key: 'ops', width: 60 },
+          { title: t('common.action'), key: 'ops', width: 70 },
         ]">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'day'">{{ fmtDay(record.day) }}</template>
@@ -252,21 +271,21 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
     <a-skeleton v-else active />
   </a-drawer>
 
-  <a-modal v-model:open="entryOpen" :title="t('analytics.enterTitle', { account: entryAccount ? handle(entryAccount) : '' })" :ok-text="t('common.save')"
-    :cancel-text="t('common.cancel')" :confirm-loading="entrySaving" @ok="saveEntry">
+  <a-modal v-model:open="entryOpen" :title="t('analytics.enterTitle', { account: entryAccount ? handle(entryAccount) : '' })" :width="MODAL_WIDTH.md"
+    :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="entrySaving" @ok="saveEntry">
     <a-form layout="vertical">
       <a-form-item :label="t('analytics.day')" :extra="t('analytics.dayHint')">
         <a-date-picker v-model:value="entry.day" value-format="YYYY-MM-DD" :disabled-date="disabledDate" :allow-clear="false" />
       </a-form-item>
-      <div class="muted small" style="margin-bottom: 8px">{{ t('analytics.countersHint') }}</div>
+      <a-divider orientation="left" plain>{{ t('analytics.countersHint') }}</a-divider>
       <a-row :gutter="12">
-        <a-col v-for="f in (['followers', 'following', 'posts'] as const)" :key="f" :span="8">
+        <a-col v-for="f in (['followers', 'following', 'posts'] as const)" :key="f" :xs="12" :sm="8">
           <a-form-item :label="t(`analytics.metrics.${f}`)"><a-input-number v-model:value="entry[f]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
         </a-col>
       </a-row>
-      <div class="muted small" style="margin-bottom: 8px">{{ t('analytics.activityHint') }}</div>
+      <a-divider orientation="left" plain>{{ t('analytics.activityHint') }}</a-divider>
       <a-row :gutter="12">
-        <a-col v-for="f in (['views', 'likes', 'shares', 'comments'] as const)" :key="f" :span="6">
+        <a-col v-for="f in (['views', 'likes', 'shares', 'comments'] as const)" :key="f" :xs="12" :sm="6">
           <a-form-item :label="t(`analytics.metrics.${f}`)"><a-input-number v-model:value="entry[f]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
         </a-col>
       </a-row>
@@ -275,14 +294,9 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
 </template>
 
 <style scoped>
-.stats { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 8px; }
-@media (max-width: 900px) { .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.section-title { margin: 12px 0 6px; font-weight: 600; color: var(--cp-text-secondary); font-size: 13px; }
-.name { margin-left: 6px; }
+.drawer-head { margin-bottom: 12px; }
 .num { font-variant-numeric: tabular-nums; }
 .up { color: var(--cp-success); }
 .down { color: var(--cp-error); }
-.muted { color: var(--cp-text-tertiary); }
-.faint { color: var(--cp-text-quaternary); }
-.small { font-size: 12px; }
 </style>
+

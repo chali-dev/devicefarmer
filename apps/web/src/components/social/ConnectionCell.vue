@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { CONNECTION_COLOR, type PlatformConnection, type PlatformInfo } from '../../api/types'
+import type { PlatformConnection, PlatformInfo } from '../../api/types'
+import StatusTag from '../common/StatusTag.vue'
+import { confirmDanger } from '../common/ui'
 
 /** Official-API authorisation of one social account: status badge + connect / disconnect / API check. */
 const props = defineProps<{ accountId: string; label: string; platform?: PlatformInfo; connection?: PlatformConnection }>()
@@ -28,9 +30,8 @@ async function connect() {
 }
 
 function disconnect() {
-  Modal.confirm({
-    title: t('platforms.confirmDisconnect', { name: props.label }), content: t('platforms.disconnectHint'),
-    okType: 'danger', okText: t('platforms.disconnect'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('platforms.confirmDisconnect', { name: props.label }), content: t('platforms.disconnectHint'), okText: t('platforms.disconnect'),
     onOk: async () => {
       try {
         const r = await api<{ revoked: boolean | null }>('DELETE', `/api/platforms/accounts/${props.accountId}/connection`)
@@ -55,7 +56,7 @@ async function check() {
   <span v-if="!platform" class="muted">—</span>
   <div v-else>
     <a-tooltip :title="tip" overlay-class-name="conn-tip">
-      <a-tag v-if="status" :color="CONNECTION_COLOR[status]">{{ t(`platforms.status.${status}`) }}</a-tag>
+      <StatusTag v-if="status" kind="connection" :status="status" />
       <a-tag v-else>{{ platform.configured ? t('platforms.status.none') : t('platforms.notConfigured') }}</a-tag>
     </a-tooltip>
     <div class="ops">
@@ -69,7 +70,6 @@ async function check() {
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-secondary); }
 .ops { display: flex; flex-wrap: wrap; margin-inline-start: -7px; }
 .ops :deep(.ant-btn) { padding-inline: 7px; height: 22px; }
 </style>

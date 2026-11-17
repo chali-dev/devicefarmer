@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { message, Modal } from 'ant-design-vue'
-import { StarFilled, StarOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import { PlusOutlined, StarFilled, StarOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
-  compactNumber, TRACKED_SCHEDULE_HOURS, TRACKED_STATUS_COLOR, trackedHandle,
+  compactNumber, TRACKED_SCHEDULE_HOURS, trackedHandle,
   type ManagedUser, type TrackedAccount, type TrackedPlatform, type TrackedStatus,
 } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
 import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 
 /** 追踪账号: external public accounts the user observes (official API or manual data only). */
 const { t } = useI18n()
@@ -30,7 +34,7 @@ const users = ref<ManagedUser[]>([])
 const items = ref<TrackedAccount[]>([])
 const total = ref(0)
 const page = ref(1)
-const PAGE_SIZE = 50
+const pageSize = ref(50)
 const loading = ref(false)
 const selectedKeys = ref<string[]>([])
 
@@ -42,7 +46,7 @@ if (queryParam(route.query, 'platform')) filters.platform = queryParam(route.que
 const platformLabel = (id: string) => platforms.value.find((p) => p.id === id)?.label ?? id
 
 function query(): string {
-  const p = new URLSearchParams({ page: String(page.value), pageSize: String(PAGE_SIZE) })
+  const p = new URLSearchParams({ page: String(page.value), pageSize: String(pageSize.value) })
   if (filters.q.trim()) p.set('q', filters.q.trim())
   for (const k of ['platform', 'category', 'tag', 'status', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
   if (filters.favorite) p.set('favorite', 'true')
@@ -99,8 +103,12 @@ const columns = computed(() => [
   { title: t('collect.schedule'), key: 'schedule', width: 170 },
   { title: t('common.status'), key: 'status', width: 150 },
   ...(auth.isAdmin ? [{ title: t('tracked.owner'), key: 'owner', width: 110 }] : []),
-  { title: '', key: 'ops', width: 200, align: 'right' as const },
+  actionColumn(230),
 ])
+function onTableChange(p: { current?: number; pageSize?: number }) {
+  if (p.pageSize && p.pageSize !== pageSize.value) { pageSize.value = p.pageSize; page.value = 1 } else page.value = p.current ?? 1
+  void load()
+}
 /** 定时采集 interval label. */
 const intervalText = (h: number | null) => (h === null ? t('collect.off') : h < 24 ? t('collect.everyHours', { n: h }) : t('collect.everyDays', { n: h / 24 }))
 const scheduleOptions = computed(() => [{ value: 0, label: t('collect.off') }, ...TRACKED_SCHEDULE_HOURS.map((h) => ({ value: h, label: intervalText(h) }))])
@@ -134,9 +142,8 @@ async function refreshBatch() {
   } catch (e) { message.error(errorText(e)) }
 }
 function remove(a: TrackedAccount) {
-  Modal.confirm({
+  confirmDanger({
     title: t('tracked.confirmDelete', { name: a.displayName || trackedHandle(a) }), content: t('tracked.confirmDeleteHint'),
-    okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
     onOk: async () => {
       try {
         await api('DELETE', `/api/tracked-accounts/${a.id}`)
@@ -222,116 +229,123 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
 </script>
 
 <template>
-  <a-card :title="t('tracked.title')" size="small">
+  <PageContainer :title="t('tracked.title')">
     <template #extra>
-      <a-space wrap>
-        <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
-        <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
-        <a-button :disabled="!items.length" @click="refreshBatch">
-          {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
-        </a-button>
-        <a-button type="primary" @click="openAdd">{{ t('tracked.add') }}</a-button>
-      </a-space>
+      <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
+      <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
+      <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('tracked.add') }}</a-button>
     </template>
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-input-search v-model:value="filters.q" :placeholder="t('tracked.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
-      <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
-        <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.label }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.category" :placeholder="t('tracked.colCategory')" allow-clear show-search style="width: 150px" @change="search">
-        <a-select-option value="none">{{ t('tracked.uncategorized') }}</a-select-option>
-        <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.tag" :placeholder="t('tracked.tag')" allow-clear show-search style="width: 130px" @change="search">
-        <a-select-option v-for="tg in facets.tags" :key="tg" :value="tg">{{ tg }}</a-select-option>
-      </a-select>
-      <a-select v-model:value="filters.status" :placeholder="t('common.status')" allow-clear style="width: 120px" @change="search">
-        <a-select-option v-for="s in (['active', 'paused', 'error'] as const)" :key="s" :value="s">{{ t(`tracked.status.${s}`) }}</a-select-option>
-      </a-select>
-      <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('tracked.owner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-        :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
-      <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-      <span class="muted">{{ t('tracked.total', { n: total }) }}</span>
-    </a-space>
-
-    <a-table
-      :data-source="items" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 1470 }"
-      :pagination="{ current: page, pageSize: PAGE_SIZE, total, size: 'small', hideOnSinglePage: true, showSizeChanger: false, onChange: (p: number) => { page = p; load() } }"
-      :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'favorite'">
-          <a-button type="text" size="small" :class="['star', { on: record.favorite }]" :aria-label="t('tracked.favorite')" @click="toggleFavorite(record as TrackedAccount)">
-            <StarFilled v-if="record.favorite" /><StarOutlined v-else />
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @reset="reset" @refresh="load()">
+        <a-input-search v-model:value="filters.q" :placeholder="t('tracked.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
+        <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.label }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.category" :placeholder="t('tracked.colCategory')" allow-clear show-search style="width: 150px" @change="search">
+          <a-select-option value="none">{{ t('tracked.uncategorized') }}</a-select-option>
+          <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.tag" :placeholder="t('tracked.tag')" allow-clear show-search style="width: 130px" @change="search">
+          <a-select-option v-for="tg in facets.tags" :key="tg" :value="tg">{{ tg }}</a-select-option>
+        </a-select>
+        <a-select v-model:value="filters.status" :placeholder="t('common.status')" allow-clear style="width: 120px" @change="search">
+          <a-select-option v-for="s in (['active', 'paused', 'error'] as const)" :key="s" :value="s">{{ t(`tracked.status.${s}`) }}</a-select-option>
+        </a-select>
+        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('tracked.owner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
+        <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
+        <template #actions>
+          <a-button :disabled="!items.length" @click="refreshBatch">
+            {{ t('tracked.refreshBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
           </a-button>
         </template>
-        <template v-else-if="column.key === 'account'">
-          <div class="acct">
-            <a-avatar v-if="record.avatarUrl" :src="record.avatarUrl" size="small" referrerpolicy="no-referrer" />
-            <a-avatar v-else size="small">{{ (record.displayName || record.handle).charAt(0).toUpperCase() }}</a-avatar>
-            <div class="acct-text">
-              <a class="name" @click="openDetail(record as TrackedAccount)">{{ record.displayName || trackedHandle(record) }}</a>
-              <a :href="record.profileUrl" target="_blank" rel="noopener noreferrer" class="muted small">{{ trackedHandle(record) }}</a>
+      </SearchBar>
+
+      <a-table
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1580 }"
+        :pagination="pagination({ current: page, pageSize, total, totalText: (n) => t('tracked.total', { n }) })"
+        :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
+        @change="onTableChange"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'favorite'">
+            <a-button type="text" size="small" :class="['star', { on: record.favorite }]" :aria-label="t('tracked.favorite')" @click="toggleFavorite(record as TrackedAccount)">
+              <StarFilled v-if="record.favorite" /><StarOutlined v-else />
+            </a-button>
+          </template>
+          <template v-else-if="column.key === 'account'">
+            <div class="acct">
+              <a-avatar v-if="record.avatarUrl" :src="record.avatarUrl" size="small" referrerpolicy="no-referrer" />
+              <a-avatar v-else size="small">{{ (record.displayName || record.handle).charAt(0).toUpperCase() }}</a-avatar>
+              <div class="acct-text">
+                <a class="ellipsis name" @click="openDetail(record as TrackedAccount)">{{ record.displayName || trackedHandle(record) }}</a>
+                <a :href="record.profileUrl" target="_blank" rel="noopener noreferrer" class="muted small">{{ trackedHandle(record) }}</a>
+              </div>
             </div>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'platform'"><a-tag>{{ platformLabel(record.platform) }}</a-tag></template>
-        <template v-else-if="column.key === 'category'">
-          <div>{{ record.category || '—' }}</div>
-          <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'followers'">
-          <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString(dateLocale()) : undefined">
-            <span class="num">{{ compactNumber(record.followers) }}</span>
-          </a-tooltip>
-          <div v-if="record.followersDelta !== null" :class="['delta small', record.followersDelta >= 0 ? 'up' : 'down']">
-            {{ record.followersDelta >= 0 ? '+' : '' }}{{ compactNumber(record.followersDelta) }}
-          </div>
-        </template>
-        <template v-else-if="column.key === 'checked'">
-          <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
-          <span v-else class="muted">{{ t('tracked.never') }}</span>
-          <div v-if="record.lastSource" class="muted small">{{ t(`tracked.sources.${record.lastSource}`) }}</div>
-        </template>
-        <template v-else-if="column.key === 'schedule'">
-          <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
-          <template v-else>
-            <span :class="{ muted: record.refreshIntervalHours === null }">{{ intervalText(record.refreshIntervalHours) }}</span>
-            <div v-if="record.nextRefreshAt" class="muted small">{{ t('collect.next', { time: new Date(record.nextRefreshAt).toLocaleString(dateLocale()) }) }}</div>
-            <div v-if="record.scheduleSkipCode" class="warn small">{{ t('collect.skipped', { reason: codeText(record.scheduleSkipCode, undefined, record.scheduleSkipCode) }) }}</div>
+          </template>
+          <template v-else-if="column.key === 'platform'"><a-tag>{{ platformLabel(record.platform) }}</a-tag></template>
+          <template v-else-if="column.key === 'category'">
+            <div>{{ record.category || '—' }}</div>
+            <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'followers'">
+            <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString(dateLocale()) : undefined">
+              <span class="num">{{ compactNumber(record.followers) }}</span>
+            </a-tooltip>
+            <div v-if="record.followersDelta !== null" :class="['delta small', record.followersDelta >= 0 ? 'up' : 'down']">
+              {{ record.followersDelta >= 0 ? '+' : '' }}{{ compactNumber(record.followersDelta) }}
+            </div>
+          </template>
+          <template v-else-if="column.key === 'checked'">
+            <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
+            <span v-else class="muted">{{ t('tracked.never') }}</span>
+            <div v-if="record.lastSource" class="muted small">{{ t(`tracked.sources.${record.lastSource}`) }}</div>
+          </template>
+          <template v-else-if="column.key === 'schedule'">
+            <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
+            <template v-else>
+              <span :class="{ muted: record.refreshIntervalHours === null }">{{ intervalText(record.refreshIntervalHours) }}</span>
+              <div v-if="record.nextRefreshAt" class="muted small">{{ t('collect.next', { time: new Date(record.nextRefreshAt).toLocaleString(dateLocale()) }) }}</div>
+              <div v-if="record.scheduleSkipCode" class="warn small">{{ t('collect.skipped', { reason: codeText(record.scheduleSkipCode, undefined, record.scheduleSkipCode) }) }}</div>
+            </template>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-tooltip :title="record.status === 'error' ? codeText(record.lastErrorCode, undefined, record.lastError ?? '') : undefined">
+              <StatusTag kind="tracked" :status="record.status" />
+            </a-tooltip>
+            <a-tag v-if="busy(record as TrackedAccount)" color="processing">{{ t('tracked.refreshing') }}</a-tag>
+            <div class="muted small">{{ t(`tracked.dataModes.${record.dataMode}`) }}</div>
+          </template>
+          <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button size="small" type="link" @click="openDetail(record as TrackedAccount)">{{ t('common.view') }}</a-button>
+              <a-tooltip :title="record.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint') : record.status === 'paused' ? t('errors.tracked.paused') : undefined">
+                <a-button size="small" type="link" :disabled="record.status === 'paused' || record.dataMode === 'api_unconfigured'" :loading="busy(record as TrackedAccount)"
+                  @click="refreshOne(record as TrackedAccount)">{{ t('common.refresh') }}</a-button>
+              </a-tooltip>
+              <a-dropdown>
+                <a-button size="small" type="link">{{ t('common.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item key="edit" @click="openEdit(record as TrackedAccount)">{{ t('common.edit') }}</a-menu-item>
+                    <a-menu-item key="delete" danger @click="remove(record as TrackedAccount)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
           </template>
         </template>
-        <template v-else-if="column.key === 'status'">
-          <a-tooltip :title="record.status === 'error' ? codeText(record.lastErrorCode, undefined, record.lastError ?? '') : undefined">
-            <a-tag :color="TRACKED_STATUS_COLOR[record.status as TrackedStatus]">{{ t(`tracked.status.${record.status}`) }}</a-tag>
-          </a-tooltip>
-          <a-tag v-if="busy(record as TrackedAccount)" color="processing">{{ t('tracked.refreshing') }}</a-tag>
-          <div class="muted small">{{ t(`tracked.dataModes.${record.dataMode}`) }}</div>
-        </template>
-        <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-        <template v-else-if="column.key === 'ops'">
-          <a-space :size="0">
-            <a-button size="small" type="link" @click="openDetail(record as TrackedAccount)">{{ t('common.view') }}</a-button>
-            <a-tooltip :title="record.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint') : record.status === 'paused' ? t('errors.tracked.paused') : undefined">
-              <a-button size="small" type="link" :disabled="record.status === 'paused' || record.dataMode === 'api_unconfigured'" :loading="busy(record as TrackedAccount)"
-                @click="refreshOne(record as TrackedAccount)">{{ t('common.refresh') }}</a-button>
-            </a-tooltip>
-            <a-button size="small" type="link" @click="openEdit(record as TrackedAccount)">{{ t('common.edit') }}</a-button>
-            <a-button size="small" type="link" danger @click="remove(record as TrackedAccount)">{{ t('common.delete') }}</a-button>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-    <div class="faint small" style="margin-top: 8px">{{ t('tracked.complianceHint') }}</div>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 
   <TrackedAccountDrawer v-model:open="detailOpen" :account="detail" :platforms="platforms" @changed="replace" @edit="openEdit" @refresh="refreshOne" />
 
-  <a-modal v-model:open="addOpen" :title="t('tracked.add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="adding" :width="600" @ok="saveAdd">
+  <a-modal v-model:open="addOpen" :title="t('tracked.add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="adding" :width="MODAL_WIDTH.md" @ok="saveAdd">
     <a-form layout="vertical" :model="addForm">
-      <a-form-item :label="t('tracked.input')" :extra="t('tracked.inputHint')" :validate-status="previewError ? 'error' : undefined" :help="previewError || undefined">
+      <a-form-item :label="t('tracked.input')" :validate-status="previewError ? 'error' : undefined" :help="previewError || undefined">
         <a-input-group compact style="display: flex">
           <a-select v-model:value="addForm.platform" :placeholder="t('tracked.autoPlatform')" allow-clear style="width: 140px" @change="parseInput">
             <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.label }}</a-select-option>
@@ -357,7 +371,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="editOpen" :title="editing ? `${t('common.edit')} · ${trackedHandle(editing)}` : ''" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="editSaving" :width="600" @ok="saveEdit">
+  <a-modal v-model:open="editOpen" :title="editing ? `${t('common.edit')} · ${trackedHandle(editing)}` : ''" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="editSaving" :width="MODAL_WIDTH.md" @ok="saveEdit">
     <a-form layout="vertical" :model="editForm">
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="editForm.displayName" :maxlength="200" /></a-form-item>
       <a-form-item :label="t('tracked.avatarUrl')"><a-input v-model:value="editForm.avatarUrl" :maxlength="1000" :placeholder="URL_HINT" /></a-form-item>
@@ -370,34 +384,37 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <a-form-item :label="t('tracked.tags')"><a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions" /></a-form-item>
         </a-col>
       </a-row>
-      <a-form-item :label="t('tracked.trackingStatus')">
-        <a-radio-group v-model:value="editForm.status">
-          <a-radio-button value="active">{{ t('tracked.status.active') }}</a-radio-button>
-          <a-radio-button value="paused">{{ t('tracked.status.paused') }}</a-radio-button>
-        </a-radio-group>
-      </a-form-item>
-      <a-form-item :label="t('collect.interval')" :extra="t('collect.hint')">
-        <a-select v-model:value="editForm.interval" :options="scheduleOptions" :disabled="editing?.dataMode === 'manual_only'" style="width: 200px" />
-      </a-form-item>
+      <a-row :gutter="12">
+        <a-col :xs="24" :sm="12">
+          <a-form-item :label="t('tracked.trackingStatus')">
+            <a-radio-group v-model:value="editForm.status">
+              <a-radio-button value="active">{{ t('tracked.status.active') }}</a-radio-button>
+              <a-radio-button value="paused">{{ t('tracked.status.paused') }}</a-radio-button>
+            </a-radio-group>
+          </a-form-item>
+        </a-col>
+        <a-col :xs="24" :sm="12">
+          <a-form-item :label="t('collect.interval')">
+            <a-select v-model:value="editForm.interval" :options="scheduleOptions" :disabled="editing?.dataMode === 'manual_only'" />
+          </a-form-item>
+        </a-col>
+      </a-row>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="editForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
     </a-form>
   </a-modal>
-
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.faint { color: var(--cp-text-quaternary); }
-.small { font-size: 12px; }
 .small-tag { font-size: 11px; margin-top: 2px; }
 .acct { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .acct-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
-.acct-text .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-text .name { font-weight: 500; }
 .num { font-variant-numeric: tabular-nums; }
 .delta.up { color: var(--cp-primary); }
 .delta.down { color: var(--cp-error); }
 .star { color: var(--cp-text-quaternary); }
-.warn { color: var(--cp-warning); }
 .star.on { color: var(--cp-warning); }
+.warn { color: var(--cp-warning); }
 .preview { margin: -8px 0 12px; }
 </style>
+
