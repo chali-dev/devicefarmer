@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -383,7 +383,8 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     /** exact persona, or 'none' for templates without one */
     persona: z.string().trim().max(50).optional(),
     tag: z.string().trim().max(32).optional(),
-    scope: z.enum(['own', 'shared']).optional(),
+    /** shared = 公共, own = the caller's 个人, all-users = every 个人 template the caller can see (admins: all users') */
+    scope: z.enum(['own', 'shared', 'all-users']).optional(),
     q: z.string().trim().max(100).optional(),
   });
   const templateWhere = (user: AuthUser, q: Partial<z.infer<typeof TemplateQuery>>): SQL | undefined => and(
@@ -391,7 +392,7 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     q.kind && q.kind !== 'all' ? eq(TPL.kind, q.kind) : undefined,
     q.persona === 'none' ? isNull(TPL.persona) : q.persona ? eq(TPL.persona, q.persona) : undefined,
     q.tag ? sql`${TPL.tags} @> array[${q.tag.toLowerCase()}]::text[]` : undefined,
-    q.scope === 'shared' ? isNull(TPL.userId) : q.scope === 'own' ? eq(TPL.userId, user.id) : undefined,
+    q.scope === 'shared' ? isNull(TPL.userId) : q.scope === 'own' ? eq(TPL.userId, user.id) : q.scope === 'all-users' ? isNotNull(TPL.userId) : undefined,
     q.q ? or(ilike(TPL.name, like(q.q)), ilike(TPL.text, like(q.q))) : undefined,
   );
   app.get('/api/comment-templates', { schema: { querystring: TemplateQuery } }, async (req) => {
@@ -401,7 +402,7 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /** Personas and tags in use among visible templates (filter suggestions). */
-  app.get('/api/comment-templates/facets', { schema: { querystring: TemplateQuery.pick({ kind: true }) } }, async (req) => {
+  app.get('/api/comment-templates/facets', { schema: { querystring: TemplateQuery.pick({ kind: true, scope: true }) } }, async (req) => {
     const cond = templateWhere(req.user, req.query);
     const [personas, tags] = await Promise.all([
       db.selectDistinct({ p: TPL.persona }).from(TPL).where(and(cond, sql`${TPL.persona} is not null`)).orderBy(asc(TPL.persona)).limit(500),

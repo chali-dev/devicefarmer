@@ -6,7 +6,7 @@ import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
-import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
 import {
   taskStatusText,
   type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentRules, type CommentStatus, type CommentTemplate,
@@ -189,7 +189,7 @@ const tpl = reactive({ id: null as string | null, name: '', text: '', shared: fa
 const tplColumns = computed(() => [
   { title: t('comments.templateName'), dataIndex: 'name', key: 'name', width: 200 },
   { title: t('comments.templateText'), dataIndex: 'text', key: 'text', width: 420 },
-  { title: t('comments.shared'), key: 'shared', width: 140 },
+  { title: t('scripts.visibility'), key: 'shared', width: 140 },
   actionColumn(120),
 ])
 function openTpl(x?: CommentTemplate) {
@@ -397,8 +397,8 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'text'"><span class="pre">{{ record.text }}</span></template>
           <template v-else-if="column.key === 'shared'">
-            <a-tag v-if="record.shared" color="blue">{{ t('comments.shared') }}</a-tag>
-            <span v-else>{{ t('comments.private') }}<span v-if="auth.isAdmin && record.ownerName" class="muted"> · {{ record.ownerName }}</span></span>
+            <a-tag v-if="record.shared" color="blue">{{ t('scripts.public') }}</a-tag>
+            <span v-else>{{ t('scripts.personal') }}<span v-if="auth.isAdmin && record.ownerName" class="muted"> · {{ record.ownerName }}</span></span>
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space v-if="record.writable" :size="0">
@@ -448,9 +448,11 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
     <a-form layout="vertical">
       <a-form-item :label="t('comments.templateName')" required><a-input v-model:value="tpl.name" :maxlength="100" /></a-form-item>
       <a-form-item :label="t('comments.templateText')" required><a-textarea v-model:value="tpl.text" :auto-size="{ minRows: 3, maxRows: 8 }" :maxlength="5000" /></a-form-item>
-      <a-form-item v-if="auth.isAdmin && !tpl.id">
-        <a-checkbox v-model:checked="tpl.shared">{{ t('comments.shared') }}</a-checkbox>
-        <a-tooltip :title="t('comments.sharedHint')"><QuestionCircleOutlined class="muted" /></a-tooltip>
+      <a-form-item v-if="auth.isAdmin && !tpl.id" :label="t('scripts.visibility')" :extra="tpl.shared ? t('scripts.publicHint') : undefined">
+        <a-radio-group v-model:value="tpl.shared">
+          <a-radio :value="true">{{ t('scripts.tabs.public') }}</a-radio>
+          <a-radio :value="false">{{ t('scripts.tabs.mine') }}</a-radio>
+        </a-radio-group>
       </a-form-item>
     </a-form>
   </a-modal>
