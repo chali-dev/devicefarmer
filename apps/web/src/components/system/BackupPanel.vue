@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import { dateLocale } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import { fetchAuthBlob, fmtSize } from '../media/media'
+import StatusTag from '../common/StatusTag.vue'
+import { actionColumn, pagination, TABLE_SIZE } from '../common/ui'
 
 /** Database backups (数据库备份): daily schedule + keep N, back up now, list, download, delete. */
 interface Backup {
@@ -77,7 +80,6 @@ async function remove(b: Backup) {
   } catch (e) { message.error(errorText(e)) }
 }
 
-const STATUS_COLOR = { running: 'processing', ok: 'success', failed: 'error' } as const
 const restoreCmd = 'pg_restore --clean --if-exists --no-owner -h <host> -U <user> -d <database> <file>.dump'
 const columns = computed(() => [
   { title: t('common.time'), key: 'createdAt', width: 180 },
@@ -85,15 +87,15 @@ const columns = computed(() => [
   { title: t('sysadmin.backup.trigger'), key: 'trigger', width: 100 },
   { title: t('sysadmin.backup.storage'), key: 'storage', width: 110 },
   { title: t('sysadmin.backup.size'), key: 'size', width: 110 },
-  { title: t('common.name'), key: 'key', ellipsis: true },
-  { title: t('common.action'), key: 'actions', width: 150 },
+  { title: t('common.name'), key: 'key', ellipsis: true, width: 260 },
+  actionColumn(150),
 ])
 </script>
 
 <template>
   <div>
-    <h4>{{ t('sysadmin.backup.schedule') }}</h4>
-    <a-form layout="inline" style="row-gap: 8px">
+    <a-typography-title :level="5">{{ t('sysadmin.backup.schedule') }}</a-typography-title>
+    <a-form layout="inline" class="schedule">
       <a-form-item><a-checkbox v-model:checked="form.enabled">{{ t('sysadmin.backup.enabled') }}</a-checkbox></a-form-item>
       <a-form-item :label="t('sysadmin.backup.hour')">
         <a-select v-model:value="form.hour" :disabled="!form.enabled" style="width: 170px">
@@ -106,29 +108,33 @@ const columns = computed(() => [
       <a-form-item><a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button></a-form-item>
     </a-form>
 
+    <a-divider />
     <div class="head">
-      <h4>{{ t('sysadmin.backup.list') }}</h4>
-      <a-space>
-        <a-button :loading="loading" @click="load">{{ t('common.refresh') }}</a-button>
+      <a-typography-title :level="5" class="head-title">{{ t('sysadmin.backup.list') }}</a-typography-title>
+      <a-space wrap>
+        <a-tooltip :title="t('common.refresh')">
+          <a-button :loading="loading" :aria-label="t('common.refresh')" @click="load"><template #icon><ReloadOutlined /></template></a-button>
+        </a-tooltip>
         <a-button type="primary" :loading="starting" @click="backupNow">{{ t('sysadmin.backup.now') }}</a-button>
       </a-space>
     </div>
-    <a-table :data-source="backups" :columns="columns" row-key="id" size="small" :loading="loading" :pagination="{ pageSize: 20, hideOnSinglePage: true }" :locale="{ emptyText: t('sysadmin.backup.empty') }" :scroll="{ x: 800 }">
+    <a-table
+      :data-source="backups" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading"
+      :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.backup.empty') }" :scroll="{ x: 1010 }"
+    >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'status'">
-          <a-tooltip :title="record.error">
-            <a-tag :color="STATUS_COLOR[record.status as Backup['status']]">{{ t(`sysadmin.backup.status.${record.status}`) }}</a-tag>
-          </a-tooltip>
+          <a-tooltip :title="record.error"><span><StatusTag kind="backup" :status="record.status" /></span></a-tooltip>
         </template>
         <template v-else-if="column.key === 'trigger'">{{ t(`sysadmin.backup.triggers.${record.trigger}`) }}</template>
         <template v-else-if="column.key === 'storage'">{{ t(`sysadmin.backup.storages.${record.storage}`) }}</template>
         <template v-else-if="column.key === 'size'">{{ record.size !== null ? fmtSize(record.size) : '—' }}</template>
         <template v-else-if="column.key === 'key'">
-          <router-link v-if="record.taskId" :to="{ path: '/tasks', query: { task: record.taskId } }">{{ record.key }}</router-link>
-          <span v-else>{{ record.key }}</span>
+          <router-link v-if="record.taskId" :to="{ path: '/tasks', query: { task: record.taskId } }" class="mono">{{ record.key }}</router-link>
+          <span v-else class="mono">{{ record.key }}</span>
         </template>
-        <template v-else-if="column.key === 'actions'">
+        <template v-else-if="column.key === 'ops'">
           <a-space :size="0">
             <a-button size="small" type="link" :disabled="record.status !== 'ok'" @click="download(record as Backup)">{{ t('sysadmin.backup.download') }}</a-button>
             <a-popconfirm :title="t('sysadmin.backup.deleteConfirm')" :disabled="record.status === 'running'" @confirm="remove(record as Backup)">
@@ -141,22 +147,20 @@ const columns = computed(() => [
 
     <a-descriptions size="small" :column="1" bordered class="info">
       <a-descriptions-item :label="t('sysadmin.backup.command')">
-        <code>{{ pgDumpCmd }} --format=custom --compress=6 …</code>
-        <div class="muted small">{{ t('sysadmin.backup.commandHint') }}</div>
+        <code class="mono small">{{ pgDumpCmd }} --format=custom --compress=6 …</code>
       </a-descriptions-item>
       <a-descriptions-item :label="t('sysadmin.backup.restoreTitle')">
         <div class="muted small">{{ t('sysadmin.backup.restoreHint') }}</div>
-        <code>{{ restoreCmd }}</code>
+        <code class="mono small">{{ restoreCmd }}</code>
       </a-descriptions-item>
     </a-descriptions>
   </div>
 </template>
 
 <style scoped>
-.head { display: flex; justify-content: space-between; align-items: center; margin: 20px 0 8px; }
-.head h4 { margin: 0; }
-.info { margin-top: 16px; }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
-code { font-size: 12px; word-break: break-all; }
+.schedule { row-gap: 8px; }
+.head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.head-title { margin: 0; }
+.info { margin-top: var(--cp-gap); }
+code { word-break: break-all; }
 </style>

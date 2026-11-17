@@ -11,6 +11,7 @@ import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vu
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import SystemInfo from '../components/settings/SystemInfo.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
+import PageContainer from '../components/common/PageContainer.vue'
 import { usePlatformsStore } from '../stores/platforms'
 
 /**
@@ -32,47 +33,54 @@ const tab = computed<Tab>({
 const cfg = ref<SettingsConfig | null>(null)
 onMounted(async () => { try { cfg.value = await api<SettingsConfig>('GET', '/api/settings/config') } catch { /* tabs show — */ } })
 const secs = (ms: number) => `${Math.round(ms / 1000)} s`
+/** Read-only values from the API's environment (publish defaults, media limits). */
+const envGroups = computed(() => {
+  const c = cfg.value
+  return [
+    { title: undefined, rows: [
+      { label: t('settings.publish.maxAttempts'), value: c?.publish.maxAttempts ?? '—', env: 'PUBLISH_MAX_ATTEMPTS' },
+      { label: t('settings.publish.timeout'), value: c ? secs(c.publish.timeoutMs) : '—', env: 'PUBLISH_TIMEOUT_MS' },
+      { label: t('settings.publish.backoff'), value: c ? secs(c.publish.retryBackoffMs) : '—', env: 'PUBLISH_RETRY_BACKOFF_MS' },
+    ] },
+    { title: t('settings.publish.mediaTitle'), rows: [
+      { label: t('settings.publish.imageMax'), value: c ? `${c.media.imageMaxMb} MB` : '—', env: 'MEDIA_IMAGE_MAX_MB' },
+      { label: t('settings.publish.videoMax'), value: c ? `${c.media.videoMaxMb} MB` : '—', env: 'MEDIA_VIDEO_MAX_MB' },
+      { label: t('settings.publish.types'), value: c?.media.allowedTypes.join(', ') ?? '—', env: 'MEDIA_ALLOWED_TYPES' },
+    ] },
+  ]
+})
 </script>
 
 <template>
-  <a-card :title="t('settings.title')" size="small">
-    <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
-      <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
-      <a-tab-pane key="platforms" :tab="t('settings.tabs.platforms')"><PlatformSettings /></a-tab-pane>
-      <a-tab-pane v-if="platforms.scope.features.youtubeKey" key="tracked" :tab="t('settings.tabs.tracked')"><YoutubeKeySettings /></a-tab-pane>
-      <a-tab-pane key="social" :tab="t('settings.tabs.social')"><SocialLimitsSettings /></a-tab-pane>
-      <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
-        <div class="settings-pane">
-          <p class="muted">{{ t('settings.publish.hint') }}</p>
-          <a-descriptions size="small" :column="1" bordered>
-            <a-descriptions-item :label="t('settings.publish.maxAttempts')">
-              {{ cfg?.publish.maxAttempts ?? '—' }} <a-tag class="ro">PUBLISH_MAX_ATTEMPTS</a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item :label="t('settings.publish.timeout')">
-              {{ cfg ? secs(cfg.publish.timeoutMs) : '—' }} <a-tag class="ro">PUBLISH_TIMEOUT_MS</a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item :label="t('settings.publish.backoff')">
-              {{ cfg ? secs(cfg.publish.retryBackoffMs) : '—' }} <a-tag class="ro">PUBLISH_RETRY_BACKOFF_MS</a-tag>
-            </a-descriptions-item>
-          </a-descriptions>
-          <h4 class="sub">{{ t('settings.publish.mediaTitle') }}</h4>
-          <a-descriptions size="small" :column="1" bordered>
-            <a-descriptions-item :label="t('settings.publish.imageMax')">{{ cfg ? `${cfg.media.imageMaxMb} MB` : '—' }} <a-tag class="ro">MEDIA_IMAGE_MAX_MB</a-tag></a-descriptions-item>
-            <a-descriptions-item :label="t('settings.publish.videoMax')">{{ cfg ? `${cfg.media.videoMaxMb} MB` : '—' }} <a-tag class="ro">MEDIA_VIDEO_MAX_MB</a-tag></a-descriptions-item>
-            <a-descriptions-item :label="t('settings.publish.types')">{{ cfg?.media.allowedTypes.join(', ') ?? '—' }} <a-tag class="ro">MEDIA_ALLOWED_TYPES</a-tag></a-descriptions-item>
-          </a-descriptions>
-        </div>
-      </a-tab-pane>
-      <a-tab-pane key="retention" :tab="t('settings.tabs.retention')"><RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" /></a-tab-pane>
-      <a-tab-pane key="system" :tab="t('settings.tabs.system')"><SystemInfo /></a-tab-pane>
-      <a-tab-pane key="alerts" :tab="t('alerts.settings.tab')"><AlertSettings /></a-tab-pane>
-    </a-tabs>
-  </a-card>
+  <PageContainer>
+    <a-card :bordered="false">
+      <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
+        <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
+        <a-tab-pane key="platforms" :tab="t('settings.tabs.platforms')"><PlatformSettings /></a-tab-pane>
+        <a-tab-pane v-if="platforms.scope.features.youtubeKey" key="tracked" :tab="t('settings.tabs.tracked')"><YoutubeKeySettings /></a-tab-pane>
+        <a-tab-pane key="social" :tab="t('settings.tabs.social')"><SocialLimitsSettings /></a-tab-pane>
+        <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
+          <div class="settings-pane">
+            <a-descriptions
+              v-for="(group, gi) in envGroups" :key="gi" size="small" :column="1" bordered :title="group.title" :class="{ block: gi > 0 }"
+            >
+              <a-descriptions-item v-for="r in group.rows" :key="r.env" :label="r.label">
+                {{ r.value }}
+                <a-tooltip :title="t('settings.readOnlyEnv', { name: r.env })"><a-tag class="env mono">{{ r.env }}</a-tag></a-tooltip>
+              </a-descriptions-item>
+            </a-descriptions>
+          </div>
+        </a-tab-pane>
+        <a-tab-pane key="retention" :tab="t('settings.tabs.retention')"><RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" /></a-tab-pane>
+        <a-tab-pane key="system" :tab="t('settings.tabs.system')"><SystemInfo /></a-tab-pane>
+        <a-tab-pane key="alerts" :tab="t('alerts.settings.tab')"><AlertSettings /></a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </PageContainer>
 </template>
 
 <style scoped>
 .settings-pane { max-width: 640px; }
-.muted { color: var(--cp-text-tertiary); }
-.ro { margin-left: 8px; font-family: monospace; font-size: 11px; }
-.sub { margin-top: 20px; }
+.env { margin-inline-start: 8px; font-size: 11px; max-width: 100%; white-space: normal; word-break: break-all; }
+.block { margin-top: 24px; }
 </style>

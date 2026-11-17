@@ -110,20 +110,19 @@ async function saveStorage() {
               </a-form-item>
             </a-col>
             <a-col :xs="24" :sm="12">
-              <a-form-item :label="t('media.storage.prefix')" :extra="t('media.storage.prefixHint')"><a-input v-model:value="storageForm.prefix" placeholder="cloudphone/" /></a-form-item>
+              <a-form-item :label="t('media.storage.prefix')"><a-input v-model:value="storageForm.prefix" placeholder="cloudphone/" /></a-form-item>
             </a-col>
           </a-row>
-          <a-alert type="warning" show-icon style="margin-bottom: 12px"
-            :message="t('media.storage.bucketWarning')" />
+          <a-alert type="warning" show-icon class="note" :message="t('media.storage.bucketWarning')" />
         </template>
         <a-alert
-          v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon style="margin-bottom: 12px"
+          v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon class="note"
           :message="testResult.ok ? t('media.storage.testOk', { ms: testResult.latencyMs }) : t('media.storage.testFailed', { error: testResult.error ?? '' })"
         />
-        <div style="display: flex; gap: 8px">
+        <a-space wrap>
           <a-button :loading="storageTesting" @click="testStorage">{{ t('media.storage.test') }}</a-button>
           <a-button type="primary" :loading="storageSaving" @click="saveStorage">{{ t('common.save') }}</a-button>
-        </div>
+        </a-space>
       </a-form>
     </a-spin>
   </div>
@@ -131,4 +130,5 @@ async function saveStorage() {
 
 <style scoped>
 .settings-pane { max-width: 640px; }
+.note { margin-bottom: 16px; }
 </style>

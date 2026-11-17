@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
-import { CheckOutlined, MinusOutlined } from '@ant-design/icons-vue'
-import { message, Modal } from 'ant-design-vue'
+import { CheckOutlined, CopyOutlined, MinusOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { PlatformAppSettings, PlatformCapabilities } from '../../api/types'
 import { usePlatformsStore } from '../../stores/platforms'
+import { confirmDanger } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
 
 /** Settings → 平台接入 (admin): official API app credentials per platform. The client secret is write-only. */
@@ -59,15 +60,15 @@ function save(a: PlatformAppSettings) {
 }
 
 function clearSecret(a: PlatformAppSettings) {
-  Modal.confirm({
-    title: t('platforms.confirmClearSecret', { name: a.name }), okType: 'danger', okText: t('common.ok'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('platforms.confirmClearSecret', { name: a.name }), okText: t('common.ok'),
     onOk: () => put(a, { clientSecret: null }, t('platforms.secretCleared')),
   })
 }
 
 function removeApp(a: PlatformAppSettings) {
-  Modal.confirm({
-    title: t('platforms.confirmRemove', { name: a.name }), content: t('platforms.removeHint'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('platforms.confirmRemove', { name: a.name }), content: t('platforms.removeHint'),
     onOk: () => put(a, { clientId: null }, t('common.deleted')),
   })
 }
@@ -79,7 +80,6 @@ async function copy(text: string) {
 
 <template>
   <a-spin :spinning="loading">
-    <a-alert type="info" show-icon style="margin-bottom: 16px" :message="t('platforms.intro')" :description="t('platforms.introDetail')" />
     <a-row :gutter="[16, 16]">
       <a-col v-for="a in apps" :key="a.platform" :xs="24" :lg="12" :xxl="8">
         <a-card size="small" class="app-card">
@@ -89,22 +89,22 @@ async function copy(text: string) {
               <a-tag :color="a.configured ? 'green' : 'default'">{{ a.configured ? t('platforms.configured') : t('platforms.notConfigured') }}</a-tag>
             </a-space>
           </template>
-          <p class="muted small">{{ t(`platforms.hint.${a.platform}`) }}</p>
-          <a-form v-if="forms[a.platform]" layout="vertical" size="small">
+          <a-typography-paragraph type="secondary" class="small">{{ t(`platforms.hint.${a.platform}`) }}</a-typography-paragraph>
+          <a-form v-if="forms[a.platform]" layout="vertical">
             <a-form-item :label="a.platform === 'tiktok' ? 'Client Key' : 'Client ID'">
               <a-input v-model:value="forms[a.platform]!.clientId" autocomplete="off" />
             </a-form-item>
-            <a-form-item label="Client Secret" :extra="t('platforms.secretHint')">
+            <a-form-item label="Client Secret">
               <a-input-password
                 v-model:value="forms[a.platform]!.clientSecret" autocomplete="new-password"
                 :placeholder="a.clientSecretSet ? t('platforms.secretKeep') : t('platforms.secretEnter')"
               />
             </a-form-item>
             <a-form-item :label="t('platforms.redirectUri')" :extra="t('platforms.redirectHint')">
-              <a-input-group compact style="display: flex">
-                <a-input :value="a.redirectUri" readonly style="flex: 1" />
-                <a-button @click="copy(a.redirectUri)">{{ t('platforms.copy') }}</a-button>
-              </a-input-group>
+              <a-space-compact block>
+                <a-input :value="a.redirectUri" readonly />
+                <a-button @click="copy(a.redirectUri)"><template #icon><CopyOutlined /></template>{{ t('platforms.copy') }}</a-button>
+              </a-space-compact>
             </a-form-item>
             <a-form-item v-if="a.platform === 'tiktok'" :extra="t('platforms.directPostHint')">
               <a-checkbox v-model:checked="forms[a.platform]!.directPost">{{ t('platforms.directPost') }}</a-checkbox>
@@ -113,7 +113,7 @@ async function copy(text: string) {
               <a-checkbox v-model:checked="forms[a.platform]!.accountStats">{{ t('platforms.accountStats') }}</a-checkbox>
             </a-form-item>
             <a-form-item :label="t('platforms.scopes')">
-              <a-tag v-for="s in a.scopes" :key="s" class="scope">{{ s.replace('https://www.googleapis.com/auth/', '') }}</a-tag>
+              <a-tag v-for="s in a.scopes" :key="s" class="scope mono">{{ s.replace('https://www.googleapis.com/auth/', '') }}</a-tag>
             </a-form-item>
             <a-form-item :label="t('platforms.capabilities')">
               <div class="caps">
@@ -140,10 +140,8 @@ async function copy(text: string) {
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-secondary); }
-.small { font-size: 12px; }
 .app-card { height: 100%; }
-.scope { margin-bottom: 4px; font-family: monospace; font-size: 12px; }
+.scope { margin-bottom: 4px; font-size: 12px; }
 .caps { display: flex; flex-wrap: wrap; gap: 4px 14px; }
 .cap { color: var(--cp-text); white-space: nowrap; }
 .cap.off { color: var(--cp-text-quaternary); }

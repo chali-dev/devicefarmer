@@ -167,7 +167,6 @@ const en: Messages = {
     },
   },
   taskCenter: {
-    title: 'Task Center',
     all: 'All',
     type: 'Type',
     target: 'Target',
@@ -193,13 +192,10 @@ const en: Messages = {
     lastError: 'Last error',
     errorCode: 'Error code',
     retryOf: 'Retry of',
-    keyword: 'Keyword',
     keywordPlaceholder: 'Name / error / task ID',
-    total: '{n} total',
     start: 'Start',
     end: 'End',
     ownerPlaceholder: 'All users',
-    empty: 'No tasks',
     timeout: 'Timeout {s} s',
   },
   profiles: {
@@ -664,7 +660,6 @@ const en: Messages = {
       pathStyle: 'Path-style addressing',
       pathStyleHint: 'Usually required for self-hosted storage (e.g. SeaweedFS / MinIO)',
       prefix: 'Prefix',
-      prefixHint: 'Optional, e.g. cloudphone/',
       bucketWarning: 'After changing the Bucket or Endpoint, items previously stored in S3 can no longer be read (no automatic migration).',
       testOk: 'Connection OK (write, read and delete passed in {ms} ms)',
       testFailed: 'Connection failed: {error}',
@@ -964,9 +959,6 @@ const en: Messages = {
     comments: 'Comments',
   },
   platforms: {
-    title: 'Platform Integrations',
-    intro: "Authorise social accounts through each platform's official API (OAuth) for official publishing, comments and account checks.",
-    introDetail: "Create an app in each platform's developer console and register the redirect URI shown below. Platform passwords are never stored, only encrypted authorisation tokens. The client secret is stored encrypted and never shown again.",
     hint: {
       youtube: 'Google Cloud project: enable YouTube Data API v3 and create an OAuth client (web application). Unverified projects can only upload private videos.',
       instagram: "Meta developer app: add the Instagram product (Instagram Login / Business Login). Business and creator accounts only; other people's accounts need App Review. The redirect URI must be https.",
@@ -976,7 +968,6 @@ const en: Messages = {
     notConfigured: 'Not configured',
     notConfiguredHint: "An admin has not configured this platform's official API yet",
     notConnectedHint: "Not authorised: manual operation only. Click Connect to authorise on the platform's official sign-in page.",
-    secretHint: 'Stored encrypted, write-only.',
     secretKeep: 'Set, leave empty to keep',
     secretEnter: 'Enter the client secret',
     redirectUri: 'Redirect URI',
@@ -986,7 +977,7 @@ const en: Messages = {
     directPost: "App passed TikTok's direct post audit (video.publish)",
     directPostHint: "Without the audit, videos are only sent to the creator's TikTok inbox and the creator finishes the post in the app.",
     accountStats: 'Request the account analytics permission',
-    accountStatsHint: 'Daily views/likes/shares for Account analytics (Instagram insights, YouTube Analytics, TikTok user.info.stats). Enable the permission in the platform\'s developer console first, or the platform refuses the authorisation; connected accounts must reconnect for it to take effect. When off, only basic numbers such as followers are collected.',
+    accountStatsHint: 'Enable the permission in the platform developer console first; connected accounts must reconnect for it to apply.',
     tiktokInbox: "Current: sent to the creator's inbox (draft), the creator finishes the post in the app; comments have no official API (manual).",
     tiktokDirect: 'Current: direct post (unaudited apps can only post as private); comments have no official API (manual).',
     instagramMedia: 'The platform fetches media by URL: media must be on internet-reachable S3 storage (time-limited signed URL); media on local storage cannot be published through the API. Images must be JPEG.',
@@ -1330,7 +1321,6 @@ const en: Messages = {
     selectAccount: 'Select an account to sync or enter comments',
   },
   users: {
-    title: 'Users',
     newUser: 'New user',
     builtin: 'Built-in',
     me: 'Me',
@@ -1352,12 +1342,10 @@ const en: Messages = {
     initialPasswordShort: 'The initial password needs at least 8 characters',
     newPasswordShort: 'The new password needs at least 8 characters',
     min8: 'At least 8 characters',
-    noGrantsHint: 'New users have no device access; grant devices under "Permissions".',
     resetTitle: 'Reset password · {name}',
     newPasswordPlaceholder: 'New password (at least 8 characters)',
   },
   permissions: {
-    title: 'Permissions',
     info: 'Admins can access all devices without grants; only accounts with the "User" role are listed here. Users see and operate only the devices granted to them.',
     byUser: 'By user',
     byDevice: 'By device',
@@ -1378,16 +1366,13 @@ const en: Messages = {
     userLabel: '{display} ({username})',
   },
   audit: {
-    title: 'Audit Log',
     exportCsv: 'Export CSV',
     exportFailed: 'Export failed ({status})',
     exportFile: 'audit-log',
     exportLimited: 'Only the latest 10000 entries were exported; narrow the filters',
-    total: '{n} entries',
     start: 'Start time',
     end: 'End time',
     result: 'Result',
-    keyword: 'Keyword',
     keywordPlaceholder: 'Target / path / username',
     target: 'Target',
     anonymous: 'Anonymous',
@@ -1590,7 +1575,6 @@ const en: Messages = {
     colAwaiting: 'Awaiting',
   },
   settings: {
-    title: 'Settings',
     updatedAt: 'Updated {at}',
     readOnlyEnv: 'env {name}, read-only',
     tabs: {
@@ -1603,7 +1587,6 @@ const en: Messages = {
       system: 'System',
     },
     publish: {
-      hint: 'These values come from server environment variables and need an API restart to change, so they are shown read-only. A distribution can still set its own number of attempts (1–10) in the Distribute dialog.',
       maxAttempts: 'Default max attempts',
       timeout: 'Attempt timeout',
       backoff: 'Retry backoff base',
@@ -1614,7 +1597,7 @@ const en: Messages = {
     },
     retention: {
       tasksTitle: 'Task Center retention',
-      tasksHint: 'Finished tasks (success / failed / cancelled) older than the retention period are deleted with their logs by an hourly cleanup task. Unfinished tasks, and tasks still referenced by unfinished work (e.g. a publish run that is scheduled or awaiting the operator), are never deleted.',
+      tasksHint: 'Finished tasks older than the retention period are deleted with their logs every hour; unfinished or still referenced tasks are kept.',
       keepForever: 'Keep forever (no cleanup)',
       days: 'Retention (days)',
       dayUnit: 'days',
@@ -1624,7 +1607,6 @@ const en: Messages = {
       lastRun: 'Last cleanup',
       lastResult: '{tasks} tasks and {logs} log lines deleted',
       auditTitle: 'Audit log retention',
-      auditHint: 'The audit log retention is set by an environment variable and applied daily.',
     },
     system: {
       health: 'Dependency health',
@@ -1643,7 +1625,6 @@ const en: Messages = {
     },
   },
   sysadmin: {
-    title: 'System',
     tabs: { backups: 'Database backups', logs: 'System logs' },
     dayUnit: 'days',
     backup: {
@@ -1665,16 +1646,14 @@ const en: Messages = {
       download: 'Download',
       deleteConfirm: 'Delete this backup file? This cannot be undone',
       command: 'Backup command',
-      commandHint: 'Set by the PG_DUMP_CMD environment variable; the database password reaches the child process only via PGPASSWORD. Files are stored under backups/ in the active storage backend.',
       restoreTitle: 'Restore (manual)',
-      restoreHint: 'Restoring overwrites the current data: stop the API, then run (see CLAUDE.md):',
+      restoreHint: 'Restoring overwrites the current data: stop the API, then run:',
       empty: 'No backups yet',
     },
     logs: {
       level: 'Minimum level',
       levelCol: 'Level',
       levels: { trace: 'Trace', debug: 'Debug', info: 'Info', warn: 'Warning', error: 'Error', fatal: 'Fatal' },
-      keyword: 'Keyword',
       keywordPlaceholder: 'Message / path / reqId',
       source: 'Source',
       memory: 'Recent (in memory, up to {n} lines)',
@@ -1685,8 +1664,6 @@ const en: Messages = {
       retention: 'Retention',
       logRetention: 'Keep log files',
       historyRetention: 'Keep connection history',
-      redactedHint: 'Passwords, keys, tokens and similar values are replaced by [redacted] before they are stored. Log files are split by UTC date.',
-      deviceLogsHint: 'Per-device operation records and system logs (logcat) are under Devices → Device logs, or open them from {link}.',
       empty: 'No matching log lines',
     },
     conn: {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -56,8 +57,10 @@ const last = computed(() => data.value?.lastCleanup ?? null)
 <template>
   <div class="settings-pane">
     <a-spin :spinning="!data">
-      <h4>{{ t('settings.retention.tasksTitle') }}</h4>
-      <p class="muted">{{ t('settings.retention.tasksHint') }}</p>
+      <a-typography-title :level="5">
+        {{ t('settings.retention.tasksTitle') }}
+        <a-tooltip :title="t('settings.retention.tasksHint')"><QuestionCircleOutlined class="muted small" /></a-tooltip>
+      </a-typography-title>
       <a-form layout="vertical">
         <a-form-item>
           <a-checkbox v-model:checked="keepForever">{{ t('settings.retention.keepForever') }}</a-checkbox>
@@ -79,11 +82,11 @@ const last = computed(() => data.value?.lastCleanup ?? null)
       </p>
 
       <a-divider />
-      <h4>{{ t('settings.retention.auditTitle') }}</h4>
-      <p class="muted">{{ t('settings.retention.auditHint') }}</p>
+      <a-typography-title :level="5">{{ t('settings.retention.auditTitle') }}</a-typography-title>
       <a-descriptions size="small" :column="1" bordered>
         <a-descriptions-item :label="t('settings.retention.days')">
-          {{ auditRetentionDays ?? '—' }} <a-tag class="ro">{{ t('settings.readOnlyEnv', { name: 'AUDIT_RETENTION_DAYS' }) }}</a-tag>
+          {{ auditRetentionDays ?? '—' }}
+          <a-tooltip :title="t('settings.readOnlyEnv', { name: 'AUDIT_RETENTION_DAYS' })"><a-tag class="env mono">AUDIT_RETENTION_DAYS</a-tag></a-tooltip>
         </a-descriptions-item>
       </a-descriptions>
     </a-spin>
@@ -92,8 +95,6 @@ const last = computed(() => data.value?.lastCleanup ?? null)
 
 <style scoped>
 .settings-pane { max-width: 640px; }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
-.last { margin-top: 12px; }
-.ro { margin-left: 8px; }
+.last { margin: 12px 0 0; }
+.env { margin-inline-start: 8px; font-size: 11px; max-width: 100%; white-space: normal; word-break: break-all; }
 </style>

@@ -22,11 +22,11 @@ const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.fl
 
 <template>
   <div>
-    <a-space style="margin-bottom: 12px">
-      <a-button size="small" :loading="loading" @click="load"><ReloadOutlined /> {{ t('common.refresh') }}</a-button>
+    <div class="toolbar"><a-space wrap>
+      <a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>{{ t('common.refresh') }}</a-button>
       <span v-if="info" class="muted small">{{ t('settings.system.uptime', { v: uptime(info.uptimeSec) }) }} · {{ info.env }}</span>
-    </a-space>
-    <a-alert v-if="error" type="error" show-icon :message="error" style="margin-bottom: 12px" />
+    </a-space></div>
+    <a-alert v-if="error" type="error" show-icon :message="error" class="toolbar" />
     <a-spin :spinning="loading && !info">
       <a-row v-if="info" :gutter="[16, 16]">
         <a-col :xs="24" :lg="12">
@@ -84,6 +84,5 @@ const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.fl
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
+.toolbar { margin-bottom: var(--cp-gap); }
 </style>

@@ -168,7 +168,6 @@ const zhCN = {
     },
   },
   taskCenter: {
-    title: '任务中心',
     all: '全部',
     type: '类型',
     target: '目标',
@@ -194,13 +193,10 @@ const zhCN = {
     lastError: '最后错误',
     errorCode: '错误码',
     retryOf: '重试自',
-    keyword: '关键字',
     keywordPlaceholder: '名称 / 错误 / 任务 ID',
-    total: '共 {n} 条',
     start: '开始',
     end: '结束',
     ownerPlaceholder: '全部用户',
-    empty: '暂无任务',
     timeout: '超时 {s} 秒',
   },
   profiles: {
@@ -665,7 +661,6 @@ const zhCN = {
       pathStyle: '路径风格（Path-style）',
       pathStyleHint: '自建存储（如 SeaweedFS / MinIO）通常需要开启',
       prefix: '前缀',
-      prefixHint: '可选，例如 cloudphone/',
       bucketWarning: '更换 Bucket 或 Endpoint 后，之前存到 S3 的素材将无法读取（不会自动迁移）。',
       testOk: '连接正常（写入、读取、删除测试通过，耗时 {ms} ms）',
       testFailed: '连接失败：{error}',
@@ -965,9 +960,6 @@ const zhCN = {
     comments: '评论',
   },
   platforms: {
-    title: '平台接入',
-    intro: '通过各平台官方 API 授权社交账号（OAuth），用于官方发布、评论和账号状态检查。',
-    introDetail: '需要在各平台开发者后台创建应用，并把下方的回调地址登记到应用中。平台不保存账号密码，只保存加密的授权令牌。Client Secret 加密保存，保存后不再显示。',
     hint: {
       youtube: 'Google Cloud 项目：启用 YouTube Data API v3，创建 OAuth 客户端（Web 应用）。未通过 Google 审核的项目只能上传私密视频。',
       instagram: 'Meta 开发者应用：添加 Instagram 产品（Instagram 登录 / Business Login）。仅支持商业账号和创作者账号；他人账号需要通过应用审核。回调地址必须是 https。',
@@ -977,7 +969,6 @@ const zhCN = {
     notConfigured: '未配置',
     notConfiguredHint: '管理员尚未配置该平台的官方接口',
     notConnectedHint: '未授权：只能人工操作。点击“授权”通过平台官方登录页授权。',
-    secretHint: '加密保存，只写不读。',
     secretKeep: '已设置，留空保持不变',
     secretEnter: '输入 Client Secret',
     redirectUri: '回调地址（Redirect URI）',
@@ -987,7 +978,7 @@ const zhCN = {
     directPost: '已通过 TikTok 直接发布审核（video.publish）',
     directPostHint: '未通过审核时视频只会发送到创作者的 TikTok 收件箱，由创作者在 App 中完成发布。',
     accountStats: '申请账号分析数据权限',
-    accountStatsHint: '用于「账号分析」的每日观看/点赞/分享等数据（Instagram insights、YouTube Analytics、TikTok user.info.stats）。必须先在平台开发者后台开通该权限，否则授权会被平台拒绝；已连接的账号需要重新授权才会生效。关闭时只采集粉丝数等基础数据。',
+    accountStatsHint: '需先在平台开发者后台开通该权限；已连接的账号需重新授权才生效。',
     tiktokInbox: '当前：发送到创作者收件箱（草稿），需要创作者在 App 中完成发布；评论无官方接口，人工处理。',
     tiktokDirect: '当前：直接发布（未审核应用只能发布为仅自己可见）；评论无官方接口，人工处理。',
     instagramMedia: '发布时平台按 URL 拉取素材：素材必须存放在公网可访问的 S3 存储（生成限时签名地址），本地存储的素材无法通过 API 发布；图片仅支持 JPEG。',
@@ -1331,7 +1322,6 @@ const zhCN = {
     selectAccount: '选择账号后可同步或录入评论',
   },
   users: {
-    title: '用户管理',
     newUser: '新建用户',
     builtin: '内置',
     me: '我',
@@ -1353,12 +1343,10 @@ const zhCN = {
     initialPasswordShort: '初始密码至少 8 位',
     newPasswordShort: '新密码至少 8 位',
     min8: '至少 8 位',
-    noGrantsHint: '新用户默认无设备权限，请在「权限管理」中授权设备。',
     resetTitle: '重置密码 · {name}',
     newPasswordPlaceholder: '新密码（至少 8 位）',
   },
   permissions: {
-    title: '权限管理',
     info: '管理员可访问全部设备，无需授权；这里只列出角色为「用户」的账号。用户只能看到并操作被授权的设备。',
     byUser: '按用户',
     byDevice: '按设备',
@@ -1379,16 +1367,13 @@ const zhCN = {
     userLabel: '{display}（{username}）',
   },
   audit: {
-    title: '操作日志',
     exportCsv: '导出 CSV',
     exportFailed: '导出失败 ({status})',
     exportFile: '操作日志',
     exportLimited: '仅导出了最新的 10000 条，请缩小筛选范围',
-    total: '共 {n} 条',
     start: '开始时间',
     end: '结束时间',
     result: '结果',
-    keyword: '关键字',
     keywordPlaceholder: '对象 / 路径 / 用户名',
     target: '对象',
     anonymous: '匿名',
@@ -1592,7 +1577,6 @@ const zhCN = {
     colAwaiting: '待确认',
   },
   settings: {
-    title: '设置',
     updatedAt: '更新于 {at}',
     readOnlyEnv: '环境变量 {name}，只读',
     tabs: {
@@ -1605,7 +1589,6 @@ const zhCN = {
       system: '系统信息',
     },
     publish: {
-      hint: '以下数值来自服务器环境变量，修改后需重启 API 才生效，因此这里只读显示。单次分发仍可在「分发」对话框中设置尝试次数（1–10）。',
       maxAttempts: '默认最大尝试次数',
       timeout: '单次尝试超时',
       backoff: '重试退避基数',
@@ -1616,7 +1599,7 @@ const zhCN = {
     },
     retention: {
       tasksTitle: '任务中心保留期',
-      tasksHint: '已结束（成功/失败/已取消）且超过保留期的任务及其日志由每小时一次的清理任务删除。未结束的任务，以及仍被未完成的业务（如待发布或待人工确认的发布任务）引用的任务不会被删除。',
+      tasksHint: '每小时清理一次已结束且超过保留期的任务及其日志；未结束或仍被业务引用的任务不会删除。',
       keepForever: '永久保留（不清理）',
       days: '保留天数',
       dayUnit: '天',
@@ -1626,7 +1609,6 @@ const zhCN = {
       lastRun: '最近一次清理',
       lastResult: '删除 {tasks} 个任务、{logs} 条日志',
       auditTitle: '操作日志保留期',
-      auditHint: '操作日志的保留期由环境变量配置，每天清理一次。',
     },
     system: {
       health: '依赖健康检查',
@@ -1645,7 +1627,6 @@ const zhCN = {
     },
   },
   sysadmin: {
-    title: '系统维护',
     tabs: { backups: '数据库备份', logs: '系统日志' },
     dayUnit: '天',
     backup: {
@@ -1667,16 +1648,14 @@ const zhCN = {
       download: '下载',
       deleteConfirm: '删除这个备份文件？删除后无法恢复',
       command: '备份命令',
-      commandHint: '由环境变量 PG_DUMP_CMD 配置；数据库密码只通过 PGPASSWORD 环境变量传给子进程。文件存放在当前存储后端的 backups/ 目录。',
       restoreTitle: '恢复（手动）',
-      restoreHint: '恢复会覆盖当前数据：先停止 API，再在命令行执行（详见 CLAUDE.md）：',
+      restoreHint: '恢复会覆盖当前数据：先停止 API，再执行：',
       empty: '暂无备份',
     },
     logs: {
       level: '最低级别',
       levelCol: '级别',
       levels: { trace: '跟踪', debug: '调试', info: '信息', warn: '警告', error: '错误', fatal: '致命' },
-      keyword: '关键字',
       keywordPlaceholder: '消息 / 路径 / reqId',
       source: '来源',
       memory: '最近（内存，最多 {n} 行）',
@@ -1687,8 +1666,6 @@ const zhCN = {
       retention: '保留期',
       logRetention: '日志文件保留',
       historyRetention: '连线历史保留',
-      redactedHint: '密码、密钥、令牌等敏感值在写入前已替换为 [redacted]。日志文件按 UTC 日期分割。',
-      deviceLogsHint: '单台云手机的操作记录与系统日志（logcat）请在 云机管理 → 设备日志 查看，或从 {link} 打开。',
       empty: '没有匹配的日志',
     },
     conn: {
