@@ -1712,6 +1712,8 @@ const en: Messages = {
       command: 'Backup command',
       restoreTitle: 'Restore (manual)',
       restoreHint: 'Restoring overwrites the current data: stop the API, then run:',
+      error: 'Failure reason',
+      cmdWarning: 'The latest backup failed: {reason}',
       empty: 'No backups yet',
     },
     logs: {
@@ -2071,6 +2073,7 @@ const en: Messages = {
       scope_missing: 'The authorisation lacks a permission needed for some metrics; re-authorise the account',
     },
     system: {
+      backup_cmd_missing: 'Backup command not found (set PG_DUMP_CMD in .env or install pg_dump on the API host)',
       backup_cmd_failed: 'pg_dump failed (check PG_DUMP_CMD and that pg_dump is not older than the database server)',
       backup_invalid: 'pg_dump output is not a valid custom-format archive',
       backup_not_found: 'Backup not found',

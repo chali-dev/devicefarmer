@@ -54,7 +54,10 @@ async function runDump(file: string, signal: AbortSignal): Promise<void> {
     const code = await new Promise<number | null>((resolve, reject) => {
       child.on('error', reject);
       child.on('close', resolve);
-    }).catch((err: Error) => { throw new TaskError('system.backup_cmd_failed', `cannot run ${cmd}: ${scrub(err.message, password)}`); });
+    }).catch((err: NodeJS.ErrnoException) => {
+      // ENOENT: the command in PG_DUMP_CMD is not installed / not on PATH (e.g. no pg_dump on the API host).
+      throw new TaskError(err.code === 'ENOENT' ? 'system.backup_cmd_missing' : 'system.backup_cmd_failed', `cannot run ${cmd}: ${scrub(err.message, password)}`);
+    });
     await new Promise<void>((resolve) => (out.writableFinished ? resolve() : out.on('finish', resolve)));
     if (signal.aborted) throw signal.reason;
     if (code !== 0) throw new TaskError('system.backup_cmd_failed', `pg_dump exited with ${code}: ${scrub(stderr, password) || 'no output'}`);
@@ -144,8 +147,19 @@ export async function failStaleBackups(): Promise<number> {
   return rows.length;
 }
 
-export async function listBackups(): Promise<DbBackup[]> {
-  return db.select().from(schema.dbBackups).orderBy(desc(schema.dbBackups.createdAt)).limit(500);
+/** Rows plus the failing task's `error_code` (so the UI can translate the reason; `error` stays the raw text). */
+export async function listBackups(): Promise<(DbBackup & { errorCode: string | null })[]> {
+  const B = schema.dbBackups;
+  const rows = await db.select({ b: B, errorCode: schema.tasks.errorCode }).from(B)
+    .leftJoin(schema.tasks, eq(schema.tasks.id, B.taskId)).orderBy(desc(B.createdAt)).limit(500);
+  const code = (b: DbBackup, taskCode: string | null) => {
+    if (b.status !== 'failed') return null;
+    if (b.error === 'interrupted') return 'task.interrupted';
+    // Rows from before backup_cmd_missing existed carry the spawn error only in the text.
+    if (taskCode === 'system.backup_cmd_failed' && b.error?.startsWith('cannot run ') && b.error.includes('ENOENT')) return 'system.backup_cmd_missing';
+    return taskCode;
+  };
+  return rows.map((r) => ({ ...r.b, errorCode: code(r.b, r.errorCode) }));
 }
 
 export async function getBackup(id: string): Promise<DbBackup> {

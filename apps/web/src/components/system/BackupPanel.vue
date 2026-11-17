@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorText } from '../../api/client'
+import { api, codeText, errorText } from '../../api/client'
 import { dateLocale } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import { fetchAuthBlob, fmtSize } from '../media/media'
@@ -13,7 +13,7 @@ import { actionColumn, pagination, TABLE_SIZE } from '../common/ui'
 /** Database backups (数据库备份): daily schedule + keep N, back up now, list, download, delete. */
 interface Backup {
   id: string; status: 'running' | 'ok' | 'failed'; trigger: 'manual' | 'scheduled'; storage: 'local' | 's3'; key: string
-  size: number | null; error: string | null; taskId: string | null; createdAt: string; finishedAt: string | null
+  size: number | null; error: string | null; errorCode: string | null; taskId: string | null; createdAt: string; finishedAt: string | null
 }
 interface SystemSettings { backup: { enabled: boolean; hour: number; keep: number }; logRetentionDays: number; historyRetentionDays: number; updatedAt: string | null }
 
@@ -80,6 +80,14 @@ async function remove(b: Backup) {
   } catch (e) { message.error(errorText(e)) }
 }
 
+/** Translated failure reason (coded error), raw message as fallback. */
+const reason = (b: Backup) => codeText(b.errorCode, undefined, b.error ?? '')
+/** Newest finished backup failed because the backup command could not run: short warning above the list. */
+const cmdProblem = computed(() => {
+  const last = backups.value.find((b) => b.status !== 'running')
+  return last?.status === 'failed' && last.errorCode?.startsWith('system.backup_cmd') ? last : null
+})
+
 const restoreCmd = 'pg_restore --clean --if-exists --no-owner -h <host> -U <user> -d <database> <file>.dump'
 const columns = computed(() => [
   { title: t('common.time'), key: 'createdAt', width: 180 },
@@ -87,6 +95,7 @@ const columns = computed(() => [
   { title: t('sysadmin.backup.trigger'), key: 'trigger', width: 100 },
   { title: t('sysadmin.backup.storage'), key: 'storage', width: 110 },
   { title: t('sysadmin.backup.size'), key: 'size', width: 110 },
+  { title: t('sysadmin.backup.error'), key: 'error', width: 280 },
   { title: t('common.name'), key: 'key', ellipsis: true, width: 260 },
   actionColumn(150),
 ])
@@ -118,18 +127,29 @@ const columns = computed(() => [
         <a-button type="primary" :loading="starting" @click="backupNow">{{ t('sysadmin.backup.now') }}</a-button>
       </a-space>
     </div>
+    <a-alert
+      v-if="cmdProblem" type="warning" show-icon class="warn"
+      :message="t('sysadmin.backup.cmdWarning', { reason: reason(cmdProblem) })"
+    >
+      <template #description><code class="mono small">PG_DUMP_CMD={{ pgDumpCmd }}</code></template>
+    </a-alert>
     <a-table
       :data-source="backups" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading"
-      :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.backup.empty') }" :scroll="{ x: 1010 }"
+      :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.backup.empty') }" :scroll="{ x: 1290 }"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'status'">
-          <a-tooltip :title="record.error"><span><StatusTag kind="backup" :status="record.status" /></span></a-tooltip>
+          <StatusTag kind="backup" :status="record.status" />
         </template>
         <template v-else-if="column.key === 'trigger'">{{ t(`sysadmin.backup.triggers.${record.trigger}`) }}</template>
         <template v-else-if="column.key === 'storage'">{{ t(`sysadmin.backup.storages.${record.storage}`) }}</template>
         <template v-else-if="column.key === 'size'">{{ record.size !== null ? fmtSize(record.size) : '—' }}</template>
+        <template v-else-if="column.key === 'error'">
+          <a-tooltip v-if="record.status === 'failed'" :title="record.error">
+            <a-typography-text type="danger" :ellipsis="true" :content="reason(record as Backup)" />
+          </a-tooltip>
+        </template>
         <template v-else-if="column.key === 'key'">
           <router-link v-if="record.taskId" :to="{ path: '/tasks', query: { task: record.taskId } }" class="mono">{{ record.key }}</router-link>
           <span v-else class="mono">{{ record.key }}</span>
@@ -162,5 +182,6 @@ const columns = computed(() => [
 .head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .head-title { margin: 0; }
 .info { margin-top: var(--cp-gap); }
+.warn { margin-bottom: 12px; }
 code { word-break: break-all; }
 </style>

@@ -1714,6 +1714,8 @@ const zhCN = {
       command: '备份命令',
       restoreTitle: '恢复（手动）',
       restoreHint: '恢复会覆盖当前数据：先停止 API，再执行：',
+      error: '失败原因',
+      cmdWarning: '最近一次备份失败：{reason}',
       empty: '暂无备份',
     },
     logs: {
@@ -2073,6 +2075,7 @@ const zhCN = {
       scope_missing: '授权缺少获取部分指标所需的权限，请重新授权账号',
     },
     system: {
+      backup_cmd_missing: '找不到备份命令（请在 .env 中设置 PG_DUMP_CMD，或在 API 主机安装 pg_dump）',
       backup_cmd_failed: 'pg_dump 执行失败（请检查 PG_DUMP_CMD 以及 pg_dump 版本不低于数据库服务器）',
       backup_invalid: 'pg_dump 输出不是有效的自定义格式备份',
       backup_not_found: '备份不存在',
