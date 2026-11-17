@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import BackupPanel from '../components/system/BackupPanel.vue'
 import LogPanel from '../components/system/LogPanel.vue'
+import PageContainer from '../components/common/PageContainer.vue'
 
 /** System maintenance (系统维护, admin): database backups and API logs. The tab is in the URL (?tab=). */
 const { t } = useI18n()
@@ -18,10 +19,12 @@ const tab = computed<Tab>({
 </script>
 
 <template>
-  <a-card :title="t('sysadmin.title')" size="small">
-    <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
-      <a-tab-pane key="backups" :tab="t('sysadmin.tabs.backups')"><BackupPanel /></a-tab-pane>
-      <a-tab-pane key="logs" :tab="t('sysadmin.tabs.logs')"><LogPanel /></a-tab-pane>
-    </a-tabs>
-  </a-card>
+  <PageContainer>
+    <a-card :bordered="false">
+      <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
+        <a-tab-pane key="backups" :tab="t('sysadmin.tabs.backups')"><BackupPanel /></a-tab-pane>
+        <a-tab-pane key="logs" :tab="t('sysadmin.tabs.logs')"><LogPanel /></a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </PageContainer>
 </template>

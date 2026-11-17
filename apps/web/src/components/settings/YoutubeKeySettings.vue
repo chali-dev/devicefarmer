@@ -29,24 +29,27 @@ async function saveKey(clear = false) {
 <template>
   <div class="settings-pane">
     <a-spin :spinning="!keyState">
-      <h4>{{ t('tracked.youtubeKey') }}</h4>
-      <p class="muted">{{ t('tracked.youtubeKeyHint') }}</p>
-      <p>
-        {{ t('tracked.youtubeKeyState') }}:
-        <a-tag :color="keyState?.apiKeySet ? 'success' : 'default'">{{ keyState?.apiKeySet ? t('tracked.keySet') : t('tracked.keyNotSet') }}</a-tag>
-        <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(keyState.updatedAt).toLocaleString(dateLocale()) }) }}</span>
-      </p>
-      <a-input-password v-model:value="keyInput" :placeholder="keyState?.apiKeySet ? t('tracked.keyReplace') : 'AIza…'" autocomplete="off" :maxlength="200" />
-      <a-space style="margin-top: 12px">
-        <a-button type="primary" :loading="keySaving" :disabled="!keyInput.trim()" @click="saveKey(false)">{{ t('common.save') }}</a-button>
-        <a-button v-if="keyState?.apiKeySet" danger :loading="keySaving" @click="saveKey(true)">{{ t('tracked.keyClear') }}</a-button>
-      </a-space>
+      <a-typography-title :level="5">{{ t('tracked.youtubeKey') }}</a-typography-title>
+      <a-typography-paragraph type="secondary">{{ t('tracked.youtubeKeyHint') }}</a-typography-paragraph>
+      <a-form layout="vertical">
+        <a-form-item :label="t('tracked.youtubeKeyState')">
+          <a-space wrap>
+            <a-tag :color="keyState?.apiKeySet ? 'success' : 'default'">{{ keyState?.apiKeySet ? t('tracked.keySet') : t('tracked.keyNotSet') }}</a-tag>
+            <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(keyState.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+          </a-space>
+        </a-form-item>
+        <a-form-item label="API Key">
+          <a-input-password v-model:value="keyInput" :placeholder="keyState?.apiKeySet ? t('tracked.keyReplace') : 'AIza…'" autocomplete="off" :maxlength="200" />
+        </a-form-item>
+        <a-space wrap>
+          <a-button type="primary" :loading="keySaving" :disabled="!keyInput.trim()" @click="saveKey(false)">{{ t('common.save') }}</a-button>
+          <a-button v-if="keyState?.apiKeySet" danger :loading="keySaving" @click="saveKey(true)">{{ t('tracked.keyClear') }}</a-button>
+        </a-space>
+      </a-form>
     </a-spin>
   </div>
 </template>
 
 <style scoped>
 .settings-pane { max-width: 640px; }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; margin-left: 8px; }
 </style>

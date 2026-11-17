@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import { dateLocale } from '../../i18n'
 import { fmtSize } from '../media/media'
+import SearchBar from '../common/SearchBar.vue'
+import { pagination } from '../common/ui'
 
 /**
  * System logs (系统日志): the API's own log lines (requests included), redacted by the API. Recent lines
@@ -64,7 +66,7 @@ const extra = (e: Entry) => { const { time: _t, level: _l, msg: _m, pid: _p, hos
 const columns = computed(() => [
   { title: t('common.time'), key: 'time', width: 180 },
   { title: t('sysadmin.logs.levelCol'), key: 'level', width: 90 },
-  { title: t('sysadmin.logs.message'), key: 'msg', ellipsis: true },
+  { title: t('sysadmin.logs.message'), key: 'msg', ellipsis: true, width: 320 },
   { title: t('sysadmin.logs.request'), key: 'req', width: 320, ellipsis: true },
   { title: 'reqId', key: 'reqId', width: 100 },
 ])
@@ -72,62 +74,42 @@ const columns = computed(() => [
 
 <template>
   <div>
-    <a-alert type="info" show-icon class="hint">
-      <template #message>
-        {{ t('sysadmin.logs.redactedHint') }}
-        <i18n-t keypath="sysadmin.logs.deviceLogsHint" tag="span">
-          <template #link><router-link to="/connections">{{ t('nav.connections') }}</router-link></template>
-        </i18n-t>
-      </template>
-    </a-alert>
+    <SearchBar :loading="loading" @search="load" @reset="reset">
+      <a-select v-model:value="filters.source" style="width: 280px" :aria-label="t('sysadmin.logs.source')">
+        <a-select-option value="">{{ t('sysadmin.logs.memory', { n: capacity || '…' }) }}</a-select-option>
+        <a-select-option v-for="f in files" :key="f.date" :value="f.date">{{ t('sysadmin.logs.file', { date: f.date, size: fmtSize(f.size) }) }}</a-select-option>
+      </a-select>
+      <a-select v-model:value="filters.level" option-label-prop="label" style="width: 190px" :aria-label="t('sysadmin.logs.level')">
+        <a-select-option
+          v-for="[l] in LEVELS" :key="l" :value="l" :label="`${t('sysadmin.logs.level')}: ${t(`sysadmin.logs.levels.${l}`)}`"
+        >{{ t(`sysadmin.logs.levels.${l}`) }}</a-select-option>
+      </a-select>
+      <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" />
+      <a-input v-model:value="filters.q" :placeholder="t('sysadmin.logs.keywordPlaceholder')" allow-clear style="width: 200px" @press-enter="load" />
+      <a-select v-model:value="filters.limit" option-label-prop="label" style="width: 120px" :aria-label="t('sysadmin.logs.limit')">
+        <a-select-option v-for="n in [100, 200, 500, 1000, 2000]" :key="n" :value="n" :label="`${t('sysadmin.logs.limit')}: ${n}`">{{ n }}</a-select-option>
+      </a-select>
+    </SearchBar>
 
-    <a-form layout="inline" style="margin-bottom: 12px; row-gap: 8px" @submit.prevent="load">
-      <a-form-item :label="t('sysadmin.logs.source')">
-        <a-select v-model:value="filters.source" style="width: 300px">
-          <a-select-option value="">{{ t('sysadmin.logs.memory', { n: capacity || '…' }) }}</a-select-option>
-          <a-select-option v-for="f in files" :key="f.date" :value="f.date">{{ t('sysadmin.logs.file', { date: f.date, size: fmtSize(f.size) }) }}</a-select-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item :label="t('sysadmin.logs.level')">
-        <a-select v-model:value="filters.level" style="width: 110px">
-          <a-select-option v-for="[l] in LEVELS" :key="l" :value="l">{{ t(`sysadmin.logs.levels.${l}`) }}</a-select-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item :label="t('common.time')">
-        <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" />
-      </a-form-item>
-      <a-form-item :label="t('sysadmin.logs.keyword')">
-        <a-input v-model:value="filters.q" :placeholder="t('sysadmin.logs.keywordPlaceholder')" allow-clear style="width: 200px" @press-enter="load" />
-      </a-form-item>
-      <a-form-item :label="t('sysadmin.logs.limit')">
-        <a-select v-model:value="filters.limit" style="width: 90px">
-          <a-select-option v-for="n in [100, 200, 500, 1000, 2000]" :key="n" :value="n">{{ n }}</a-select-option>
-        </a-select>
-      </a-form-item>
-      <a-form-item>
-        <a-space>
-          <a-button type="primary" html-type="submit" :loading="loading">{{ t('common.search') }}</a-button>
-          <a-button @click="reset">{{ t('common.reset') }}</a-button>
-        </a-space>
-      </a-form-item>
-    </a-form>
-
-    <a-table :data-source="entries" :columns="columns" :row-key="(e: Entry) => `${e.time}-${e.reqId ?? ''}-${e.msg ?? ''}`" size="small" :loading="loading"
-      :pagination="{ pageSize: 50, hideOnSinglePage: true }" :locale="{ emptyText: t('sysadmin.logs.empty') }" :scroll="{ x: 900 }">
+    <a-table
+      :data-source="entries" :columns="columns" :row-key="(e: Entry) => `${e.time}-${e.reqId ?? ''}-${e.msg ?? ''}`" size="small" :loading="loading"
+      :pagination="pagination({ defaultPageSize: 50, hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.logs.empty') }" :scroll="{ x: 1010 }"
+    >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'time'">{{ new Date(record.time).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'level'">
           <a-tag :color="LEVEL_COLOR[levelName(record.level)]">{{ t(`sysadmin.logs.levels.${levelName(record.level)}`) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'msg'">{{ record.msg ?? '' }}</template>
-        <template v-else-if="column.key === 'req'">{{ request(record as Entry) }}</template>
-        <template v-else-if="column.key === 'reqId'">{{ record.reqId ?? '' }}</template>
+        <template v-else-if="column.key === 'req'"><span class="mono">{{ request(record as Entry) }}</span></template>
+        <template v-else-if="column.key === 'reqId'"><span class="mono">{{ record.reqId ?? '' }}</span></template>
       </template>
-      <template #expandedRowRender="{ record }"><pre class="json">{{ extra(record as Entry) }}</pre></template>
+      <template #expandedRowRender="{ record }"><pre class="json mono small">{{ extra(record as Entry) }}</pre></template>
     </a-table>
 
-    <h4 class="sub">{{ t('sysadmin.logs.retention') }}</h4>
-    <a-form layout="inline" style="row-gap: 8px">
+    <a-divider />
+    <a-typography-title :level="5">{{ t('sysadmin.logs.retention') }}</a-typography-title>
+    <a-form layout="inline" class="retention">
       <a-form-item :label="t('sysadmin.logs.logRetention')">
         <a-input-number v-model:value="retention.logRetentionDays" :min="1" :max="365" :precision="0" :addon-after="t('sysadmin.dayUnit')" style="width: 150px" />
       </a-form-item>
@@ -140,7 +122,6 @@ const columns = computed(() => [
 </template>
 
 <style scoped>
-.hint { margin-bottom: 12px; }
-.sub { margin-top: 20px; }
-.json { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; }
+.retention { row-gap: 8px; }
+.json { margin: 0; white-space: pre-wrap; word-break: break-all; max-height: 360px; overflow: auto; }
 </style>

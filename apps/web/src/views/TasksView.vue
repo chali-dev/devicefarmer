@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { logText } from '../api/logText'
 import { useRoute } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import {
-  TASK_STATUSES, TASK_STATUS_COLOR, taskStatusText, taskText,
+  TASK_STATUSES, taskStatusText, taskText,
   type ManagedUser, type Task, type TaskDetail, type TaskLog, type TaskStats, type TaskStatus,
 } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, DRAWER_WIDTH, pagination as tablePagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -82,11 +85,7 @@ const deviceOptions = computed(() => store.list.map((i) => ({ value: i.id, label
 const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label: u.displayName ? `${u.displayName} (${u.username})` : u.username })))
 const allCount = computed(() => Object.values(stats.value?.byStatus ?? {}).reduce((a, b) => a + b, 0))
 
-const pagination = computed(() => ({
-  current: page.value, pageSize: pageSize.value, total: total.value,
-  showSizeChanger: true, pageSizeOptions: ['20', '50', '100', '200'],
-  showTotal: (n: number) => t('taskCenter.total', { n }),
-}))
+const pagination = computed(() => tablePagination({ current: page.value, pageSize: pageSize.value, total: total.value, pageSizeOptions: ['20', '50', '100', '200'] }))
 function onTableChange(p: { current?: number; pageSize?: number }) {
   if (p.pageSize && p.pageSize !== pageSize.value) { pageSize.value = p.pageSize; page.value = 1 }
   else if (p.current) page.value = p.current
@@ -126,11 +125,11 @@ const columns = computed(() => [
   { title: t('taskCenter.target'), key: 'target', ellipsis: true, width: 240 },
   { title: t('common.status'), key: 'status', width: 150 },
   { title: t('taskCenter.attempts'), key: 'attempts', width: 90 },
-  { title: t('taskCenter.createdAt'), key: 'createdAt', width: 170 },
-  { title: t('taskCenter.runAt'), key: 'runAt', width: 170 },
+  { title: t('taskCenter.createdAt'), key: 'createdAt', width: 180 },
+  { title: t('taskCenter.runAt'), key: 'runAt', width: 180 },
   { title: t('taskCenter.duration'), key: 'duration', width: 100 },
   ...(auth.isAdmin ? [{ title: t('taskCenter.owner'), key: 'owner', width: 110 }] : []),
-  { title: t('common.action'), key: 'actions', width: 170, fixed: 'right' as const },
+  actionColumn(170),
 ])
 
 // ---- actions
@@ -209,128 +208,121 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
 </script>
 
 <template>
-  <a-card :title="t('taskCenter.title')" size="small">
-    <template #extra>
-      <a-button :loading="loading" @click="load"><ReloadOutlined /> {{ t('common.refresh') }}</a-button>
-    </template>
+  <PageContainer>
+    <a-card :bordered="false">
+      <a-tabs v-model:active-key="tab">
+        <a-tab-pane key="all" :tab="`${t('taskCenter.all')} (${allCount})`" />
+        <a-tab-pane v-for="s in TASK_STATUSES" :key="s" :tab="`${taskStatusText(s)} (${stats?.byStatus[s] ?? 0})`" />
+      </a-tabs>
 
-    <a-tabs v-model:active-key="tab" size="small">
-      <a-tab-pane key="all" :tab="`${t('taskCenter.all')} (${allCount})`" />
-      <a-tab-pane v-for="s in TASK_STATUSES" :key="s" :tab="`${taskStatusText(s)} (${stats?.byStatus[s] ?? 0})`" />
-    </a-tabs>
-
-    <a-form layout="inline" class="filters" @submit.prevent="search">
-      <a-form-item :label="t('taskCenter.type')">
-        <a-select v-model:value="filters.type" :options="typeOptions" :placeholder="t('common.all')" allow-clear show-search option-filter-prop="label" style="width: 170px" @change="search" />
-      </a-form-item>
-      <a-form-item :label="t('common.device')">
-        <a-select v-model:value="filters.instanceId" :options="deviceOptions" :placeholder="t('common.all')" allow-clear show-search option-filter-prop="label" style="width: 150px" @change="search" />
-      </a-form-item>
-      <a-form-item v-if="auth.isAdmin" :label="t('taskCenter.owner')">
-        <a-select v-model:value="filters.userId" :options="userOptions" :placeholder="t('taskCenter.ownerPlaceholder')" allow-clear show-search option-filter-prop="label" style="width: 150px" @change="search" />
-      </a-form-item>
-      <a-form-item :label="t('taskCenter.createdAt')">
+      <SearchBar :loading="loading" @search="search" @reset="reset" @refresh="load">
+        <a-select
+          v-model:value="filters.type" :options="typeOptions" :placeholder="t('taskCenter.type')" allow-clear show-search option-filter-prop="label"
+          style="width: 170px" @change="search"
+        />
+        <a-select
+          v-model:value="filters.instanceId" :options="deviceOptions" :placeholder="t('common.device')" allow-clear show-search option-filter-prop="label"
+          style="width: 150px" @change="search"
+        />
+        <a-select
+          v-if="auth.isAdmin" v-model:value="filters.userId" :options="userOptions" :placeholder="t('taskCenter.ownerPlaceholder')" allow-clear show-search
+          option-filter-prop="label" style="width: 150px" @change="search"
+        />
         <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" :placeholder="[t('taskCenter.start'), t('taskCenter.end')]" @change="search" />
-      </a-form-item>
-      <a-form-item :label="t('taskCenter.keyword')">
-        <a-input v-model:value="filters.q" :placeholder="t('taskCenter.keywordPlaceholder')" allow-clear style="width: 190px" @press-enter="search" />
-      </a-form-item>
-      <a-form-item>
-        <a-space>
-          <a-button type="primary" html-type="submit">{{ t('common.search') }}</a-button>
-          <a-button @click="reset">{{ t('common.reset') }}</a-button>
-        </a-space>
-      </a-form-item>
-    </a-form>
+        <a-input v-model:value="filters.q" :placeholder="t('taskCenter.keywordPlaceholder')" allow-clear style="width: 200px" @press-enter="search" />
+      </SearchBar>
 
-    <a-table
-      :data-source="items" :columns="columns" row-key="id" :loading="loading" size="middle"
-      :pagination="pagination" :scroll="{ x: 1150 }" :locale="{ emptyText: t('taskCenter.empty') }" @change="onTableChange"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'type'">
-          <a @click="openDetail(record.id)">{{ taskText(record.type) }}</a>
+      <a-table
+        :data-source="items" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
+        :pagination="pagination" :scroll="{ x: 1260 }" @change="onTableChange"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'type'">
+            <a @click="openDetail(record.id)">{{ taskText(record.type) }}</a>
+          </template>
+          <template v-else-if="column.key === 'target'">
+            <router-link v-if="targetLink(record as Task)" :to="targetLink(record as Task)!">{{ record.instanceName ?? record.refId }}</router-link>
+            <span v-else>{{ record.instanceName ?? '—' }}</span>
+          </template>
+          <template v-else-if="column.key === 'status'">
+            <a-tooltip :title="record.error ? errText(record as Task) : undefined">
+              <span><StatusTag kind="task" :status="record.status" /></span>
+            </a-tooltip>
+            <a-tag v-if="record.cancelRequested && record.status === 'running'" color="warning">{{ t('taskCenter.cancelRequested') }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'attempts'">{{ record.attempts }}/{{ record.maxAttempts }}</template>
+          <template v-else-if="column.key === 'createdAt'">{{ fmtTime(record.createdAt) }}</template>
+          <template v-else-if="column.key === 'runAt'">{{ fmtTime(record.runAt) }}</template>
+          <template v-else-if="column.key === 'duration'">{{ duration(record as Task) }}</template>
+          <template v-else-if="column.key === 'owner'">{{ owner(record as Task) }}</template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space :size="0">
+              <a-button type="link" size="small" @click="openDetail(record.id)">{{ t('taskCenter.detail') }}</a-button>
+              <a-popconfirm v-if="canCancel(record as Task)" :title="t('taskCenter.cancelConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="cancel(record as Task)">
+                <a-button type="link" size="small" danger :loading="busy === record.id">{{ t('common.cancel') }}</a-button>
+              </a-popconfirm>
+              <a-popconfirm v-if="canRetry(record as Task)" :title="t('taskCenter.retryConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="retry(record as Task)">
+                <a-button type="link" size="small" :loading="busy === record.id">{{ t('taskCenter.retry') }}</a-button>
+              </a-popconfirm>
+            </a-space>
+          </template>
         </template>
-        <template v-else-if="column.key === 'target'">
-          <router-link v-if="targetLink(record as Task)" :to="targetLink(record as Task)!">{{ record.instanceName ?? record.refId }}</router-link>
-          <span v-else>{{ record.instanceName ?? '—' }}</span>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <a-tooltip :title="record.error ? errText(record as Task) : undefined">
-            <a-tag :color="TASK_STATUS_COLOR[record.status as TaskStatus]">{{ taskStatusText(record.status) }}</a-tag>
-          </a-tooltip>
-          <a-tag v-if="record.cancelRequested && record.status === 'running'" color="warning">{{ t('taskCenter.cancelRequested') }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'attempts'">{{ record.attempts }}/{{ record.maxAttempts }}</template>
-        <template v-else-if="column.key === 'createdAt'">{{ fmtTime(record.createdAt) }}</template>
-        <template v-else-if="column.key === 'runAt'">{{ fmtTime(record.runAt) }}</template>
-        <template v-else-if="column.key === 'duration'">{{ duration(record as Task) }}</template>
-        <template v-else-if="column.key === 'owner'">{{ owner(record as Task) }}</template>
-        <template v-else-if="column.key === 'actions'">
-          <a-space :size="4">
-            <a-button type="link" size="small" @click="openDetail(record.id)">{{ t('taskCenter.detail') }}</a-button>
-            <a-popconfirm v-if="canCancel(record as Task)" :title="t('taskCenter.cancelConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="cancel(record as Task)">
-              <a-button type="link" size="small" danger :loading="busy === record.id">{{ t('common.cancel') }}</a-button>
-            </a-popconfirm>
-            <a-popconfirm v-if="canRetry(record as Task)" :title="t('taskCenter.retryConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="retry(record as Task)">
-              <a-button type="link" size="small" :loading="busy === record.id">{{ t('taskCenter.retry') }}</a-button>
-            </a-popconfirm>
-          </a-space>
-        </template>
-      </template>
-    </a-table>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 
-  <a-drawer v-model:open="drawerOpen" :width="680" :title="detail ? `${taskText(detail.type)} · ${detail.instanceName ?? ''}` : t('taskCenter.detail')" destroy-on-close>
+  <a-drawer v-model:open="drawerOpen" :width="DRAWER_WIDTH.lg" :title="detail ? `${taskText(detail.type)} · ${detail.instanceName ?? ''}` : t('taskCenter.detail')" destroy-on-close>
+    <template v-if="detail" #extra>
+      <a-space>
+        <a-popconfirm v-if="detail.canCancel && canCancel(detail)" :title="t('taskCenter.cancelConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="cancel(detail)">
+          <a-button danger :loading="busy === detail.id">{{ t('taskCenter.cancel') }}</a-button>
+        </a-popconfirm>
+        <a-popconfirm v-if="detail.canRetry && canRetry(detail)" :title="t('taskCenter.retryConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="retry(detail)">
+          <a-button type="primary" :loading="busy === detail.id">{{ t('taskCenter.retry') }}</a-button>
+        </a-popconfirm>
+      </a-space>
+    </template>
     <a-spin :spinning="detailLoading">
       <template v-if="detail">
-        <a-space style="margin-bottom: 12px">
-          <a-popconfirm v-if="detail.canCancel && canCancel(detail)" :title="t('taskCenter.cancelConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="cancel(detail)">
-            <a-button danger :loading="busy === detail.id">{{ t('taskCenter.cancel') }}</a-button>
-          </a-popconfirm>
-          <a-popconfirm v-if="detail.canRetry && canRetry(detail)" :title="t('taskCenter.retryConfirm')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" @confirm="retry(detail)">
-            <a-button type="primary" :loading="busy === detail.id">{{ t('taskCenter.retry') }}</a-button>
-          </a-popconfirm>
-        </a-space>
         <a-descriptions :column="1" size="small" bordered>
-          <a-descriptions-item label="ID"><a-typography-text copyable>{{ detail.id }}</a-typography-text></a-descriptions-item>
+          <a-descriptions-item label="ID"><a-typography-text copyable class="mono">{{ detail.id }}</a-typography-text></a-descriptions-item>
           <a-descriptions-item :label="t('common.status')">
-            <a-tag :color="TASK_STATUS_COLOR[detail.status]">{{ taskStatusText(detail.status) }}</a-tag>
+            <StatusTag kind="task" :status="detail.status" />
             <a-tag v-if="detail.cancelRequested && detail.status === 'running'" color="warning">{{ t('taskCenter.cancelRequested') }}</a-tag>
           </a-descriptions-item>
-          <a-descriptions-item :label="t('taskCenter.type')">{{ taskText(detail.type) }} <span class="muted">({{ detail.type }})</span></a-descriptions-item>
+          <a-descriptions-item :label="t('taskCenter.type')">{{ taskText(detail.type) }} <span class="muted small">({{ detail.type }})</span></a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.target')">
             <router-link v-if="targetLink(detail)" :to="targetLink(detail)!">{{ detail.instanceName ?? detail.refId }}</router-link>
             <span v-else>{{ detail.instanceName ?? '—' }}</span>
           </a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.attempts')">
-            {{ detail.attempts }}/{{ detail.maxAttempts }}<span v-if="detail.timeoutMs" class="muted"> · {{ t('taskCenter.timeout', { s: Math.round(detail.timeoutMs / 1000) }) }}</span>
+            {{ detail.attempts }}/{{ detail.maxAttempts }}<span v-if="detail.timeoutMs" class="muted small"> · {{ t('taskCenter.timeout', { s: Math.round(detail.timeoutMs / 1000) }) }}</span>
           </a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.owner')">{{ owner(detail) }}</a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.createdAt')">{{ fmtTime(detail.createdAt) }}</a-descriptions-item>
           <a-descriptions-item v-if="detail.runAt" :label="t('taskCenter.runAt')">{{ fmtTime(detail.runAt) }}</a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.startedAt')">{{ fmtTime(detail.startedAt) }}</a-descriptions-item>
-          <a-descriptions-item :label="t('taskCenter.finishedAt')">{{ fmtTime(detail.finishedAt) }} <span class="muted">({{ duration(detail) }})</span></a-descriptions-item>
-          <a-descriptions-item v-if="detail.retryOf" :label="t('taskCenter.retryOf')"><a @click="openDetail(detail.retryOf)">{{ detail.retryOf }}</a></a-descriptions-item>
+          <a-descriptions-item :label="t('taskCenter.finishedAt')">{{ fmtTime(detail.finishedAt) }} <span class="muted small">({{ duration(detail) }})</span></a-descriptions-item>
+          <a-descriptions-item v-if="detail.retryOf" :label="t('taskCenter.retryOf')"><a class="mono" @click="openDetail(detail.retryOf)">{{ detail.retryOf }}</a></a-descriptions-item>
           <a-descriptions-item v-if="detail.error" :label="t('taskCenter.lastError')">
             <a-typography-text type="danger">{{ errText(detail) }}</a-typography-text>
-            <div v-if="detail.errorCode" class="muted">{{ t('taskCenter.errorCode') }}: {{ detail.errorCode }}<span v-if="errText(detail) !== detail.error"> · {{ detail.error }}</span></div>
+            <div v-if="detail.errorCode" class="muted small">{{ t('taskCenter.errorCode') }}: {{ detail.errorCode }}<span v-if="errText(detail) !== detail.error"> · {{ detail.error }}</span></div>
           </a-descriptions-item>
         </a-descriptions>
 
-        <h4 class="section">{{ t('taskCenter.payload') }}</h4>
-        <pre class="json">{{ json(detail.payload ?? {}) }}</pre>
+        <a-divider orientation="left" orientation-margin="0">{{ t('taskCenter.payload') }}</a-divider>
+        <pre class="json mono small">{{ json(detail.payload ?? {}) }}</pre>
         <template v-if="detail.result !== null && detail.result !== undefined">
-          <h4 class="section">{{ t('taskCenter.result') }}</h4>
-          <pre class="json">{{ json(detail.result) }}</pre>
+          <a-divider orientation="left" orientation-margin="0">{{ t('taskCenter.result') }}</a-divider>
+          <pre class="json mono small">{{ json(detail.result) }}</pre>
         </template>
 
-        <h4 class="section">{{ t('taskCenter.logs') }}</h4>
+        <a-divider orientation="left" orientation-margin="0">{{ t('taskCenter.logs') }}</a-divider>
         <a-empty v-if="!logs.length" :description="t('taskCenter.noLogs')" />
         <a-timeline v-else>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="LOG_COLOR[l.level]">
-            <div class="log-head"><span class="muted">{{ new Date(l.ts).toLocaleString(dateLocale()) }}</span> {{ logText(l.message, l.data) }}</div>
-            <pre v-if="l.data && Object.keys(l.data).length" class="log-data">{{ json(l.data) }}</pre>
+            <div class="log-head"><span class="muted small">{{ new Date(l.ts).toLocaleString(dateLocale()) }}</span> {{ logText(l.message, l.data) }}</div>
+            <pre v-if="l.data && Object.keys(l.data).length" class="json log-data mono small">{{ json(l.data) }}</pre>
           </a-timeline-item>
         </a-timeline>
       </template>
@@ -339,13 +331,9 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
 </template>
 
 <style scoped>
-.filters { margin: 4px 0 12px; row-gap: 8px; }
-.muted { color: var(--cp-text-tertiary); font-size: 12px; }
-.section { margin: 16px 0 8px; }
-.json, .log-data {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px; background: var(--cp-fill-alter); border: 1px solid var(--cp-border-secondary);
-  border-radius: 6px; padding: 8px; margin: 0; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+.json {
+  background: var(--cp-fill-alter); border: 1px solid var(--cp-border-secondary);
+  border-radius: var(--cp-radius); padding: 8px; margin: 0; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
 .log-data { margin-top: 4px; max-height: 160px; }
 .log-head { word-break: break-word; }

@@ -33,23 +33,22 @@ async function save() {
 <template>
   <div class="settings-pane">
     <a-spin :spinning="loading">
-      <h4>{{ t('social.limits') }}</h4>
-      <p class="muted">{{ t('social.limitsHint') }}</p>
-      <a-form layout="horizontal" :label-col="{ span: 8 }">
-        <a-form-item v-for="p in platforms" :key="p.id" :label="p.name">
-          <a-input-number v-model:value="limits[p.id]" :min="1" :max="100" :precision="0" />
-          <span class="muted small">{{ t('social.limitDefault', { n: p.defaultLimit }) }}</span>
-        </a-form-item>
-        <a-form-item :wrapper-col="{ offset: 8 }">
-          <a-button type="primary" :loading="saving" :disabled="!platforms.length" @click="save">{{ t('common.save') }}</a-button>
-        </a-form-item>
+      <a-typography-title :level="5">{{ t('social.limits') }}</a-typography-title>
+      <a-typography-paragraph type="secondary">{{ t('social.limitsHint') }}</a-typography-paragraph>
+      <a-form layout="vertical">
+        <a-row :gutter="12">
+          <a-col v-for="p in platforms" :key="p.id" :xs="24" :sm="12">
+            <a-form-item :label="p.name" :extra="t('social.limitDefault', { n: p.defaultLimit })">
+              <a-input-number v-model:value="limits[p.id]" :min="1" :max="100" :precision="0" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-button type="primary" :loading="saving" :disabled="!platforms.length" @click="save">{{ t('common.save') }}</a-button>
       </a-form>
     </a-spin>
   </div>
 </template>
 
 <style scoped>
-.settings-pane { max-width: 560px; }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; margin-left: 8px; }
+.settings-pane { max-width: 640px; }
 </style>

@@ -6,6 +6,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText, getToken, responseError } from '../api/client'
 import { auditActionText, type AuditLog } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import { pagination as tablePagination, TABLE_SIZE } from '../components/common/ui'
 
 const { t } = useI18n()
 const items = ref<AuditLog[]>([])
@@ -58,11 +61,10 @@ function reset() {
   search()
 }
 
-const pagination = computed(() => ({
-  current: page.value, pageSize: pageSize.value, total: total.value,
-  showSizeChanger: true, pageSizeOptions: ['20', '50', '100', '200'],
-  showTotal: (n: number) => t('audit.total', { n }),
-}))
+const pagination = computed(() => tablePagination({ current: page.value, pageSize: pageSize.value, total: total.value, pageSizeOptions: ['20', '50', '100', '200'] }))
+const resultOptions = computed(() => [
+  { value: '', text: t('common.all') }, { value: 'true', text: t('common.success') }, { value: 'false', text: t('common.failed') },
+])
 function onTableChange(p: { current?: number; pageSize?: number }) {
   if (p.pageSize && p.pageSize !== pageSize.value) { pageSize.value = p.pageSize; page.value = 1 }
   else if (p.current) page.value = p.current
@@ -94,81 +96,71 @@ async function exportCsv() {
 onMounted(() => { void load(); void loadActions() })
 
 const columns = computed(() => [
-  { title: t('common.time'), key: 'at', width: 170 },
+  { title: t('common.time'), key: 'at', width: 180 },
   { title: t('common.operator'), key: 'user', width: 130 },
   { title: t('common.action'), key: 'action', width: 170 },
-  { title: t('audit.target'), key: 'target', ellipsis: true },
+  { title: t('audit.target'), key: 'target', ellipsis: true, width: 260 },
   { title: t('audit.result'), key: 'result', width: 110 },
-  { title: 'IP', dataIndex: 'ip', key: 'ip', width: 130 },
+  { title: 'IP', dataIndex: 'ip', key: 'ip', width: 140 },
 ])
 </script>
 
 <template>
-  <a-card :title="t('audit.title')" size="small">
+  <PageContainer>
     <template #extra>
-      <a-button :loading="exporting" @click="exportCsv"><DownloadOutlined /> {{ t('audit.exportCsv') }}</a-button>
+      <a-button :loading="exporting" @click="exportCsv"><template #icon><DownloadOutlined /></template>{{ t('audit.exportCsv') }}</a-button>
     </template>
-
-    <a-form layout="inline" style="margin-bottom: 12px; row-gap: 8px" @submit.prevent="search">
-      <a-form-item :label="t('common.time')">
+    <a-card :bordered="false">
+      <SearchBar @search="search" @reset="reset">
         <a-range-picker v-model:value="filters.range" show-time value-format="YYYY-MM-DDTHH:mm:ssZ" :placeholder="[t('audit.start'), t('audit.end')]" />
-      </a-form-item>
-      <a-form-item :label="t('common.operator')">
-        <a-input v-model:value="filters.user" :placeholder="t('common.username')" allow-clear style="width: 140px" />
-      </a-form-item>
-      <a-form-item :label="t('common.action')">
-        <a-select v-model:value="filters.action" :placeholder="t('common.all')" allow-clear show-search style="width: 200px" :filter-option="(input: string, opt: any) => `${opt.value} ${actionLabel(opt.value)}`.toLowerCase().includes(input.toLowerCase())">
+        <a-input v-model:value="filters.user" :placeholder="t('common.operator')" allow-clear style="width: 140px" @press-enter="search" />
+        <a-select
+          v-model:value="filters.action" :placeholder="t('common.action')" allow-clear show-search style="width: 200px"
+          :filter-option="(input: string, opt: any) => `${opt.value} ${actionLabel(opt.value)}`.toLowerCase().includes(input.toLowerCase())"
+        >
           <a-select-option v-for="a in actions" :key="a" :value="a">{{ actionLabel(a) }}</a-select-option>
         </a-select>
-      </a-form-item>
-      <a-form-item :label="t('audit.result')">
-        <a-select v-model:value="filters.ok" style="width: 100px">
-          <a-select-option value="">{{ t('common.all') }}</a-select-option>
-          <a-select-option value="true">{{ t('common.success') }}</a-select-option>
-          <a-select-option value="false">{{ t('common.failed') }}</a-select-option>
+        <a-select v-model:value="filters.ok" option-label-prop="label" style="width: 130px">
+          <a-select-option v-for="o in resultOptions" :key="o.value" :value="o.value" :label="`${t('audit.result')}: ${o.text}`">{{ o.text }}</a-select-option>
         </a-select>
-      </a-form-item>
-      <a-form-item :label="t('audit.keyword')">
-        <a-input v-model:value="filters.q" :placeholder="t('audit.keywordPlaceholder')" allow-clear style="width: 180px" @press-enter="search" />
-      </a-form-item>
-      <a-form-item>
-        <a-space>
-          <a-button type="primary" html-type="submit">{{ t('common.search') }}</a-button>
-          <a-button @click="reset">{{ t('common.reset') }}</a-button>
-        </a-space>
-      </a-form-item>
-    </a-form>
+        <a-input v-model:value="filters.q" :placeholder="t('audit.keywordPlaceholder')" allow-clear style="width: 200px" @press-enter="search" />
+      </SearchBar>
 
-    <a-table
-      :data-source="items" :columns="columns" row-key="id" :loading="loading" size="middle"
-      :pagination="pagination" :scroll="{ x: 900 }" @change="onTableChange"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString(dateLocale()) }}</template>
-        <template v-else-if="column.key === 'user'">
-          <span v-if="record.username">{{ record.username }}</span>
-          <a-typography-text v-else type="secondary">{{ record.userId ? t('common.system') : t('audit.anonymous') }}</a-typography-text>
+      <a-table
+        :data-source="items" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
+        :pagination="pagination" :scroll="{ x: 990 }" @change="onTableChange"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString(dateLocale()) }}</template>
+          <template v-else-if="column.key === 'user'">
+            <span v-if="record.username">{{ record.username }}</span>
+            <a-typography-text v-else type="secondary">{{ record.userId ? t('common.system') : t('audit.anonymous') }}</a-typography-text>
+          </template>
+          <template v-else-if="column.key === 'action'">
+            <a-tooltip :title="record.action">{{ actionLabel(record.action) }}</a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'target'">
+            <a-tooltip :title="`${record.method} ${record.path}`">{{ record.target || '—' }}</a-tooltip>
+          </template>
+          <template v-else-if="column.key === 'result'">
+            <a-tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? t('common.success') : t('common.failed') }} {{ record.status }}</a-tag>
+          </template>
         </template>
-        <template v-else-if="column.key === 'action'">
-          <a-tooltip :title="record.action">{{ actionLabel(record.action) }}</a-tooltip>
+        <template #expandedRowRender="{ record }">
+          <a-descriptions size="small" :column="1">
+            <a-descriptions-item :label="t('audit.request')"><span class="mono">{{ record.method }} {{ record.path }}</span></a-descriptions-item>
+            <a-descriptions-item v-if="record.targetId" :label="t('audit.targetId')"><span class="mono">{{ record.targetId }}</span></a-descriptions-item>
+            <a-descriptions-item :label="t('audit.detail')">
+              <pre v-if="record.detail" class="detail mono small">{{ JSON.stringify(record.detail, null, 2) }}</pre>
+              <span v-else>—</span>
+            </a-descriptions-item>
+          </a-descriptions>
         </template>
-        <template v-else-if="column.key === 'target'">
-          <a-tooltip :title="`${record.method} ${record.path}`">{{ record.target || '—' }}</a-tooltip>
-        </template>
-        <template v-else-if="column.key === 'result'">
-          <a-tag :color="record.ok ? 'success' : 'error'">{{ record.ok ? t('common.success') : t('common.failed') }} {{ record.status }}</a-tag>
-        </template>
-      </template>
-      <template #expandedRowRender="{ record }">
-        <a-descriptions size="small" :column="1">
-          <a-descriptions-item :label="t('audit.request')">{{ record.method }} {{ record.path }}</a-descriptions-item>
-          <a-descriptions-item v-if="record.targetId" :label="t('audit.targetId')">{{ record.targetId }}</a-descriptions-item>
-          <a-descriptions-item :label="t('audit.detail')">
-            <pre v-if="record.detail" style="margin: 0; white-space: pre-wrap; word-break: break-all">{{ JSON.stringify(record.detail, null, 2) }}</pre>
-            <span v-else>—</span>
-          </a-descriptions-item>
-        </a-descriptions>
-      </template>
-    </a-table>
-  </a-card>
+      </a-table>
+    </a-card>
+  </PageContainer>
 </template>
+
+<style scoped>
+.detail { margin: 0; white-space: pre-wrap; word-break: break-all; }
+</style>
