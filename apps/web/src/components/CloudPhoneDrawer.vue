@@ -39,7 +39,7 @@ const ZOOM_MIN = 0.5
 const ZOOM_MAX = 1.6
 const stageEl = ref<HTMLElement | null>(null)
 const fullscreen = ref(false)
-const size = computed(() => `calc((100vh - ${fullscreen.value ? 120 : 210}px) * ${zoom.value})`)
+const size = computed(() => `calc((100vh - ${fullscreen.value ? 165 : 250}px) * ${zoom.value})`)
 function rotate() { rotation.value = ((rotation.value + 90) % 360) as typeof rotation.value }
 function zoomBy(d: number) { zoom.value = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom.value + d)) * 10) / 10 }
 function toggleFullscreen() {

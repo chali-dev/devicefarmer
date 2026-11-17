@@ -495,77 +495,97 @@ watch(() => props.instanceId, connect)
 <template>
   <div class="player">
     <div class="stage">
-    <div class="screen" :style="screenStyle">
-      <canvas
-        :style="canvasStyle"
-        ref="canvas"
-        tabindex="0"
-        :width="width"
-        :height="height"
-        @pointerdown="onPointerDown"
-        @pointermove="onPointerMove"
-        @pointerup="onPointerUp"
-        @pointercancel="onPointerUp"
-        @keydown="onKeyDown"
-        @paste="onPaste"
-        @contextmenu.prevent="key('back')"
-      />
-      <div v-if="state !== 'live'" class="overlay">
-        <div class="conn">
-          <div class="conn-logo" :class="{ spinning: state === 'connecting' }"><AndroidFilled /></div>
-          <div v-if="title" class="conn-title">{{ title }}</div>
-          <div v-if="subtitle" class="conn-sub">{{ subtitle }}</div>
-          <a-progress :percent="overall" :show-info="false" :status="state === 'connecting' ? 'active' : 'exception'" size="small" class="conn-bar" />
-          <div class="conn-steps">
-            <div v-for="s in STAGES" :key="s" class="conn-step" :class="stageClass(s)">
-              <span>{{ t(`player.stage.${s}`) }}</span><span class="conn-pct">{{ Math.round(pct[s]) }}%</span>
+      <div class="main">
+        <div class="topbar">
+          <template v-if="!$slots.side">
+            <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
+            <a-tooltip v-if="state === 'live' && latency">
+              <template #title><div v-for="(line, i) in latencyTipLines" :key="i">{{ line }}</div></template>
+              <span class="fps latency" :style="{ color: latencyColor }">{{ t('player.latency', { ms: latencyTotal }) }}</span>
+            </a-tooltip>
+          </template>
+          <a-tooltip :title="canH264 ? t('player.sourceTip') : t('player.noWebCodecs')">
+            <a-radio-group
+              size="small" button-style="solid" :value="secureView ? undefined : source"
+              :disabled="state !== 'live' || secureView"
+              @change="(e: any) => setPreferred(e.target.value)"
+            >
+              <a-radio-button value="stf">{{ t('player.sourceStf') }}</a-radio-button>
+              <a-radio-button value="scrcpy" :disabled="!canH264">{{ t('player.sourceScrcpy') }}</a-radio-button>
+            </a-radio-group>
+          </a-tooltip>
+          <a-tooltip v-if="source === 'scrcpy'" :title="t('player.readClipboard')">
+            <a-button size="small" :disabled="state !== 'live'" @click="readClipboard">{{ t('player.clipboard') }}</a-button>
+          </a-tooltip>
+          <a-tooltip :title="t('player.secureTip')">
+            <span class="secure">
+              <a-switch size="small" :checked="secureView" :disabled="state !== 'live'" @change="(v: any) => setSecureView(v)" />
+              <span>{{ t('player.secure') }}</span>
+            </span>
+          </a-tooltip>
+        </div>
+        <div class="screen" :style="screenStyle">
+          <canvas
+            :style="canvasStyle"
+            ref="canvas"
+            tabindex="0"
+            :width="width"
+            :height="height"
+            @pointerdown="onPointerDown"
+            @pointermove="onPointerMove"
+            @pointerup="onPointerUp"
+            @pointercancel="onPointerUp"
+            @keydown="onKeyDown"
+            @paste="onPaste"
+            @contextmenu.prevent="key('back')"
+          />
+          <div v-if="state !== 'live'" class="overlay">
+            <div class="conn">
+              <div class="conn-logo" :class="{ spinning: state === 'connecting' }"><AndroidFilled /></div>
+              <div v-if="title" class="conn-title">{{ title }}</div>
+              <div v-if="subtitle" class="conn-sub">{{ subtitle }}</div>
+              <a-progress :percent="overall" :show-info="false" :status="state === 'connecting' ? 'active' : 'exception'" size="small" class="conn-bar" />
+              <div class="conn-steps">
+                <div v-for="s in STAGES" :key="s" class="conn-step" :class="stageClass(s)">
+                  <span>{{ t(`player.stage.${s}`) }}</span><span class="conn-pct">{{ Math.round(pct[s]) }}%</span>
+                </div>
+              </div>
+              <div v-if="state !== 'connecting'" class="conn-msg">{{ message || t('player.disconnected') }}</div>
+              <div class="conn-actions">
+                <a-button v-if="state !== 'connecting'" size="small" type="primary" @click="connect">{{ t('player.reconnect') }}</a-button>
+                <a-button size="small" :type="state === 'connecting' ? 'primary' : 'default'" @click="exit">{{ t('player.exit') }}</a-button>
+              </div>
             </div>
           </div>
-          <div v-if="state !== 'connecting'" class="conn-msg">{{ message || t('player.disconnected') }}</div>
-          <div class="conn-actions">
-            <a-button v-if="state !== 'connecting'" size="small" type="primary" @click="connect">{{ t('player.reconnect') }}</a-button>
-            <a-button size="small" :type="state === 'connecting' ? 'primary' : 'default'" @click="exit">{{ t('player.exit') }}</a-button>
-          </div>
+        </div>
+        <div class="nav">
+          <a-tooltip :title="t('player.back')">
+            <button type="button" class="nav-btn" :aria-label="t('player.back')" @click="key('back')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14L6 12z" /></svg>
+            </button>
+          </a-tooltip>
+          <a-tooltip :title="t('player.home')">
+            <button type="button" class="nav-btn" :aria-label="t('player.home')" @click="key('home')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" /></svg>
+            </button>
+          </a-tooltip>
+          <a-tooltip :title="t('player.recents')">
+            <button type="button" class="nav-btn" :aria-label="t('player.recents')" @click="key('app_switch')">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5" /></svg>
+            </button>
+          </a-tooltip>
         </div>
       </div>
-    </div>
-    <slot name="side" :latency="state === 'live' ? latencyTotal : null" :color="latencyColor" :tip="latencyTipLines" />
-    </div>
-    <div class="nav">
-      <a-tooltip :title="t('player.back')"><a-button shape="circle" @click="key('back')">◁</a-button></a-tooltip>
-      <a-tooltip :title="t('player.home')"><a-button shape="circle" @click="key('home')">○</a-button></a-tooltip>
-      <a-tooltip :title="t('player.recents')"><a-button shape="circle" @click="key('app_switch')">□</a-button></a-tooltip>
-      <template v-if="!$slots.side">
-        <span class="fps">{{ state === 'live' ? `${fps} fps` : '' }}</span>
-        <a-tooltip v-if="state === 'live' && latency">
-          <template #title><div v-for="(line, i) in latencyTipLines" :key="i">{{ line }}</div></template>
-          <span class="fps latency" :style="{ color: latencyColor }">{{ t('player.latency', { ms: latencyTotal }) }}</span>
-        </a-tooltip>
-      </template>
-      <a-tooltip :title="canH264 ? t('player.sourceTip') : t('player.noWebCodecs')">
-        <a-radio-group
-          size="small" button-style="solid" :value="secureView ? undefined : source"
-          :disabled="state !== 'live' || secureView"
-          @change="(e: any) => setPreferred(e.target.value)"
-        >
-          <a-radio-button value="stf">{{ t('player.sourceStf') }}</a-radio-button>
-          <a-radio-button value="scrcpy" :disabled="!canH264">{{ t('player.sourceScrcpy') }}</a-radio-button>
-        </a-radio-group>
-      </a-tooltip>
-      <a-tooltip v-if="source === 'scrcpy'" :title="t('player.readClipboard')">
-        <a-button size="small" :disabled="state !== 'live'" @click="readClipboard">{{ t('player.clipboard') }}</a-button>
-      </a-tooltip>
-      <a-tooltip :title="t('player.secureTip')">
-        <a-switch size="small" :checked="secureView" :disabled="state !== 'live'" @change="(v: any) => setSecureView(v)" />
-      </a-tooltip>
-      <span class="fps" style="width: auto">{{ t('player.secure') }}</span>
+      <slot name="side" :latency="state === 'live' ? latencyTotal : null" :color="latencyColor" :tip="latencyTipLines" />
     </div>
   </div>
 </template>
 
 <style scoped>
-.player { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.player { display: flex; flex-direction: column; align-items: center; max-width: 100%; }
 .stage { display: flex; gap: 8px; align-items: stretch; max-width: 100%; }
+/* Top bar, screen and navigation keys share one column, so the bars are centred on the screen, not on screen + side tools. */
+.main { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
 .screen {
   position: relative; max-width: 100%;
   background: #000; border-radius: 18px; overflow: hidden; border: 6px solid #1f1f1f;
@@ -596,9 +616,28 @@ canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--cp-primary); }
 .conn-step.failed { color: var(--cp-error); font-weight: 600; }
 .conn-msg { font-size: 12px; color: var(--cp-error); margin-top: 6px; word-break: break-word; }
 .conn-actions { display: flex; gap: 8px; margin-top: 14px; }
-.nav { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; }
+/* Top bar: screen source, clipboard, secure view (+ fps/latency when there is no side column). */
+.topbar { display: flex; gap: 8px 14px; align-items: center; justify-content: center; flex-wrap: wrap; max-width: 100%; min-height: 24px; }
+/* Chip with its own background so the label stays readable on the drawer's black fullscreen stage. */
+.secure {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; white-space: nowrap;
+  font-size: 12px; color: var(--cp-text-secondary); background: var(--cp-bg-container); border: 1px solid var(--cp-border-secondary);
+}
 .fps { width: 52px; color: var(--cp-text-tertiary); font-size: 12px; font-variant-numeric: tabular-nums; }
 .latency { width: auto; min-width: 92px; cursor: default; }
+/* Android navigation keys, centred under the screen. */
+.nav { display: flex; gap: 28px; align-items: center; justify-content: center; }
+.nav-btn {
+  width: 44px; height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--cp-border-secondary); background: var(--cp-bg-container);
+  color: var(--cp-text-secondary); cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s, transform 0.1s;
+}
+.nav-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.nav-btn:hover { color: var(--cp-primary); border-color: var(--cp-primary); background: var(--cp-primary-bg); }
+.nav-btn:active { transform: scale(0.92); }
+.nav-btn:focus-visible { outline: 2px solid var(--cp-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .nav-btn { transition: none; } .nav-btn:active { transform: none; } }
 </style>
 
 <style>
