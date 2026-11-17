@@ -9,6 +9,7 @@ import { useInstancesStore } from '../../stores/instances'
 import StatusTag from '../common/StatusTag.vue'
 import { MODAL_WIDTH } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
+import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
 
 /**
  * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
@@ -25,8 +26,11 @@ const platforms = ref<PublishPlatform[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const selected = ref<string[]>([])
-interface Override { title: string; caption: string; hashtags: string[]; privacy: string | undefined; at: Dayjs | null }
+interface Override { title: string; hashtags: string[]; privacy: string | undefined; at: Dayjs | null }
 const overrides = reactive<Record<string, Override>>({})
+/** Per-account caption (empty = the content's text for that platform); one tab per selected account. */
+const captions = reactive<Record<string, string>>({})
+const accountTab = ref('')
 const form = reactive({ when: 'now' as 'now' | 'at', at: null as Dayjs | null, maxAttempts: 3, republish: false, postType: 'feed' as PostType })
 const defaultAt = () => dayjs().add(90, 'minute').startOf('hour')
 const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
@@ -36,6 +40,7 @@ watch(() => props.open, async (o) => {
   if (!o || !props.content) return
   selected.value = []
   for (const k of Object.keys(overrides)) delete overrides[k]
+  for (const k of Object.keys(captions)) delete captions[k]
   const when = props.mode ?? 'now'
   Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, maxAttempts: 3, republish: false, postType: 'feed' })
   loading.value = true
@@ -97,9 +102,16 @@ function online(a: SocialAccount): boolean {
 function toggle(id: string, on: boolean) {
   if (on && !selected.value.includes(id)) {
     selected.value = [...selected.value, id]
-    overrides[id] ??= { title: '', caption: '', hashtags: [], privacy: undefined, at: null }
+    overrides[id] ??= { title: '', hashtags: [], privacy: undefined, at: null }
+    captions[id] ??= ''
+    accountTab.value = id
   } else if (!on) selected.value = selected.value.filter((x) => x !== id)
 }
+watch(selected, (ids) => { if (!ids.includes(accountTab.value)) accountTab.value = ids[0] ?? '' })
+const accountTabs = computed<TextTab[]>(() => selected.value.map((id) => {
+  const platform = accountById(id)?.platform ?? ''
+  return { key: id, platform, label: `@${accountById(id)?.handle ?? ''}`, max: capOf(platform)?.captionMax ?? 5000, placeholder: defaultCaption(platform), text: hasCaption(id) }
+}))
 
 const defaultCaption = (platform: string) => {
   const h = (props.content?.platformHints ?? {}) as Record<string, Record<string, string> | undefined>
@@ -119,7 +131,7 @@ async function submit() {
       return {
         accountId: id,
         ...(o.title.trim() ? { title: o.title.trim() } : {}),
-        ...(text && o.caption.trim() ? { caption: o.caption } : {}),
+        ...(text && captions[id]?.trim() ? { caption: captions[id] } : {}),
         ...(text && o.hashtags.length ? { hashtags: o.hashtags } : {}),
         ...(o.privacy ? { options: { privacy: o.privacy } } : {}),
         scheduledAt: at ? at.toISOString() : null,
@@ -186,34 +198,31 @@ async function submit() {
 
       <template v-if="selected.length">
         <a-divider orientation="left" plain>{{ t('distribute.overrides') }}</a-divider>
-        <a-collapse>
-          <a-collapse-panel v-for="id in selected" :key="id">
-            <template #header>
-              <PlatformTag :platform="accountById(id)?.platform ?? ''" /> @{{ accountById(id)?.handle }}
-            </template>
-            <a-form layout="vertical">
-              <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.title" :label="t('distribute.titleOverride')">
-                <a-input v-model:value="overrides[id]!.title" :maxlength="capOf(accountById(id)!.platform)!.title!.max" :placeholder="defaultTitle(accountById(id)!.platform)" />
+        <PlatformTextTabs v-model:active="accountTab" :tabs="accountTabs" :values="captions" :rows="4">
+          <template #default="{ tab }">
+            <a-form layout="vertical" class="tab-form">
+              <a-form-item v-if="capOf(tab.platform ?? '')?.title" :label="t('distribute.titleOverride')">
+                <a-input v-model:value="overrides[tab.key]!.title" :maxlength="capOf(tab.platform ?? '')!.title!.max" :placeholder="defaultTitle(tab.platform ?? '')" />
               </a-form-item>
-              <template v-if="hasCaption(id)">
-                <a-form-item :label="t('distribute.captionOverride')">
-                  <a-textarea v-model:value="overrides[id]!.caption" :rows="3" :maxlength="capOf(accountById(id)?.platform ?? '')?.captionMax" show-count
-                    :placeholder="defaultCaption(accountById(id)?.platform ?? '')" />
-                </a-form-item>
-                <a-form-item :label="t('distribute.hashtags')">
-                  <a-select v-model:value="overrides[id]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
-                </a-form-item>
-              </template>
-              <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.privacy" :label="t('distribute.privacy')">
-                <a-select v-model:value="overrides[id]!.privacy" allow-clear :placeholder="t('common.default')" style="width: 200px; max-width: 100%"
-                  :options="capOf(accountById(id)!.platform)!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
+              <a-form-item v-if="tab.text !== false" :label="t('distribute.hashtags')">
+                <a-select v-model:value="overrides[tab.key]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
               </a-form-item>
-              <a-form-item :label="t('distribute.timeOverride')">
-                <a-date-picker v-model:value="overrides[id]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.useCommonTime')" />
-              </a-form-item>
+              <a-row :gutter="12">
+                <a-col v-if="capOf(tab.platform ?? '')?.privacy" :xs="24" :sm="12">
+                  <a-form-item :label="t('distribute.privacy')">
+                    <a-select v-model:value="overrides[tab.key]!.privacy" allow-clear :placeholder="t('common.default')"
+                      :options="capOf(tab.platform ?? '')!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
+                  </a-form-item>
+                </a-col>
+                <a-col :xs="24" :sm="12">
+                  <a-form-item :label="t('distribute.timeOverride')">
+                    <a-date-picker v-model:value="overrides[tab.key]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.useCommonTime')" style="width: 100%" />
+                  </a-form-item>
+                </a-col>
+              </a-row>
             </a-form>
-          </a-collapse-panel>
-        </a-collapse>
+          </template>
+        </PlatformTextTabs>
       </template>
     </a-spin>
   </a-modal>
@@ -224,4 +233,5 @@ async function submit() {
 .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .acc { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-radius: var(--cp-radius); }
 .acc:hover { background: var(--cp-bg-hover); }
+.tab-form { margin-top: 16px; }
 </style>

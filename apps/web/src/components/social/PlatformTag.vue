@@ -1,18 +1,16 @@
 <script setup lang="ts">
-import { FacebookOutlined, InstagramOutlined, PlaySquareOutlined, ShareAltOutlined, YoutubeOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
+import { platformIcon, platformName } from './platformMeta'
 
 /** Platform badge. Unknown (newly registered) platforms fall back to a generic icon and the raw id. */
 const props = defineProps<{ platform: string; name?: string }>()
-const ICONS: Record<string, unknown> = { instagram: InstagramOutlined, youtube: YoutubeOutlined, tiktok: PlaySquareOutlined, facebook: FacebookOutlined }
-const NAMES: Record<string, string> = { instagram: 'Instagram', youtube: 'YouTube', tiktok: 'TikTok', facebook: 'Facebook' }
-const icon = computed(() => ICONS[props.platform] ?? ShareAltOutlined)
+const icon = computed(() => platformIcon(props.platform))
 </script>
 
 <template>
   <a-tag class="platform-tag">
     <component :is="icon" />
-    <span>{{ name ?? NAMES[platform] ?? platform }}</span>
+    <span>{{ name ?? platformName(platform) }}</span>
   </a-tag>
 </template>
 

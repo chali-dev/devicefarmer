@@ -5,29 +5,21 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, errorText } from '../../api/client'
 import type { CommentTemplate } from '../../api/types'
-import { usePlatformsStore } from '../../stores/platforms'
 import { MODAL_WIDTH } from '../common/ui'
 
 /**
  * "Insert template" for the content editor: picks a post template (话术库, kind post) and hands its text to the
- * editor for one field. The person edits the result before saving; nothing is generated or posted.
+ * editor's current text tab. The person edits the result before saving; nothing is generated or posted.
  */
-export type InsertTarget = 'body' | 'ytDescription' | 'igCaption' | 'ttCaption' | 'fbCaption'
-/** Platform of each caption field: only fields of enabled platforms are offered (the editor hides the others too). */
-const TARGET_PLATFORM: Record<InsertTarget, string | null> = { body: null, ytDescription: 'youtube', igCaption: 'instagram', ttCaption: 'tiktok', fbCaption: 'facebook' }
-
-const emit = defineEmits<{ insert: [target: InsertTarget, text: string, replace: boolean] }>()
+const emit = defineEmits<{ insert: [text: string, replace: boolean] }>()
 const { t } = useI18n()
 const router = useRouter()
-const platforms = usePlatformsStore()
-const targets = computed(() => (Object.keys(TARGET_PLATFORM) as InsertTarget[]).filter((x) => { const p = TARGET_PLATFORM[x]; return !p || platforms.isEnabled(p) }))
 
 const open = ref(false)
 const templates = ref<CommentTemplate[]>([])
 const loading = ref(false)
 const persona = ref<string | undefined>()
 const picked = ref<string | undefined>()
-const target = ref<InsertTarget>('body')
 const replace = ref(false)
 
 const personas = computed(() => [...new Set(templates.value.map((x) => x.persona).filter((p): p is string => !!p))].sort())
@@ -42,7 +34,7 @@ async function show() {
 }
 function ok() {
   if (!current.value) { message.warning(t('scripts.pick')); return }
-  emit('insert', target.value, current.value.text, replace.value)
+  emit('insert', current.value.text, replace.value)
   message.info(t('scripts.insertOk'))
   open.value = false
 }
@@ -66,21 +58,12 @@ function ok() {
         </a-col>
       </a-row>
       <a-form-item v-if="current" :label="t('scripts.preview')"><div class="preview">{{ current.text }}</div></a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="14">
-          <a-form-item :label="t('scripts.insertTarget')">
-            <a-select v-model:value="target" :options="targets.map((x) => ({ value: x, label: t(`scripts.targets.${x}`) }))" />
-          </a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="10">
-          <a-form-item label=" ">
-            <a-radio-group v-model:value="replace">
-              <a-radio :value="false">{{ t('scripts.append') }}</a-radio>
-              <a-radio :value="true">{{ t('scripts.replace') }}</a-radio>
-            </a-radio-group>
-          </a-form-item>
-        </a-col>
-      </a-row>
+      <a-form-item>
+        <a-radio-group v-model:value="replace">
+          <a-radio :value="false">{{ t('scripts.append') }}</a-radio>
+          <a-radio :value="true">{{ t('scripts.replace') }}</a-radio>
+        </a-radio-group>
+      </a-form-item>
     </a-form>
     <a class="small" @click="open = false; router.push({ path: '/scripts', query: { kind: 'post' } })">{{ t('scripts.manage') }}</a>
   </a-modal>
