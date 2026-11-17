@@ -300,7 +300,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
       const targets = Array.isArray(body.targets) ? (body.targets as Body[]) : [];
       return {
         accountIds: targets.map((t) => t.accountId), count: targets.length, republish: body.republish, maxAttempts: body.maxAttempts,
-        scheduledAt: targets.map((t) => t.scheduledAt ?? null),
+        scheduledAt: targets.map((t) => t.scheduledAt ?? null), postTypes: targets.map((t) => t.postType ?? 'feed'),
       };
     },
   },

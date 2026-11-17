@@ -1,17 +1,19 @@
-import { and, asc, count, desc, eq, gte, ilike, inArray, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { PUBLISH_STATUSES, type PublishTask } from '../../db/schema.js';
+import { POST_TYPES, PUBLISH_STATUSES, type PublishTask } from '../../db/schema.js';
 import { forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { mediaItem } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
 import { methodIdsFor } from './methods.js';
-import { PUBLISH_CAPABILITIES, capabilityOf, composeText } from './platforms.js';
+import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
 import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish, retryPublish } from './publish.js';
 
 const pt = schema.publishTasks;
+/** The day a task belongs to: when it was published, else when it is (was) due. */
+const WHEN = sql`coalesce(${pt.publishedAt}, ${pt.scheduledAt})`;
 const Id = z.object({ id: z.string().uuid() });
 const NONE = '00000000-0000-0000-0000-000000000000';
 const idsOf = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string => !!x))].concat(NONE);
@@ -22,11 +24,12 @@ const csv = <E extends z.ZodType<string, string>>(item: E) => z.string().max(500
 
 const ListQuery = z.object({
   status: csv(z.enum(PUBLISH_STATUSES)).optional(),
+  postType: csv(z.enum(POST_TYPES)).optional(),
   platform: z.string().max(32).optional(),
   accountId: z.string().uuid().optional(),
   contentId: z.string().uuid().optional(),
   ownerId: z.string().uuid().optional(),
-  /** scheduled_at range [from, to) (calendar). */
+  /** Range [from, to) on the task's day: published_at when published, else scheduled_at (calendar, today view). */
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   q: z.string().trim().max(100).optional(),
@@ -86,7 +89,7 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /** Capability table + available methods per platform. */
   app.get('/api/publish/platforms', async () => ({
-    platforms: enabledPlatforms().map((p) => ({ id: p.id, name: p.name, capability: capabilityOf(p.id), methods: methodIdsFor(p.id), known: p.id in PUBLISH_CAPABILITIES })),
+    platforms: enabledPlatforms().map((p) => ({ id: p.id, name: p.name, capability: capabilityOf(p.id), postTypes: postTypesOf(p.id), methods: methodIdsFor(p.id), known: p.id in PUBLISH_CAPABILITIES })),
   }));
 
   app.get('/api/publish/tasks', { schema: { querystring: ListQuery } }, async (req) => {
@@ -95,24 +98,31 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     if (q.platform) base.push(eq(pt.platform, q.platform));
     if (q.accountId) base.push(eq(pt.accountId, q.accountId));
     if (q.contentId) base.push(eq(pt.contentId, q.contentId));
-    if (q.from) base.push(gte(pt.scheduledAt, q.from));
-    if (q.to) base.push(lt(pt.scheduledAt, q.to));
+    if (q.from) base.push(sql`${WHEN} >= ${q.from.toISOString()}::timestamptz`);
+    if (q.to) base.push(sql`${WHEN} < ${q.to.toISOString()}::timestamptz`);
     if (q.q) {
       const l = `%${q.q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
       base.push(or(ilike(pt.caption, l), ilike(pt.title, l), ilike(pt.error, l),
         sql`exists (select 1 from contents x where x.id = ${pt.contentId} and x.title ilike ${l})`,
         sql`exists (select 1 from social_accounts s where s.id = ${pt.accountId} and s.handle ilike ${l})`)!);
     }
-    const cond = and(...base, q.status?.length ? inArray(pt.status, q.status) : undefined);
+    // byStatus ignores the status filter, byPostType the type filter (counts for the filter chips).
+    const byType = q.postType?.length ? inArray(pt.postType, q.postType) : undefined;
+    const byStat = q.status?.length ? inArray(pt.status, q.status) : undefined;
+    const cond = and(...base, byStat, byType);
     const order = q.sort === 'scheduled_asc' ? [asc(pt.scheduledAt), asc(pt.id)] : q.sort === 'updated_desc' ? [desc(pt.updatedAt), desc(pt.id)] : [desc(pt.scheduledAt), desc(pt.id)];
     const [rows, [total], byStatus] = await Promise.all([
       db.select().from(pt).where(cond).orderBy(...order).limit(q.limit).offset(q.offset),
       db.select({ n: count() }).from(pt).where(cond),
-      db.select({ k: pt.status, n: count() }).from(pt).where(and(...base)).groupBy(pt.status),
+      db.select({ s: pt.status, t: pt.postType, n: count() }).from(pt).where(and(...base)).groupBy(pt.status, pt.postType),
     ]);
+    const sum = (f: (r: typeof byStatus[number]) => boolean) => byStatus.filter(f).reduce((a, r) => a + r.n, 0);
+    const typeOk = (t: string) => !q.postType?.length || (q.postType as string[]).includes(t);
+    const statOk = (s: string) => !q.status?.length || (q.status as string[]).includes(s);
     return {
       items: await toPublishItems(rows, req.user), total: total?.n ?? 0,
-      byStatus: Object.fromEntries(PUBLISH_STATUSES.map((s) => [s, byStatus.find((r) => r.k === s)?.n ?? 0])),
+      byStatus: Object.fromEntries(PUBLISH_STATUSES.map((s) => [s, sum((r) => r.s === s && typeOk(r.t))])),
+      byPostType: Object.fromEntries(POST_TYPES.map((t) => [t, sum((r) => r.t === t && statOk(r.s))])),
     };
   });
 

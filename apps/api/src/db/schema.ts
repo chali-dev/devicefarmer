@@ -578,6 +578,9 @@ export const contentTagLinks = pgTable('content_tag_links', {
 export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled'] as const;
 export type PublishStatus = (typeof PUBLISH_STATUSES)[number];
 export const PUBLISH_UNFINISHED: readonly PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator'];
+/** Post type (帖子 / Reels / 限动). Which types a platform accepts: modules/publish/platforms.ts. */
+export const POST_TYPES = ['feed', 'reel', 'story'] as const;
+export type PostType = (typeof POST_TYPES)[number];
 
 export const publishTasks = pgTable('publish_tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -592,6 +595,8 @@ export const publishTasks = pgTable('publish_tasks', {
   options: jsonb('options').$type<Record<string, unknown>>().notNull().default({}),
   /** Snapshot of the content's ordered media at distribution. */
   mediaIds: uuid('media_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  /** feed (帖子, carousel when > 1 medium) | reel | story (限动). */
+  postType: text('post_type', { enum: POST_TYPES }).notNull().default('feed'),
   /** When it is (or was) due; distributions "now" get the creation time. */
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull().defaultNow(),
   status: text('status', { enum: PUBLISH_STATUSES }).notNull().default('pending'),

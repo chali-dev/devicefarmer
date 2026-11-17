@@ -2,7 +2,7 @@ import { UnrecoverableError } from 'bullmq';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
-import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
+import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
 import { badRequest, conflict } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isTransientPlatformError } from '../platforms/http.js';
@@ -12,7 +12,7 @@ import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../co
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { methodsFor, type PublishInput, type PublishLogLevel, type PublishMethod } from './methods.js';
-import { capabilityOf, composeText, validateForPlatform } from './platforms.js';
+import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
 
 /**
  * Publish scheduler (定时发布). One publish_tasks row per (content, account); each scheduling round
@@ -79,6 +79,8 @@ export interface DistributeTarget {
   options?: Record<string, unknown>;
   /** null/absent = now */
   scheduledAt?: Date | null;
+  /** Default feed. */
+  postType?: PostType;
 }
 
 export interface DistributeResult { created: PublishTask[]; existing: PublishTask[] }
@@ -93,12 +95,15 @@ function postFor(content: Content, platform: string, t: DistributeTarget) {
   const cap = capabilityOf(platform);
   const title = cap.title ? (t.title?.trim() || str(h.title) || content.title) : (t.title?.trim() || null);
   const caption = t.caption ?? str(h.description) ?? str(h.caption) ?? content.body;
+  const postType = t.postType ?? 'feed';
   const options: Record<string, unknown> = { ...(t.options ?? {}) };
   if (cap.privacy && options.privacy === undefined) options.privacy = str(h.privacy) ?? 'private';
   if (options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(options.privacy)))) {
     throw badRequest(`${platform} 不支持该可见性：${String(options.privacy)}`, 'publish.bad_privacy', { platform, privacy: String(options.privacy) });
   }
-  return { title: title ?? null, caption, hashtags: uniqueTags(t.hashtags ?? []), options };
+  // Types without a caption (Instagram stories) publish no text: don't keep one the operator might copy.
+  const noText = postTypeRule(platform, postType)?.caption === false;
+  return { title: title ?? null, caption: noText ? '' : caption, hashtags: noText ? [] : uniqueTags(t.hashtags ?? []), options, postType };
 }
 
 /**
@@ -135,11 +140,11 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const scheduledAt = t.scheduledAt && t.scheduledAt > now ? t.scheduledAt : now;
       const [row] = await tx.insert(pt).values({
         userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
-        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id),
+        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType,
         scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts, republish: prior.length > 0, createdBy: user.id,
       }).returning();
       await publishLog(row!, 'info', prior.length ? 'distributed (re-publish)' : 'distributed', {
-        account: acc.handle, platform: acc.platform, scheduledAt: scheduledAt.toISOString(), media: media.length, maxAttempts,
+        account: acc.handle, platform: acc.platform, postType: post.postType, scheduledAt: scheduledAt.toISOString(), media: media.length, maxAttempts,
       }, user, tx);
       out.created.push(row!);
     }
@@ -158,7 +163,7 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
   const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
   try {
     const { task } = await createTask({
-      type: TASK_TYPE, userId: row.userId, label: `${row.platform} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
+      type: TASK_TYPE, userId: row.userId, label: `${row.platform}${row.postType !== 'feed' ? ` ${row.postType}` : ''} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
       refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
       runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, retryOf,
     });
@@ -256,11 +261,13 @@ export async function recordOutcome(user: AuthUser, row: PublishTask, o: { resul
 /** Edit texts/options while the task waits. */
 export async function editPublish(user: AuthUser, row: PublishTask, b: { title?: string | null; caption?: string; hashtags?: string[]; options?: Record<string, unknown> }): Promise<PublishTask> {
   if (row.status !== 'pending' && row.status !== 'scheduled') throw conflict(`当前状态（${row.status}）不能修改`, 'publish.bad_status', { status: row.status });
+  const noText = postTypeRule(row.platform, row.postType)?.caption === false;
   const next = {
     title: b.title !== undefined ? (b.title?.trim() || null) : row.title,
-    caption: b.caption ?? row.caption,
-    hashtags: b.hashtags ? uniqueTags(b.hashtags) : row.hashtags,
+    caption: noText ? '' : b.caption ?? row.caption,
+    hashtags: noText ? [] : b.hashtags ? uniqueTags(b.hashtags) : row.hashtags,
     options: b.options ? { ...row.options, ...b.options } : row.options,
+    postType: row.postType,
   };
   const cap = capabilityOf(row.platform);
   if (next.options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(next.options.privacy)))) {
@@ -269,7 +276,8 @@ export async function editPublish(user: AuthUser, row: PublishTask, b: { title?:
   const media = await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, row.mediaIds.length ? row.mediaIds : ['00000000-0000-0000-0000-000000000000']));
   const bad = validateForPlatform(row.platform, row.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m): m is MediaAsset => !!m), next);
   if (bad) throw badRequest(bad.message, bad.code, bad.params);
-  const [done] = await db.update(pt).set(next).where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
+  const [done] = await db.update(pt).set({ title: next.title, caption: next.caption, hashtags: next.hashtags, options: next.options })
+    .where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
   if (!done) throw conflict('任务状态已变化', 'publish.bad_status', { status: 'changed' });
   await publishLog(done, 'info', 'edited', { fields: Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined) }, user);
   return done;
@@ -296,7 +304,7 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
     await ctx.log(level, message, data);
   };
   await refreshContentStatus(row.contentId);
-  await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`);
+  await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`, { postType: row.postType });
   // An earlier attempt of this round already sent the publish request (then timed out / crashed):
   // publishing again could post twice.
   if (await committedRound(row)) {
@@ -310,7 +318,7 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
     const { method, input } = await preflight(row, log);
     if (ctx.signal.aborted) throw ctx.signal.reason;
     methodId = method.id;
-    await log('info', `publishing via ${method.id}`);
+    await log('info', `publishing via ${method.id}`, { postType: row.postType });
     const commit = async () => {
       if (committed) return;
       committed = true;
@@ -384,7 +392,7 @@ async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishM
   const ready = media as MediaAsset[];
   const bad = validateForPlatform(row.platform, ready, row);
   if (bad) throw new PublishCheckError(bad.code, bad.message, bad.params);
-  await log('info', 'check: media ready and valid for the platform', { count: ready.length });
+  await log('info', 'check: media ready and valid for the platform', { count: ready.length, postType: row.postType });
   // 4. duplicates
   if (!row.republish) {
     const [dup] = await db.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, row.contentId), eq(pt.accountId, row.accountId), eq(pt.status, 'published'), ne(pt.id, row.id)));
@@ -396,7 +404,7 @@ async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishM
     publishTaskId: row.id, attemptNo: row.attemptNo, platform: row.platform, account: acc,
     title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags, tags: row.hashtags,
     privacy: typeof row.options.privacy === 'string' && ['public', 'unlisted', 'private'].includes(row.options.privacy) ? row.options.privacy as PublishInput['privacy'] : undefined,
-    text: composeText(row.caption, row.hashtags), options: row.options, media: ready,
+    text: composeText(row.caption, row.hashtags), options: row.options, media: ready, postType: row.postType,
   };
   const reasons: Record<string, string> = {};
   let method: PublishMethod | undefined;

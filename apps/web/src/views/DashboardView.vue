@@ -5,7 +5,7 @@ import { MobileOutlined, ReloadOutlined, ScheduleOutlined, SendOutlined, TeamOut
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import {
-  compactNumber, dayTs, taskStatusText, taskText, trackedHandle,
+  compactNumber, dayTs, POST_TYPES, taskStatusText, taskText, trackedHandle,
   type DashboardResponse, type DashboardUserRow, type ManagedUser,
 } from '../api/types'
 import { fmtSize } from '../components/media/media'
@@ -333,6 +333,19 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
                 <LineChart :points="trendPoints" :height="200" :format-time="shortDay" :aria-label="t('dashboard.trendTitle')" />
               </a-col>
             </a-row>
+          </a-card>
+        </a-col>
+
+        <!-- today's publishing per post type -->
+        <a-col v-if="w.publishToday" :xs="24" :lg="12">
+          <a-card size="small" :bordered="false" :title="t('dashboard.w.publishToday')" class="card">
+            <template #extra><router-link :to="{ path: '/publish', query: { tab: 'today' } }">{{ t('dashboard.viewAll') }}</router-link></template>
+            <div class="grid3">
+              <StatLink v-for="pt in POST_TYPES" :key="pt" :label="t(`publish.type.${pt}`)" :value="w.publishToday.byType[pt] ?? 0" :to="{ path: '/publish', query: { tab: 'today', postType: pt } }" />
+            </div>
+            <div class="muted small">
+              {{ t('dashboard.todayTotal', { n: w.publishToday.total }) }} · {{ t('dashboard.todayPublished', { n: w.publishToday.byStatus.published ?? 0 }) }}
+            </div>
           </a-card>
         </a-col>
 

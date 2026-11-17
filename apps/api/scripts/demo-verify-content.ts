@@ -301,9 +301,11 @@ try {
   const rp = await http('PUT', `/api/contents/${adminContent.id}`, U, { title: 'x' });
   const rdl = await http('DELETE', `/api/contents/${adminContent.id}`, U);
   check('demo-user GET/PUT/DELETE admin content → 404', r.status === 404 && rp.status === 404 && rdl.status === 404);
+  // Contents with demo publish tasks (定时发布 demo) get their status from those tasks instead of the stage.
+  const withPublish = new Set(aC.filter((x) => Object.values(x.publishCounts ?? {}).some((n) => Number(n) > 0)).map((x) => x.title));
   for (const s of ['draft', 'ready', 'archived'] as const) {
     const got = await cl(T, `status=${s}&q=demo`);
-    check(`status=${s} filter (admin, all owners)`, eqSet(ctitles(got), CONTENTS.filter((c) => c.stage === s).map((c) => c.title)), sorted(ctitles(got)));
+    check(`status=${s} filter (admin, all owners)`, eqSet(ctitles(got), CONTENTS.filter((c) => c.stage === s && !withPublish.has(c.title)).map((c) => c.title)), sorted(ctitles(got)));
   }
   const media0 = aC.find((x) => x.title === 'demo 夏日海边合集');
   check('media attached in order with thumbnails', media0.media.map((m: any) => m.name).join(',') === 'demo-海边日落,demo-城市夜景,demo-早餐摆拍' && media0.media.every((m: any) => m.thumbnailUrl));

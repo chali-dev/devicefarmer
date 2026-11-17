@@ -387,6 +387,7 @@ export interface PublishTaskItem {
   title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
   scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | null; attemptNo: number; maxAttempts: number; taskId: string | null
   republish: boolean; externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
+  postType: PostType
   createdAt: string; updatedAt: string
   content: { id: string; title: string; userId: string } | null
   account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null
@@ -401,12 +402,16 @@ export interface PublishRun {
   id: string; status: TaskStatus; attempts: number; maxAttempts: number; runAt: string | null; idempotencyKey: string | null; retryOf: string | null
   error: string | null; errorCode: string | null; result: unknown; createdAt: string; startedAt: string | null; finishedAt: string | null
 }
+export const POST_TYPES = ['feed', 'reel', 'story'] as const
+export type PostType = (typeof POST_TYPES)[number]
+export interface MediaRule { min: number; max: number; kinds: ('image' | 'video')[]; mixed: boolean; maxVideoSec?: number }
 export interface PublishCapability {
-  media: { min: number; max: number; kinds: ('image' | 'video')[]; mixed: boolean }
+  media: MediaRule
+  postTypes?: Partial<Record<'reel' | 'story', { media: MediaRule; caption: boolean }>>
   title: { required: boolean; max: number } | null
   captionMax: number; hashtagsMax: number; privacy?: string[]
 }
-export interface PublishPlatform { id: string; name: string; capability: PublishCapability; methods: ('api' | 'manual')[]; known: boolean }
+export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; methods: ('api' | 'manual')[]; known: boolean }
 
 // ---------------------------------------------------------------- dashboard (概览) + settings (设置)
 export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
@@ -424,6 +429,7 @@ export interface DashboardWidgets {
     next: { id: string; scheduledAt: string; platform: string; status: string; title: string | null; handle: string | null }[]
     trend: { day: string; published: number; failed: number }[]
   }
+  publishToday?: { total: number; byType: Record<PostType, number>; published: Record<PostType, number>; byStatus: Record<string, number> }
   tasks?: {
     last24h: Record<'total' | 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled', number>
     recentFailures: { id: string; type: string; label: string | null; error: string | null; errorCode: string | null; finishedAt: string | null; createdAt: string }[]

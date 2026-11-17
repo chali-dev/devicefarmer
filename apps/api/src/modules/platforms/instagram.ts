@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { config } from '../../config.js';
+import type { PostType } from '../../db/schema.js';
 import type { HttpError } from '../../lib/errors.js';
 import { mediaUrlProblem, publicMediaUrl } from './media-url.js';
 import { dayStartSec, expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
@@ -17,6 +18,13 @@ import type { Authed, PlatformAdapter, PlatformAppOptions, PlatformComment, Publ
  * endpoint, so disconnect only deletes it here). No PKCE in this flow (confidential client + state).
  * Publishing: Meta fetches media by URL → a presigned public HTTPS URL is needed (S3 storage only).
  * Images must be JPEG. Limit: 100 API-published posts per 24 h per account.
+ * Post types (POST /<IG_ID>/media, https://developers.facebook.com/docs/instagram-platform/content-publishing/ and
+ * the IG User Media reference https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media):
+ *   feed  = image_url (single image) | media_type=REELS + share_to_feed (single video: Meta publishes single feed
+ *           videos as reels) | media_type=CAROUSEL with is_carousel_item children (2–10 items);
+ *   reel  = media_type=REELS, video_url, caption, share_to_feed=true (as the app does by default); video 3 s – 15 min;
+ *   story = media_type=STORIES, image_url or video_url, no caption parameter (the reference documents caption for
+ *           "the image, video, or carousel" and the story request takes none; stickers are not supported); video 3–60 s.
  */
 const NAME = 'Instagram';
 /** Account insights (账号分析: views/likes/comments/shares per day). Connections made without it still work (scope missing). */
@@ -85,12 +93,20 @@ async function exchangeLongLived(app: { clientSecret: string }, shortToken: stri
   return { accessToken: b.access_token, expiresAt: expiresIn(b.expires_in) };
 }
 
+/** Container parameters of a single-media post (see the post types above). */
+export function singleContainerParams(postType: PostType, kind: 'image' | 'video', url: string, caption: string): Record<string, string> {
+  const media: Record<string, string> = kind === 'video' ? { video_url: url } : { image_url: url };
+  if (postType === 'story') return { media_type: 'STORIES', ...media };
+  if (postType === 'reel') return { media_type: 'REELS', video_url: url, caption, share_to_feed: 'true' };
+  return kind === 'video' ? { media_type: 'REELS', video_url: url, caption, share_to_feed: 'true' } : { image_url: url, caption };
+}
+
 export const instagramAdapter: PlatformAdapter = {
   id: 'instagram',
   name: NAME,
   capabilities: () => ({
     publishVideo: true, publishImage: true, publishCarousel: true, draftOnly: false, needsPublicMediaUrl: true,
-    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true,
+    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true, postTypes: ['reel', 'story'],
   }),
 
   oauth: {
@@ -175,6 +191,15 @@ export const instagramAdapter: PlatformAdapter = {
       if (x.fileType === 'image' && !isJpeg(x.mimeType)) return { code: 'platform.media_unsupported', message: 'Instagram 只接受 JPEG 图片' };
       if (x.fileType === 'video' && !isIgVideo(x.mimeType)) return { code: 'platform.media_unsupported', message: 'Instagram 只接受 MP4 / MOV 视频' };
     }
+    const type = input.postType ?? 'feed';
+    if (type !== 'feed' && m.length !== 1) return { code: 'platform.media_unsupported', message: 'Reels / 限动只能有 1 个素材' };
+    if (type === 'reel' && m[0]!.fileType !== 'video') return { code: 'platform.media_unsupported', message: 'Reels 需要 1 个视频' };
+    // API-only duration limits (in the app shorter clips are fine, so these fall back to the manual method).
+    const v = m.find((x) => x.fileType === 'video');
+    const [lo, hi] = type === 'story' ? [3, 60] : [3, 900];
+    if (v && type !== 'feed' && v.duration !== null && (v.duration < lo || v.duration > hi)) {
+      return { code: 'platform.video_duration', message: `Instagram 接口要求视频 ${lo}–${hi} 秒（当前 ${Math.round(v.duration)} 秒）` };
+    }
     for (const x of m) {
       const problem = await mediaUrlProblem(x);
       if (problem) return { code: problem.code, message: problem.message };
@@ -188,12 +213,9 @@ export const instagramAdapter: PlatformAdapter = {
     let creationId: string;
     if (input.media.length === 1) {
       const x = input.media[0]!;
-      const url = await publicMediaUrl(x);
-      const params: Record<string, string> = x.fileType === 'video'
-        ? { media_type: 'REELS', video_url: url, caption, share_to_feed: 'true' }
-        : { image_url: url, caption };
+      const params = singleContainerParams(input.postType ?? 'feed', x.fileType, await publicMediaUrl(x), caption);
       creationId = (await graph<{ id: string }>(a, 'POST', `${user}/media`, params)).id;
-      await a.log?.('media container created', { kind: x.fileType });
+      await a.log?.('media container created', { kind: x.fileType, postType: input.postType ?? 'feed' });
       await waitContainer(a, creationId);
     } else {
       const children: string[] = [];

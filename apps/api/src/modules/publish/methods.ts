@@ -1,4 +1,4 @@
-import type { MediaAsset, SocialAccount } from '../../db/schema.js';
+import type { MediaAsset, PostType, SocialAccount } from '../../db/schema.js';
 import { PLATFORMS } from '../social/platforms.js';
 
 /**
@@ -35,6 +35,8 @@ export interface PublishInput {
   options: Record<string, unknown>;
   /** Ordered, all `ready`. */
   media: MediaAsset[];
+  /** feed | reel | story (validated for the platform). */
+  postType: PostType;
 }
 
 /** Coded reason (`code` is translated by the UI as errors.<code>). */
@@ -91,8 +93,8 @@ export const manualMethod: PublishMethod = {
   id: 'manual',
   needsDevice: true,
   async unavailableReason() { return null; },
-  async publish(_input, ctx) {
-    await ctx.log('info', 'handed over to an operator: publish by hand on the bound device, then record the outcome');
+  async publish(input, ctx) {
+    await ctx.log('info', 'handed over to an operator: publish by hand on the bound device, then record the outcome', { postType: input.postType });
     return { state: 'awaiting_operator' };
   },
 };
