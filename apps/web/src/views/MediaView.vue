@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { SettingOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import type { MediaLimits } from '../api/types'
-import { useAuthStore } from '../stores/auth'
 import PageContainer from '../components/common/PageContainer.vue'
 import MediaPanel from '../components/media/MediaPanel.vue'
 
 /** Media library (素材库): public / my media / favorites. */
-const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -27,11 +24,6 @@ onMounted(async () => { try { limits.value = await api<MediaLimits>('GET', '/api
 
 <template>
   <PageContainer :title="t('media.title')">
-    <template #extra>
-      <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'storage' } })">
-        <template #icon><SettingOutlined /></template>{{ t('media.storageSettings') }}
-      </a-button>
-    </template>
     <a-card :bordered="false">
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
         <a-tab-pane v-for="k in TABS" :key="k" :tab="t(`media.tabs.${k}`)">

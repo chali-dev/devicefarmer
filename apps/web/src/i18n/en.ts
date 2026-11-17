@@ -646,7 +646,6 @@ const en: Messages = {
       deleteContent: 'Items in it are not deleted; they become uncategorized.',
       empty: 'No categories',
     },
-    storageSettings: 'Storage settings',
     storage: {
       location: 'Storage location',
       locationHint: 'Affects only future uploads; existing items are still read from their original storage',

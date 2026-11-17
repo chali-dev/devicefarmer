@@ -647,7 +647,6 @@ const zhCN = {
       deleteContent: '分类中的素材不会被删除，将变为未分类。',
       empty: '暂无分类',
     },
-    storageSettings: '存储设置',
     storage: {
       location: '存储位置',
       locationHint: '只影响之后上传的素材；已有素材仍从原存储读取',
