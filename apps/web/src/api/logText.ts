@@ -71,6 +71,8 @@ const EXACT: Record<string, string> = {
   'previous attempt interrupted while sending: not sent again': 'sendUncertain',
   'the comment was already replied to': 'alreadyReplied',
   'test handler running': 'testRunning',
+  'telegram disabled: not sent': 'telegramDisabled',
+  'telegram message sent': 'telegramSent',
 }
 
 const RULES: Rule[] = [
@@ -94,6 +96,7 @@ const RULES: Rule[] = [
   [/^method: (\w+)$/, 'sendMethod', (m) => ({ method: method(m[1]!) })],
   [/^send rate limit reached \((\d+)\/(\d+) per hour\), deferred$/, 'rateLimited', (m) => ({ n: m[1]!, max: m[2]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
+  [/^deleted (\d+) read and (\d+) unread notifications, (\d+) alert states$/, 'notificationsDeleted', (m) => ({ read: m[1]!, unread: m[2]!, states: m[3]! })],
   [/^(\w+) → (\w+)$/, 'commentStatus', (m) => ({ from: status('comments', m[1]!), to: status('comments', m[2]!) })],
 ]
 

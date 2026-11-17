@@ -37,7 +37,7 @@ const selectedKeys = ref<string[]>([])
 const page = reactive({ current: 1, pageSize: 20 })
 
 const filters = reactive({
-  q: '',
+  q: queryParam(route.query, 'q') ?? '',
   platform: queryParam(route.query, 'platform'),
   groupId: undefined as string | undefined,
   loginStatus: queryParam<SocialLoginStatus>(route.query, 'loginStatus', ['unknown', 'logged_in', 'logged_out', 'needs_verification']),
@@ -92,6 +92,7 @@ function reset() {
 }
 onMounted(() => { void loadMeta(); void load(); void conns.loadPlatforms().then(conns.handleCallback) })
 watch(() => route.query.instanceId, (v) => { filters.instanceId = typeof v === 'string' ? v : undefined; search() })
+watch(() => route.query.q, (v) => { if (typeof v === 'string') { filters.q = v; search() } }) // alert links (/social?q=handle)
 
 function onTableChange(p: { current?: number; pageSize?: number }) {
   page.current = p.current ?? 1

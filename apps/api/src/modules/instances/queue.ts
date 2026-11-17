@@ -2,6 +2,7 @@ import type { Task } from '../../db/schema.js';
 import { conflict, forbidden } from '../../lib/errors.js';
 import { isAdmin } from '../auth/rbac.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
+import { deviceStatusChanged } from '../notify/triggers.js';
 import { getInstance, updateInstance } from './repo.js';
 import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opPushAsset, opRestart, opSetProxy, opStart, opStop, opUninstallApp } from './ops.js';
 
@@ -83,7 +84,8 @@ for (const op of Object.keys(RUN) as DeviceOpName[]) {
     },
     async onFailure(task) {
       if (task.status !== 'failed' || !task.instanceId || DEVICE_OPS.includes(op)) return;
-      await updateInstance(task.instanceId, { status: 'error', lastError: `${op}: ${task.error ?? ''}` });
+      const row = await updateInstance(task.instanceId, { status: 'error', lastError: `${op}: ${task.error ?? ''}` });
+      if (row) await deviceStatusChanged(row, 'error', 'op_failed', op);
     },
   });
 }

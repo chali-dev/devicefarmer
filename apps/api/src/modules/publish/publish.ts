@@ -5,6 +5,7 @@ import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
 import { badRequest, conflict } from '../../lib/errors.js';
 import { isTransientPlatformError } from '../platforms/http.js';
+import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
@@ -447,6 +448,11 @@ registerTaskHandler<Payload>(TASK_TYPE, {
     if (row) {
       await publishLog(row, status === 'cancelled' ? 'warn' : 'error', `${status} (scheduler task ${task.status})`, { code: row.errorCode, error: task.error });
       await refreshContentStatus(row.contentId);
+    }
+    // Alert once per failed round (the run itself may already have marked the row failed before throwing).
+    if (status === 'failed') {
+      const [failed] = row ? [row] : await db.select().from(pt).where(and(eq(pt.id, id), eq(pt.taskId, task.id), eq(pt.status, 'failed')));
+      if (failed) await publishFailed(failed);
     }
   },
 });

@@ -143,6 +143,7 @@ export type PlatformEvent =
   | { type: 'instance.deleted'; instanceId: string }
   | { type: 'task.updated'; task: Task }
   | { type: 'task.log'; taskId: string; instanceId: string | null; createdBy: string | null; log: TaskLog }
+  | { type: 'notification.created'; userId: string; notification: AppNotification }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
 
@@ -505,3 +506,9 @@ export interface CommentLog {
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
 }
 export interface CommentTemplate { id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string }
+
+/** In-app alert (告警通知, GET /api/notifications); rendered by api/alerts.ts. */
+export interface AppNotification {
+  id: string; userId: string; kind: string; severity: 'info' | 'warning' | 'error'; recovered: boolean
+  params: Record<string, string | number>; refType: string | null; refId: string | null; readAt: string | null; createdAt: string
+}

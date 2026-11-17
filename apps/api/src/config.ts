@@ -118,6 +118,8 @@ const Env = z.object({
   PUBLISH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
   PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10 * 60_000),
   PUBLISH_RETRY_BACKOFF_MS: z.coerce.number().int().min(100).default(30_000),
+  /** Alerts: Telegram Bot API base URL (override only for a compatible test endpoint). Token and chat id live in settings. */
+  TELEGRAM_API_BASE: z.string().url().default('https://api.telegram.org'),
   /** Registers the test-only task types used by scripts/tasks-check.ts. Never set in normal runs. */
   TASKS_TEST_HANDLERS: z.enum(['0', '1']).default('0').transform((v) => v === '1'),
 });

@@ -5,6 +5,7 @@ import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
+import { accountChecked } from '../notify/triggers.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
   assertLinkable, EXCEPTION_SQL, getLimits, groupForOwner, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
@@ -243,7 +244,9 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
       await tx.update(sa).set(set).where(eq(sa.id, cur.id));
       await writeLogs(tx, req.user, logs);
     });
-    const [item] = await toItems(req.user, [await visibleAccount(req.user, req.params.id)]);
+    const acc = await visibleAccount(req.user, req.params.id);
+    await accountChecked(acc); // alerts: a problem result notifies, a clean one recovers
+    const [item] = await toItems(req.user, [acc]);
     return { account: item };
   });
 

@@ -7,6 +7,7 @@ import { getProfile } from '../../profiles.js';
 import { adb, dockerHost, network, stf } from '../../services.js';
 import { checkGoogleHealth } from '../google/health.js';
 import { updateInstance } from '../instances/repo.js';
+import { deviceStatusChanged, type DownReason } from '../notify/triggers.js';
 import { sourceOf } from '../sources/index.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
@@ -78,16 +79,18 @@ export function startMonitor(log: FastifyBaseLogger, intervalMs = 5000): () => v
         const serial = adb.serialFor(inst.adbPort);
         const c = containers.get(inst.id);
         const patch: Partial<Instance> = {};
+        let reason: DownReason | undefined;
 
         if (!c || c.state !== 'running') {
           if (inst.status === 'running') {
             patch.status = c ? 'stopped' : 'error';
+            reason = c ? 'container_exited' : 'container_missing';
             patch.lastError = c ? `container ${c.state} unexpectedly` : 'container missing on Android host';
           }
           clearDevice(inst, patch);
         } else if (inst.netContainerId && netStates.get(inst.id) !== 'running') {
           // Android without its network sidecar has no network at all (namespace owner gone).
-          if (inst.status !== 'error') { patch.status = 'error'; patch.lastError = '网络边车未运行（请重启实例）'; }
+          if (inst.status !== 'error') { patch.status = 'error'; patch.lastError = '网络边车未运行（请重启实例）'; reason = 'sidecar_down'; }
         } else {
           const booted = await observeAdb(log, inst, adbStates, stfBySerial, patch);
           if (inst.containerId !== c.containerId) patch.containerId = c.containerId;
@@ -100,6 +103,7 @@ export function startMonitor(log: FastifyBaseLogger, intervalMs = 5000): () => v
           }
         }
         if (Object.keys(patch).length) await updateInstance(inst.id, patch);
+        await deviceStatusChanged(inst, patch.status, reason);
       }
     } catch (err) {
       log.error({ err }, 'monitor tick failed');
@@ -156,6 +160,7 @@ function startExternalMonitor(log: FastifyBaseLogger): () => void {
           }
         }
         if (Object.keys(patch).length) await updateInstance(inst.id, patch);
+        await deviceStatusChanged(inst, patch.status, 'powered_off');
       }
     } catch (err) {
       log.error({ err }, 'external monitor tick failed');

@@ -40,6 +40,7 @@ import './modules/publish/publish.js'; // registers the publish task handler + m
 import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-sync / comment-reply task handlers
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
+import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, Telegram, account-check schedule
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 
@@ -86,6 +87,7 @@ await app.register(commentRoutes);
 await app.register(auditRoutes);
 await app.register(taskRoutes);
 await app.register(dashboardRoutes);
+await app.register(notifyRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
@@ -104,10 +106,12 @@ const hourly = () => {
   void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+  alertsHourly(app.log);
 };
 setTimeout(() => {
   void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
   void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
+  alertsHourly(app.log);
 }, 10_000).unref();
 const cleanupTimer = setInterval(hourly, 3600_000);
 
