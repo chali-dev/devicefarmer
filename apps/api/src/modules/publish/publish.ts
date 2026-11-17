@@ -4,6 +4,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
 import { badRequest, conflict } from '../../lib/errors.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isTransientPlatformError } from '../platforms/http.js';
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -118,6 +119,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
     const out: DistributeResult = { created: [], existing: [] };
     for (const t of targets) {
       const acc = await visibleAccount(user, t.accountId, tx);
+      assertPlatformEnabled(acc.platform);
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
       const post = postFor(content, acc.platform, t);
       const bad = validateForPlatform(acc.platform, media, post);
@@ -190,6 +192,7 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
     const [cur] = await tx.select().from(pt).where(eq(pt.id, id)).for('update');
     if (!cur) throw conflict('发布任务不存在', 'publish.not_found');
     if (!from.includes(cur.status)) throw conflict(`当前状态（${cur.status}）不能执行该操作`, 'publish.bad_status', { status: cur.status });
+    assertPlatformEnabled(cur.platform);
     if (action === 'retried' && !cur.republish) {
       const [done] = await tx.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, cur.contentId), eq(pt.accountId, cur.accountId), eq(pt.status, 'published'), ne(pt.id, cur.id)));
       if (done) throw conflict('该内容已发布到这个账号', 'publish.already_published', { account: cur.accountId });
@@ -350,6 +353,7 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
 type Log = (level: PublishLogLevel, message: string, data?: Record<string, unknown>) => Promise<void>;
 
 async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishMethod; input: PublishInput }> {
+  if (!isPlatformEnabled(row.platform)) throw new PublishCheckError('platform.disabled', `platform ${row.platform} is disabled`, { platform: row.platform });
   // 1. account + owner
   const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
   if (!acc) throw new PublishCheckError('publish.account_gone', 'the social account no longer exists');

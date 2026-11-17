@@ -5,7 +5,7 @@ import { registerDashboardWidget } from '../dashboard/registry.js';
 import { ACCOUNT_REF_TYPE } from '../platforms/check.js';
 import { appOptions } from '../platforms/credentials.js';
 import { connectionFor } from '../platforms/connections.js';
-import { ADAPTERS, adapterById } from '../platforms/index.js';
+import { adapterById, enabledAdapters } from '../platforms/index.js';
 import { apiAccountStats } from '../platforms/service.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 
@@ -61,8 +61,8 @@ export async function upsertDay(
   return row!;
 }
 
-/** Platforms whose adapter can fetch account stats. */
-export const statsPlatforms = () => ADAPTERS.filter((a) => a.capabilities({}).accountStats).map((a) => a.id);
+/** Enabled platforms whose adapter can fetch account stats. */
+const statsPlatforms = () => enabledAdapters().filter((a) => a.capabilities({}).accountStats).map((a) => a.id);
 
 // ---------------------------------------------------------------- refresh (task)
 export async function refreshAccountStats(accountId: string, ctx: Pick<TaskContext, 'signal' | 'log'>): Promise<Record<string, unknown>> {
@@ -133,6 +133,7 @@ const slot = (id: string) => parseInt(id.replace(/-/g, '').slice(0, 8), 16) / 0x
 export async function scheduleDailyAccountStats(now = new Date(), opts: { spread?: boolean } = {}): Promise<{ created: number }> {
   const day = utcDay(now);
   const platforms = statsPlatforms();
+  if (!platforms.length) return { created: 0 };
   const rows = await db.execute<{ id: string; user_id: string; platform: string; handle: string }>(sql`
     select sa.id, sa.user_id, sa.platform, sa.handle from social_accounts sa
     join platform_connections pc on pc.social_account_id = sa.id and pc.status = 'connected'

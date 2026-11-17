@@ -4,6 +4,7 @@ import { and, eq, gte, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Comment, CommentReplyStatus, CommentTask, SocialAccount, Task } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { connectionFor } from '../platforms/connections.js';
 import { isConfigured } from '../platforms/credentials.js';
@@ -225,6 +226,7 @@ export async function deleteManualComment(user: AuthUser, c: Comment): Promise<v
 
 /** Starts (or returns the running) comment-sync task of the account. */
 export async function startSync(user: AuthUser, account: SocialAccount): Promise<{ task: Task; created: boolean }> {
+  assertPlatformEnabled(account.platform);
   const caps = await platformCapabilities(account.platform);
   if (!caps?.commentsRead) throw conflict('该平台没有读取评论的官方接口，请人工录入评论', 'comment.sync_unsupported', { platform: account.platform });
   const mode = await readMode(account);

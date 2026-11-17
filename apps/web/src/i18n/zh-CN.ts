@@ -2228,6 +2228,7 @@ const zhCN = {
     platform: {
       not_configured: '未配置 {platform} 平台接入（管理员可在“平台接入”页设置）',
       unsupported: '平台 {platform} 没有官方接口适配',
+      disabled: '平台 {platform} 未启用',
       account_platform_mismatch: '该账号不是 {platform} 账号',
       client_id_required: '请先填写 Client ID',
       bad_account_ids: '账号 ID 格式不正确',
@@ -2337,6 +2338,7 @@ const zhCN = {
     },
     trending: {
       no_regions: '未配置趋势热点地区',
+      unavailable: '当前启用的平台都不提供趋势热点',
       snapshot_not_found: '快照不存在',
     },
     player: {

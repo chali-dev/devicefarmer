@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { TrackedAccount } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platforms.js';
@@ -166,6 +167,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (b.favorite !== undefined) set.favorite = b.favorite;
     if (b.status !== undefined) set.status = b.status;
     if (b.refreshIntervalHours !== undefined && b.refreshIntervalHours !== cur.refreshIntervalHours) {
+      if (b.refreshIntervalHours !== null) assertPlatformEnabled(cur.platform);
       if (b.refreshIntervalHours !== null && !platformDef(cur.platform).source) {
         throw badRequest('该平台没有官方 API，只能手动录入，无法定时采集', 'tracked.schedule_manual_only');
       }
@@ -273,7 +275,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/tracked-accounts/:id/refresh', { schema: { params: Id } }, async (req, reply) => {
     const acc = await getVisibleAccount(req.user, req.params.id);
     const no = await refreshRefusal(acc, await pendingRefreshes([acc.id]));
-    if (no) throw new HttpError(no.status, no.message, no.code);
+    if (no) throw new HttpError(no.status, no.message, no.code, no.params);
     const taskId = await enqueueRefresh(acc, req.user.id);
     reply.code(202);
     return { taskId, manualOnly: !platformDef(acc.platform).source };

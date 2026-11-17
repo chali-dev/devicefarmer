@@ -17,10 +17,12 @@ import MediaStrip from '../components/content/MediaStrip.vue'
 import TemplateInsert, { type InsertTarget } from '../components/content/TemplateInsert.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
+import { usePlatformsStore } from '../stores/platforms'
 
 /** Content management (内容管理): list, editor, distribution to social accounts. */
 const { t } = useI18n()
 const auth = useAuthStore()
+const platforms = usePlatformsStore()
 const router = useRouter()
 
 const items = ref<Content[]>([])
@@ -251,19 +253,28 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
       <a-collapse ghost>
         <a-collapse-panel key="hints" :header="t('content.hints')">
           <p class="muted">{{ t('content.hintsHelp') }}</p>
-          <a-divider orientation="left" plain><PlatformTag platform="youtube" /></a-divider>
-          <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="form.yt.title" :maxlength="100" show-count /></a-form-item>
-          <a-form-item :label="t('content.ytDescription')"><a-textarea v-model:value="form.yt.description" :rows="3" :maxlength="5000" /></a-form-item>
-          <a-form-item :label="t('content.ytPrivacy')">
-            <a-select v-model:value="form.yt.privacy" allow-clear style="width: 200px" :placeholder="t('distribute.privacyOpt.private')"
-              :options="['public', 'unlisted', 'private'].map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
-          </a-form-item>
-          <a-divider orientation="left" plain><PlatformTag platform="instagram" /></a-divider>
-          <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.ig.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
-          <a-divider orientation="left" plain><PlatformTag platform="tiktok" /></a-divider>
-          <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.tt.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
-          <a-divider orientation="left" plain><PlatformTag platform="facebook" /></a-divider>
-          <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.fb.caption" :rows="3" :maxlength="5000" show-count /></a-form-item>
+          <!-- Hints of disabled platforms stay in the form (and are saved) but are not shown. -->
+          <template v-if="platforms.isEnabled('youtube')">
+            <a-divider orientation="left" plain><PlatformTag platform="youtube" /></a-divider>
+            <a-form-item :label="t('content.ytTitle')"><a-input v-model:value="form.yt.title" :maxlength="100" show-count /></a-form-item>
+            <a-form-item :label="t('content.ytDescription')"><a-textarea v-model:value="form.yt.description" :rows="3" :maxlength="5000" /></a-form-item>
+            <a-form-item :label="t('content.ytPrivacy')">
+              <a-select v-model:value="form.yt.privacy" allow-clear style="width: 200px" :placeholder="t('distribute.privacyOpt.private')"
+                :options="['public', 'unlisted', 'private'].map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
+            </a-form-item>
+          </template>
+          <template v-if="platforms.isEnabled('instagram')">
+            <a-divider orientation="left" plain><PlatformTag platform="instagram" /></a-divider>
+            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.ig.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
+          </template>
+          <template v-if="platforms.isEnabled('tiktok')">
+            <a-divider orientation="left" plain><PlatformTag platform="tiktok" /></a-divider>
+            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.tt.caption" :rows="3" :maxlength="2200" show-count /></a-form-item>
+          </template>
+          <template v-if="platforms.isEnabled('facebook')">
+            <a-divider orientation="left" plain><PlatformTag platform="facebook" /></a-divider>
+            <a-form-item :label="t('content.caption')"><a-textarea v-model:value="form.fb.caption" :rows="3" :maxlength="5000" show-count /></a-form-item>
+          </template>
         </a-collapse-panel>
       </a-collapse>
     </a-form>

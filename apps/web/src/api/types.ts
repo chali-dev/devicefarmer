@@ -321,6 +321,7 @@ export interface PlatformCapabilities {
   commentsRead: boolean
   commentsReply: boolean
   profileStats: boolean
+  accountStats: boolean
 }
 export interface PlatformInfo { id: string; name: string; configured: boolean; capabilities: PlatformCapabilities; scopes: string[]; pkce: boolean }
 export interface PlatformAppSettings {

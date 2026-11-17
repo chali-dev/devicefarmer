@@ -1,4 +1,5 @@
 import { badRequest } from '../../lib/errors.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { TrackedAccount } from '../../db/schema.js';
 
 /**
@@ -139,8 +140,15 @@ export function registerSource(id: string, source: TrackedSource): void {
 /**
  * Normalises a profile URL or handle. With a URL the platform comes from the host (a given
  * `platform` must match); a bare handle (`@name`, `name`, YouTube `UC…`) needs `platform`.
+ * The platform must be enabled (platform.disabled).
  */
 export function parseProfile(input: string, platform?: string): ParsedProfile {
+  const p = parse(input, platform);
+  assertPlatformEnabled(p.platform);
+  return p;
+}
+
+function parse(input: string, platform?: string): ParsedProfile {
   const raw = input.trim();
   if (!raw) throw badRequest('请输入主页链接或账号', 'tracked.input_required');
   const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^[a-z0-9.-]+\.[a-z]{2,}\//i.test(raw)
@@ -166,9 +174,9 @@ export function parseProfile(input: string, platform?: string): ParsedProfile {
   return { platform: def.id, ...id, profileUrl: def.profileUrl(id) };
 }
 
-/** Public platform list with what each can do (sources are configured globally by admins). */
+/** Enabled platforms with what each can do (sources are configured globally by admins). */
 export async function platformInfo() {
-  return Promise.all(PLATFORMS.map(async (p) => ({
+  return Promise.all(PLATFORMS.filter((p) => isPlatformEnabled(p.id)).map(async (p) => ({
     id: p.id, label: p.label, metrics: p.metrics,
     api: p.source ? { ...p.source.capabilities, configured: await p.source.isConfigured() } : null,
   })));

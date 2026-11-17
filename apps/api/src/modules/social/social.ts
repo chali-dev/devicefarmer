@@ -4,7 +4,7 @@ import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
-import { PLATFORMS, platformById } from './platforms.js';
+import { enabledPlatforms, PLATFORMS, platformById } from './platforms.js';
 
 /**
  * Social accounts (社交账号). Rules:
@@ -43,7 +43,7 @@ export async function saveLimits(input: Record<string, number>): Promise<Record<
 }
 
 export function platformsWithLimits(limits: Record<string, number>) {
-  return PLATFORMS.map((p) => ({ id: p.id, name: p.name, defaultLimit: p.defaultLimit, limit: limits[p.id] ?? p.defaultLimit }));
+  return enabledPlatforms().map((p) => ({ id: p.id, name: p.name, defaultLimit: p.defaultLimit, limit: limits[p.id] ?? p.defaultLimit }));
 }
 
 /**

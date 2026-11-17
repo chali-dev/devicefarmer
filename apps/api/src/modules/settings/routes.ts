@@ -5,6 +5,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { checkHealth, hostCapacity, systemInfo } from '../../health.js';
 import { HttpError } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
@@ -30,7 +31,10 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
   /** `apiKey: null` clears it. The key is not tested here (that would spend quota); a refresh reports a bad key. */
   app.put('/api/settings/youtube', {
     schema: { body: z.object({ apiKey: z.string().trim().min(20).max(200).regex(/^[A-Za-z0-9_-]+$/, 'invalid API key format').nullable() }) },
-  }, async (req) => ({ youtube: await saveYoutubeApiKey(req.body.apiKey) }));
+  }, async (req) => {
+    assertPlatformEnabled('youtube');
+    return { youtube: await saveYoutubeApiKey(req.body.apiKey) };
+  });
 
   /** Task centre retention + the last cleanup run. */
   const lastCleanup = async () => {

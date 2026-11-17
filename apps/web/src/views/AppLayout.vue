@@ -16,9 +16,11 @@ import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import { MENU_GROUPS, useMenuLocation } from '../components/common/menu'
+import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
+const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -30,7 +32,7 @@ function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 const collapsed = ref(false)
 /** Groups with only the items this user may open; a group left empty is dropped (no bare header). */
 const visibleGroups = computed(() => MENU_GROUPS
-  .map((g) => ({ ...g, items: g.items.filter((it) => auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) }))
+  .map((g) => ({ ...g, items: g.items.filter((it) => (auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) && (!it.feature || platforms.scope.features[it.feature])) }))
   .filter((g) => g.items.length > 0))
 const loc = useMenuLocation()
 const selected = computed(() => [loc.itemKey.value])
@@ -47,7 +49,7 @@ const crumbs = computed(() => {
   return out
 })
 
-onMounted(() => { store.connect(); void store.refresh() })
+onMounted(() => { store.connect(); void store.refresh(); platforms.load().catch(() => undefined) })
 onBeforeUnmount(() => store.disconnect())
 
 function logout() {

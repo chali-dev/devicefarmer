@@ -93,6 +93,12 @@ const Env = z.object({
   FFPROBE_PATH: z.string().default('ffprobe'),
   /** Audit log (操作日志) entries older than this are deleted at startup and daily. */
   AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(180),
+  /**
+   * Social platforms switched on (comma list of platform ids, or `all`). Every platform's code stays in the
+   * registries; a disabled one is left out of option lists, refused for anything new (platform.disabled)
+   * and skipped by the schedulers. Existing rows stay readable.
+   */
+  ENABLED_PLATFORMS: z.string().default('instagram'),
   /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
   YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
   /**

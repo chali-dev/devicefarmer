@@ -8,7 +8,8 @@ import {
 import { t } from '../../i18n'
 
 export type MenuGroupKey = 'devices' | 'matrix' | 'content' | 'system'
-export interface MenuItem { key: string; icon: Component }
+/** `feature`: shown only while the platform scope offers it (GET /api/platforms → features, stores/platforms.ts). */
+export interface MenuItem { key: string; icon: Component; feature?: 'trending' }
 export interface MenuGroup { key: MenuGroupKey; icon: Component; items: MenuItem[] }
 
 /**
@@ -26,7 +27,7 @@ export const MENU_GROUPS: MenuGroup[] = [
     { key: 'tracked', icon: EyeOutlined }, { key: 'comments', icon: CommentOutlined },
   ] },
   { key: 'content', icon: ReadOutlined, items: [
-    { key: 'media', icon: PictureOutlined }, { key: 'scripts', icon: BookOutlined }, { key: 'trending', icon: FireOutlined },
+    { key: 'media', icon: PictureOutlined }, { key: 'scripts', icon: BookOutlined }, { key: 'trending', icon: FireOutlined, feature: 'trending' },
     { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
   ] },
   { key: 'system', icon: ControlOutlined, items: [

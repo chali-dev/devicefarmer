@@ -14,6 +14,7 @@ import StatLink from '../components/dashboard/StatLink.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import TrendCharts from '../components/analytics/TrendCharts.vue'
 import { useAuthStore } from '../stores/auth'
+import { usePlatformsStore } from '../stores/platforms'
 
 /**
  * 账号分析: followers gained, views and shares per day of the operator's own social accounts
@@ -22,7 +23,7 @@ import { useAuthStore } from '../stores/auth'
 const { t } = useI18n()
 const auth = useAuthStore()
 const RANGES = [7, 30, 90] as const
-const STATS_PLATFORMS = ['instagram', 'youtube', 'tiktok']
+const platforms = usePlatformsStore()
 
 const range = ref<number>(7)
 const ownerId = ref<string | undefined>()
@@ -60,7 +61,7 @@ onBeforeUnmount(() => { if (pollTimer) clearTimeout(pollTimer) })
 
 const fmtDay = (d: string) => new Date(dayTs(d)).toLocaleDateString(dateLocale())
 const signed = (n: number | null | undefined) => (n === null || n === undefined ? '—' : `${n > 0 ? '+' : ''}${compactNumber(n)}`)
-const canRefresh = (a: AnalyticsAccount) => a.connection !== null && STATS_PLATFORMS.includes(a.platform)
+const canRefresh = (a: AnalyticsAccount) => a.connection !== null && platforms.statsPlatforms.includes(a.platform)
 const handle = (a: { handle: string; displayName: string | null }) => a.displayName || `@${a.handle}`
 
 async function refresh(a: AnalyticsAccount) {
@@ -145,7 +146,7 @@ const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label:
     </template>
     <a-space wrap style="margin-bottom: 12px">
       <a-select v-model:value="platform" :placeholder="t('analytics.platform')" allow-clear style="width: 140px">
-        <a-select-option v-for="p in ['instagram', 'youtube', 'tiktok', 'facebook']" :key="p" :value="p"><PlatformTag :platform="p" /></a-select-option>
+        <a-select-option v-for="p in platforms.scope.enabled" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" /></a-select-option>
       </a-select>
       <a-select v-if="auth.isAdmin" v-model:value="ownerId" :placeholder="t('analytics.owner')" allow-clear show-search option-filter-prop="label" style="width: 160px" :options="userOptions" />
       <span v-if="data" class="muted small">{{ t('analytics.rangeHint', { from: fmtDay(data.from), to: fmtDay(data.to) }) }}</span>

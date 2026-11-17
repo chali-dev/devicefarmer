@@ -3,6 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { accountChecked } from '../notify/triggers.js';
@@ -98,6 +99,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     preHandler: app.requireAdmin,
     schema: { body: z.object({ limits: z.partialRecord(z.enum(PLATFORM_IDS), z.number().int().min(1).max(MAX_LIMIT)) }) },
   }, async (req) => {
+    Object.keys(req.body.limits).forEach(assertPlatformEnabled);
     const limits = await saveLimits(req.body.limits as Record<string, number>);
     return { limits, platforms: platformsWithLimits(limits) };
   });
@@ -150,6 +152,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.post('/api/social/accounts', { schema: { body: CreateBody } }, async (req, reply) => {
     const b = req.body;
+    assertPlatformEnabled(b.platform);
     const ownerId = await resolveOwner(req.user, b.ownerId);
     const platform = platformById(b.platform)!;
     const id = await db.transaction(async (tx) => {
