@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { commentActionText, logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
-import {
-  COMMENT_REPLY_STATUS_COLOR, COMMENT_STATUS_COLOR, type CommentItem, type CommentLog, type CommentReplyItem, type CommentRules, type CommentTemplate,
-} from '../../api/types'
+import type { CommentItem, CommentLog, CommentReplyItem, CommentRules, CommentTemplate } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import PlatformTag from '../social/PlatformTag.vue'
+import StatusTag from '../common/StatusTag.vue'
+import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
 
 /**
  * One comment: its thread, the reply composer (always written by a person, optionally from a template),
@@ -88,8 +88,8 @@ function reject() {
   void act(() => api('POST', `/api/comment-replies/${active.value!.id}/reject`, { reason: review.reason }), t('comments.rejected'))
 }
 function cancel() {
-  Modal.confirm({
-    title: t('comments.cancelConfirm'), okText: t('comments.cancel'), cancelText: t('common.cancel'), okType: 'danger',
+  confirmDanger({
+    title: t('comments.cancelConfirm'), okText: t('comments.cancel'),
     onOk: () => act(() => api('POST', `/api/comment-replies/${active.value!.id}/cancel`), t('comments.cancelled')),
   })
 }
@@ -111,51 +111,50 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 </script>
 
 <template>
-  <a-drawer :open="open" :title="t('comments.thread')" width="min(720px, 100vw)" @close="emit('update:open', false)">
+  <a-drawer :open="open" :title="t('comments.thread')" :width="DRAWER_WIDTH.lg" @close="emit('update:open', false)">
     <a-spin :spinning="loading">
       <template v-if="comment">
         <div class="thread">
           <div v-for="c in thread" :key="c.id" class="msg" :class="{ child: !!c.parentExternalId, current: c.id === comment.id }">
             <div class="meta">
               <b>{{ c.authorName ?? '—' }}</b>
-              <span v-if="c.authorHandle" class="muted">{{ c.authorHandle }}</span>
-              <span class="muted">{{ fmt(c.publishedAt ?? c.createdAt) }}</span>
-              <a-tag :color="COMMENT_STATUS_COLOR[c.status]">{{ t(`comments.status.${c.status}`) }}</a-tag>
+              <span v-if="c.authorHandle" class="muted small">{{ c.authorHandle }}</span>
+              <span class="muted small">{{ fmt(c.publishedAt ?? c.createdAt) }}</span>
+              <StatusTag kind="comment" :status="c.status" />
               <a-tag v-if="c.source === 'manual'">{{ t('comments.sourceManual') }}</a-tag>
             </div>
             <div class="text">{{ c.text }}</div>
           </div>
         </div>
-        <a-space wrap style="margin: 8px 0">
+        <a-space wrap class="gap" style="margin-top: 8px">
           <PlatformTag :platform="comment.platform" />
           <span>@{{ comment.account?.handle }}</span>
           <a v-if="comment.postUrl" :href="comment.postUrl" target="_blank" rel="noopener noreferrer">{{ t('comments.viewPost') }}</a>
-          <span v-if="comment.publishTask?.title" class="muted">{{ t('comments.publishedContent', { title: comment.publishTask.title }) }}</span>
+          <span v-if="comment.publishTask?.title" class="muted small">{{ t('comments.publishedContent', { title: comment.publishTask.title }) }}</span>
           <a-tag v-if="mode" :color="mode.mode === 'api' ? 'blue' : 'orange'" :title="modeReason">{{ mode.mode === 'api' ? t('comments.replyApi') : t('comments.replyManual') }}</a-tag>
         </a-space>
 
-        <a-divider orientation="left">{{ active && !editing ? t('comments.currentReply') : t('comments.composer') }}</a-divider>
+        <a-divider orientation="left" plain>{{ active && !editing ? t('comments.currentReply') : t('comments.composer') }}</a-divider>
 
         <!-- composer / draft -->
         <template v-if="editing">
-          <a-alert type="info" show-icon :message="t('comments.composerHint')" style="margin-bottom: 8px" />
           <a-form layout="vertical">
             <a-form-item :label="t('comments.template')">
               <a-select v-model:value="form.templateId" allow-clear :placeholder="t('comments.noTemplate')" @change="(v: any) => pickTemplate(v as string | undefined)">
-                <a-select-option v-for="x in templates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.shared" class="muted"> · {{ t('comments.shared') }}</span></a-select-option>
+                <a-select-option v-for="x in templates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.shared" class="muted small"> · {{ t('comments.shared') }}</span></a-select-option>
               </a-select>
             </a-form-item>
             <a-form-item :label="t('comments.replyText')" required>
               <a-textarea v-model:value="form.text" :auto-size="{ minRows: 3, maxRows: 10 }" :maxlength="5000" show-count />
             </a-form-item>
             <a-form-item v-if="!active || active.status === 'draft'" :label="t('comments.sendAt')">
-              <a-date-picker v-model:value="form.at" show-time style="width: 100%" />
+              <a-date-picker v-model:value="form.at" show-time :placeholder="t('comments.sendAtPlaceholder')" style="width: 100%" />
             </a-form-item>
           </a-form>
           <a-space wrap>
             <a-button :loading="busy" @click="save(false)">{{ active?.status === 'pending_review' ? t('common.save') : t('comments.saveDraft') }}</a-button>
             <a-button v-if="!active || active.status === 'draft'" type="primary" :loading="busy" @click="save(true)">{{ t('comments.submit') }}</a-button>
-            <span v-if="!active || active.status === 'draft'" class="muted">{{ needsReview ? t('comments.needsReview') : t('comments.noReviewNeeded') }}</span>
+            <span v-if="!active || active.status === 'draft'" class="muted small">{{ needsReview ? t('comments.needsReview') : t('comments.noReviewNeeded') }}</span>
             <a-button v-if="active" danger :disabled="busy" @click="cancel">{{ t('comments.cancel') }}</a-button>
           </a-space>
         </template>
@@ -164,9 +163,9 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
         <template v-if="active && (!editing || active.status === 'pending_review')">
           <a-descriptions :column="1" size="small" bordered style="margin-top: 8px">
             <a-descriptions-item :label="t('comments.colStatus')">
-              <a-tag :color="COMMENT_REPLY_STATUS_COLOR[active.status]">{{ t(`comments.replyStatus.${active.status}`) }}</a-tag>
-              <span v-if="active.method" class="muted">{{ t(`comments.method.${active.method}`) }}</span>
-              <span v-if="active.scheduledAt && active.status === 'scheduled'" class="muted"> · {{ fmt(active.scheduledAt) }}</span>
+              <StatusTag kind="commentReply" :status="active.status" />
+              <span v-if="active.method" class="muted small">{{ t(`comments.method.${active.method}`) }}</span>
+              <span v-if="active.scheduledAt && active.status === 'scheduled'" class="muted small"> · {{ fmt(active.scheduledAt) }}</span>
             </a-descriptions-item>
             <a-descriptions-item v-if="!editing" :label="t('comments.replyText')"><div class="text">{{ active.text }}</div></a-descriptions-item>
             <a-descriptions-item :label="t('comments.colPeople')">{{ people(active) || '—' }}</a-descriptions-item>
@@ -185,12 +184,12 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
           </div>
 
           <div v-if="active.status === 'awaiting_operator'" class="box">
-            <a-alert type="warning" show-icon :message="t('comments.operatorHint')" style="margin-bottom: 8px" />
+            <a-alert type="warning" show-icon :message="t('comments.operatorHint')" class="gap" />
             <a-space wrap style="margin-bottom: 8px">
               <a-button v-if="active.instance?.accessible" @click="$router.push(`/instances/${active.instance.id}`)">
                 <a-badge :status="active.instance.online ? 'success' : 'default'" />{{ t('comments.openDevice') }} · {{ active.instance.name }}
               </a-button>
-              <span v-else-if="!active.instance" class="muted">{{ t('comments.noDevice') }}</span>
+              <span v-else-if="!active.instance" class="muted small">{{ t('comments.noDevice') }}</span>
               <a-button @click="copy(active.text)">{{ t('comments.copyText') }}</a-button>
             </a-space>
             <a-form layout="vertical">
@@ -216,23 +215,23 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
         </template>
 
         <template v-if="history.length">
-          <a-divider orientation="left">{{ t('comments.tabs.history') }}</a-divider>
+          <a-divider orientation="left" plain>{{ t('comments.tabs.history') }}</a-divider>
           <div v-for="r in history" :key="r.id" class="hist">
-            <a-tag :color="COMMENT_REPLY_STATUS_COLOR[r.status]">{{ t(`comments.replyStatus.${r.status}`) }}</a-tag>
-            <span class="muted">{{ fmt(r.updatedAt) }} · {{ people(r) }}</span>
+            <StatusTag kind="commentReply" :status="r.status" />
+            <span class="muted small">{{ fmt(r.updatedAt) }} · {{ people(r) }}</span>
             <div class="text">{{ r.text }}</div>
             <div v-if="r.reviewNote && r.status === 'rejected'" class="err">{{ t('comments.rejectReason') }}: {{ r.reviewNote }}</div>
             <div v-else-if="r.errorCode && r.status === 'failed'" class="err">{{ errText(r.errorCode, r.error) }}<template v-if="r.errorCode === 'comment.operator_failed' && r.error">: {{ r.error }}</template></div>
           </div>
         </template>
 
-        <a-divider orientation="left">{{ t('comments.logs') }}</a-divider>
+        <a-divider orientation="left" plain>{{ t('comments.logs') }}</a-divider>
         <a-timeline>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="LOG_COLOR[l.level]">
-            <span class="muted">{{ fmt(l.at) }}</span> <b>{{ commentActionText(l.action) }}</b>
+            <span class="muted small">{{ fmt(l.at) }}</span> <b>{{ commentActionText(l.action) }}</b>
             <span v-if="l.code"> · {{ errText(l.code, l.message) }}</span>
             <span v-else-if="l.message"> · {{ logText(l.message, l.data) }}</span>
-            <span v-if="l.actorName" class="muted"> · {{ l.actorName }}</span>
+            <span v-if="l.actorName" class="muted small"> · {{ l.actorName }}</span>
           </a-timeline-item>
         </a-timeline>
       </template>
@@ -242,13 +241,13 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 
 <style scoped>
 .thread { display: flex; flex-direction: column; gap: 6px; }
-.msg { border: 1px solid var(--cp-border-secondary); border-radius: 6px; padding: 6px 8px; }
+.msg { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); padding: 8px 12px; }
 .msg.child { margin-left: 24px; }
 .msg.current { border-color: var(--cp-primary); }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
 .text { white-space: pre-wrap; word-break: break-word; }
-.muted { color: var(--cp-text-tertiary); font-size: 12px; }
 .err { color: var(--cp-error); font-size: 12px; }
-.box { border: 1px dashed var(--cp-border-secondary); border-radius: 6px; padding: 8px; margin-top: 8px; }
+.box { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); background: var(--cp-fill-alter); padding: 12px; margin-top: 12px; }
+.gap { margin-bottom: 12px; }
 .hist { border-bottom: 1px solid var(--cp-border-secondary); padding: 6px 0; }
 </style>

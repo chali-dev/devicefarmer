@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import {
-  compactNumber, TRACKED_STATUS_COLOR, trackedHandle,
+  compactNumber, trackedHandle,
   type TrackedAccount, type TrackedMetric, type TrackedPlatform, type TrackedPost, type TrackedSnapshot,
 } from '../../api/types'
 import LineChart from './LineChart.vue'
+import StatusTag from '../common/StatusTag.vue'
+import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
 /** Detail of one tracked account: follower history chart + table, public posts, manual entry, refresh. */
 const open = defineModel<boolean>('open', { required: true })
@@ -64,7 +66,7 @@ const snapColumns = computed(() => [
   { title: t('tracked.capturedAt'), key: 'capturedAt', width: 170 },
   ...metrics.value.map((m) => ({ title: metricText(m), key: m, align: 'right' as const })),
   { title: t('tracked.source'), key: 'source', width: 90 },
-  { title: '', key: 'ops', width: 60 },
+  { title: t('common.action'), key: 'ops', width: 70 },
 ])
 const snapRows = computed(() => [...snapshots.value].reverse())
 
@@ -94,8 +96,8 @@ async function saveSnap() {
   finally { snapSaving.value = false }
 }
 function removeSnap(s: TrackedSnapshot) {
-  Modal.confirm({
-    title: t('tracked.confirmDeleteSnapshot'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('tracked.confirmDeleteSnapshot'),
     onOk: async () => {
       try {
         await api('DELETE', `/api/tracked-accounts/${acc.value!.id}/snapshots/${s.id}`)
@@ -112,7 +114,7 @@ const postColumns = computed(() => [
   { title: t('tracked.publishedAt'), key: 'publishedAt', width: 150 },
   { title: t('tracked.firstSeen'), key: 'firstSeenAt', width: 150 },
   { title: t('tracked.postMetrics'), key: 'metrics', width: 170 },
-  { title: '', key: 'ops', width: 60 },
+  { title: t('common.action'), key: 'ops', width: 70 },
 ])
 const postOpen = ref(false)
 const postSaving = ref(false)
@@ -141,8 +143,8 @@ async function savePost() {
   finally { postSaving.value = false }
 }
 function removePost(p: TrackedPost) {
-  Modal.confirm({
-    title: t('tracked.confirmDeletePost'), okType: 'danger', okText: t('common.delete'), cancelText: t('common.cancel'),
+  confirmDanger({
+    title: t('tracked.confirmDeletePost'),
     onOk: async () => {
       try { await api('DELETE', `/api/tracked-accounts/${acc.value!.id}/posts/${p.id}`); await loadPosts() } catch (e) { message.error(errorText(e)) }
     },
@@ -153,39 +155,39 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 </script>
 
 <template>
-  <a-drawer v-model:open="open" :width="860" :title="acc ? (acc.displayName || trackedHandle(acc)) : ''" destroy-on-close class="tracked-drawer">
+  <a-drawer v-model:open="open" :width="DRAWER_WIDTH.lg" :title="acc ? (acc.displayName || trackedHandle(acc)) : ''" destroy-on-close>
+    <template v-if="acc" #extra>
+      <a-space>
+        <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
+        <a-button type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
+          :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
+          {{ t('tracked.refreshNow') }}
+        </a-button>
+      </a-space>
+    </template>
     <template v-if="acc">
       <div class="head">
         <a-avatar v-if="acc.avatarUrl" :src="acc.avatarUrl" :size="56" referrerpolicy="no-referrer" />
         <a-avatar v-else :size="56">{{ (acc.displayName || acc.handle).charAt(0).toUpperCase() }}</a-avatar>
         <div class="who">
-          <div>
+          <a-space wrap :size="6">
             <a-tag>{{ platform?.label ?? acc.platform }}</a-tag>
             <a :href="acc.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(acc) }}</a>
-            <a-tag :color="TRACKED_STATUS_COLOR[acc.status]" style="margin-left: 8px">{{ t(`tracked.status.${acc.status}`) }}</a-tag>
-          </div>
+            <StatusTag kind="tracked" :status="acc.status" />
+            <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
+          </a-space>
           <div class="muted small">
             {{ acc.category || t('tracked.uncategorized') }}
             <a-tag v-for="tg in acc.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
           </div>
+          <div class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>
           <div v-if="acc.bio" class="bio">{{ acc.bio }}</div>
         </div>
-        <a-space direction="vertical" align="end">
-          <a-space>
-            <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
-            <a-button type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
-              :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
-              {{ t('tracked.refreshNow') }}
-            </a-button>
-          </a-space>
-          <span class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</span>
-        </a-space>
       </div>
 
       <a-alert v-if="acc.status === 'error' && acc.lastError" type="error" show-icon class="note"
         :message="codeText(acc.lastErrorCode, undefined, acc.lastError)" />
-      <a-alert v-if="acc.dataMode === 'manual_only'" type="info" show-icon class="note" :message="t('tracked.manualOnlyHint', { platform: platform?.label ?? acc.platform })" />
-      <a-alert v-else-if="acc.dataMode === 'api_unconfigured'" type="warning" show-icon class="note" :message="t('tracked.apiUnconfiguredHint')" />
+      <a-alert v-if="acc.dataMode === 'api_unconfigured'" type="warning" show-icon class="note" :message="t('tracked.apiUnconfiguredHint')" />
 
       <a-row :gutter="12" class="stats">
         <a-col v-for="m in metrics" :key="m" :xs="12" :sm="6">
@@ -199,7 +201,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="history" :tab="t('tracked.history')">
           <a-space style="margin-bottom: 8px" wrap>
-            <a-radio-group v-model:value="metric" size="small">
+            <a-radio-group v-model:value="metric" size="small" button-style="solid">
               <a-radio-button v-for="m in metrics" :key="m" :value="m">{{ metricText(m) }}</a-radio-button>
             </a-radio-group>
             <a-button size="small" @click="openSnap">{{ t('tracked.addSnapshot') }}</a-button>
@@ -209,7 +211,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <a-empty v-else :description="t('tracked.noHistory')" />
           </a-spin>
           <a-table :data-source="snapRows" :columns="snapColumns" row-key="id" size="small" style="margin-top: 12px"
-            :pagination="{ pageSize: 10, size: 'small', hideOnSinglePage: true }">
+            :pagination="pagination({ defaultPageSize: 10, hideOnSinglePage: true })">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'capturedAt'">{{ when(record.capturedAt) }}</template>
               <template v-else-if="column.key === 'source'"><a-tag>{{ t(`tracked.sources.${record.source}`) }}</a-tag></template>
@@ -222,12 +224,9 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
         </a-tab-pane>
 
         <a-tab-pane key="posts" :tab="`${t('tracked.posts')} (${postsTotal})`">
-          <a-space style="margin-bottom: 8px">
-            <a-button size="small" @click="openPost">{{ t('tracked.addPost') }}</a-button>
-            <span class="muted small">{{ t('tracked.postsHint') }}</span>
-          </a-space>
+          <a-button size="small" style="margin-bottom: 8px" @click="openPost">{{ t('tracked.addPost') }}</a-button>
           <a-table :data-source="posts" :columns="postColumns" row-key="id" size="small" :loading="loading"
-            :pagination="{ current: postsPage, pageSize: 20, total: postsTotal, size: 'small', hideOnSinglePage: true, onChange: (p: number) => { postsPage = p; loadPosts() } }">
+            :pagination="pagination({ current: postsPage, pageSize: 20, total: postsTotal, showSizeChanger: false, hideOnSinglePage: true, onChange: (p: number) => { postsPage = p; loadPosts() } })">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'title'">
                 <a v-if="isHttp(record.url)" :href="record.url" target="_blank" rel="noopener noreferrer">{{ record.title || record.externalId }}</a>
@@ -251,11 +250,11 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 
   <a-modal v-model:open="snapOpen" :title="t('tracked.addSnapshot')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="snapSaving" @ok="saveSnap">
     <a-form layout="vertical" :model="snapForm">
-      <a-form-item :label="t('tracked.capturedAt')" :extra="t('tracked.capturedAtHint')">
-        <a-date-picker v-model:value="snapForm.capturedAt" show-time style="width: 100%" />
+      <a-form-item :label="t('tracked.capturedAt')">
+        <a-date-picker v-model:value="snapForm.capturedAt" show-time :placeholder="t('tracked.capturedAtHint')" style="width: 100%" />
       </a-form-item>
       <a-row :gutter="12">
-        <a-col v-for="m in metrics" :key="m" :span="12">
+        <a-col v-for="m in metrics" :key="m" :xs="24" :sm="12">
           <a-form-item :label="metricText(m)"><a-input-number v-model:value="snapForm[m]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
         </a-col>
       </a-row>
@@ -265,13 +264,13 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
   <a-modal v-model:open="postOpen" :title="t('tracked.addPost')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="postSaving" @ok="savePost">
     <a-form layout="vertical" :model="postForm">
       <a-form-item :label="t('tracked.postUrl')"><a-input v-model:value="postForm.url" :placeholder="URL_HINT" :maxlength="1000" /></a-form-item>
-      <a-form-item :label="t('tracked.postId')" :extra="t('tracked.postIdHint')"><a-input v-model:value="postForm.externalId" :maxlength="200" /></a-form-item>
+      <a-form-item :label="t('tracked.postId')"><a-input v-model:value="postForm.externalId" :maxlength="200" :placeholder="t('tracked.postIdHint')" /></a-form-item>
       <a-form-item :label="t('tracked.postTitle')"><a-textarea v-model:value="postForm.title" :maxlength="500" :auto-size="{ minRows: 1, maxRows: 4 }" /></a-form-item>
       <a-form-item :label="t('tracked.publishedAt')"><a-date-picker v-model:value="postForm.publishedAt" show-time style="width: 100%" /></a-form-item>
       <a-row :gutter="12">
-        <a-col :span="8"><a-form-item :label="t('tracked.views')"><a-input-number v-model:value="postForm.views" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
-        <a-col :span="8"><a-form-item :label="t('tracked.likes')"><a-input-number v-model:value="postForm.likes" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
-        <a-col :span="8"><a-form-item :label="t('tracked.comments')"><a-input-number v-model:value="postForm.comments" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
+        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.views')"><a-input-number v-model:value="postForm.views" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
+        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.likes')"><a-input-number v-model:value="postForm.likes" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
+        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.comments')"><a-input-number v-model:value="postForm.comments" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
       </a-row>
     </a-form>
   </a-modal>
@@ -286,8 +285,5 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 .delta { font-size: 12px; }
 .delta.up { color: var(--cp-primary); }
 .delta.down { color: var(--cp-error); }
-.muted { color: var(--cp-text-tertiary); }
-.small { font-size: 12px; }
 .small-tag { margin-left: 4px; font-size: 11px; }
-@media (max-width: 640px) { .head { flex-wrap: wrap; } }
 </style>
