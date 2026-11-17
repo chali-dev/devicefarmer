@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { ApiError, getToken, responseError } from '../../api/client'
-import type { MediaItem, MediaLimits } from '../../api/types'
+import type { MediaCropAspect, MediaItem, MediaLimits } from '../../api/types'
 
 /** <img>/<video> can't send the Authorization header: fetch → Blob (→ object URL). */
 export async function fetchAuthBlob(url: string): Promise<Blob> {
@@ -95,4 +95,40 @@ export function xhrUpload(fields: Record<string, string>, file: File, onProgress
     xhr.send(fd)
   })
   return { promise, abort: () => xhr.abort() }
+}
+
+// ---------------------------------------------------------------- crop / compress (mirrors api media/transform.ts)
+export const ASPECTS: Record<MediaCropAspect, number | null> = { original: null, '1:1': 1, '4:5': 4 / 5, '9:16': 9 / 16, '16:9': 16 / 9, '1.91:1': 1.91 }
+
+/** Crop box as fractions of the source, centred on pos and clamped inside. */
+export function cropFraction(w: number, h: number, aspect: MediaCropAspect, pos: { x: number; y: number }) {
+  const r = ASPECTS[aspect]
+  let bw = 1, bh = 1
+  if (r) { if (w / h > r) bw = (h * r) / w; else bh = w / r / h }
+  const left = Math.min(Math.max(pos.x - bw / 2, 0), 1 - bw)
+  const top = Math.min(Math.max(pos.y - bh / 2, 0), 1 - bh)
+  return { left, top, w: bw, h: bh }
+}
+
+/** Expected output size (same rules as the server: shorter side ≤ maxSize, longer ≤ 2×, no upscaling, even for video). */
+export function outputSize(w: number, h: number, aspect: MediaCropAspect, maxSize: number | null, video: boolean) {
+  const r = ASPECTS[aspect]
+  let bw = w, bh = h
+  if (r) { if (w / h > r) bw = Math.round(h * r); else bh = Math.round(w / r) }
+  if (video) { bw -= bw % 2; bh -= bh % 2 }
+  const s = maxSize ? Math.min(1, maxSize / Math.min(bw, bh), (2 * maxSize) / Math.max(bw, bh)) : 1
+  let tw = Math.max(1, Math.round(bw * s)), th = Math.max(1, Math.round(bh * s))
+  if (video) { tw = 2 * Math.round(tw / 2); th = 2 * Math.round(th / 2) }
+  return { w: tw, h: th }
+}
+
+const extOfFile = (file: File) => /\.([a-z0-9]{1,8})$/i.exec(file.name)?.[1]?.toLowerCase() ?? ''
+
+export function isProcessable(file: File, limits: MediaLimits | null): boolean {
+  const ext = extOfFile(file)
+  return Boolean(limits && [...limits.image.formats, ...limits.video.formats].some((f) => f.processable && f.exts.includes(ext)))
+}
+
+export function isVideoFile(file: File, limits: MediaLimits | null): boolean {
+  return limits ? limits.video.formats.some((f) => f.exts.includes(extOfFile(file))) : file.type.startsWith('video/')
 }

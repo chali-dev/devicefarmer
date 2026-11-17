@@ -235,6 +235,21 @@ export const mediaCategories = pgTable('media_categories', {
   ownerCheck('media_categories_owner_chk'),
 ]);
 
+export type MediaCropAspect = 'original' | '1:1' | '4:5' | '9:16' | '16:9' | '1.91:1';
+export interface MediaProcessOptions {
+  /** Aspect preset; x/y = centre of the crop box in 0..1 of the (orientation-corrected) source. */
+  crop?: { aspect: MediaCropAspect; x: number; y: number };
+  /** Shorter side ≤ maxSize (longer side ≤ 2 × maxSize); never upscales. */
+  maxSize?: 1080 | 720;
+  quality?: 'high' | 'medium' | 'low';
+}
+export interface MediaFileFacts { size: number; width: number | null; height: number | null; mime: string; duration?: number | null }
+export interface MediaProcessing {
+  options: MediaProcessOptions;
+  /** Set when processing ran. `kept`: the re-encode wasn't smaller and nothing else changed, so the upload was kept. */
+  result?: { before: MediaFileFacts; after: MediaFileFacts; kept?: boolean };
+}
+
 export const mediaAssets = pgTable('media_assets', {
   id: uuid('id').primaryKey().defaultRandom(),
   ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
@@ -257,6 +272,8 @@ export const mediaAssets = pgTable('media_assets', {
   checksum: text('checksum').notNull(),
   status: text('status', { enum: ['processing', 'ready', 'failed', 'disabled'] }).notNull().default('processing'),
   error: text('error'),
+  /** Crop/compress requested at upload (null = stored as uploaded) and, once done, what it did. */
+  processing: jsonb('processing').$type<MediaProcessing>(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),

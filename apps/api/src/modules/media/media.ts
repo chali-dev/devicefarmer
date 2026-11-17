@@ -7,15 +7,16 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
-import { PUBLISH_UNFINISHED, type MediaAsset } from '../../db/schema.js';
+import { PUBLISH_UNFINISHED, type MediaAsset, type MediaFileFacts, type MediaProcessing, type MediaProcessOptions } from '../../db/schema.js';
 import { describeError } from '../../adapters/storage/types.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { registerTaskHandler } from '../tasks/core.js';
 import { activeStorage, storageFor } from '../settings/storage.js';
-import { formatByExt, MAGIC_BYTES, maxBytes, maxMb, mediaLimits, mimeMatches, type MediaFormat } from './formats.js';
+import { FORMATS, formatByExt, MAGIC_BYTES, PROCESSABLE, maxBytes, maxMb, mediaLimits, mimeMatches, type MediaFormat } from './formats.js';
 import { analyzeMedia } from './process.js';
+import { transformMedia } from './transform.js';
 
 export type OwnerType = 'public' | 'user';
 export interface Owner { ownerType: OwnerType; ownerId: string | null }
@@ -114,6 +115,8 @@ export interface UploadInput {
   owner: Owner;
   categoryId?: string | null;
   userId: string;
+  /** Crop/compress in the media-process job (already normalised; null = keep as uploaded). */
+  process?: MediaProcessOptions | null;
 }
 
 function rejectType(): HttpError {
@@ -140,6 +143,10 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
   if (!mimeMatches(format, input.mimetype)) {
     await drain(input.stream);
     throw new HttpError(415, `文件类型（${input.mimetype}）与扩展名不符`, 'media.mime_mismatch', { mime: input.mimetype });
+  }
+  if (input.process && !PROCESSABLE.has(format.id)) {
+    await drain(input.stream);
+    throw badRequest(`${format.id.toUpperCase()} 不支持裁切/压缩`, 'media.process_unsupported', { format: format.id });
   }
   if (input.categoryId) await assertCategoryFor(input.owner, input.categoryId).catch(async (e) => { await drain(input.stream); throw e; });
   const limit = maxBytes(format.kind);
@@ -179,6 +186,7 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
         ownerType: input.owner.ownerType, ownerId: input.owner.ownerId, categoryId: input.categoryId ?? null,
         name, fileName, storage: storage.kind, fileKey, fileType: format.kind, mimeType: format.mime, fileSize: size,
         checksum: hash.digest('hex'), status: 'processing', createdBy: input.userId,
+        processing: input.process ? { options: input.process } : null,
       }).returning()) as [MediaAsset];
     } catch (err) {
       await storage.delete(fileKey).catch(() => undefined);
@@ -215,30 +223,76 @@ export async function withMediaFile<T>(asset: MediaAsset, fn: (localPath: string
   });
 }
 
+async function sha256File(file: string): Promise<string> {
+  const h = createHash('sha256');
+  for await (const c of fs.createReadStream(file)) h.update(c as Buffer);
+  return h.digest('hex');
+}
+
 /**
- * media-process job: metadata (sharp / ffprobe) + JPEG thumbnail / video cover, then 'ready'.
- * Errors set 'failed' with the reason and fail the task. If the asset was deleted meanwhile,
- * the freshly written thumbnail is removed again (no orphans).
+ * media-process job: optional crop/compress (asset.processing.options), then metadata
+ * (sharp / ffprobe) + JPEG thumbnail / video cover, then 'ready'. A processed file goes to a new
+ * key and the row is switched over in one update; the upload is deleted only after that, so a
+ * failure (or a retry) always finds the original. Errors set 'failed' with the reason and fail
+ * the task. If the asset was deleted meanwhile, the freshly written objects are removed again.
  */
-export async function processMedia(assetId: string): Promise<void> {
+export async function processMedia(assetId: string, signal?: AbortSignal): Promise<void> {
   const asset = await getMedia(assetId);
   if (!asset) return; // deleted before processing: nothing to do
+  const written: string[] = [];
+  let storage: Awaited<ReturnType<typeof storageFor>> | null = null;
   try {
-    const storage = await storageFor(asset.storage);
+    storage = await storageFor(asset.storage);
+    const st = storage;
     await withMediaFile(asset, async (local) => {
-      const thumb = `${local}.thumb.jpg`;
-      const info = await analyzeMedia(asset.fileType, local, thumb);
       const owner: Owner = { ownerType: asset.ownerType, ownerId: asset.ownerId };
+      const options = asset.processing?.options;
+      let file = local;
+      let replace: { fileKey: string; fileSize: number; checksum: string; mimeType: string } | null = null;
+      let processing: MediaProcessing | null = asset.processing;
+      let before: MediaFileFacts | null = null;
+      let kept = false;
+      if (options) {
+        const format = FORMATS.find((f) => f.mime === asset.mimeType);
+        if (!format) throw new Error(`unknown format ${asset.mimeType}`);
+        const out = `${local}.out`;
+        const r = await transformMedia(format, local, out, options, signal);
+        before = r.before;
+        if (r.replaced) {
+          file = out;
+          const fileKey = mediaKey(owner, asset.fileType === 'image' ? 'images' : 'videos', r.ext);
+          const fileSize = (await fs.promises.stat(out)).size;
+          written.push(fileKey);
+          await st.put(fileKey, out, fileSize, r.mime);
+          replace = { fileKey, fileSize, checksum: await sha256File(out), mimeType: r.mime };
+        } else kept = true;
+      }
+      const thumb = `${local}.thumb.jpg`;
+      const info = await analyzeMedia(asset.fileType, file, thumb);
+      if (options) {
+        processing = {
+          options,
+          result: {
+            before: before!,
+            after: { size: replace?.fileSize ?? asset.fileSize, width: info.width, height: info.height, mime: replace?.mimeType ?? asset.mimeType, ...(asset.fileType === 'video' ? { duration: info.duration } : {}) },
+            ...(kept ? { kept: true } : {}),
+          },
+        };
+      }
       const thumbnailKey = mediaKey(owner, 'thumbnails', 'jpg');
-      const st = await fs.promises.stat(thumb);
-      await storage.put(thumbnailKey, thumb, st.size, 'image/jpeg');
+      const ts = await fs.promises.stat(thumb);
+      written.push(thumbnailKey);
+      await st.put(thumbnailKey, thumb, ts.size, 'image/jpeg');
       const done = await db.update(schema.mediaAssets)
-        .set({ ...info, thumbnailKey, status: 'ready', error: null })
-        .where(and(eq(schema.mediaAssets.id, asset.id), isNull(schema.mediaAssets.deletedAt), eq(schema.mediaAssets.status, 'processing')))
+        .set({ ...info, ...(replace ?? {}), processing, thumbnailKey, status: 'ready', error: null })
+        .where(and(eq(schema.mediaAssets.id, asset.id), isNull(schema.mediaAssets.deletedAt), eq(schema.mediaAssets.status, 'processing'), eq(schema.mediaAssets.fileKey, asset.fileKey)))
         .returning({ id: schema.mediaAssets.id });
-      if (!done.length) await storage.delete(thumbnailKey).catch(() => undefined);
+      if (!done.length) { for (const k of written) await st.delete(k).catch(() => undefined); }
+      else if (replace) await st.delete(asset.fileKey).catch(() => undefined); // best effort: the old key is no longer referenced
+      written.length = 0;
     });
   } catch (err) {
+    for (const k of written) await storage?.delete(k).catch(() => undefined);
     const msg = describeError(err).slice(0, 500);
     await db.update(schema.mediaAssets).set({ status: 'failed', error: msg })
       .where(and(eq(schema.mediaAssets.id, asset.id), isNull(schema.mediaAssets.deletedAt)));
@@ -255,7 +309,7 @@ registerTaskHandler<{ assetId: string }>('media-process', {
   queue: 'task-ops',
   concurrency: 2,
   timeoutMs: 15 * 60_000,
-  run: (ctx) => processMedia(ctx.payload.assetId ?? ctx.task.refId!),
+  run: (ctx) => processMedia(ctx.payload.assetId ?? ctx.task.refId!, ctx.signal),
   async onFailure(task) {
     const assetId = (task.payload as { assetId?: string } | null)?.assetId ?? task.refId;
     if (!assetId) return;

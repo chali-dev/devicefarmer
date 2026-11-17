@@ -230,6 +230,15 @@ function closePreview() {
   previewItem.value = null
   previewLoading.value = false
 }
+/** "12.3 MB → 2.1 MB · 2000×2500 → 1080×1350" (crop/compress at upload). */
+function processedText(m: MediaItem): string {
+  const r = m.processing?.result
+  if (!r) return ''
+  if (r.kept) return t('media.processKept')
+  const dim = (f: { width: number | null; height: number | null }) => (f.width ? `${f.width}×${f.height}` : '')
+  const dims = dim(r.before) && dim(r.before) !== dim(r.after) ? ` · ${dim(r.before)} → ${dim(r.after)}` : ''
+  return `${fmtSize(r.before.size)} → ${fmtSize(r.after.size)}${dims}`
+}
 
 // edit
 const editing = ref<MediaItem | null>(null)
@@ -476,6 +485,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
           <a-descriptions-item :label="t('media.type')">{{ previewItem.mimeType }}</a-descriptions-item>
           <a-descriptions-item :label="t('media.size')">{{ fmtSize(previewItem.fileSize) }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.width" :label="t('media.resolution')">{{ previewItem.width }}×{{ previewItem.height }}</a-descriptions-item>
+          <a-descriptions-item v-if="previewItem.processing?.result" :label="t('media.processed')" :span="2">{{ processedText(previewItem) }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.duration" :label="t('media.duration')">{{ fmtDuration(previewItem.duration) }}</a-descriptions-item>
           <a-descriptions-item :label="t('media.uploadedAt')">{{ fmtTime(previewItem.createdAt) }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.ownerName" :label="t('media.owner')">{{ previewItem.ownerName }}</a-descriptions-item>
