@@ -5,6 +5,7 @@ import { CheckCircleFilled, PictureOutlined, PlayCircleFilled } from '@ant-desig
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { ContentMedia, MediaItem } from '../../api/types'
+import { MODAL_WIDTH } from '../common/ui'
 import { fmtDuration, useThumbs } from '../media/media'
 
 /** Picks ready assets from the media library (my media / public / favorites) for a content. */
@@ -63,21 +64,20 @@ function ok() {
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('content.picker.title')" width="820px" :ok-text="t('content.picker.add', { n: picked.size })" :ok-button-props="{ disabled: !picked.size }"
+  <a-modal :open="open" :title="t('content.picker.title')" :width="MODAL_WIDTH.lg" :ok-text="t('content.picker.add', { n: picked.size })" :ok-button-props="{ disabled: !picked.size }"
     :cancel-text="t('common.cancel')" @ok="ok" @cancel="emit('update:open', false)">
-    <a-space wrap style="margin-bottom: 12px">
-      <a-radio-group v-model:value="scope" button-style="solid" size="small">
+    <a-space wrap style="margin-bottom: var(--cp-gap)">
+      <a-radio-group v-model:value="scope" button-style="solid">
         <a-radio-button value="mine">{{ t('media.tabs.mine') }}</a-radio-button>
         <a-radio-button value="public">{{ t('media.tabs.public') }}</a-radio-button>
         <a-radio-button value="favorites">{{ t('media.tabs.favorites') }}</a-radio-button>
       </a-radio-group>
-      <a-select v-model:value="type" size="small" style="width: 110px">
+      <a-select v-model:value="type" style="width: 110px">
         <a-select-option value="">{{ t('common.all') }}</a-select-option>
         <a-select-option value="image">{{ t('media.image') }}</a-select-option>
         <a-select-option value="video">{{ t('media.video') }}</a-select-option>
       </a-select>
-      <a-input-search v-model:value="q" size="small" allow-clear :placeholder="t('media.searchPlaceholder')" style="width: 200px" @search="page = 1; load()" />
-      <span class="hint">{{ t('content.picker.readyOnly') }}</span>
+      <a-input-search v-model:value="q" allow-clear :placeholder="t('media.searchPlaceholder')" style="width: 220px" @search="page = 1; load()" />
     </a-space>
     <a-spin :spinning="loading">
       <a-empty v-if="!items.length" />
@@ -91,7 +91,7 @@ function ok() {
             <CheckCircleFilled v-if="picked.has(m.id)" class="check" />
           </div>
           <div class="name">{{ m.name }}</div>
-          <div v-if="exclude.includes(m.id)" class="hint">{{ t('content.picker.already') }}</div>
+          <div v-if="exclude.includes(m.id)" class="muted small">{{ t('content.picker.already') }}</div>
         </div>
       </div>
       <a-pagination v-if="total > 24" v-model:current="page" :total="total" :page-size="24" size="small" style="margin-top: 12px; text-align: right" @change="load" />
@@ -101,7 +101,7 @@ function ok() {
 
 <style scoped>
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
-.tile { cursor: pointer; border: 1px solid var(--cp-border-secondary); border-radius: 6px; padding: 4px; }
+.tile { cursor: pointer; border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); padding: 4px; }
 .tile.on { border-color: var(--cp-primary); box-shadow: 0 0 0 1px var(--cp-primary); }
 .tile.off { opacity: 0.5; cursor: default; }
 .img { position: relative; height: 90px; background: var(--cp-fill-alter); display: flex; align-items: center; justify-content: center; border-radius: 4px; overflow: hidden; }
@@ -110,5 +110,5 @@ function ok() {
 .badge { position: absolute; left: 4px; bottom: 4px; font-size: 11px; padding: 0 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.6); color: #fff; }
 .check { position: absolute; top: 4px; right: 4px; font-size: 18px; color: var(--cp-primary); background: var(--cp-bg-container); border-radius: 50%; }
 .name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
-.hint { color: var(--cp-text-tertiary); font-size: 12px; }
+
 </style>

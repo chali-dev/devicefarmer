@@ -8,7 +8,11 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
-import { PUBLISH_STATUS_COLOR, type ManagedUser, type PublishPlatform, type PublishStatus, type PublishTaskItem } from '../api/types'
+import type { ManagedUser, PublishPlatform, PublishStatus, PublishTaskItem } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { actionColumn, pagination, TABLE_SIZE } from '../components/common/ui'
 import PublishTaskDrawer from '../components/publish/PublishTaskDrawer.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
@@ -96,12 +100,14 @@ watch(contentId, () => search())
 const columns = computed(() => [
   { title: t('publish.colTime'), key: 'time', width: 170 },
   { title: t('publish.colAccount'), key: 'account', width: 220 },
-  { title: t('publish.colContent'), key: 'content' },
-  { title: t('common.status'), key: 'status', width: 130 },
-  ...(tab.value === 'history' ? [{ title: t('publish.result'), key: 'result' }] : [{ title: t('common.device'), key: 'device', width: 160 }]),
-  ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 100 }] : []),
-  { title: t('common.action'), key: 'action', width: 90 },
+  { title: t('publish.colContent'), key: 'content', width: 240 },
+  { title: t('common.status'), key: 'status', width: 150 },
+  ...(tab.value === 'history' ? [{ title: t('publish.result'), key: 'result', width: 220 }] : [{ title: t('common.device'), key: 'device', width: 160 }]),
+  ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 110 }] : []),
+  actionColumn(90),
 ])
+const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
+function onTableChange(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void loadList() }
 
 // ---------------------------------------------------------------- drawer + live updates
 const drawerOpen = ref(false)
@@ -133,89 +139,91 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
 </script>
 
 <template>
-  <a-card :title="t('publish.title')" size="small">
+  <PageContainer :title="t('publish.title')">
     <template #extra><a-button @click="router.push('/content')">{{ t('publish.toContent') }}</a-button></template>
-    <a-space wrap style="margin-bottom: 8px">
-      <a-input-search v-model:value="filters.q" :placeholder="t('publish.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
-      <a-select v-model:value="filters.platform" :placeholder="t('publish.platform')" allow-clear style="width: 130px" @change="search">
-        <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
-      </a-select>
-      <a-select v-if="tab !== 'calendar'" v-model:value="filters.status" :placeholder="t('common.status')" allow-clear style="width: 140px" @change="search">
-        <a-select-option v-for="s in (tab === 'queue' ? QUEUE : HISTORY)" :key="s" :value="s">{{ statusText(s) }} ({{ byStatus[s] ?? 0 }})</a-select-option>
-      </a-select>
-      <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-        :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search" />
-      <a-tag v-if="contentId" closable @close="reset">{{ t('publish.filteredByContent') }}</a-tag>
-      <a-button @click="reset">{{ t('common.reset') }}</a-button>
-    </a-space>
 
-    <a-tabs v-model:active-key="tab">
-      <a-tab-pane key="calendar" :tab="t('publish.tabs.calendar')">
-        <a-space style="margin-bottom: 8px" wrap>
-          <a-button size="small" :aria-label="t('publish.prev')" @click="shift(-1)"><LeftOutlined /></a-button>
-          <a-button size="small" @click="cursor = dayjs()">{{ t('publish.today') }}</a-button>
-          <a-button size="small" :aria-label="t('publish.next')" @click="shift(1)"><RightOutlined /></a-button>
-          <b>{{ `${weekDays[0]!.format('YYYY-MM-DD')} – ${weekDays[6]!.format('MM-DD')}` }}</b>
-        </a-space>
-        <a-spin :spinning="calLoading">
-          <div class="week">
-            <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="{ today: d.isSame(dayjs(), 'day') }">
-              <div class="day-head">{{ d.format('ddd MM-DD') }}</div>
-              <div v-for="x in dayItems(d)" :key="x.id" class="card" role="button" tabindex="0" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">
-                <div>{{ dayjs(x.scheduledAt).format('HH:mm') }} <PlatformTag :platform="x.platform" /></div>
-                <div class="ellipsis">@{{ x.account?.handle }}</div>
-                <div class="ellipsis muted">{{ x.content?.title }}</div>
-                <a-tag :color="PUBLISH_STATUS_COLOR[x.status]">{{ statusText(x.status) }}</a-tag>
+    <a-card :bordered="false">
+      <SearchBar :loading="tab === 'calendar' ? calLoading : loading" @reset="reset" @refresh="load">
+        <a-input-search v-model:value="filters.q" :placeholder="t('publish.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
+        <a-select v-model:value="filters.platform" :placeholder="t('publish.platform')" allow-clear style="width: 130px" @change="search">
+          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+        </a-select>
+        <a-select v-if="tab !== 'calendar'" v-model:value="filters.status" :placeholder="t('common.status')" allow-clear style="width: 160px" @change="search">
+          <a-select-option v-for="s in (tab === 'queue' ? QUEUE : HISTORY)" :key="s" :value="s">{{ statusText(s) }} ({{ byStatus[s] ?? 0 }})</a-select-option>
+        </a-select>
+        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search" />
+        <a-tag v-if="contentId" closable color="blue" @close="reset">{{ t('publish.filteredByContent') }}</a-tag>
+      </SearchBar>
+
+      <a-tabs v-model:active-key="tab">
+        <a-tab-pane key="calendar" :tab="t('publish.tabs.calendar')">
+          <a-space style="margin-bottom: 12px" wrap>
+            <a-button-group>
+              <a-button :aria-label="t('publish.prev')" @click="shift(-1)"><template #icon><LeftOutlined /></template></a-button>
+              <a-button @click="cursor = dayjs()">{{ t('publish.today') }}</a-button>
+              <a-button :aria-label="t('publish.next')" @click="shift(1)"><template #icon><RightOutlined /></template></a-button>
+            </a-button-group>
+            <span class="week-label">{{ `${weekDays[0]!.format('YYYY-MM-DD')} – ${weekDays[6]!.format('MM-DD')}` }}</span>
+          </a-space>
+          <a-spin :spinning="calLoading">
+            <div class="week">
+              <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="{ today: d.isSame(dayjs(), 'day') }">
+                <div class="day-head">{{ d.format('ddd MM-DD') }}</div>
+                <div v-for="x in dayItems(d)" :key="x.id" class="ev" role="button" tabindex="0" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">
+                  <div class="ev-time">{{ dayjs(x.scheduledAt).format('HH:mm') }} <PlatformTag :platform="x.platform" /></div>
+                  <div class="ellipsis">@{{ x.account?.handle }}</div>
+                  <div class="ellipsis muted">{{ x.content?.title }}</div>
+                  <StatusTag kind="publish" :status="x.status" />
+                </div>
+                <div v-if="!dayItems(d).length" class="faint empty">—</div>
               </div>
-              <div v-if="!dayItems(d).length" class="muted empty">—</div>
             </div>
-          </div>
-        </a-spin>
-      </a-tab-pane>
-      <a-tab-pane v-for="k in (['queue', 'history'] as const)" :key="k" :tab="t(`publish.tabs.${k}`)">
-        <a-table :data-source="items" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 960 }"
-          :pagination="{ current: page.current, pageSize: page.pageSize, total, showSizeChanger: true, showTotal: (n: number) => t('content.total', { n }) }"
-          @change="(p: any) => { page.current = p.current; page.pageSize = p.pageSize; loadList() }">
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'time'">{{ fmt(record.status === 'published' ? record.publishedAt : record.scheduledAt) }}</template>
-            <template v-else-if="column.key === 'account'"><PlatformTag :platform="record.platform" /> @{{ record.account?.handle ?? '—' }}</template>
-            <template v-else-if="column.key === 'content'">{{ record.content?.title ?? '—' }}</template>
-            <template v-else-if="column.key === 'status'">
-              <a-tag :color="PUBLISH_STATUS_COLOR[record.status as PublishStatus]">{{ statusText(record.status) }}</a-tag>
-              <div v-if="record.status === 'pending' && record.errorCode" class="err">{{ errText(record) }}</div>
+          </a-spin>
+        </a-tab-pane>
+        <a-tab-pane v-for="k in (['queue', 'history'] as const)" :key="k" :tab="t(`publish.tabs.${k}`)">
+          <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
+            :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" @change="onTableChange">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'time'">{{ fmt(record.status === 'published' ? record.publishedAt : record.scheduledAt) }}</template>
+              <template v-else-if="column.key === 'account'"><PlatformTag :platform="record.platform" /> @{{ record.account?.handle ?? '—' }}</template>
+              <template v-else-if="column.key === 'content'">
+                <a-typography-text :content="record.content?.title ?? '—'" :ellipsis="{ tooltip: record.content?.title }" />
+              </template>
+              <template v-else-if="column.key === 'status'">
+                <StatusTag kind="publish" :status="record.status" />
+                <div v-if="record.status === 'pending' && record.errorCode"><a-typography-text type="danger" class="small">{{ errText(record) }}</a-typography-text></div>
+              </template>
+              <template v-else-if="column.key === 'device'">
+                <template v-if="record.instance"><a-badge :status="record.instance.online ? 'success' : 'default'" :text="record.instance.name" /></template>
+                <span v-else class="muted">—</span>
+              </template>
+              <template v-else-if="column.key === 'result'">
+                <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
+                <span v-else-if="record.externalId">{{ record.externalId }}</span>
+                <a-typography-text v-else-if="record.errorCode" type="danger" class="small">{{ errText(record) }}<template v-if="record.errorCode === 'publish.operator_failed' && record.error">: {{ record.error }}</template></a-typography-text>
+              </template>
+              <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+              <template v-else-if="column.key === 'ops'">
+                <a-button type="link" size="small" @click="openTask(record.id)">{{ record.status === 'awaiting_operator' ? t('publish.handle') : t('common.view') }}</a-button>
+              </template>
             </template>
-            <template v-else-if="column.key === 'device'">
-              <template v-if="record.instance"><a-badge :status="record.instance.online ? 'success' : 'default'" />{{ record.instance.name }}</template>
-              <span v-else class="muted">—</span>
-            </template>
-            <template v-else-if="column.key === 'result'">
-              <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
-              <span v-else-if="record.externalId">{{ record.externalId }}</span>
-              <span v-else-if="record.errorCode" class="err">{{ errText(record) }}<template v-if="record.errorCode === 'publish.operator_failed' && record.error">: {{ record.error }}</template></span>
-            </template>
-            <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-            <template v-else-if="column.key === 'action'"><a @click="openTask(record.id)">{{ record.status === 'awaiting_operator' ? t('publish.handle') : t('common.view') }}</a></template>
-          </template>
-        </a-table>
-      </a-tab-pane>
-    </a-tabs>
-  </a-card>
+          </a-table>
+        </a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </PageContainer>
   <PublishTaskDrawer ref="drawer" v-model:open="drawerOpen" :task-id="drawerId" @changed="load" />
 </template>
 
 <style scoped>
-.cell-list { font-size: 12px; }
-.ev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; border-radius: 3px; padding: 0 2px; }
-.ev:hover { background: var(--cp-bg-hover); }
-.more { color: var(--cp-primary); cursor: pointer; }
-.week { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 6px; overflow-x: auto; }
-.day { border: 1px solid var(--cp-border-secondary); border-radius: 6px; padding: 6px; min-height: 240px; }
-.day.today { border-color: var(--cp-primary); }
-.day-head { font-weight: 600; margin-bottom: 6px; }
-.card { border: 1px solid var(--cp-border-secondary); border-radius: 4px; padding: 4px 6px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
-.card:hover { background: var(--cp-bg-hover); }
-.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.muted { color: var(--cp-text-tertiary); }
-.err { color: var(--cp-error); font-size: 12px; }
+.week-label { font-weight: 600; }
+.week { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
+.day { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); padding: 8px; min-height: 240px; min-width: 0; }
+.day.today { border-color: var(--cp-primary); background: var(--cp-primary-bg); }
+.day-head { font-weight: 600; margin-bottom: 8px; }
+.ev { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); background: var(--cp-bg-container); padding: 4px 6px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
+.ev:hover { border-color: var(--cp-primary); }
+.ev-time { display: flex; align-items: center; gap: 4px; }
 .empty { text-align: center; }
 </style>

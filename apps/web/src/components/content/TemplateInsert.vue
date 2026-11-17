@@ -5,17 +5,22 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, errorText } from '../../api/client'
 import type { CommentTemplate } from '../../api/types'
+import { usePlatformsStore } from '../../stores/platforms'
+import { MODAL_WIDTH } from '../common/ui'
 
 /**
  * "Insert template" for the content editor: picks a post template (话术库, kind post) and hands its text to the
  * editor for one field. The person edits the result before saving; nothing is generated or posted.
  */
 export type InsertTarget = 'body' | 'ytDescription' | 'igCaption' | 'ttCaption' | 'fbCaption'
-const TARGETS: InsertTarget[] = ['body', 'ytDescription', 'igCaption', 'ttCaption', 'fbCaption']
+/** Platform of each caption field: only fields of enabled platforms are offered (the editor hides the others too). */
+const TARGET_PLATFORM: Record<InsertTarget, string | null> = { body: null, ytDescription: 'youtube', igCaption: 'instagram', ttCaption: 'tiktok', fbCaption: 'facebook' }
 
 const emit = defineEmits<{ insert: [target: InsertTarget, text: string, replace: boolean] }>()
 const { t } = useI18n()
 const router = useRouter()
+const platforms = usePlatformsStore()
+const targets = computed(() => (Object.keys(TARGET_PLATFORM) as InsertTarget[]).filter((x) => { const p = TARGET_PLATFORM[x]; return !p || platforms.isEnabled(p) }))
 
 const open = ref(false)
 const templates = ref<CommentTemplate[]>([])
@@ -45,7 +50,7 @@ function ok() {
 
 <template>
   <a-button size="small" @click="show">{{ t('scripts.insert') }}</a-button>
-  <a-modal v-model:open="open" :title="t('scripts.insert')" :ok-text="t('scripts.insert')" :cancel-text="t('common.cancel')" :width="600" @ok="ok">
+  <a-modal v-model:open="open" :title="t('scripts.insert')" :ok-text="t('scripts.insert')" :cancel-text="t('common.cancel')" :width="MODAL_WIDTH.md" @ok="ok">
     <a-form layout="vertical">
       <a-row :gutter="12">
         <a-col :xs="24" :sm="10">
@@ -64,7 +69,7 @@ function ok() {
       <a-row :gutter="12">
         <a-col :xs="24" :sm="14">
           <a-form-item :label="t('scripts.insertTarget')">
-            <a-select v-model:value="target" :options="TARGETS.map((x) => ({ value: x, label: t(`scripts.targets.${x}`) }))" />
+            <a-select v-model:value="target" :options="targets.map((x) => ({ value: x, label: t(`scripts.targets.${x}`) }))" />
           </a-form-item>
         </a-col>
         <a-col :xs="24" :sm="10">
@@ -77,13 +82,10 @@ function ok() {
         </a-col>
       </a-row>
     </a-form>
-    <div class="muted">
-      {{ t('scripts.hint') }} <a @click="open = false; router.push({ path: '/scripts', query: { kind: 'post' } })">{{ t('scripts.manage') }}</a>
-    </div>
+    <a class="small" @click="open = false; router.push({ path: '/scripts', query: { kind: 'post' } })">{{ t('scripts.manage') }}</a>
   </a-modal>
 </template>
 
 <style scoped>
-.preview { white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--cp-fill-alter); }
-.muted { color: var(--cp-text-tertiary); font-size: 12px; }
+.preview { white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; padding: 8px; border-radius: var(--cp-radius); background: var(--cp-fill-alter); }
 </style>

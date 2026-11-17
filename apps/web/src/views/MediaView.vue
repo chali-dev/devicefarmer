@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import type { MediaLimits } from '../api/types'
 import { useAuthStore } from '../stores/auth'
+import PageContainer from '../components/common/PageContainer.vue'
 import MediaPanel from '../components/media/MediaPanel.vue'
 
 /** Media library (素材库): public / my media / favorites. */
@@ -25,14 +26,18 @@ onMounted(async () => { try { limits.value = await api<MediaLimits>('GET', '/api
 </script>
 
 <template>
-  <a-card :title="t('media.title')" size="small">
+  <PageContainer :title="t('media.title')">
     <template #extra>
-      <a-button v-if="auth.isAdmin" size="small" @click="router.push({ path: '/settings', query: { tab: 'storage' } })"><SettingOutlined /> {{ t('media.storageSettings') }}</a-button>
+      <a-button v-if="auth.isAdmin" @click="router.push({ path: '/settings', query: { tab: 'storage' } })">
+        <template #icon><SettingOutlined /></template>{{ t('media.storageSettings') }}
+      </a-button>
     </template>
-    <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
-      <a-tab-pane v-for="k in TABS" :key="k" :tab="t(`media.tabs.${k}`)">
-        <MediaPanel :tab="k" :limits="limits" />
-      </a-tab-pane>
-    </a-tabs>
-  </a-card>
+    <a-card :bordered="false">
+      <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
+        <a-tab-pane v-for="k in TABS" :key="k" :tab="t(`media.tabs.${k}`)">
+          <MediaPanel :tab="k" :limits="limits" />
+        </a-tab-pane>
+      </a-tabs>
+    </a-card>
+  </PageContainer>
 </template>

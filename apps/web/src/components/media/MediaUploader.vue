@@ -4,6 +4,7 @@ import { CloudUploadOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../../api/client'
 import type { MediaCategory, MediaLimits } from '../../api/types'
+import { MODAL_WIDTH } from '../common/ui'
 import { acceptAttr, allExts, fmtSize, precheck, xhrUpload } from './media'
 
 /** Multi-file upload: drag & drop, client pre-check, 2 parallel XHRs with progress, retry. */
@@ -86,36 +87,35 @@ onBeforeUnmount(() => { for (const e of entries.value) e.abort?.() })
 </script>
 
 <template>
-  <a-modal v-model:open="open" :title="t('media.uploadTitle', { scope: scopeLabel })" :footer="null" width="640px" :mask-closable="!stats.busy">
-    <a-form-item v-if="categories.length" :label="t('media.uploadCategory')" style="margin-bottom: 12px">
+  <a-modal v-model:open="open" :title="t('media.uploadTitle', { scope: scopeLabel })" :footer="null" :width="MODAL_WIDTH.md" :mask-closable="!stats.busy">
+    <a-form-item v-if="categories.length" :label="t('media.uploadCategory')">
       <a-select
-        v-model:value="categoryId" allow-clear :placeholder="t('media.uncategorized')" style="width: 240px"
+        v-model:value="categoryId" allow-clear :placeholder="t('media.uncategorized')" style="width: 240px; max-width: 100%"
         :options="categories.map((c) => ({ value: c.id, label: c.name }))"
       />
     </a-form-item>
     <a-upload-dragger :multiple="true" :show-upload-list="false" :before-upload="add" :accept="accept">
       <p style="margin: 8px 0"><CloudUploadOutlined class="upload-icon" /></p>
       <p style="margin: 0">{{ t('media.drop') }}</p>
-      <p class="hint" style="margin: 4px 8px 8px">{{ hint }}</p>
+      <p class="muted small" style="margin: 4px 8px 8px">{{ hint }}</p>
     </a-upload-dragger>
-    <p class="hint" style="margin: 8px 0">{{ t('media.processingNote') }}</p>
 
     <div v-if="entries.length" class="files">
       <div class="files-head">
         <span>{{ t('media.uploadSummary', stats) }}</span>
         <a-space>
-          <a-button v-if="stats.failed" size="small" @click="retryFailed"><ReloadOutlined /> {{ t('media.retryFailed') }}</a-button>
+          <a-button v-if="stats.failed" size="small" @click="retryFailed"><template #icon><ReloadOutlined /></template>{{ t('media.retryFailed') }}</a-button>
           <a-button v-if="stats.done" size="small" @click="clearDone">{{ t('media.clearDone') }}</a-button>
         </a-space>
       </div>
       <div v-for="e in entries" :key="e.uid" class="file">
         <div class="file-row">
           <a-typography-text class="file-name" :content="e.file.name" :ellipsis="{ tooltip: e.file.name }" />
-          <span class="hint">{{ fmtSize(e.file.size) }}</span>
+          <span class="muted small nowrap">{{ fmtSize(e.file.size) }}</span>
           <a-tooltip v-if="e.state === 'error'" :title="t('media.retry')">
-            <a-button type="text" size="small" @click="retry(e)"><ReloadOutlined /></a-button>
+            <a-button type="text" size="small" :aria-label="t('media.retry')" @click="retry(e)"><ReloadOutlined /></a-button>
           </a-tooltip>
-          <a-button v-if="e.state !== 'done'" type="text" size="small" @click="remove(e)"><DeleteOutlined /></a-button>
+          <a-button v-if="e.state !== 'done'" type="text" size="small" :aria-label="t('common.delete')" @click="remove(e)"><DeleteOutlined /></a-button>
         </div>
         <a-progress
           v-if="e.state !== 'error'" :percent="e.pct" size="small"
@@ -130,8 +130,7 @@ onBeforeUnmount(() => { for (const e of entries.value) e.abort?.() })
 
 <style scoped>
 .upload-icon { font-size: 24px; color: var(--cp-primary); }
-.hint { color: var(--cp-text-tertiary); font-size: 12px; }
-.files { max-height: 320px; overflow: auto; border-top: 1px solid var(--cp-border-secondary); padding-top: 8px; }
+.files { max-height: 320px; overflow: auto; border-top: 1px solid var(--cp-border-secondary); padding-top: 8px; margin-top: var(--cp-gap); }
 .files-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; flex-wrap: wrap; }
 .file { padding: 4px 0; }
 .file-row { display: flex; align-items: center; gap: 8px; min-width: 0; }

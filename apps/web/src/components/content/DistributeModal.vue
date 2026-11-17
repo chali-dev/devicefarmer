@@ -4,8 +4,10 @@ import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { SOCIAL_LOGIN_COLOR, type Content, type PublishPlatform, type PublishTaskItem, type SocialAccount } from '../../api/types'
+import type { Content, PublishPlatform, PublishTaskItem, SocialAccount } from '../../api/types'
 import { useInstancesStore } from '../../stores/instances'
+import StatusTag from '../common/StatusTag.vue'
+import { MODAL_WIDTH } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
 
 /**
@@ -109,25 +111,24 @@ async function submit() {
 </script>
 
 <template>
-  <a-modal :open="open" :title="t('distribute.title', { title: content?.title ?? '' })" width="860px" :confirm-loading="saving"
+  <a-modal :open="open" :title="t('distribute.title', { title: content?.title ?? '' })" :width="MODAL_WIDTH.lg" :confirm-loading="saving"
     :ok-text="t('distribute.submit', { n: selected.length })" :ok-button-props="{ disabled: !selected.length }" :cancel-text="t('common.cancel')"
     @ok="submit" @cancel="emit('update:open', false)">
     <a-spin :spinning="loading">
-      <a-alert type="info" show-icon :message="t('distribute.methodHint')" style="margin-bottom: 12px" />
       <a-empty v-if="!loading && !accounts.length" :description="t('distribute.noAccounts')" />
       <div v-for="g in groups" :key="g.id" class="group">
         <div class="group-head">
           <PlatformTag :platform="g.id" :name="g.name" />
-          <span v-if="g.reason" class="warn">{{ g.reason }}</span>
+          <a-typography-text v-if="g.reason" type="warning" class="small">{{ g.reason }}</a-typography-text>
         </div>
         <div v-for="a in g.accounts" :key="a.id" class="acc">
           <a-checkbox :checked="selected.includes(a.id)" :disabled="!!g.reason" @change="(e: any) => toggle(a.id, e.target.checked)">
             <b>@{{ a.handle }}</b><span v-if="a.displayName" class="muted"> · {{ a.displayName }}</span>
           </a-checkbox>
-          <a-space size="small" wrap>
-            <a-tag :color="SOCIAL_LOGIN_COLOR[a.loginStatus]">{{ t(`social.login.${a.loginStatus}`) }}</a-tag>
-            <a-tag v-if="a.accountStatus !== 'active'" color="error">{{ t(`social.account.${a.accountStatus}`) }}</a-tag>
-            <span v-if="a.instance"><a-badge :status="online(a) ? 'success' : 'default'" />{{ a.instance.name }} · {{ online(a) ? t('distribute.online') : t('distribute.offline') }}</span>
+          <a-space :size="4" wrap>
+            <StatusTag kind="socialLogin" :status="a.loginStatus" />
+            <StatusTag v-if="a.accountStatus !== 'active'" kind="socialAccount" :status="a.accountStatus" />
+            <a-badge v-if="a.instance" :status="online(a) ? 'success' : 'default'" :text="`${a.instance.name} · ${online(a) ? t('distribute.online') : t('distribute.offline')}`" />
             <span v-else class="muted">{{ t('distribute.noDevice') }}</span>
           </a-space>
         </div>
@@ -144,7 +145,7 @@ async function submit() {
               <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.title" :label="t('distribute.titleOverride')">
                 <a-input v-model:value="overrides[id]!.title" :maxlength="capOf(accountById(id)!.platform)!.title!.max" :placeholder="defaultTitle(accountById(id)!.platform)" />
               </a-form-item>
-              <a-form-item :label="t('distribute.captionOverride')" :extra="t('distribute.captionHint')">
+              <a-form-item :label="t('distribute.captionOverride')">
                 <a-textarea v-model:value="overrides[id]!.caption" :rows="3" :maxlength="capOf(accountById(id)?.platform ?? '')?.captionMax" show-count
                   :placeholder="defaultCaption(accountById(id)?.platform ?? '')" />
               </a-form-item>
@@ -152,7 +153,7 @@ async function submit() {
                 <a-select v-model:value="overrides[id]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
               </a-form-item>
               <a-form-item v-if="capOf(accountById(id)?.platform ?? '')?.privacy" :label="t('distribute.privacy')">
-                <a-select v-model:value="overrides[id]!.privacy" allow-clear :placeholder="t('common.default')" style="width: 200px"
+                <a-select v-model:value="overrides[id]!.privacy" allow-clear :placeholder="t('common.default')" style="width: 200px; max-width: 100%"
                   :options="capOf(accountById(id)!.platform)!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
               </a-form-item>
               <a-form-item :label="t('distribute.timeOverride')">
@@ -183,8 +184,6 @@ async function submit() {
 <style scoped>
 .group { margin-bottom: 12px; }
 .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.acc { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-radius: 4px; }
+.acc { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-radius: var(--cp-radius); }
 .acc:hover { background: var(--cp-bg-hover); }
-.muted { color: var(--cp-text-tertiary); }
-.warn { color: var(--cp-warning); font-size: 12px; }
 </style>

@@ -7,6 +7,10 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import { compactNumber, type TrendingData, type TrendingItem } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import { MODAL_WIDTH, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 
 /** 趋势热点: YouTube mostPopular chart per region (official Data API), rank changes vs. the previous snapshot. */
@@ -38,13 +42,14 @@ const items = computed(() => (data.value?.items ?? []).filter((x) => (!filters.o
 
 const columns = computed(() => [
   { title: t('trending.rank'), key: 'rank', width: 70, align: 'right' as const },
-  { title: t('trending.change'), key: 'change', width: 90 },
-  { title: t('trending.video'), key: 'video' },
+  { title: t('trending.change'), key: 'change', width: 100 },
+  { title: t('trending.video'), key: 'video', width: 380 },
   { title: t('trending.channel'), key: 'channel', width: 180 },
   { title: t('trending.views'), key: 'views', width: 100, align: 'right' as const },
   { title: t('trending.likes'), key: 'likes', width: 90, align: 'right' as const },
   { title: t('trending.published'), key: 'published', width: 170 },
 ])
+const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 
 // ---- admin
 const refreshing = ref(false)
@@ -82,110 +87,104 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
 </script>
 
 <template>
-  <a-card :title="t('trending.title')" size="small">
-    <template #extra>
-      <a-space v-if="auth.isAdmin && data?.notice !== 'trending.unavailable'" wrap>
-        <a-button @click="openSettings">{{ t('trending.settings') }}</a-button>
-        <a-button type="primary" :loading="refreshing" :disabled="!data?.configured || !data?.settings.regions.length" @click="refreshNow">{{ t('trending.refreshNow') }}</a-button>
-      </a-space>
+  <PageContainer :title="t('trending.title')">
+    <template v-if="auth.isAdmin && data?.notice !== 'trending.unavailable'" #extra>
+      <a-button @click="openSettings">{{ t('trending.settings') }}</a-button>
+      <a-button type="primary" :loading="refreshing" :disabled="!data?.configured || !data?.settings.regions.length" @click="refreshNow">{{ t('trending.refreshNow') }}</a-button>
     </template>
 
-    <a-alert v-if="data?.notice === 'tracked.youtube_no_api_key'" type="warning" show-icon style="margin-bottom: 12px" :message="codeText(data.notice, undefined, data.notice)">
+    <a-alert v-if="data?.notice === 'tracked.youtube_no_api_key'" type="warning" show-icon :message="codeText(data.notice, undefined, data.notice)">
       <template v-if="auth.isAdmin" #action>
         <a-button size="small" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('trending.setKey') }}</a-button>
       </template>
     </a-alert>
-    <a-alert v-else-if="data?.notice === 'trending.no_regions'" type="info" show-icon style="margin-bottom: 12px"
-      :message="auth.isAdmin ? t('trending.emptyAdmin') : t('trending.noRegions')" />
-    <a-alert v-else-if="data?.notice" type="info" show-icon style="margin-bottom: 12px" :message="codeText(data.notice, undefined, data.notice)" />
+    <a-alert v-else-if="data?.notice === 'trending.no_regions'" type="info" show-icon :message="auth.isAdmin ? t('trending.emptyAdmin') : t('trending.noRegions')" />
+    <a-alert v-else-if="data?.notice" type="info" show-icon :message="codeText(data.notice, undefined, data.notice)" />
 
-    <a-space wrap style="margin-bottom: 12px">
-      <a-radio-group v-if="regionOptions.length" :value="data?.snapshot?.region ?? filters.region" button-style="solid" @change="(e: any) => pickRegion(e.target.value)">
-        <a-radio-button v-for="r in regionOptions" :key="r" :value="r">{{ r }}</a-radio-button>
-      </a-radio-group>
-      <a-select v-if="data?.history.length" v-model:value="filters.snapshotId" :placeholder="t('trending.latest')" allow-clear style="width: 200px" @change="load">
-        <a-select-option v-for="h in data.history" :key="h.id" :value="h.id">{{ fmt(h.capturedAt) }}</a-select-option>
-      </a-select>
-      <a-input-search v-model:value="filters.q" :placeholder="t('trending.searchPlaceholder')" allow-clear style="width: 240px" @search="load" />
-      <a-checkbox v-model:checked="filters.onlyNew">{{ t('trending.onlyNew') }}</a-checkbox>
-      <a-checkbox v-model:checked="filters.onlyRising">{{ t('trending.onlyRising') }}</a-checkbox>
-    </a-space>
-
-    <div v-if="data?.snapshot" class="muted small" style="margin-bottom: 8px">
-      {{ t('trending.capturedAt', { time: fmt(data.snapshot.capturedAt) }) }}
-      · {{ data.previous ? t('trending.vsPrevious', { time: fmt(data.previous.capturedAt) }) : t('trending.noPrevious') }}
-      <template v-if="data.nextSlotAt"> · {{ t('trending.nextRun', { time: fmt(data.nextSlotAt) }) }}</template>
-    </div>
-
-    <a-table :data-source="items" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 1000 }" :pagination="false"
-      :locale="{ emptyText: t('trending.empty') }">
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'rank'"><span class="num">{{ record.rank }}</span></template>
-        <template v-else-if="column.key === 'change'">
-          <a-tag v-if="record.isNew" color="blue">{{ t('trending.new') }}</a-tag>
-          <span v-else-if="changeOf(record as TrendingItem) > 0" class="up"><ArrowUpOutlined /> {{ record.rankChange }}</span>
-          <span v-else-if="changeOf(record as TrendingItem) < 0" class="down"><ArrowDownOutlined /> {{ -record.rankChange }}</span>
-          <span v-else class="muted">—</span>
+    <a-card :bordered="false">
+      <SearchBar :loading="loading" @refresh="load">
+        <a-radio-group v-if="regionOptions.length" :value="data?.snapshot?.region ?? filters.region" button-style="solid" @change="(e: any) => pickRegion(e.target.value)">
+          <a-radio-button v-for="r in regionOptions" :key="r" :value="r">{{ r }}</a-radio-button>
+        </a-radio-group>
+        <a-select v-if="data?.history.length" v-model:value="filters.snapshotId" :placeholder="t('trending.latest')" allow-clear style="width: 200px" @change="load">
+          <a-select-option v-for="h in data.history" :key="h.id" :value="h.id">{{ fmt(h.capturedAt) }}</a-select-option>
+        </a-select>
+        <a-input-search v-model:value="filters.q" :placeholder="t('trending.searchPlaceholder')" allow-clear style="width: 240px" @search="load" />
+        <a-checkbox v-model:checked="filters.onlyNew">{{ t('trending.onlyNew') }}</a-checkbox>
+        <a-checkbox v-model:checked="filters.onlyRising">{{ t('trending.onlyRising') }}</a-checkbox>
+        <template v-if="data?.snapshot" #actions>
+          <span class="muted small">
+            {{ t('trending.capturedAt', { time: fmt(data.snapshot.capturedAt) }) }}
+            · {{ data.previous ? t('trending.vsPrevious', { time: fmt(data.previous.capturedAt) }) : t('trending.noPrevious') }}
+            <template v-if="data.nextSlotAt"> · {{ t('trending.nextRun', { time: fmt(data.nextSlotAt) }) }}</template>
+          </span>
         </template>
-        <template v-else-if="column.key === 'video'">
-          <a :href="record.url" target="_blank" rel="noopener noreferrer">{{ record.title || record.videoId }}</a>
-          <div v-if="record.tags.length"><a-tag v-for="tg in record.tags.slice(0, 6)" :key="tg" class="small-tag">{{ tg }}</a-tag></div>
-        </template>
-        <template v-else-if="column.key === 'channel'">
-          <a v-if="record.channelUrl" :href="record.channelUrl" target="_blank" rel="noopener noreferrer">{{ record.channelTitle || record.channelId }}</a>
-          <span v-else>{{ record.channelTitle ?? '—' }}</span>
-        </template>
-        <template v-else-if="column.key === 'views'"><span class="num">{{ compactNumber(record.views) }}</span></template>
-        <template v-else-if="column.key === 'likes'"><span class="num">{{ compactNumber(record.likes) }}</span></template>
-        <template v-else-if="column.key === 'published'">{{ fmt(record.publishedAt) }}</template>
-      </template>
-    </a-table>
+      </SearchBar>
 
-    <template v-if="auth.isAdmin && data?.lastTasks.length">
-      <a-divider orientation="left" plain>{{ t('trending.lastTasks') }}</a-divider>
-      <a-space wrap>
-        <span v-for="x in data.lastTasks" :key="x.label ?? ''" class="small">
+      <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }" :pagination="false"
+        :locale="{ emptyText: t('trending.empty') }">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'rank'"><span class="num">{{ record.rank }}</span></template>
+          <template v-else-if="column.key === 'change'">
+            <a-tag v-if="record.isNew" color="blue">{{ t('trending.new') }}</a-tag>
+            <span v-else-if="changeOf(record as TrendingItem) > 0" class="up nowrap"><ArrowUpOutlined /> {{ record.rankChange }}</span>
+            <span v-else-if="changeOf(record as TrendingItem) < 0" class="down nowrap"><ArrowDownOutlined /> {{ -record.rankChange }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'video'">
+            <a :href="record.url" target="_blank" rel="noopener noreferrer">{{ record.title || record.videoId }}</a>
+            <div v-if="record.tags.length"><a-tag v-for="tg in record.tags.slice(0, 6)" :key="tg" style="margin-top: 2px">{{ tg }}</a-tag></div>
+          </template>
+          <template v-else-if="column.key === 'channel'">
+            <a v-if="record.channelUrl" :href="record.channelUrl" target="_blank" rel="noopener noreferrer">{{ record.channelTitle || record.channelId }}</a>
+            <span v-else>{{ record.channelTitle ?? '—' }}</span>
+          </template>
+          <template v-else-if="column.key === 'views'"><span class="num">{{ compactNumber(record.views) }}</span></template>
+          <template v-else-if="column.key === 'likes'"><span class="num">{{ compactNumber(record.likes) }}</span></template>
+          <template v-else-if="column.key === 'published'">{{ fmt(record.publishedAt) }}</template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-card v-if="auth.isAdmin && data?.lastTasks.length" :bordered="false" size="small" :title="t('trending.lastTasks')">
+      <a-space wrap :size="[24, 8]">
+        <span v-for="x in data.lastTasks" :key="x.label ?? ''" class="nowrap">
           {{ x.label }}
           <a-tooltip :title="x.errorCode || x.error ? codeText(x.errorCode, undefined, x.error ?? '') : undefined">
-            <a-tag :color="x.status === 'failed' ? 'error' : x.status === 'success' ? 'success' : 'processing'">{{ t(`tasks.status.${x.status}`) }}</a-tag>
+            <StatusTag kind="task" :status="x.status" style="margin-inline: 4px" />
           </a-tooltip>
-          <span class="muted">{{ fmt(x.finishedAt ?? x.createdAt) }}</span>
+          <span class="muted small">{{ fmt(x.finishedAt ?? x.createdAt) }}</span>
         </span>
       </a-space>
-    </template>
-    <div class="faint small" style="margin-top: 8px">{{ t('trending.hint') }}</div>
-  </a-card>
+    </a-card>
 
-  <a-modal v-model:open="settingsOpen" :title="t('trending.settings')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="saving" :width="560" @ok="saveSettings">
-    <a-form layout="vertical">
-      <a-form-item :label="t('trending.regions')" :extra="t('trending.regionsHint')">
-        <a-select v-model:value="sform.regions" mode="tags" :token-separators="[',', ' ']" :max-tag-count="10" />
-      </a-form-item>
-      <a-form-item :label="t('trending.categoryId')" :extra="t('trending.categoryHint')">
-        <a-input v-model:value="sform.categoryId" :maxlength="4" style="width: 160px" />
-      </a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="8">
-          <a-form-item :label="t('trending.interval')">
-            <a-select v-model:value="sform.intervalHours" :options="INTERVALS.map((h) => ({ value: h, label: intervalLabel(h) }))" />
-          </a-form-item>
-        </a-col>
-        <a-col :xs="12" :sm="8">
-          <a-form-item :label="t('trending.maxResults')"><a-input-number v-model:value="sform.maxResults" :min="1" :max="50" style="width: 100%" /></a-form-item>
-        </a-col>
-        <a-col :xs="12" :sm="8">
-          <a-form-item :label="t('trending.retentionDays')"><a-input-number v-model:value="sform.retentionDays" :min="1" :max="365" style="width: 100%" /></a-form-item>
-        </a-col>
-      </a-row>
-    </a-form>
-  </a-modal>
+    <a-modal v-model:open="settingsOpen" :title="t('trending.settings')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="saving" :width="MODAL_WIDTH.md" @ok="saveSettings">
+      <a-form layout="vertical">
+        <a-form-item :label="t('trending.regions')">
+          <a-select v-model:value="sform.regions" mode="tags" :token-separators="[',', ' ']" :max-tag-count="10" :placeholder="t('trending.regionsHint')" />
+        </a-form-item>
+        <a-form-item :label="t('trending.categoryId')" :extra="t('trending.categoryHint')">
+          <a-input v-model:value="sform.categoryId" :maxlength="4" style="width: 160px" />
+        </a-form-item>
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('trending.interval')">
+              <a-select v-model:value="sform.intervalHours" :options="INTERVALS.map((h) => ({ value: h, label: intervalLabel(h) }))" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('trending.maxResults')"><a-input-number v-model:value="sform.maxResults" :min="1" :max="50" style="width: 100%" /></a-form-item>
+          </a-col>
+          <a-col :xs="12" :sm="8">
+            <a-form-item :label="t('trending.retentionDays')"><a-input-number v-model:value="sform.retentionDays" :min="1" :max="365" style="width: 100%" /></a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
+    </a-modal>
+  </PageContainer>
 </template>
 
 <style scoped>
-.muted { color: var(--cp-text-tertiary); }
-.faint { color: var(--cp-text-quaternary); }
-.small { font-size: 12px; }
-.small-tag { font-size: 11px; margin-top: 2px; }
 .num { font-variant-numeric: tabular-nums; }
 .up { color: var(--cp-success); }
 .down { color: var(--cp-error); }
