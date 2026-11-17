@@ -4,7 +4,7 @@ import type { PostType } from '../../db/schema.js';
 import type { HttpError } from '../../lib/errors.js';
 import { mediaUrlProblem, publicMediaUrl } from './media-url.js';
 import { dayStartSec, expiresIn, num, oauthTokenError, platformError, platformFetch, splitScopes, withOptionalScope } from './http.js';
-import type { Authed, PlatformAdapter, PlatformAppOptions, PlatformComment, PublishInput, TokenSet } from './types.js';
+import type { Authed, CommentPage, OwnPost, PlatformAdapter, PlatformAppOptions, PlatformComment, PublishInput, TokenSet } from './types.js';
 
 /**
  * Instagram: "Instagram API with Instagram Login" (business login for Instagram, 2024+). Chosen over
@@ -101,12 +101,122 @@ export function singleContainerParams(postType: PostType, kind: 'image' | 'video
   return kind === 'video' ? { media_type: 'REELS', video_url: url, caption, share_to_feed: 'true' } : { image_url: url, caption };
 }
 
+// ---------------------------------------------------------------- paged reads (comments, own posts)
+
+/** A Graph GET (path relative to the Graph base, query params); the adapter binds it to a connection. */
+export type GraphGet = <T>(path: string, params: Record<string, string>) => Promise<T>;
+/** Graph list response: `paging.next` exists while there are more pages, `cursors.after` continues it. */
+interface GraphPage<T> { data?: T[]; paging?: { cursors?: { after?: string }; next?: string } }
+
+/**
+ * `after` cursor of the next page, or null on the last page. Only the cursor of `paging.next` is used: the
+ * next request goes to our own path with our own params (and the token in the header), never to the URL
+ * the response suggests.
+ */
+export function nextAfter(p: GraphPage<unknown>): string | null {
+  if (!p.paging?.next) return null;
+  if (p.paging.cursors?.after) return p.paging.cursors.after;
+  try { return new URL(p.paging.next).searchParams.get('after'); } catch { return null; }
+}
+
+/**
+ * Comment sync caps per run (one comment-sync task, timeout 5 min; every Graph call is paced ≥ 200 ms per
+ * connection and retried on 429 by platformFetch): the newest MEDIA_PAGES × 25 posts, up to
+ * COMMENT_PAGES × 50 top-level comments per post (replies: the first page Graph nests in each comment),
+ * at most MAX_CALLS Graph requests in total. A huge account therefore can't keep a run going forever.
+ */
+export const IG_SYNC_LIMITS = { MEDIA_PAGES: 4, MEDIA_LIMIT: 25, COMMENT_PAGES: 4, COMMENT_LIMIT: 50, MAX_CALLS: 150 } as const;
+/** Own posts per account-stats run: the newest POST_PAGES × 25 posts. */
+export const IG_POST_PAGE_LIMIT = 25;
+
+type IgComment = { id: string; text?: string; timestamp?: string; username?: string; like_count?: number };
+
+/**
+ * Cursor = ISO time of the newest comment already stored. Media pages (newest first) and each post's
+ * comment pages (newest first since Graph v3.2; at most 50 per request, no time filter) are followed via
+ * `paging.next`; a post's comment pages stop at the first page that reaches the cursor (older comments
+ * follow) or at COMMENT_PAGES (older backlog of a very busy post is left unread: `backlog`). ALL comments
+ * read are returned, also older ones, so the sync updates like/reply counts and text of comments it
+ * already has. nextCursor = the newest time seen; when MAX_CALLS stopped the run before all posts were
+ * read (`truncated`), the old cursor is kept, so new comments on unread posts are not skipped next time
+ * (what was read is de-duplicated by the store).
+ */
+export async function collectComments(get: GraphGet, user: string, cursor: string | null, limits = IG_SYNC_LIMITS): Promise<CommentPage> {
+  const since = cursor ? Date.parse(cursor) || 0 : 0;
+  const out: PlatformComment[] = [];
+  let newest = since;
+  let calls = 0; let mediaSeen = 0; let truncated = false; let backlog = false; let after: string | null = null;
+  const budget = () => calls < limits.MAX_CALLS;
+  for (let mp = 0; mp < limits.MEDIA_PAGES; mp++) {
+    if (!budget()) { truncated = true; break; }
+    calls++;
+    const media: GraphPage<{ id: string; comments_count?: number }> = await get(`${user}/media`, {
+      fields: 'id,comments_count', limit: String(limits.MEDIA_LIMIT), ...(after ? { after } : {}),
+    });
+    for (const m of media.data ?? []) {
+      mediaSeen++;
+      if (!m.comments_count) continue;
+      let cAfter: string | null = null;
+      for (let cp = 0; ; cp++) {
+        if (!budget()) { truncated = true; break; }
+        if (cp >= limits.COMMENT_PAGES) { backlog = true; break; }
+        calls++;
+        const r: GraphPage<IgComment & { replies?: { data?: IgComment[] } }> = await get(`${m.id}/comments`, {
+          fields: 'id,text,timestamp,username,like_count,replies{id,text,timestamp,username,like_count}', limit: String(limits.COMMENT_LIMIT),
+          ...(cAfter ? { after: cAfter } : {}),
+        });
+        let reached = false;
+        const push = (c: IgComment, parentId: string | null, replies: number | null) => {
+          const t = c.timestamp ? Date.parse(c.timestamp) || 0 : 0;
+          if (since && t <= since) reached = true;
+          newest = Math.max(newest, t);
+          out.push({ id: c.id, parentId, postId: m.id, authorName: c.username ?? null, text: c.text ?? '', publishedAt: c.timestamp ?? null, likeCount: num(c.like_count), replyCount: replies });
+        };
+        for (const c of r.data ?? []) {
+          push(c, null, c.replies?.data?.length ?? 0);
+          for (const rep of c.replies?.data ?? []) push(rep, c.id, null);
+        }
+        cAfter = nextAfter(r);
+        if (!cAfter || reached) break;
+      }
+    }
+    after = nextAfter(media);
+    if (!after) break;
+  }
+  const nextCursor = truncated ? cursor : newest > 0 ? new Date(newest).toISOString() : cursor;
+  return { comments: out, nextCursor, info: { calls, media: mediaSeen, truncated, backlog } };
+}
+
+/** Own posts (basic scope: /me/media), newest first, at most `maxPages` pages of 25. */
+export async function collectOwnPosts(get: GraphGet, user: string, maxPages: number): Promise<OwnPost[]> {
+  type M = { id: string; caption?: string; media_type?: string; media_product_type?: string; permalink?: string; timestamp?: string; like_count?: number; comments_count?: number };
+  const out: OwnPost[] = [];
+  let after: string | null = null;
+  for (let p = 0; p < maxPages; p++) {
+    const r: GraphPage<M> = await get(`${user}/media`, {
+      fields: 'id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count', limit: String(IG_POST_PAGE_LIMIT),
+      ...(after ? { after } : {}),
+    });
+    for (const m of r.data ?? []) {
+      if (!m.id) continue;
+      out.push({
+        id: String(m.id), mediaType: m.media_type ?? null, productType: m.media_product_type ?? null, caption: m.caption ?? null,
+        permalink: m.permalink?.startsWith('https://') ? m.permalink : null, publishedAt: m.timestamp ?? null,
+        likes: num(m.like_count), comments: num(m.comments_count),
+      });
+    }
+    after = nextAfter(r);
+    if (!after) break;
+  }
+  return out;
+}
+
 export const instagramAdapter: PlatformAdapter = {
   id: 'instagram',
   name: NAME,
   capabilities: () => ({
     publishVideo: true, publishImage: true, publishCarousel: true, draftOnly: false, needsPublicMediaUrl: true,
-    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true, postTypes: ['reel', 'story'],
+    commentsRead: true, commentsReply: true, profileStats: true, accountStats: true, accountPosts: true, postTypes: ['reel', 'story'],
   }),
 
   oauth: {
@@ -238,34 +348,9 @@ export const instagramAdapter: PlatformAdapter = {
     return { externalId: published.id, url: info.permalink, state: 'published' };
   },
 
-  /**
-   * Cursor = ISO time of the newest comment already seen: returns newer comments (top-level and
-   * replies) on the 25 most recent posts; nextCursor = the newest time returned (or the old cursor).
-   */
-  async listComments(a, cursor) {
-    const since = cursor ? Date.parse(cursor) : 0;
-    const media = await graph<{ data?: { id: string; comments_count?: number }[] }>(a, 'GET', `${igUser(a)}/media`, { fields: 'id,comments_count', limit: '25' });
-    type C = { id: string; text?: string; timestamp?: string; username?: string; like_count?: number };
-    const out: PlatformComment[] = [];
-    let newest = since;
-    for (const m of media.data ?? []) {
-      if (!m.comments_count) continue;
-      const r = await graph<{ data?: (C & { replies?: { data?: C[] } })[] }>(a, 'GET', `${m.id}/comments`, {
-        fields: 'id,text,timestamp,username,like_count,replies{id,text,timestamp,username,like_count}', limit: '50',
-      });
-      const push = (c: C, parentId: string | null, replies: number | null) => {
-        const t = c.timestamp ? Date.parse(c.timestamp) : 0;
-        if (t <= since) return;
-        newest = Math.max(newest, t);
-        out.push({ id: c.id, parentId, postId: m.id, authorName: c.username ?? null, text: c.text ?? '', publishedAt: c.timestamp ?? null, likeCount: num(c.like_count), replyCount: replies });
-      };
-      for (const c of r.data ?? []) {
-        push(c, null, c.replies?.data?.length ?? 0);
-        for (const rep of c.replies?.data ?? []) push(rep, c.id, null);
-      }
-    }
-    return { comments: out, nextCursor: newest > 0 ? new Date(newest).toISOString() : cursor };
-  },
+  listComments: (a, cursor) => collectComments((path, params) => graph(a, 'GET', path, params), igUser(a), cursor),
+
+  fetchOwnPosts: (a, maxPages) => collectOwnPosts((path, params) => graph(a, 'GET', path, params), igUser(a), maxPages),
 
   async replyToComment(a, commentId, text) {
     const r = await graph<{ id?: string }>(a, 'POST', `${commentId}/replies`, { message: text });

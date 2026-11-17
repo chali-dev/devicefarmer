@@ -15,11 +15,12 @@ import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import TrendCharts from '../components/analytics/TrendCharts.vue'
+import AccountPosts from '../components/analytics/AccountPosts.vue'
 import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
 
 /**
- * 账号分析: followers gained, views and shares per day of the operator's own social accounts
+ * 账号分析: followers gained, views, likes, comments and shares per day (+ per-post counters) of the operator's own social accounts
  * (official APIs of connected accounts, or numbers entered by hand). Days are UTC.
  */
 const { t } = useI18n()
@@ -80,6 +81,8 @@ const columns = computed(() => [
   { title: t('analytics.metrics.followers'), key: 'followers', width: 110, align: 'right' as const },
   { title: t('analytics.gained'), key: 'gained', width: 110, align: 'right' as const },
   { title: t('analytics.metrics.views'), key: 'views', width: 100, align: 'right' as const },
+  { title: t('analytics.metrics.likes'), key: 'likes', width: 100, align: 'right' as const },
+  { title: t('analytics.metrics.comments'), key: 'comments', width: 100, align: 'right' as const },
   { title: t('analytics.metrics.shares'), key: 'shares', width: 100, align: 'right' as const },
   { title: t('analytics.colSource'), key: 'source', width: 200 },
   actionColumn(200),
@@ -91,7 +94,8 @@ const detail = ref<AnalyticsSeries | null>(null)
 async function loadDetail(id: string, quiet = false) {
   try { detail.value = await api<AnalyticsSeries>('GET', `/api/analytics/accounts/${id}?days=${range.value}`) } catch (e) { if (!quiet) message.error(errorText(e)) }
 }
-async function openDetail(a: AnalyticsAccount) { detail.value = null; detailOpen.value = true; await loadDetail(a.id) }
+const detailTab = ref<'days' | 'posts'>('days')
+async function openDetail(a: AnalyticsAccount) { detail.value = null; detailTab.value = 'days'; detailOpen.value = true; await loadDetail(a.id) }
 const detailRows = computed(() => [...(detail.value?.days ?? [])].reverse().filter((d) => d.source !== null))
 function removeDay(day: string) {
   const id = detail.value?.account.id
@@ -177,7 +181,7 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
       </a-card>
 
       <a-card :bordered="false">
-        <a-table :data-source="data.accounts" :columns="columns" row-key="id" :size="TABLE_SIZE" :scroll="{ x: 1170 }" :loading="loading"
+        <a-table :data-source="data.accounts" :columns="columns" row-key="id" :size="TABLE_SIZE" :scroll="{ x: 1370 }" :loading="loading"
           :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('analytics.empty') }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'account'">
@@ -196,6 +200,8 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
               <span :class="['num', (record.range.followersGained ?? 0) > 0 ? 'up' : (record.range.followersGained ?? 0) < 0 ? 'down' : '']">{{ signed(record.range.followersGained) }}</span>
             </template>
             <template v-else-if="column.key === 'views'"><span class="num">{{ compactNumber(record.range.views) }}</span></template>
+            <template v-else-if="column.key === 'likes'"><span class="num">{{ compactNumber(record.range.likes) }}</span></template>
+            <template v-else-if="column.key === 'comments'"><span class="num">{{ compactNumber(record.range.comments) }}</span></template>
             <template v-else-if="column.key === 'shares'"><span class="num">{{ compactNumber(record.range.shares) }}</span></template>
             <template v-else-if="column.key === 'source'">
               <a-tag v-if="record.connection === 'connected'" color="success">{{ t('analytics.sourceApi') }}</a-tag>
@@ -232,20 +238,27 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
       </a-space>
     </template>
     <template v-if="detail">
-      <a-space wrap class="drawer-head">
-        <PlatformTag :platform="detail.account.platform" />
-        <a-tooltip :title="sourceTip(detail.account, detail.apiStats)">
-          <a-tag v-if="detail.account.connection === 'connected'" color="success">{{ t('analytics.sourceApi') }}</a-tag>
-          <a-tag v-else-if="detail.account.connection" color="warning">{{ t('analytics.sourceExpired') }}</a-tag>
-          <a-tag v-else>{{ t('analytics.sourceManual') }}</a-tag>
-        </a-tooltip>
-        <span class="muted">{{ t('analytics.rangeHint', { from: fmtDay(detail.from), to: fmtDay(detail.to) }) }}</span>
-      </a-space>
+      <div class="drawer-head">
+        <a-space wrap>
+          <PlatformTag :platform="detail.account.platform" />
+          <a-tooltip :title="sourceTip(detail.account, detail.apiStats)">
+            <a-tag v-if="detail.account.connection === 'connected'" color="success">{{ t('analytics.sourceApi') }}</a-tag>
+            <a-tag v-else-if="detail.account.connection" color="warning">{{ t('analytics.sourceExpired') }}</a-tag>
+            <a-tag v-else>{{ t('analytics.sourceManual') }}</a-tag>
+          </a-tooltip>
+          <span class="muted">{{ t('analytics.rangeHint', { from: fmtDay(detail.from), to: fmtDay(detail.to) }) }}</span>
+        </a-space>
+      </div>
       <a-alert v-if="detail.account.missing.length" type="warning" show-icon class="drawer-head"
         :message="t('analytics.missingHint', { metrics: detail.account.missing.map((m) => t(`analytics.metrics.${m}`)).join(', ') })" />
       <TrendCharts :days="detail.days" :height="140" />
-      <a-divider orientation="left" plain>{{ t('analytics.dayRows') }}</a-divider>
-      <a-table :data-source="detailRows" row-key="day" size="small" :pagination="false" :scroll="{ x: 700 }" :locale="{ emptyText: t('analytics.noRows') }"
+      <a-tabs v-model:active-key="detailTab">
+        <a-tab-pane key="days" :tab="t('analytics.dayRows')" />
+        <a-tab-pane key="posts" :tab="t('analytics.tabPosts')" />
+      </a-tabs>
+      <AccountPosts v-if="detailTab === 'posts'" :account-id="detail.account.id" :connected="detail.account.connection === 'connected'"
+        :reload-key="detail.account.lastRun?.finishedAt" />
+      <a-table v-else :data-source="detailRows" row-key="day" size="small" :pagination="false" :scroll="{ x: 700 }" :locale="{ emptyText: t('analytics.noRows') }"
         :columns="[
           { title: t('analytics.day'), key: 'day', width: 110 },
           { title: t('analytics.metrics.followers'), key: 'followers', align: 'right' },

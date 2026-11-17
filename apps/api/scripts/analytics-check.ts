@@ -9,15 +9,20 @@
  *   analytics.scope_missing (no platform call). Unsupported platform / no connection / refresh in progress refused.
  * - Daily scheduler: one task per connected account and UTC day (key account-stats:<id>:<day>), idempotent,
  *   expired connections skipped, spread over the day.
+ * - Likes/comments in per-account sums and the dashboard widget; days without data are null (chart gaps).
+ * - Own posts (帖子): the Instagram collector on Graph responses in the documented shape (no real IG account here:
+ *   paging via cursors.after, page cap), the real upsert (first_seen kept, counters updated), list/sort/limit, publish
+ *   link, RBAC; the fake-token refresh writes no posts.
  * - No token in responses, task rows/logs, audit; audit entries recorded.
  * Creates two temporary users and removes everything afterwards.
- * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3102 npx tsx --env-file=../../.env scripts/analytics-check.ts
+ * Usage (from apps/api, API running with ENABLED_PLATFORMS=all): ENABLED_PLATFORMS=all E2E_API=http://127.0.0.1:3102 npx tsx --env-file=../../.env scripts/analytics-check.ts
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { sealSecret } from '../src/lib/secret-box.js';
-import { scheduleDailyAccountStats } from '../src/modules/analytics/analytics.js';
+import { POST_PAGES, scheduleDailyAccountStats, upsertAccountPosts } from '../src/modules/analytics/analytics.js';
+import { collectOwnPosts } from '../src/modules/platforms/instagram.js';
 import { createTask } from '../src/modules/tasks/core.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
@@ -139,6 +144,10 @@ try {
   check('per-account sums: instagram +100 / views 220 / shares 15, facebook +30 / views 10',
     accOf(igM)?.range.followersGained === 100 && accOf(igM)?.range.views === 220 && accOf(igM)?.range.shares === 15 &&
     accOf(fb)?.range.followersGained === 30 && accOf(fb)?.range.views === 10 && accOf(igM)?.latest.followers === 1100, JSON.stringify(accOf(igM)));
+  check('per-account sums carry likes 9 / comments 2 (account table columns); accounts without them stay null',
+    accOf(igM)?.range.likes === 9 && accOf(igM)?.range.comments === 2 && accOf(fb)?.range.likes === null && accOf(fb)?.range.comments === null, JSON.stringify(accOf(fb)?.range));
+  check('per-day sums: days without any data are null for every metric (gaps, not 0)',
+    [day(5), day(4), day(2)].every((d) => ['followersGained', 'views', 'likes', 'shares', 'comments'].every((k) => dayOf(d)[k] === null)), JSON.stringify([dayOf(day(5)), dayOf(day(2))]));
   check('user summary lists only own accounts', !s.accounts.some((a: any) => a.id === igB) && s.accounts.length === 5);
   r = await http('GET', '/api/analytics/summary?days=30', A);
   check('30-day range: 30 days, same gains (first readings have no gain)', r.status === 200 && r.body.days.length === 30 && r.body.totals.followersGained === 130 && r.body.totals.views === 230, JSON.stringify(r.body.totals));
@@ -179,6 +188,10 @@ try {
   const w = r.body.widgets?.analytics;
   check('dashboard widget (user A): +130 / views 230 / shares 15, top = the instagram account',
     r.status === 200 && w?.followersGained7d === 130 && w.views7d === 230 && w.shares7d === 15 && w.trend.length === 7 && w.top[0]?.id === igM && w.top[0].gain === 100, JSON.stringify(w));
+  const wDay = (d: string) => w?.trend.find((x: any) => x.day === d);
+  check('dashboard widget: likes7d 9 / comments7d 2, trend carries likes/comments per day, days without data are null (not 0)',
+    w?.likes7d === 9 && w.comments7d === 2 && wDay(day(3))?.likes === 9 && wDay(day(3))?.comments === 2 && wDay(day(5))?.likes === null && wDay(day(5))?.followersGained === null
+      && wDay(day(5))?.views === null, JSON.stringify(w?.trend));
   r = await http('GET', `/api/dashboard?tz=${tz}`, B);
   check('dashboard widget (user B): +20 only', r.body.widgets?.analytics?.followersGained7d === 20 && r.body.widgets.analytics.accounts === 1, JSON.stringify(r.body.widgets?.analytics));
   r = await http('GET', `/api/dashboard?tz=${tz}&userId=${uA}`, T);
@@ -236,6 +249,62 @@ try {
   check('… series shows missing metrics and the last run', r.body.account.missing.includes('followers') && r.body.account.lastRun?.status === 'success' && r.body.account.connection === 'connected');
   const tLogs = await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, k.task.id));
   check('… task log has the scope-missing warning', tLogs.some((l) => l.level === 'warn' && /scope missing/.test(l.message)));
+
+  // ---------------------------------------------------------------- own posts (帖子)
+  check('Instagram refresh with a fake token stored no posts', (await db.select().from(schema.socialAccountPosts).where(eq(schema.socialAccountPosts.socialAccountId, igA))).length === 0);
+  r = await http('GET', `/api/analytics/accounts/${igA}/posts`, A);
+  check('posts of the failed account: 200, empty, apiPosts true (Instagram)', r.status === 200 && r.body.total === 0 && r.body.posts.length === 0 && r.body.apiPosts === true, r.text.slice(0, 200));
+  r = await http('GET', `/api/analytics/accounts/${ytA}/posts`, A);
+  check('YouTube posts: apiPosts false (not implemented yet), empty', r.status === 200 && r.body.apiPosts === false && r.body.total === 0, r.text.slice(0, 200));
+  // Graph /me/media pages in the documented response shape (no real IG account here): the real collector code, its own paging.
+  const graphPages: Record<string, any> = {
+    '': { data: [
+      { id: '17900000000000001', caption: 'first reel', media_type: 'VIDEO', media_product_type: 'REELS', permalink: 'https://www.instagram.com/reel/AAA/', timestamp: '2026-11-10T08:00:00+0000', like_count: 12, comments_count: 3 },
+      { id: '17900000000000002', media_type: 'CAROUSEL_ALBUM', media_product_type: 'FEED', permalink: 'https://www.instagram.com/p/BBB/', timestamp: '2026-11-08T08:00:00+0000', comments_count: 0 },
+    ], paging: { cursors: { before: 'b1', after: 'a1' }, next: 'https://graph.instagram.com/v21.0/123/media?after=a1&access_token=REDACTED' } },
+    a1: { data: [
+      { id: '17900000000000003', caption: 'old photo', media_type: 'IMAGE', media_product_type: 'FEED', permalink: 'http://insecure.example/x', timestamp: '2026-10-01T08:00:00+0000', like_count: 40, comments_count: 7 },
+    ], paging: { cursors: { before: 'b2', after: 'a2' } } },
+  };
+  const calls: Record<string, string>[] = [];
+  const get = async <X>(path: string, params: Record<string, string>) => { calls.push({ path, ...params }); return graphPages[params.after ?? ''] as X; };
+  const ownPosts = await collectOwnPosts(get, '123', POST_PAGES);
+  check('collectOwnPosts: follows paging.next via cursors.after (own path/params, no token URL), stops on the last page, fields mapped',
+    calls.length === 2 && calls[0]!.path === '123/media' && calls[1]!.after === 'a1' && calls.every((c) => /like_count/.test(c.fields!) && c.limit === '25') && ownPosts.length === 3
+      && ownPosts[0]!.likes === 12 && ownPosts[0]!.productType === 'REELS' && ownPosts[1]!.likes === null && ownPosts[2]!.permalink === null, JSON.stringify({ calls, ownPosts }));
+  calls.length = 0;
+  await collectOwnPosts(get, '123', 1);
+  check('collectOwnPosts: page cap honoured (1 page)', calls.length === 1);
+  const up1 = await upsertAccountPosts(igM, 'instagram', ownPosts, new Date(Date.now() - 3600_000));
+  const [p1Before] = await db.select().from(schema.socialAccountPosts).where(and(eq(schema.socialAccountPosts.socialAccountId, igM), eq(schema.socialAccountPosts.externalId, '17900000000000001')));
+  const up2 = await upsertAccountPosts(igM, 'instagram', [{ ...ownPosts[0]!, likes: 15, comments: 4 }, { ...ownPosts[2]!, likes: null }]);
+  const postRows = await db.select().from(schema.socialAccountPosts).where(eq(schema.socialAccountPosts.socialAccountId, igM));
+  const p1 = postRows.find((p) => p.externalId === '17900000000000001');
+  const p3 = postRows.find((p) => p.externalId === '17900000000000003');
+  check('upsertAccountPosts: 3 inserted, then 2 updated (no duplicates); counts updated, first_seen kept, fetched_at moved, missing like count keeps the old one',
+    up1.inserted === 3 && up2.inserted === 0 && up2.updated === 2 && postRows.length === 3 && p1?.likes === 15 && p1.comments === 4
+      && p1.firstSeenAt.getTime() === p1Before!.firstSeenAt.getTime() && p1.fetchedAt.getTime() > p1Before!.fetchedAt.getTime() && p3?.likes === 40, JSON.stringify({ up1, up2, p1, p3 }));
+  // publish link: a published publish task with the same platform post id
+  const [content] = await db.insert(schema.contents).values({ userId: uA, title: `an ${tag} content` }).returning();
+  const [pt] = await db.insert(schema.publishTasks).values({ userId: uA, contentId: content!.id, accountId: igM, platform: 'instagram', title: 'Reel title', status: 'published', externalId: '17900000000000001', publishedAt: new Date() }).returning();
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts`, A);
+  responses.push(r.text);
+  const lp = r.body.posts;
+  check('posts list: newest first, totals likes 15+40 / comments 4+0+7, linked publish task, type/permalink',
+    r.status === 200 && r.body.total === 3 && r.body.likes === 55 && r.body.comments === 11 && lp[0].externalId === '17900000000000001' && lp[0].publish?.taskId === pt!.id
+      && lp[0].publish.contentId === content!.id && lp[0].permalink === 'https://www.instagram.com/reel/AAA/' && lp[1].publish === null && lp[1].likes === null && lp[2].externalId === '17900000000000003',
+    r.text.slice(0, 400));
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts?sort=likes&limit=1`, A);
+  check('posts: sort=likes (nulls last) + limit', r.status === 200 && r.body.posts.length === 1 && r.body.posts[0].externalId === '17900000000000003' && r.body.total === 3);
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts?sort=comments&offset=2`, A);
+  check('posts: sort=comments + offset', r.status === 200 && r.body.posts.length === 1 && r.body.posts[0].externalId === '17900000000000002');
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts?limit=101`, A);
+  check('posts: limit > 100 → 400', r.status === 400);
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts`, B);
+  check('posts RBAC: user B on A\'s account → 404 social.not_found', r.status === 404 && r.body.code === 'social.not_found');
+  r = await http('GET', `/api/analytics/accounts/${igM}/posts`, T);
+  check('posts RBAC: admin sees any account\'s posts', r.status === 200 && r.body.total === 3);
+  await db.delete(schema.contents).where(eq(schema.contents.id, content!.id));
 
   // in progress
   const blocker = await createTask({ type: 'account-stats', userId: uA, label: 'blocker', refType: 'social-account', refId: ttA, payload: { socialAccountId: ttA }, runAt: new Date(Date.now() + 3600_000) });

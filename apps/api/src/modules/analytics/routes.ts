@@ -9,10 +9,11 @@ import { ACCOUNT_REF_TYPE } from '../platforms/check.js';
 import { appOptions } from '../platforms/credentials.js';
 import { connectionFor } from '../platforms/connections.js';
 import { adapterById } from '../platforms/index.js';
+import { platformCapabilities } from '../platforms/service.js';
 import { visibleAccount } from '../social/social.js';
 import { createTask } from '../tasks/core.js';
 import {
-  accountLabel, accountRows, accountScope, dailyRows, dayRange, MAX_RANGE_DAYS, pendingStats, STATS_TASK, summary, upsertDay, utcDay,
+  accountLabel, accountPosts, accountRows, accountScope, dailyRows, POST_SORTS, dayRange, MAX_RANGE_DAYS, pendingStats, STATS_TASK, summary, upsertDay, utcDay,
 } from './analytics.js';
 
 const Id = z.object({ id: z.string().uuid() });
@@ -65,7 +66,23 @@ export const analyticsRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   });
 
-  app.post('/api/analytics/accounts/:id/stats', { schema: { params: Id, body: StatsBody } }, async (req, reply) => {
+  /** Own posts with per-post likes/comments as the last refresh stored them (capability accountPosts). */
+  app.get('/api/analytics/accounts/:id/posts', {
+    schema: {
+      params: Id,
+      querystring: z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(20),
+        offset: z.coerce.number().int().min(0).max(100_000).default(0),
+        sort: z.enum(POST_SORTS).default('published'),
+      }),
+    },
+  }, async (req) => {
+    const acc = await visibleAccount(req.user, req.params.id);
+    const caps = await platformCapabilities(acc.platform);
+    return { apiPosts: !!caps?.accountPosts, ...(await accountPosts(acc.id, req.query)) };
+  });
+
+  app.post('/api/analytics/accounts/:id/stats',{ schema: { params: Id, body: StatsBody } }, async (req, reply) => {
     const acc = await visibleAccount(req.user, req.params.id);
     const { day: d, ...values } = req.body;
     if (Object.values(values).every((v) => v === undefined || v === null)) throw badRequest('至少填写一项数据', 'analytics.stats_empty');

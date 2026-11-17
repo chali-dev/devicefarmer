@@ -232,9 +232,17 @@ try {
   r = await http('GET', `/api/tracked-accounts/${ig.id}/snapshots`, T);
   check("admin can read A's history", r.status === 200 && r.body.snapshots.length === 3);
 
+  // ---------------------------------------------------------------- refresh only where an API source exists
+  // The web UI shows 刷新 / 立即刷新 / 批量刷新 and the 定时采集 controls only when dataMode !== 'manual_only'.
+  const modes = Object.fromEntries((await list('', A.token)).items.map((x: any) => [x.platform, x.dataMode]));
+  check('data modes that drive the UI: Instagram + TikTok manual_only (no refresh / schedule shown), YouTube api_unconfigured (refresh + schedule kept)',
+    modes.instagram === 'manual_only' && modes.tiktok === 'manual_only' && modes.youtube === 'api_unconfigured', JSON.stringify(modes));
+  r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { refreshIntervalHours: 6 });
+  check('schedule on a manual-only platform is refused by the API too (400 tracked.schedule_manual_only)', r.status === 400 && r.body.code === 'tracked.schedule_manual_only');
   // ---------------------------------------------------------------- refresh via the real queue
+  // A direct API refresh of a manual-only account stays the documented no-op (the UI no longer offers it).
   r = await http('POST', `/api/tracked-accounts/${ig.id}/refresh`, A.token);
-  check('refresh manual-only account → 202 task (manualOnly)', r.status === 202 && !!r.body.taskId && r.body.manualOnly === true, r.text.slice(0, 120));
+  check('API refresh of a manual-only account → 202 no-op task (manualOnly)', r.status === 202 && !!r.body.taskId && r.body.manualOnly === true, r.text.slice(0, 120));
   const t1 = await waitTask(r.body.taskId);
   const [taskRow] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.body.taskId));
   check('task row reaches succeeded (type tracked-refresh, ref tracked_account)', t1.status === 'success' && taskRow!.type === 'tracked-refresh'

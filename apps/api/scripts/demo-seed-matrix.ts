@@ -1,9 +1,10 @@
 /**
- * 媒体矩阵 demo data + verification through the real HTTP API (no DB access, no mocks).
+ * 媒体矩阵 demo data + verification through the real HTTP API (no mocks; DB access only for the own posts below).
  *
  * Seeds (idempotent, everything recognisable by the `demo` prefix, Instagram only):
  * - 社交号管理: 16 Instagram social accounts (admin + demo-user) in 5 groups, tags, notes, varied statuses.
- * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them.
+ * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them, plus up to 10 own posts each
+ *   with likes/comments (帖子 tab; written with the refresh's own upsert, the only step that touches the DB directly).
  * - 追踪账号: 10 tracked Instagram accounts (categories, tags, favourites, weekly snapshots, posts).
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
  * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public).
@@ -263,7 +264,7 @@ if (CLEAN) {
 }
 
 // ---------------------------------------------------------------- seed: groups
-const counts = { groups: 0, accounts: 0, statDays: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0, personas: 0 };
+const counts = { groups: 0, accounts: 0, statDays: 0, ownPosts: 0, tracked: 0, snapshots: 0, posts: 0, comments: 0, replies: 0, templates: 0, personas: 0 };
 const groupId = new Map<string, string>();
 for (const o of ['admin', 'user'] as Owner[]) {
   const existing = (await must('GET', '/api/social/groups', tokenOf(o))).groups as any[];
@@ -307,6 +308,36 @@ for (const s of ACCOUNTS) {
     await must('POST', `/api/analytics/accounts/${acc.id}/stats`, tokenOf(s.owner), { day, ...values });
     counts.statDays++;
   }
+}
+
+// ---------------------------------------------------------------- seed: own posts (帖子 tab)
+// Own posts only ever come from the official API (account-stats refresh) and there is no Instagram connection
+// here, so this one step writes through the same upsert the refresh uses (DB, not HTTP). No permalinks: a made-up
+// instagram.com link would point at nobody's post.
+const { upsertAccountPosts } = await import('../src/modules/analytics/analytics.js');
+const CAPTIONS = ['demo: 周末出行清单', 'demo: 新品试用', 'demo: 幕后花絮', 'demo: 粉丝问答', 'demo: 本周精选', 'demo: 教程第 3 集', 'demo: 合作预告', 'demo: 日常记录'];
+/** Deterministic own posts of an account: one every 3 days back from the anchor, counters scaled by its followers. */
+function postsOf(a: AccSpec) {
+  if (!a.days) return [];
+  const n = Math.min(10, Math.floor(a.days / 3));
+  const followers = series(a).at(-1)?.followers ?? a.f0;
+  return Array.from({ length: n }, (_, i) => {
+    const kind = (hashStr(a.handle) + i) % 3;
+    const likes = Math.round(followers * (0.02 + 0.06 * rnd(`${a.handle}:pl`, i)));
+    return {
+      id: `demo-${a.handle}-${i}`, mediaType: kind === 1 ? 'VIDEO' : kind === 2 ? 'CAROUSEL_ALBUM' : 'IMAGE', productType: kind === 1 ? 'REELS' : 'FEED',
+      caption: CAPTIONS[(hashStr(a.handle) + i) % CAPTIONS.length]!, permalink: null,
+      publishedAt: new Date((ANCHOR_N - i * 3) * DAY + (9 + (i % 10)) * 3600_000).toISOString(),
+      // One post with likes hidden by the owner (the API then returns no like_count).
+      likes: i === 4 ? null : likes, comments: Math.round(likes * (0.02 + 0.05 * rnd(`${a.handle}:pc`, i))),
+    };
+  });
+}
+for (const s of ACCOUNTS) {
+  const want = postsOf(s);
+  if (!want.length) continue;
+  const r = await upsertAccountPosts(accByHandle.get(s.handle)!.id, 'instagram', want);
+  counts.ownPosts += r.inserted;
 }
 
 // ---------------------------------------------------------------- seed: tracked accounts
@@ -716,6 +747,24 @@ try {
     const fut = await http('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: utcDay((TODAY_N + 1) * DAY), followers: 1 });
     const emp = await http('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: d(5) });
     check('validation: future day 400 analytics.future_day, empty 400 analytics.stats_empty', codeOf(fut) === 'analytics.future_day' && codeOf(emp) === 'analytics.stats_empty', `${fut.text} ${emp.text}`);
+  }
+
+  // ---------------------------------------------------------------- 账号分析 → 帖子 (own posts)
+  {
+    const spec = ACCOUNTS.find((s) => s.handle === 'demo.fit.with.mia')!;
+    const exp = postsOf(spec);
+    const acc = accByHandle.get(spec.handle)!;
+    const p = await must('GET', `/api/analytics/accounts/${acc.id}/posts?limit=100`, DU.token);
+    const sum = (k: 'likes' | 'comments') => exp.reduce((s, x) => s + (x[k] ?? 0), 0);
+    check('帖子: demo-user sees the seeded posts of an own account, newest first, exact like/comment totals, hidden likes null',
+      p.total === exp.length && p.likes === sum('likes') && p.comments === sum('comments') && p.posts[0].externalId === exp[0]!.id
+        && p.posts.find((x: any) => x.externalId === exp[4]!.id)?.likes === null && p.apiPosts === true, JSON.stringify({ total: p.total, likes: p.likes, exp: sum('likes') }));
+    const adminAcc = accByHandle.get('demo.tokyo.bites')!;
+    const denied = await http('GET', `/api/analytics/accounts/${adminAcc.id}/posts`, DU.token);
+    const asAdmin = await http('GET', `/api/analytics/accounts/${acc.id}/posts`, ADMIN);
+    check('帖子 RBAC: demo-user on an admin account → 404, admin sees demo-user\'s posts', denied.status === 404 && asAdmin.status === 200 && asAdmin.body.total === exp.length);
+    const none = await must('GET', `/api/analytics/accounts/${accByHandle.get('demo.vintage.finds')!.id}/posts`, ADMIN);
+    check('帖子: account without stats history has no posts', none.total === 0);
   }
 
   // ---------------------------------------------------------------- 追踪账号

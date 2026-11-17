@@ -19,6 +19,8 @@ export interface PlatformCapabilities {
   profileStats: boolean;
   /** fetchAccountStats returns counters and/or day activity for 账号分析. */
   accountStats: boolean;
+  /** fetchOwnPosts lists the account's own recent posts with per-post counters (账号分析 → 帖子). Absent = no. */
+  accountPosts?: boolean;
   /** Post types besides feed the API can publish (absent = feed only); others fall back to the manual method. */
   postTypes?: PostType[];
 }
@@ -100,6 +102,18 @@ export interface AccountStats {
   missingScopes: string[];
 }
 
+/** One of the account's own posts with its current counters (null = not returned, e.g. likes hidden by the owner). */
+export interface OwnPost {
+  id: string;
+  mediaType: string | null;
+  productType: string | null;
+  caption: string | null;
+  permalink: string | null;
+  publishedAt: string | null;
+  likes: number | null;
+  comments: number | null;
+}
+
 export interface PublishInput {
   /** YouTube title / TikTok title; Instagram ignores it. */
   title?: string | null;
@@ -137,6 +151,8 @@ export interface CommentPage {
   comments: PlatformComment[];
   /** Opaque cursor for the next call (null = nothing more right now). */
   nextCursor: string | null;
+  /** Diagnostics for the task log (e.g. Instagram: Graph calls, posts read, whether a cap was hit). */
+  info?: Record<string, unknown>;
 }
 
 export interface PlatformAdapter {
@@ -158,6 +174,8 @@ export interface PlatformAdapter {
   fetchOwnProfile(a: Authed): Promise<OwnProfile>;
   /** Counters + day activity for `days` (UTC YYYY-MM-DD, oldest first). Scope gaps are reported in `missing`, not thrown. */
   fetchAccountStats(a: Authed, days: string[]): Promise<AccountStats>;
+  /** Own posts, newest first, at most `maxPages` platform pages (capability accountPosts). */
+  fetchOwnPosts?(a: Authed, maxPages: number): Promise<OwnPost[]>;
   /** Why the API cannot publish this input (coded message), or null when it can. */
   publishUnavailableReason(input: PublishInput, options: PlatformAppOptions): Promise<{ code: string; message: string } | null>;
   publish(a: Authed, input: PublishInput): Promise<PublishResult>;
