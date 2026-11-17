@@ -22,10 +22,18 @@ const pending = new Map<string, Pending>();
 const hash = (t: string) => createHash('sha256').update(t).digest('hex');
 /** Last ping → pong round trip per relay stream (CpRelay answers pings at once), ms. */
 const rtt = new WeakMap<Duplex, number>();
+/** Streams whose helper paces timed control frames (both sides sent X-Relay-Timed: 1, see CpRelay). */
+const timedStreams = new WeakSet<Duplex>();
+const TIMED_HEADER = 'x-relay-timed';
 
 /** API ↔ device round trip over this relay stream, null until the first pong. */
 export function relayRttMs(stream: Duplex): number | null {
   return rtt.get(stream) ?? null;
+}
+
+/** Whether this relay stream takes timed control frames ([u32 len][u16 dt][message]) instead of raw bytes. */
+export function relayTimed(stream: Duplex): boolean {
+  return timedStreams.has(stream);
 }
 
 /** Registers a token and waits for the helper's connections, one per channel. */
@@ -61,6 +69,8 @@ export function startRelayListener(log: { info(o: object, m: string): void; warn
       cb(true);
     },
   });
+  // An older helper doesn't announce timed framing and gets raw bytes.
+  wss.on('headers', (headers, req) => { if (req.headers[TIMED_HEADER] === '1') headers.push('X-Relay-Timed: 1'); });
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '/', 'http://x');
     const key = hash(String(req.headers['x-relay-token']));
@@ -71,6 +81,7 @@ export function startRelayListener(log: { info(o: object, m: string): void; warn
     p.take.delete(ch);
     if (!p.take.size) { pending.delete(key); clearTimeout(p.timer); }
     const stream = createWebSocketStream(ws);
+    if (req.headers[TIMED_HEADER] === '1') timedStreams.add(stream);
     let sentAt = 0;
     const ping = () => { sentAt = performance.now(); ws.ping(); };
     ws.on('pong', () => { if (sentAt) rtt.set(stream, Math.round(performance.now() - sentAt)); sentAt = 0; });
