@@ -47,6 +47,24 @@ function killStale(localPort: number): void {
   spawnSync('pkill', ['-f', '--', `-L ${forwardSpec(localPort)}`], { stdio: 'ignore' });
 }
 
+/**
+ * Absolute path of the ssh binary, looked up once. A plain name is searched in PATH here (skipping
+ * entries that fail with any error): the OS lookup inside spawn gives up on the first non-ENOENT
+ * error, so one broken PATH entry (e.g. a self-referencing node_modules/.bin symlink → ELOOP) used to
+ * break every tunnel.
+ */
+let sshBin: string | null = null;
+function sshPath(): string {
+  if (sshBin) return sshBin;
+  const name = config.SSH_PATH;
+  if (name.includes('/')) return (sshBin = name);
+  for (const dir of (process.env.PATH ?? '/usr/bin:/bin').split(path.delimiter)) {
+    const p = path.join(dir, name);
+    try { fs.accessSync(p, fs.constants.X_OK); return (sshBin = p); } catch { /* next entry */ }
+  }
+  return (sshBin = name);
+}
+
 function spawnTunnel(info: BitAdbInfo, localPort: number): ChildProcess {
   fs.mkdirSync(path.dirname(path.resolve(config.BITBROWSER_KNOWN_HOSTS)), { recursive: true });
   const args = [
@@ -64,16 +82,29 @@ function spawnTunnel(info: BitAdbInfo, localPort: number): ChildProcess {
     '-L', `${forwardSpec(localPort)}${info.targetHost}:${info.targetPort}`,
     `${info.sshUser}@${info.sshHost}`,
   ];
-  return spawn(config.SSH_PATH, args, {
+  return spawn(sshPath(), args, {
     stdio: ['ignore', 'ignore', 'pipe'],
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? os.homedir(), SSH_ASKPASS: askpassScript(), SSH_ASKPASS_REQUIRE: 'force', DISPLAY: ':0', CP_SSH_PASS: info.password },
   });
 }
 
-async function open(instanceId: string, client: BitBrowserClient, phoneId: string, localPort: number): Promise<void> {
+/** Stops the device's tunnel and waits (bounded) until its ssh has exited, so the port is free again. */
+async function closeAndWait(instanceId: string, timeoutMs = 3000): Promise<void> {
+  const t = tunnels.get(instanceId);
+  if (!t) return;
+  const exited = t.proc.exitCode !== null || t.proc.signalCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => { t.proc.once('exit', () => resolve()); setTimeout(resolve, timeoutMs); });
   close(instanceId);
-  if (await portOpen(localPort)) killStale(localPort);
+  await exited;
+}
+
+async function open(instanceId: string, client: BitBrowserClient, phoneId: string, localPort: number): Promise<void> {
+  // New credentials first: if the client is down or refuses, a still-working tunnel stays up (renewal
+  // happens RENEW_BEFORE_MS ahead, so the next monitor round simply retries).
   const info = await client.adbInfo(phoneId);
+  await closeAndWait(instanceId);
+  if (await portOpen(localPort)) killStale(localPort);
   const proc = spawnTunnel(info, localPort);
   let stderr = '';
   proc.stderr?.on('data', (b: Buffer) => { stderr = (stderr + b.toString()).slice(-500); });

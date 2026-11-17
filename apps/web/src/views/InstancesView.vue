@@ -304,19 +304,32 @@ async function loadPhones() {
 watch(kind, (k) => { if (k !== 'local') void loadSources() })
 watch(sourceId, () => void loadPhones())
 
-// source editor: BitBrowser = the client's local API address (host + port)
-const srcEdit = reactive({ open: false, id: null as string | null, name: '', host: '127.0.0.1', port: 54345, saving: false })
+// source editor: BitBrowser = the client's local API address (host + port), optional Local API Token
+// (write-only: empty keeps the saved one) and the client machine's time zone
+const srcEdit = reactive({
+  open: false, id: null as string | null, name: '', host: '127.0.0.1', port: 54345, saving: false,
+  apiKey: '', apiKeySet: false, clearKey: false, timeZone: undefined as string | undefined,
+})
+const TIME_ZONES: string[] = (() => { try { return (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone') } catch { return [] } })()
+const selectedSource = computed(() => kindSources.value.find((s) => s.id === sourceId.value))
 function editSource(s?: DeviceSource) {
   let host = '127.0.0.1'; let port = 54345
   if (s && typeof s.config.apiUrl === 'string') {
     try { const u = new URL(s.config.apiUrl); host = u.hostname; port = Number(u.port) || 80 } catch { /* keep defaults */ }
   }
-  Object.assign(srcEdit, { open: true, id: s?.id ?? null, name: s?.name ?? t('devices.ext.defaultName'), host, port })
+  Object.assign(srcEdit, {
+    open: true, id: s?.id ?? null, name: s?.name ?? t('devices.ext.defaultName'), host, port,
+    apiKey: '', apiKeySet: s?.config.apiKeySet === true, clearKey: false, timeZone: typeof s?.config.timeZone === 'string' ? s.config.timeZone : undefined,
+  })
 }
 async function saveSource() {
   srcEdit.saving = true
   try {
-    const body = { name: srcEdit.name.trim(), config: { apiUrl: `http://${srcEdit.host.trim()}:${srcEdit.port}` } }
+    const config: Record<string, unknown> = { apiUrl: `http://${srcEdit.host.trim()}:${srcEdit.port}` }
+    if (srcEdit.apiKey.trim()) config.apiKey = srcEdit.apiKey.trim()
+    else if (srcEdit.clearKey) config.apiKey = null
+    if (srcEdit.timeZone) config.timeZone = srcEdit.timeZone
+    const body = { name: srcEdit.name.trim(), config }
     const r = srcEdit.id
       ? await api<{ source: DeviceSource }>('PATCH', `/api/device-sources/${srcEdit.id}`, body)
       : await api<{ source: DeviceSource }>('POST', '/api/device-sources', { type: kind.value, ...body })
@@ -601,6 +614,10 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <a-select v-model:value="sourceId" :options="kindSources.map((s) => ({ value: s.id, label: `${s.name} · ${s.config.apiUrl ?? ''}` }))" :placeholder="t('devices.ext.noSource')" style="min-width: min(360px, 70vw)" />
             <a-button v-if="sourceId" size="small" @click="editSource(kindSources.find((s) => s.id === sourceId))">{{ t('common.edit') }}</a-button>
             <a-button size="small" type="dashed" @click="editSource()">{{ t('devices.ext.newSource') }}</a-button>
+            <a-tooltip v-if="selectedSource?.health && selectedSource.health.ok !== null"
+              :title="selectedSource.health.ok ? t('devices.ext.healthOkTip', { at: selectedSource.health.lastOkAt ? new Date(selectedSource.health.lastOkAt).toLocaleString(dateLocale()) : '—' }) : t('devices.ext.healthDownTip', { since: selectedSource.health.failingSince ? new Date(selectedSource.health.failingSince).toLocaleString(dateLocale()) : '—', error: selectedSource.health.lastError ?? '' })">
+              <a-tag :color="selectedSource.health.ok ? 'success' : 'error'">{{ selectedSource.health.ok ? t('devices.ext.healthOk') : t('devices.ext.healthDown') }}</a-tag>
+            </a-tooltip>
           </a-space>
         </a-form-item>
       </a-form>
@@ -702,6 +719,14 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         <a-col :span="16"><a-form-item :label="t('devices.ext.host')" :extra="t('devices.ext.hostHint')"><a-input v-model:value="srcEdit.host" placeholder="127.0.0.1" /></a-form-item></a-col>
         <a-col :span="8"><a-form-item :label="t('devices.ext.port')"><a-input-number v-model:value="srcEdit.port" :min="1" :max="65535" style="width: 100%" /></a-form-item></a-col>
       </a-row>
+      <a-form-item :label="t('devices.ext.apiKey')" :extra="t('devices.ext.apiKeyHint')">
+        <a-input-password v-model:value="srcEdit.apiKey" autocomplete="new-password" :disabled="srcEdit.clearKey"
+          :placeholder="srcEdit.apiKeySet ? t('devices.ext.apiKeyKeep') : t('common.optional')" />
+        <a-checkbox v-if="srcEdit.apiKeySet" v-model:checked="srcEdit.clearKey" style="margin-top: 6px">{{ t('devices.ext.apiKeyClear') }}</a-checkbox>
+      </a-form-item>
+      <a-form-item :label="t('devices.ext.timeZone')" :extra="t('devices.ext.timeZoneHint')">
+        <a-select v-model:value="srcEdit.timeZone" allow-clear show-search :placeholder="t('devices.ext.timeZoneDefault')" :options="TIME_ZONES.map((z) => ({ value: z, label: z }))" />
+      </a-form-item>
     </a-form>
     <a-button v-if="srcEdit.id" danger size="small" @click="deleteSource">{{ t('devices.ext.deleteSource') }}</a-button>
   </a-modal>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
@@ -7,6 +7,7 @@ import type { Rule } from 'ant-design-vue/es/form'
 import {
   AppstoreOutlined, EyeOutlined, ClusterOutlined, CheckOutlined, FileSearchOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MobileOutlined, PictureOutlined, ScheduleOutlined,
   SafetyOutlined, TeamOutlined, UserOutlined, FileTextOutlined, CalendarOutlined, DashboardOutlined, SettingOutlined, ControlOutlined, CommentOutlined, WarningOutlined, ApiOutlined, DatabaseOutlined, BookOutlined, RiseOutlined,
+  CloudOutlined, ShareAltOutlined, ReadOutlined, FireOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -28,10 +29,36 @@ const themeToggleLabel = computed(() => (isDark.value ? t('prefs.toLight') : t('
 function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 
 const collapsed = ref(false)
-const MENU_KEYS = ['dashboard', 'instances', 'library', 'proxies', 'social', 'tracked', 'media', 'content', 'publish', 'comments', 'tasks', 'settings', 'users', 'permissions', 'audit', 'analytics', 'connections', 'system', 'scripts', 'trending'] as const
+/**
+ * Sidebar: dashboard on top, then the product's four modules. An item key is also its route path
+ * and its `nav.<key>` label; admin-only items follow the route's `meta.admin`.
+ */
+const MENU_GROUPS: { key: 'devices' | 'matrix' | 'content' | 'system'; icon: Component; items: { key: string; icon: Component }[] }[] = [
+  { key: 'devices', icon: CloudOutlined, items: [
+    { key: 'instances', icon: MobileOutlined }, { key: 'connections', icon: ApiOutlined },
+    { key: 'library', icon: AppstoreOutlined }, { key: 'proxies', icon: ClusterOutlined },
+  ] },
+  { key: 'matrix', icon: ShareAltOutlined, items: [
+    { key: 'social', icon: TeamOutlined }, { key: 'analytics', icon: RiseOutlined },
+    { key: 'tracked', icon: EyeOutlined }, { key: 'comments', icon: CommentOutlined },
+  ] },
+  { key: 'content', icon: ReadOutlined, items: [
+    { key: 'media', icon: PictureOutlined }, { key: 'scripts', icon: BookOutlined }, { key: 'trending', icon: FireOutlined },
+    { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
+  ] },
+  { key: 'system', icon: ControlOutlined, items: [
+    { key: 'users', icon: UserOutlined }, { key: 'permissions', icon: SafetyOutlined }, { key: 'audit', icon: FileSearchOutlined },
+    { key: 'system', icon: DatabaseOutlined }, { key: 'settings', icon: SettingOutlined }, { key: 'tasks', icon: ScheduleOutlined },
+  ] },
+]
+/** Groups with only the items this user may open; a group left empty is dropped (no bare header). */
+const visibleGroups = computed(() => MENU_GROUPS
+  .map((g) => ({ ...g, items: g.items.filter((it) => auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) }))
+  .filter((g) => g.items.length > 0))
+const MENU_KEYS = ['dashboard', ...MENU_GROUPS.flatMap((g) => g.items.map((it) => it.key))]
 const selected = computed(() => [MENU_KEYS.find((k) => route.path.startsWith(`/${k}`)) ?? 'dashboard'])
-/** Sub-menus (cloud devices, administration) start open. */
-const openKeys = ref<string[]>(['devices', 'admin'])
+/** All module groups start open (sub-menu keys are prefixed: 'content' and 'system' are also item keys). */
+const openKeys = ref<string[]>(MENU_GROUPS.map((g) => `group-${g.key}`))
 
 onMounted(() => { store.connect(); void store.refresh() })
 onBeforeUnmount(() => store.disconnect())
@@ -127,97 +154,19 @@ async function savePassword() {
   <a-layout style="min-height: 100vh">
     <a-layout-sider v-model:collapsed="collapsed" collapsible breakpoint="lg" :collapsed-width="64" theme="dark">
       <div class="brand">{{ collapsed ? t('app.short') : t('app.title') }}</div>
-      <a-menu v-model:open-keys="openKeys" theme="dark" mode="inline" :selected-keys="selected">
+      <a-menu v-model:open-keys="openKeys" theme="dark" mode="inline" :inline-indent="16" :selected-keys="selected">
         <a-menu-item key="dashboard" @click="router.push('/dashboard')">
           <DashboardOutlined />
           <span>{{ t('nav.dashboard') }}</span>
         </a-menu-item>
-        <a-sub-menu key="devices">
-          <template #icon><MobileOutlined /></template>
-          <template #title>{{ t('nav.cloudDevices') }}</template>
-          <a-menu-item key="instances" @click="router.push('/instances')">
-            <MobileOutlined />
-            <span>{{ t('nav.instances') }}</span>
-          </a-menu-item>
-          <a-menu-item key="library" @click="router.push('/library')">
-            <AppstoreOutlined />
-            <span>{{ t('nav.library') }}</span>
-          </a-menu-item>
-          <a-menu-item key="connections" @click="router.push('/connections')">
-            <ApiOutlined />
-            <span>{{ t('nav.connections') }}</span>
+        <a-sub-menu v-for="g in visibleGroups" :key="`group-${g.key}`">
+          <template #icon><component :is="g.icon" /></template>
+          <template #title>{{ t(`nav.group.${g.key}`) }}</template>
+          <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
+            <component :is="it.icon" />
+            <span>{{ t(`nav.${it.key}`) }}</span>
           </a-menu-item>
         </a-sub-menu>
-        <a-menu-item v-if="auth.isAdmin" key="proxies" @click="router.push('/proxies')">
-          <ClusterOutlined />
-          <span>{{ t('nav.proxies') }}</span>
-        </a-menu-item>
-        <a-menu-item key="social" @click="router.push('/social')">
-          <TeamOutlined />
-          <span>{{ t('nav.social') }}</span>
-        </a-menu-item>
-        <a-menu-item key="tracked" @click="router.push('/tracked')">
-          <EyeOutlined />
-          <span>{{ t('nav.tracked') }}</span>
-        </a-menu-item>
-        <a-menu-item key="analytics" @click="router.push('/analytics')">
-          <RiseOutlined />
-          <span>{{ t('nav.analytics') }}</span>
-        </a-menu-item>
-        <a-menu-item key="media" @click="router.push('/media')">
-          <PictureOutlined />
-          <span>{{ t('nav.media') }}</span>
-        </a-menu-item>
-        <a-menu-item key="content" @click="router.push('/content')">
-          <FileTextOutlined />
-          <span>{{ t('nav.content') }}</span>
-        </a-menu-item>
-        <a-menu-item key="publish" @click="router.push('/publish')">
-          <CalendarOutlined />
-          <span>{{ t('nav.publish') }}</span>
-        </a-menu-item>
-        <a-menu-item key="comments" @click="router.push('/comments')">
-          <CommentOutlined />
-          <span>{{ t('nav.comments') }}</span>
-        </a-menu-item>
-        <a-menu-item key="scripts" @click="router.push('/scripts')">
-          <BookOutlined />
-          <span>{{ t('nav.scripts') }}</span>
-        </a-menu-item>
-        <a-menu-item key="trending" @click="router.push('/trending')">
-          <RiseOutlined />
-          <span>{{ t('nav.trending') }}</span>
-        </a-menu-item>
-        <a-menu-item key="tasks" @click="router.push('/tasks')">
-          <ScheduleOutlined />
-          <span>{{ t('nav.tasks') }}</span>
-        </a-menu-item>
-        <template v-if="auth.isAdmin">
-          <a-menu-item key="settings" @click="router.push('/settings')">
-            <SettingOutlined />
-            <span>{{ t('nav.settings') }}</span>
-          </a-menu-item>
-          <a-sub-menu key="admin">
-            <template #icon><ControlOutlined /></template>
-            <template #title>{{ t('nav.admin') }}</template>
-            <a-menu-item key="users" @click="router.push('/users')">
-              <UserOutlined />
-              <span>{{ t('nav.users') }}</span>
-            </a-menu-item>
-            <a-menu-item key="permissions" @click="router.push('/permissions')">
-              <SafetyOutlined />
-              <span>{{ t('nav.permissions') }}</span>
-            </a-menu-item>
-            <a-menu-item key="audit" @click="router.push('/audit')">
-              <FileSearchOutlined />
-              <span>{{ t('nav.audit') }}</span>
-            </a-menu-item>
-            <a-menu-item key="system" @click="router.push('/system')">
-              <DatabaseOutlined />
-              <span>{{ t('nav.system') }}</span>
-            </a-menu-item>
-          </a-sub-menu>
-        </template>
       </a-menu>
     </a-layout-sider>
     <a-layout>

@@ -3,7 +3,9 @@
  * client, STF and DB (no mocks).
  *
  * Default (free, nothing is powered on): source CRUD (admin only, tested before save, unreachable
- * address refused, in-use source can't be deleted), phone list, add, a phone that is off stays
+ * address refused, in-use source can't be deleted), Local API token (sealed, write-only, kept/cleared,
+ * sent as x-api-key), client time zone (expiry parsing), client health + fast failure on a dead
+ * client, phone list, add, a phone that is off stays
  * `stopped` (also after a few monitor rounds), duplicate add, proxy/settings refused, audit, delete
  * leaves the phone in BitBrowser untouched.
  *
@@ -21,7 +23,8 @@ import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
 import { eq } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { BitBrowserClient } from '../src/adapters/bitbrowser.js';
+import { BitBrowserClient, parseLocalTime } from '../src/adapters/bitbrowser.js';
+import { openSecret } from '../src/lib/secret-box.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const WS = API.replace(/^http/, 'ws');
@@ -81,6 +84,42 @@ try {
   check('duplicate source name → 409', r.status === 409 && r.body.code === 'sources.name_taken', r.text);
   r = await http('PATCH', `/api/device-sources/${sourceId}`, T, { config: { apiUrl: 'http://127.0.0.1:1' } });
   check('edit to an unreachable address → 400, old config kept', r.status === 400 && (await http('GET', '/api/device-sources', T)).body.sources.find((x: any) => x.id === sourceId)?.config.apiUrl === BIT_URL, r.text);
+
+  // ---- Local API token (secret: sealed, write-only) + client time zone + health
+  const KEY = `bbkey-${randomBytes(9).toString('hex')}`;
+  const srcOf = async () => (await http('GET', '/api/device-sources', T)).body.sources.find((x: any) => x.id === sourceId);
+  const stored = async () => (await db.select().from(schema.deviceSources).where(eq(schema.deviceSources.id, sourceId)))[0]!.config as Record<string, unknown>;
+  r = await http('PATCH', `/api/device-sources/${sourceId}`, T, { config: { apiUrl: BIT_URL, apiKey: KEY, timeZone: 'Asia/Shanghai' } });
+  // The local client has its token off, so it ignores x-api-key and the save (connection test) succeeds.
+  check('token + time zone saved (connection test passes with x-api-key sent)', r.status === 200 && r.body.source.config.apiKeySet === true && r.body.source.config.timeZone === 'Asia/Shanghai', r.text);
+  check('token never returned (no apiKey / apiKeyEnc in the API)', !JSON.stringify(r.body).includes(KEY) && !('apiKey' in r.body.source.config) && !('apiKeyEnc' in r.body.source.config));
+  const st = await stored();
+  check('token stored sealed (no plaintext in the DB row)', typeof st.apiKeyEnc === 'string' && !JSON.stringify(st).includes(KEY) && !('apiKey' in st));
+  r = await http('PATCH', `/api/device-sources/${sourceId}`, T, { config: { apiUrl: BIT_URL, timeZone: 'Asia/Shanghai' } });
+  check('edit without apiKey keeps the saved token', r.status === 200 && (await srcOf()).config.apiKeySet === true && openSecret(String((await stored()).apiKeyEnc)) === KEY);
+  r = await http('PATCH', `/api/device-sources/${sourceId}`, T, { config: { apiUrl: BIT_URL, timeZone: 'Mars/Olympus' } });
+  check('unknown time zone → 400 invalid_config, old config kept', r.status === 400 && r.body.code === 'sources.invalid_config' && (await srcOf()).config.timeZone === 'Asia/Shanghai', r.text);
+  r = await http('PATCH', `/api/device-sources/${sourceId}`, T, { config: { apiUrl: BIT_URL, apiKey: null } });
+  check('apiKey null clears the token; time zone omitted = removed', r.status === 200 && (await srcOf()).config.apiKeySet === false && !('apiKeyEnc' in (await stored())) && !('timeZone' in (await srcOf()).config), r.text);
+  const srcAuditRows = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'device_source.update'));
+  check('audit: the token never appears in device_source.update entries', srcAuditRows.length > 0 && !srcAuditRows.some((a) => JSON.stringify(a).includes(KEY)));
+  const h = (await srcOf()).health;
+  check('source health reported: client online with a recent successful call', h?.ok === true && !!h.lastOkAt && Date.now() - Date.parse(h.lastOkAt) < 120_000, JSON.stringify(h));
+  check('expiry parsing in the client\'s zone: 17:49:47 Asia/Shanghai = 09:49:47Z; New York summer/winter offsets',
+    parseLocalTime('2026-11-17 17:49:47', 'Asia/Shanghai')?.toISOString() === '2026-11-17T09:49:47.000Z' &&
+    parseLocalTime('2026-07-01 12:00:00', 'America/New_York')?.toISOString() === '2026-07-01T16:00:00.000Z' &&
+    parseLocalTime('2026-12-01 12:00:00', 'America/New_York')?.toISOString() === '2026-12-01T17:00:00.000Z' &&
+    parseLocalTime('2026-11-17 17:49:47')?.getTime() === new Date('2026-11-17T17:49:47').getTime() && parseLocalTime('17:49') === null);
+  {
+    const dead = new BitBrowserClient('http://127.0.0.1:1');
+    const e = await dead.list().then(() => null, (err) => err);
+    check('dead client: coded unreachable error, health turns offline', e?.code === 'bitbrowser.unreachable' && dead.health.ok === false && !!dead.health.failingSince, String(e?.code));
+    // Packets silently dropped (non-routable address): reads give up after the short read timeout, not 30 s.
+    const hole = new BitBrowserClient('http://10.255.255.1:54345');
+    const s0 = Date.now();
+    const e2 = await hole.running('x').then(() => null, (err) => err);
+    check('blackholed client: read fails in ≤ 10 s (short read timeout)', e2?.code === 'bitbrowser.unreachable' && Date.now() - s0 <= 10_000, `${Date.now() - s0} ms`);
+  }
   r = await http('GET', `/api/device-sources/${sourceId}/phones`, U);
   check('user: list phones → 403', r.status === 403);
   r = await http('GET', `/api/device-sources/${sourceId}/phones`, T);

@@ -135,15 +135,18 @@ function startExternalMonitor(log: FastifyBaseLogger): () => void {
       if (!rows.length) return;
       const [adbStates, stfDevices] = await Promise.all([adb.states(), stf.listDevices().catch(() => null)]);
       const stfBySerial = new Map((stfDevices ?? []).map((d) => [d.serial, d]));
+      /** Sources whose client is unreachable/unauthorized this round: their other phones are skipped (one failure per source per round). */
+      const down = new Set<string>();
       for (const inst of rows) {
-        if (BUSY.includes(inst.status)) continue;
+        if (BUSY.includes(inst.status) || down.has(inst.sourceId!)) continue;
         const patch: Partial<Instance> = {};
-        let src: Awaited<ReturnType<typeof sourceOf>>;
+        let src: Awaited<ReturnType<typeof sourceOf>> | undefined;
         let on: boolean;
         try {
           src = await sourceOf(inst);
           on = src.driver.power ? await src.driver.power.isOn(src.cfg, inst.externalId!) : true;
         } catch (err) {
+          if (src?.driver.health?.(src.cfg)?.ok === false) down.add(inst.sourceId!);
           log.warn({ err, instance: inst.name }, 'external phone: power state unavailable');
           continue;
         }

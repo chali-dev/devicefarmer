@@ -15,6 +15,8 @@ export interface SourcePhone {
   on: boolean | null;
 }
 
+export interface SourceHealth { ok: boolean | null; lastOkAt: string | null; failingSince: string | null; lastError: string | null; lastErrorCode: string | null }
+
 /** Where the API makes the phone's adbd reachable: ADB_DEVICE_HOST:<localPort> for STF. */
 export interface AdbTarget { instanceId: string; phoneId: string; localPort: number }
 
@@ -26,8 +28,15 @@ export interface AdbTarget { instanceId: string; phoneId: string; localPort: num
  */
 export interface SourceDriver<C = Record<string, unknown>> {
   type: SourceType;
-  /** Validates the source config entered in the UI (stored as jsonb; no secrets). */
+  /**
+   * Validates the source config entered in the UI (stored as jsonb). Fields named in `secrets` are
+   * sealed (secret-box) as `<field>Enc` before storage, never returned (only `<field>Set`), and
+   * handed back decrypted to the driver (modules/sources/index.ts).
+   */
   config: z.ZodType<C>;
+  secrets?: readonly string[];
+  /** What the platform currently knows about the source's reachability (null = no data). */
+  health?(cfg: C): SourceHealth | null;
   /** Connectivity check when a source is saved; returns how many phones it offers. */
   test(cfg: C): Promise<{ phones: number }>;
   listPhones(cfg: C): Promise<SourcePhone[]>;

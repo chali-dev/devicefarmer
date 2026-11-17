@@ -111,7 +111,7 @@
   - `expiresAt` 由 `parseLocalTime()` 按 **API 进程所在时区**解析客户端返回的本地时间字符串。**如果 Windows 和 Linux 时区不一致，续期时间就错了**：Windows 比 Linux 快 N 小时时，会晚 N 小时续期（隧道先断，下一轮再自愈，中间有一段中断）；反过来会提前续期，严重时每轮都续，白白消耗限速额度。返回的时间到底是 Windows 本地时间还是北京时间，[未验证]。
   - 进程退出时（`main.ts` 的 SIGTERM/SIGINT 都会走到 `process.exit`）会 SIGTERM 所有 ssh 子进程。用 systemd 管理时，`KillMode=control-group` 也会兜底。
   - 每台手机一个 ssh 进程。`SSH_ASKPASS_REQUIRE=force` 要求 OpenSSH ≥ 8.4，Ubuntu 22.04/24.04 满足。
-- `modules/sources/routes.ts`：**没有修改来源的接口**（只有 GET、POST、DELETE），而删除来源又要求它下面没有设备。所以客户端地址一旦变化，就得先删掉所有设备才能改。**这就是来源地址要固定为 `http://127.0.0.1:54345` 这种“隧道端点”的原因。**
+- `modules/sources/routes.ts`：有修改来源的接口 `PATCH /api/device-sources/:id`（保存前会先测试连接）。地址、Token、时区都可以直接改，不用先删设备。（更正：初稿写成了没有这个接口。）
 - 外部 adb 端口池 5700–5799 是全局的（所有来源共用 100 个）；同一台手机挂在两个来源下不会被拦截（唯一约束只是“来源 + 外部 id”）。
 - Linux 部署相关：`EXTERNAL_ADB_BIND` 默认是 127.0.0.1，而 STF 的 adb 容器通过 `ADB_DEVICE_HOST=host.docker.internal` 连接。**在 Linux Docker 上，`host.docker.internal` 默认不存在**，容器也连不到宿主机的 127.0.0.1（见 §5.2 配置）。`infra/stf/docker-compose.yml` 的 adb 服务没有 `extra_hosts` [已验证]。
 
@@ -129,7 +129,7 @@
 
 ### 4.3 建议的小改动（不在本次实现）
 
-**P0：上线前**
+**P0：上线前**（2026-11-17 已全部实现：`apiKey`、`killStale`、短超时 + 每轮跳过离线来源 + 健康状态、续期顺序、`timeZone`）
 
 1. **Local API Token**：来源配置增加可选的 `apiKey`。它是密钥，不能明文放在 `device_sources.config` 里，要用 `secret-box` 加密、只写不读（参照代理密码的做法）；`BitBrowserClient` 收到后加上 `x-api-key` 请求头；审计脱敏规则已经覆盖 `key`。测试脚本要覆盖“错误 Token 返回 403 且错误码清晰”（新增 `bitbrowser.unauthorized`）。
 2. **`killStale` 修复**：`spawnSync('pkill', ['-f', '--', pattern])`，在 Linux 和 macOS 上都实测一下。
@@ -142,7 +142,7 @@
 1. **monitor 批量化**：每个来源每轮只调一次 `/phone/list`（每页 100 条，50 台只需 1 个请求），只对状态有变化或不明确的手机再调 `/phone/running`。现在 50 台时一轮要约 55 s 的限速额度，用户的开关机请求要排在后面等。
 2. **用户操作优先**：`BitBrowserClient` 的队列分两个优先级，开机、关机、`adb/get` 插到 monitor 的查询前面。
 3. **来源健康状态显示出来**：`GET /api/device-sources` 返回健康状态；仪表盘和 `/api/health` 增加“比特来源”一项；离线时设备卡片标“来源离线”。
-4. **`PUT /api/device-sources/:id`**：允许修改 `name` / `apiUrl` / `apiKey`，保存前先测试连通性。
+4. ~~修改来源接口~~：已有 `PATCH /api/device-sources/:id`，`apiKey` / `timeZone` 已支持（2026-11-17）。
 5. **`envType`**：`list()` 分别查询 `envType: 1` 和 `envType: 0`，否则以后买的套餐模式手机不会出现在列表里（文档写明默认只查按时计费，实际行为[未验证]）。
 6. **费用防漏**：比特侧已开机、但平台里没有对应设备或设备已标“停止”时，在仪表盘提示。只提示，不自动关机。
 

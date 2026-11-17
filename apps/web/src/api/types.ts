@@ -85,7 +85,9 @@ export interface ProxyImportResult { dryRun: boolean; results: ProxyImportLine[]
 export const proxyLabel = (p: { label: string | null; host: string; port: number }) => p.label || `${p.host}:${p.port}`
 
 /** Device source (设备来源): where external phones come from, e.g. a BitBrowser client. */
-export interface DeviceSource { id: string; type: 'bitbrowser'; name: string; config: Record<string, unknown>; devices: number }
+export interface SourceHealth { ok: boolean | null; lastOkAt: string | null; failingSince: string | null; lastError: string | null; lastErrorCode: string | null }
+/** `config` never contains secrets: secret fields come back only as `<field>Set` (e.g. apiKeySet). */
+export interface DeviceSource { id: string; type: 'bitbrowser'; name: string; config: Record<string, unknown>; health: SourceHealth | null; devices: number }
 /** A phone offered by a device source (GET /api/device-sources/:id/phones). */
 export interface SourcePhone {
   id: string; name: string; detail: string | null; model: string | null; region: string | null; on: boolean | null

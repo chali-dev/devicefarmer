@@ -14,7 +14,7 @@ import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
-/** Publish scheduler (定时发布): calendar (month/week), pending queue, history. */
+/** Publish scheduler (定时发布): week calendar, pending queue, history. */
 const { t } = useI18n()
 const auth = useAuthStore()
 const store = useInstancesStore()
@@ -36,9 +36,6 @@ const filters = reactive({ q: '', platform: undefined as string | undefined, own
 const contentId = computed(() => (typeof route.query.contentId === 'string' ? route.query.contentId : undefined))
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`publish.status.${s}`)
-const BADGE: Record<PublishStatus, 'default' | 'processing' | 'success' | 'error' | 'warning'> = {
-  pending: 'default', scheduled: 'default', running: 'processing', awaiting_operator: 'warning', published: 'success', failed: 'error', cancelled: 'default',
-}
 
 function baseParams(): URLSearchParams {
   const p = new URLSearchParams()
@@ -50,13 +47,11 @@ function baseParams(): URLSearchParams {
 }
 
 // ---------------------------------------------------------------- calendar
-const mode = ref<'month' | 'week'>('month')
+// One week at a time (the owner wants the schedule by week, not by month).
 const cursor = ref<Dayjs>(dayjs())
 const calItems = ref<PublishTaskItem[]>([])
 const calLoading = ref(false)
-const range = computed(() => (mode.value === 'month'
-  ? { from: cursor.value.startOf('month').startOf('week'), to: cursor.value.endOf('month').endOf('week').add(1, 'millisecond') }
-  : { from: cursor.value.startOf('week'), to: cursor.value.endOf('week').add(1, 'millisecond') }))
+const range = computed(() => ({ from: cursor.value.startOf('week'), to: cursor.value.endOf('week').add(1, 'millisecond') }))
 const weekDays = computed(() => Array.from({ length: 7 }, (_, i) => range.value.from.add(i, 'day')))
 async function loadCalendar() {
   calLoading.value = true
@@ -67,8 +62,8 @@ async function loadCalendar() {
   } catch (e) { message.error(errorText(e)) } finally { calLoading.value = false }
 }
 const dayItems = (d: Dayjs) => calItems.value.filter((x) => dayjs(x.scheduledAt).isSame(d, 'day'))
-function shift(n: number) { cursor.value = cursor.value.add(n, mode.value === 'month' ? 'month' : 'week') }
-watch([cursor, mode], () => { if (tab.value === 'calendar') void loadCalendar() })
+function shift(n: number) { cursor.value = cursor.value.add(n, 'week') }
+watch(cursor, () => { if (tab.value === 'calendar') void loadCalendar() })
 
 // ---------------------------------------------------------------- queue / history
 const items = ref<PublishTaskItem[]>([])
@@ -157,28 +152,13 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
     <a-tabs v-model:active-key="tab">
       <a-tab-pane key="calendar" :tab="t('publish.tabs.calendar')">
         <a-space style="margin-bottom: 8px" wrap>
-          <a-radio-group v-model:value="mode" button-style="solid" size="small">
-            <a-radio-button value="month">{{ t('publish.month') }}</a-radio-button>
-            <a-radio-button value="week">{{ t('publish.week') }}</a-radio-button>
-          </a-radio-group>
           <a-button size="small" :aria-label="t('publish.prev')" @click="shift(-1)"><LeftOutlined /></a-button>
           <a-button size="small" @click="cursor = dayjs()">{{ t('publish.today') }}</a-button>
           <a-button size="small" :aria-label="t('publish.next')" @click="shift(1)"><RightOutlined /></a-button>
-          <b>{{ mode === 'month' ? cursor.format('YYYY-MM') : `${weekDays[0]!.format('YYYY-MM-DD')} – ${weekDays[6]!.format('MM-DD')}` }}</b>
+          <b>{{ `${weekDays[0]!.format('YYYY-MM-DD')} – ${weekDays[6]!.format('MM-DD')}` }}</b>
         </a-space>
         <a-spin :spinning="calLoading">
-          <a-calendar v-if="mode === 'month'" :value="cursor" :header-render="() => null" @select="(d: Dayjs) => (cursor = d)">
-            <template #dateCellRender="{ current }">
-              <div class="cell-list">
-                <div v-for="x in dayItems(current).slice(0, 3)" :key="x.id" class="ev" :title="`${x.account?.handle ?? ''} · ${x.content?.title ?? ''}`" @click.stop="openTask(x.id)">
-                  <a-badge :status="BADGE[x.status]" />
-                  {{ dayjs(x.scheduledAt).format('HH:mm') }} @{{ x.account?.handle }}
-                </div>
-                <div v-if="dayItems(current).length > 3" class="more" @click.stop="mode = 'week'; cursor = current">{{ t('publish.more', { n: dayItems(current).length - 3 }) }}</div>
-              </div>
-            </template>
-          </a-calendar>
-          <div v-else class="week">
+          <div class="week">
             <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="{ today: d.isSame(dayjs(), 'day') }">
               <div class="day-head">{{ d.format('ddd MM-DD') }}</div>
               <div v-for="x in dayItems(d)" :key="x.id" class="card" role="button" tabindex="0" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">

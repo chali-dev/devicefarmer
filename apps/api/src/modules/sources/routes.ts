@@ -8,11 +8,11 @@ import { badRequest, conflict, HttpError, notFound } from '../../lib/errors.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { enqueue } from '../instances/queue.js';
 import { publicInstances } from '../instances/repo.js';
-import { driverFor, getSource, SOURCE_TYPES } from './index.js';
+import { driverFor, getSource, mergeSecrets, openConfig, publicConfig, sealConfig, SOURCE_TYPES } from './index.js';
 
 /**
- * Device sources (设备来源) and adding their phones as devices. Admin only. Source configs hold no
- * secrets (BitBrowser: the client's local API address).
+ * Device sources (设备来源) and adding their phones as devices. Admin only. Secret config fields
+ * (BitBrowser: the client's Local API Token) are sealed and write-only (see sources/index.ts).
  */
 const Id = z.object({ id: z.string().uuid() });
 const Name = z.string().trim().min(1).max(60);
@@ -24,12 +24,20 @@ async function deviceCounts(ids: string[]): Promise<Map<string, number>> {
     .where(inArray(schema.instances.sourceId, ids)).groupBy(schema.instances.sourceId);
   return new Map(rows.map((r) => [r.id!, r.n]));
 }
-const publicSource = (s: DeviceSource, devices: number) => ({ id: s.id, type: s.type, name: s.name, config: s.config, devices, createdAt: s.createdAt, updatedAt: s.updatedAt });
+function publicSource(s: DeviceSource, devices: number) {
+  const driver = driverFor(s.type);
+  let health = null;
+  try { health = driver.health?.(driver.config.parse(openConfig(driver, s.config))) ?? null; } catch { /* config unreadable: no health */ }
+  return { id: s.id, type: s.type, name: s.name, config: publicConfig(driver, s.config), health, devices, createdAt: s.createdAt, updatedAt: s.updatedAt };
+}
 
-/** Parses the config for the type and checks the source answers; 400 with the reason otherwise. */
-async function validConfig(type: DeviceSource['type'], raw: unknown) {
+/**
+ * Parses the config for the type (secret fields merged with `stored` on edits) and checks the source
+ * answers; 400 with the reason otherwise. Returns the form to store (secrets sealed).
+ */
+async function validConfig(type: DeviceSource['type'], raw: Record<string, unknown>, stored?: unknown) {
   const driver = driverFor(type);
-  const parsed = driver.config.safeParse(raw);
+  const parsed = driver.config.safeParse(mergeSecrets(driver, raw, stored));
   if (!parsed.success) throw badRequest(`配置不正确：${parsed.error.issues[0]?.message ?? ''}`, 'sources.invalid_config', { error: parsed.error.issues[0]?.message ?? '' });
   try {
     await driver.test(parsed.data);
@@ -37,7 +45,7 @@ async function validConfig(type: DeviceSource['type'], raw: unknown) {
     const msg = (err as Error).message.slice(0, 200);
     throw badRequest(`连接测试失败，未保存：${msg}`, 'sources.test_failed', { error: msg });
   }
-  return parsed.data as Record<string, unknown>;
+  return sealConfig(driver, parsed.data as Record<string, unknown>);
 }
 
 /** Free local port for an external phone's adb connection (separate range from local containers). */
@@ -85,8 +93,8 @@ export const sourceRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!src) throw notFound('来源不存在', 'sources.not_found');
     const set: Partial<DeviceSource> = {};
     if (req.body.name !== undefined) set.name = req.body.name;
-    if (req.body.config !== undefined) set.config = await validConfig(src.type, req.body.config);
-    if (req.audit) req.audit.extra = { from: { name: src.name, config: src.config } };
+    if (req.body.config !== undefined) set.config = await validConfig(src.type, req.body.config, src.config);
+    if (req.audit) req.audit.extra = { from: { name: src.name, config: publicConfig(driverFor(src.type), src.config) } };
     const [row] = Object.keys(set).length
       ? await db.update(schema.deviceSources).set(set).where(eq(schema.deviceSources.id, src.id)).returning()
         .catch((err) => { if (isUniqueViolation(err, 'device_sources_name_unique')) throw conflict('来源名称已存在', 'sources.name_taken', { name: req.body.name ?? '' }); throw err; })
