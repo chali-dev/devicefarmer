@@ -1286,8 +1286,8 @@ const zhCN = {
     fieldMedia: '素材（{n}）',
     addMedia: '从素材库选择',
     uploadMedia: '上传',
-    uploadPublic: '上传为公共素材',
-    uploadPublicHint: '这是其他用户的内容：你上传的素材会存为公共素材（所有用户可见），内容只能使用所有者自己的素材或公共素材。',
+    uploadOwnerHint: '将上传到 {user} 的个人素材',
+    uploadOwnerLabel: '{user} 的个人素材',
     uploadOtherOwner: '内容只能使用所有者自己的素材或公共素材：请让所有者上传，或先在素材库上传为公共素材',
     uploadOverLimit: '一条内容最多 {max} 个素材，另外 {n} 个已上传到「我的素材」但未加入',
     uploadFailed: '素材「{name}」处理失败：{error}',
@@ -2710,6 +2710,7 @@ const zhCN = {
     media: {
       not_found: '素材不存在',
       public_admin_only: '仅管理员可以管理公共素材',
+      owner_admin_only: '仅管理员可以上传到其他用户的个人素材',
       admin_only: '仅管理员可以查看其他用户的素材',
       unsupported_type: '不支持的文件类型（支持：{exts}）',
       mime_mismatch: '文件类型（{mime}）与扩展名不符',

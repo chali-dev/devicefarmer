@@ -392,15 +392,16 @@ const personaText = computed(() => [form.title, ...Object.values(form.texts), ..
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
 /**
- * 上传: the editor uploads into the caller's personal media; a content may only use its owner's private media
- * (content.media_not_usable), so it is blocked with a hint on someone else's content. New assets are appended in order
+ * 上传: the editor uploads into the content owner's personal media (an admin on someone else's content via ownerId);
+ * a content may only use its owner's private media (content.media_not_usable), so non-admins are blocked with a hint there. New assets are appended in order
  * while they are still processing (the API accepts that; publishing waits for ready: publish.media_not_ready) and are
  * polled until the media-process task has finished.
  */
 const MAX_MEDIA = 20
 const otherOwner = computed(() => Boolean(targetOwner.value && targetOwner.value !== myId.value))
-/** Admin on another user's content: uploads go to public media (usable by every content); others are blocked. */
-const uploadScope = computed<'mine' | 'public'>(() => (otherOwner.value && auth.isAdmin ? 'public' : 'mine'))
+/** Admin on another user's content: uploads go to that owner's personal media (ownerId); others are blocked. */
+const uploadOwner = computed(() => (otherOwner.value && auth.isAdmin ? targetOwner.value : undefined))
+const uploadOwnerName = computed(() => editing.value?.ownerName ?? users.value.find((u) => u.id === targetOwner.value)?.username ?? null)
 const uploadBlocked = computed(() => (otherOwner.value && !auth.isAdmin ? t('content.uploadOtherOwner') : ''))
 function onUploaded(items: ContentMedia[]) {
   const fresh = items.filter((p) => !form.media.some((m) => m.id === p.id))
@@ -779,9 +780,9 @@ async function submitBatchForm() {
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
         <a-space style="margin-top: 8px" wrap>
           <a-button :disabled="form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :scope="uploadScope" @uploaded="onUploaded" />
+          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
         </a-space>
-        <div v-if="uploadBlocked || uploadScope === 'public'" class="muted small media-hint">{{ uploadBlocked || t('content.uploadPublicHint') }}</div>
+        <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
         <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
       </a-form-item>
     </a-form>
