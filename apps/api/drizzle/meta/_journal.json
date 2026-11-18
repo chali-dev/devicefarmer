@@ -246,6 +246,13 @@
       "when": 1794985606980,
       "tag": "0034_account_lang",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794987059171,
+      "tag": "0035_account_feed",
+      "breakpoints": true
     }
   ]
 }

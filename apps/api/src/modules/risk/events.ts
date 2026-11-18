@@ -13,7 +13,7 @@ export interface RiskEventInput {
   instance?: { id: string; name: string } | null;
   socialAccountId?: string | null;
   trackedAccountId?: string | null;
-  source: 'collector' | 'account_check';
+  source: 'collector' | 'account_check' | 'feed' | 'reply';
   code: string;
   detail?: string | null;
   userId?: string | null;

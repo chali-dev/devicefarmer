@@ -6,11 +6,13 @@ import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
-import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
 import {
   type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentStatus, type CommentTemplate,
 } from '../api/types'
 import CommentDrawer from '../components/comments/CommentDrawer.vue'
+import FoldToggle from '../components/comments/FoldToggle.vue'
+import EvidenceModal from '../components/feed/EvidenceModal.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -38,7 +40,7 @@ const tab = computed<Tab>({
 })
 /** `approved` / `pending_review` only on rows older than the removal of the approval step. */
 const QUEUE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
-const HISTORY: CommentReplyStatus[] = ['sent', 'failed', 'rejected', 'cancelled']
+const HISTORY: CommentReplyStatus[] = ['sent', 'dry_run', 'failed', 'rejected', 'cancelled']
 const STATUSES: CommentStatus[] = ['new', 'read', 'replied', 'hidden', 'ignored']
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const errText = (code: string | null, raw: string | null, platform?: string) => (code ? codeText(code, { platform: platform ?? '' }, raw ?? code) : raw ?? '')
@@ -48,7 +50,7 @@ const posts = ref<{ postId: string; postUrl: string | null; n: number; title: st
 const templates = ref<CommentTemplate[]>([])
 const filters = reactive({
   accountId: (typeof route.query.account === 'string' ? route.query.account : undefined) as string | undefined,
-  postId: undefined as string | undefined, status: (typeof route.query.status === 'string' ? route.query.status : undefined) as CommentStatus | undefined, source: undefined as 'api' | 'manual' | undefined, q: '',
+  postId: undefined as string | undefined, status: (typeof route.query.status === 'string' ? route.query.status : undefined) as CommentStatus | undefined, source: undefined as 'api' | 'manual' | 'device' | undefined, q: '',
 })
 const account = computed(() => accounts.value.find((a) => a.id === filters.accountId) ?? null)
 
@@ -229,6 +231,10 @@ const drawerOpen = ref(false)
 const drawerId = ref<string | null>(null)
 const drawer = ref<InstanceType<typeof CommentDrawer>>()
 function openComment(id: string) { drawerId.value = id; drawerOpen.value = true }
+/** Screenshot of a device send / test-mode run. */
+const evidenceOpen = ref(false)
+const evidenceId = ref<string | null>(null)
+function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = true }
 function changed() { void load(); void loadAccounts() }
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -306,6 +312,7 @@ onMounted(() => {
               <span class="muted">{{ fmt(m.publishedAt ?? m.createdAt) }}</span>
               <StatusTag kind="comment" :status="m.status" />
               <a-tag v-if="m.source === 'manual'">{{ t('comments.sourceManual') }}</a-tag>
+              <a-tag v-else-if="m.source === 'device'" color="cyan">{{ t('comments.sourceDevice') }}</a-tag>
               <span v-if="m.likeCount" class="muted">{{ t('comments.likes', { n: m.likeCount }) }}</span>
               <a v-if="m.id === c.id && m.postUrl" :href="m.postUrl" target="_blank" rel="noopener noreferrer">{{ t('comments.viewPost') }}</a>
               <span v-if="m.id === c.id && m.publishTask?.title" class="muted">{{ t('comments.publishedContent', { title: m.publishTask.title }) }}</span>
@@ -326,12 +333,11 @@ onMounted(() => {
               <a-button v-if="m.source === 'manual'" size="small" type="link" danger @click="remove(m)">{{ t('common.delete') }}</a-button>
             </a-space>
             <template v-if="m.id === c.id && c.children?.length">
-              <button v-for="info in [threadInfo(c)]" :key="c.id" type="button" class="thread-toggle" :aria-expanded="expanded.has(c.id)" @click="toggleThread(c.id)">
-                <DownOutlined class="chev" :class="{ open: expanded.has(c.id) }" />
-                <span>{{ expanded.has(c.id) ? t('comments.collapseReplies') : t('comments.expandReplies', { n: info.n }) }}</span>
-                <a-tag v-if="info.fresh" color="blue" class="badge">{{ t('comments.newReplies', { n: info.fresh }) }}</a-tag>
-                <a-tag v-if="info.pending" color="orange" class="badge">{{ t('comments.pendingReplies', { n: info.pending }) }}</a-tag>
-              </button>
+              <FoldToggle v-for="info in [threadInfo(c)]" :key="c.id" :open="expanded.has(c.id)"
+                :label="expanded.has(c.id) ? t('comments.collapseReplies') : t('comments.expandReplies', { n: info.n })" @toggle="toggleThread(c.id)">
+                <a-tag v-if="info.fresh" color="blue">{{ t('comments.newReplies', { n: info.fresh }) }}</a-tag>
+                <a-tag v-if="info.pending" color="orange">{{ t('comments.pendingReplies', { n: info.pending }) }}</a-tag>
+              </FoldToggle>
             </template>
           </div>
         </div>
@@ -345,10 +351,21 @@ onMounted(() => {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'account'"><PlatformTag :platform="record.platform" /> @{{ record.account?.handle ?? '—' }}</template>
           <template v-else-if="column.key === 'comment'">
-            <div class="muted small">{{ record.comment?.authorName }}</div>
-            <div class="ellipsis2">{{ record.comment?.text }}</div>
+            <template v-if="record.comment">
+              <div class="muted small">{{ record.comment.authorName }}</div>
+              <div class="ellipsis2">{{ record.comment.text }}</div>
+            </template>
+            <template v-else-if="record.post">
+              <div class="muted small">{{ t('feed.onPost') }}</div>
+              <a v-if="record.post.permalink" class="ellipsis2" :href="record.post.permalink" target="_blank" rel="noopener noreferrer">{{ record.post.caption || record.post.permalink }}</a>
+              <div v-else class="ellipsis2">{{ record.post.caption }}</div>
+            </template>
           </template>
-          <template v-else-if="column.key === 'reply'"><a class="ellipsis2" @click="openComment(record.commentId)">{{ record.text }}</a></template>
+          <template v-else-if="column.key === 'reply'">
+            <a v-if="record.commentId" class="ellipsis2" @click="openComment(record.commentId)">{{ record.text }}</a>
+            <span v-else class="ellipsis2">{{ record.text }}</span>
+            <a v-if="record.hasEvidence" class="small" @click="showEvidence(record.id)">{{ t('feed.evidence') }}</a>
+          </template>
           <template v-else-if="column.key === 'status'">
             <StatusTag kind="commentReply" :status="record.status" />
             <div v-if="record.method" class="muted small">{{ t(`comments.method.${record.method}`) }}</div>
@@ -384,6 +401,7 @@ onMounted(() => {
   </PageContainer>
 
   <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" :templates="templates" @changed="changed" />
+  <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 
   <a-modal v-model:open="manualOpen" :title="t('comments.manualTitle')" :width="MODAL_WIDTH.md" :confirm-loading="manualBusy" @ok="saveManual">
     <a-form layout="vertical">
@@ -443,16 +461,6 @@ onMounted(() => {
 .msg { padding: 4px 0; }
 .msg.child { margin-left: 24px; border-top: 1px dashed var(--cp-border-secondary); }
 .msg.hidden { opacity: 0.6; }
-.thread-toggle {
-  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; margin-top: 2px; padding: 2px 6px;
-  border: 0; border-radius: var(--cp-radius); background: transparent; color: var(--cp-primary); font: inherit; font-size: 12px;
-  text-align: start; cursor: pointer;
-}
-.thread-toggle:hover { background: var(--cp-bg-hover); }
-.thread-toggle:focus-visible { outline: 2px solid var(--cp-primary); outline-offset: 1px; }
-.thread-toggle .chev { transition: transform 0.2s; }
-.thread-toggle .chev.open { transform: rotate(180deg); }
-.thread-toggle .badge { margin: 0; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
 .text { white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .reply-line { display: flex; gap: 6px; align-items: center; font-size: 12px; min-width: 0; }

@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import PageContainer from '../components/common/PageContainer.vue'
 import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vue'
 import CommentRulesSettings from '../components/risk/CommentRulesSettings.vue'
+import DeviceCommentSettings from '../components/risk/DeviceCommentSettings.vue'
 import RiskDevices from '../components/risk/RiskDevices.vue'
 import RiskEvents from '../components/risk/RiskEvents.vue'
 import RiskPaceSettings from '../components/risk/RiskPaceSettings.vue'
@@ -23,6 +24,7 @@ const SECTIONS: { key: string; component: Component }[] = [
   { key: 'pace', component: RiskPaceSettings },
   { key: 'limits', component: SocialLimitsSettings },
   { key: 'comments', component: CommentRulesSettings },
+  { key: 'deviceComments', component: DeviceCommentSettings },
   { key: 'events', component: RiskEvents },
 ]
 const tab = computed<string>({

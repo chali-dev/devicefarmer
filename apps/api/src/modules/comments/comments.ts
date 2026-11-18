@@ -1,12 +1,21 @@
 import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { UnrecoverableError } from 'bullmq';
-import { and, eq, gte, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
-import type { Comment, CommentReplyStatus, CommentTask, SocialAccount, Task } from '../../db/schema.js';
+import type { Comment, CommentReplyStatus, CommentTask, Instance, ReplyEvidence, SocialAccount, Task } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { sendIgComment, ReplyDeviceError } from '../feed/device.js';
+import { commentKey, pkOfShortcode, shortcodeOf, shortcodeOfUrl } from '../feed/ig-ui.js';
+import { getInstance } from '../instances/repo.js';
+import { recordRiskEvent } from '../risk/events.js';
+import { activeStorage } from '../settings/storage.js';
+import { platformById } from '../social/platforms.js';
 import { visibleAccount, type Tx } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
+import { CollectorDefer, deviceHalt, haltDevice, onDeviceResumed, withDevice } from '../tracked/collector.js';
 
 /**
  * Comments & engagement (评论互动, P5).
@@ -48,11 +57,20 @@ export interface CommentRules {
   /** Same reply text at most this many times per account within the window. */
   duplicateMax: number;
   duplicateWindowHours: number;
-  /** Hand-overs to an operator (sends) per account per rolling hour. */
+  /** Sends (device sends, test-mode runs and hand-overs to an operator) per account per rolling hour. */
   sendsPerHour: number;
+  /** 云手机发评论: device sends + test-mode runs per account per rolling 24 h. */
+  sendsPerDay: number;
+  /** 云手机发评论: minimum seconds between two device sends / test runs of one account. */
+  minGapSec: number;
+  /**
+   * 测试模式 (default ON): the phone opens the post, the comments, the reply field and pastes the text, then
+   * clears it and goes back without tapping 发布; the reply ends as `dry_run` with a screenshot.
+   */
+  testMode: boolean;
 }
 const RULES_KEY = 'comments.rules';
-export const DEFAULT_RULES: CommentRules = { duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20 };
+export const DEFAULT_RULES: CommentRules = { duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20, sendsPerDay: 50, minGapSec: 60, testMode: true };
 
 export async function getRules(exec: Exec = db): Promise<CommentRules> {
   const [row] = await exec.select().from(schema.settings).where(eq(schema.settings.key, RULES_KEY));
@@ -62,6 +80,9 @@ export async function getRules(exec: Exec = db): Promise<CommentRules> {
     duplicateMax: int(v.duplicateMax, DEFAULT_RULES.duplicateMax),
     duplicateWindowHours: int(v.duplicateWindowHours, DEFAULT_RULES.duplicateWindowHours),
     sendsPerHour: int(v.sendsPerHour, DEFAULT_RULES.sendsPerHour),
+    sendsPerDay: int(v.sendsPerDay, DEFAULT_RULES.sendsPerDay),
+    minGapSec: typeof v.minGapSec === 'number' && Number.isInteger(v.minGapSec) && v.minGapSec >= 0 ? v.minGapSec : DEFAULT_RULES.minGapSec,
+    testMode: typeof v.testMode === 'boolean' ? v.testMode : DEFAULT_RULES.testMode,
   };
 }
 
@@ -327,8 +348,8 @@ export async function cancelReply(user: AuthUser, r: CommentTask): Promise<Comme
   return cur;
 }
 
-async function markReplied(commentId: string): Promise<void> {
-  await db.update(C).set({ status: 'replied' }).where(eq(C.id, commentId));
+async function markReplied(commentId: string | null): Promise<void> {
+  if (commentId) await db.update(C).set({ status: 'replied' }).where(eq(C.id, commentId));
 }
 
 /** Operator records the outcome of a manual reply. */
@@ -352,29 +373,140 @@ class ReplyCheckError extends UnrecoverableError {
 }
 type ReplyPayload = { commentTaskId: string; round?: number };
 
+// ---------------------------------------------------------------- 云手机发评论 (device sending)
+
+/**
+ * How a reply is sent. `device` (owner decision 2026-11-18, no approval): an Instagram account linked to a cloud
+ * phone, the post locatable (permalink / media pk) and, for a reply, the comment's author + text known (a
+ * top-level comment; nested replies are collapsed in the app). Anything else → `manual` (handed to an
+ * operator, `reason` = why not the phone).
+ */
+type ReplyPlan =
+  | { kind: 'device'; inst: Instance; acc: SocialAccount; shortcode: string; postPk: string; replyTo: { author: string; text: string; key: string } | null }
+  | { kind: 'manual'; reason: string };
+
+async function planReply(r: CommentTask): Promise<ReplyPlan> {
+  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, r.accountId));
+  if (!acc) return { kind: 'manual', reason: 'comment.account_gone' };
+  if (!platformById(acc.platform)?.deviceCheck || !isPlatformEnabled(acc.platform)) return { kind: 'manual', reason: 'comment.device_unsupported_platform' };
+  if (!acc.instanceId) return { kind: 'manual', reason: 'comment.device_no_device' };
+  const inst = await getInstance(acc.instanceId);
+  if (!inst) return { kind: 'manual', reason: 'comment.device_no_device' };
+  const P = schema.socialAccountPosts;
+  const postLink = async (externalId: string | null) => {
+    if (!externalId) return null;
+    const [p] = await db.select({ permalink: P.permalink, source: P.source }).from(P).where(and(eq(P.socialAccountId, acc.id), eq(P.externalId, externalId)));
+    return shortcodeOfUrl(p?.permalink) ?? (/^\d{10,}$/.test(externalId) ? shortcodeOf(externalId) : null);
+  };
+  let shortcode: string | null = null;
+  let replyTo: { author: string; text: string; key: string } | null = null;
+  if (r.postId) {
+    const [p] = await db.select().from(P).where(and(eq(P.id, r.postId), eq(P.socialAccountId, acc.id)));
+    if (!p) return { kind: 'manual', reason: 'comment.post_gone' };
+    shortcode = shortcodeOfUrl(p.permalink) ?? (p.source === 'device' ? shortcodeOf(p.externalId) : null);
+  } else if (r.commentId) {
+    const [c] = await db.select().from(C).where(eq(C.id, r.commentId));
+    if (!c) return { kind: 'manual', reason: 'comment.comment_gone' };
+    if (c.parentExternalId) return { kind: 'manual', reason: 'comment.device_nested_reply' };
+    const author = (c.authorHandle ?? (c.source === 'device' ? c.authorName : null))?.replace(/^@/, '').trim();
+    if (!author) return { kind: 'manual', reason: 'comment.device_no_author' };
+    shortcode = shortcodeOfUrl(c.postUrl) ?? await postLink(c.externalPostId);
+    const pk = shortcode ? pkOfShortcode(shortcode) : null;
+    if (pk) replyTo = { author, text: c.text, key: c.source === 'device' ? c.externalId : commentKey(pk, author, c.text) };
+  }
+  const postPk = shortcode ? pkOfShortcode(shortcode) : null;
+  if (!shortcode || !postPk) return { kind: 'manual', reason: 'comment.device_no_post_link' };
+  return { kind: 'device', inst, acc, shortcode, postPk, replyTo };
+}
+
+/** Device sends / test runs of the account (rate rules of 云手机发评论). */
+const DEVICE_DONE = sql`${R.method} = 'device' and ${R.status} in ('sent', 'dry_run')`;
+const doneAt = sql<Date>`coalesce(${R.sentAt}, ${R.handedAt})`;
+
+/** The reply's next round at `at` (pace / rate limit): back to scheduled, a new send task. Never dropped. */
+async function deferRound(r: CommentTask, at: Date, code: string, message: string, ctx: TaskContext<ReplyPayload>, data: Record<string, unknown> = {}) {
+  const [n] = await db.update(R).set({ status: 'scheduled', scheduledAt: at, round: r.round + 1, taskId: null })
+    .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id))).returning();
+  await replyLog(r, { level: 'warn', action: 'blocked', code, message: `${message}, deferred`, data: { ...data, retryAt: at.toISOString() }, taskId: ctx.task.id });
+  await ctx.log('warn', code === 'comment.rate_limited' ? 'rate limit reached: deferred to a new round' : `${message}, deferred`, { code, retryAt: at.toISOString() });
+  const next = n ? await scheduleSend(n, null) : null;
+  return { deferred: true, code, retryAt: at.toISOString(), nextTaskId: next?.taskId ?? null };
+}
+
+/**
+ * Parks a reply while its phone is halted (风控): stays `scheduled` without a task (error_code
+ * comment.device_halted); resuming the device re-queues it (resumeParkedReplies). Not sent, not dropped.
+ */
+async function park(r: CommentTask, ctx: TaskContext<ReplyPayload>, instName: string) {
+  await db.update(R).set({ status: 'scheduled', taskId: null, errorCode: 'comment.device_halted', error: null })
+    .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id)));
+  await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.device_halted', message: 'device halted (risk control): waiting until an admin resumes it', data: { device: instName }, taskId: ctx.task.id });
+  await ctx.log('warn', 'device halted (risk control): waiting until an admin resumes it', { device: instName });
+  return { parked: true, code: 'comment.device_halted' };
+}
+
+/** After 恢复 on the 风控 page: every reply parked for that phone gets a new round now. */
+export async function resumeParkedReplies(instanceId: string): Promise<number> {
+  const rows = await db.select({ r: R }).from(R).innerJoin(schema.socialAccounts, eq(schema.socialAccounts.id, R.accountId))
+    .where(and(eq(schema.socialAccounts.instanceId, instanceId), eq(R.status, 'scheduled'), isNull(R.taskId), eq(R.errorCode, 'comment.device_halted')));
+  for (const { r } of rows) {
+    const [n] = await db.update(R).set({ round: r.round + 1, errorCode: null, scheduledAt: null })
+      .where(and(eq(R.id, r.id), eq(R.status, 'scheduled'), isNull(R.taskId))).returning();
+    if (n) { await replyLog(n, { action: 'resumed', message: 'device resumed: queued again' }); await scheduleSend(n, null); }
+  }
+  return rows.length;
+}
+onDeviceResumed(resumeParkedReplies);
+
+async function storeEvidence(r: CommentTask, shot: Buffer | null, inputText: string, excerpt: string): Promise<ReplyEvidence> {
+  const ev: ReplyEvidence = { at: new Date().toISOString(), inputText: inputText.slice(0, 1000), excerpt };
+  if (!shot) return ev;
+  try {
+    const storage = await activeStorage();
+    const key = `evidence/replies/${r.id}-r${r.round}.png`;
+    await storage.put(key, Readable.from([shot]), shot.length, 'image/png');
+    return { ...ev, storage: storage.kind, key };
+  } catch { return ev; }
+}
+
 async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
   const id = ctx.payload.commentTaskId ?? ctx.task.refId!;
   const rules = await getRules();
+  const [cur0] = await db.select().from(R).where(eq(R.id, id));
+  const plan: ReplyPlan = cur0 ? await planReply(cur0) : { kind: 'manual', reason: 'comment.reply_gone' };
+  const halted = plan.kind === 'device' ? await deviceHalt(plan.inst.id) : null;
   // Claim + rate limit under a per-account lock: concurrent sends of one account serialize.
   const claim = await db.transaction(async (tx) => {
     const [r] = await tx.select().from(R).where(eq(R.id, id)).for('update');
     if (!r) return { kind: 'gone' as const };
-    // `sending` of this same task = an earlier attempt was cut off before the hand-over (nothing is ever sent automatically).
+    // `sending` of this same task = an earlier attempt was cut off before the hand-over / the paste.
     // `approved` = an old row queued before the approval step was removed.
     if (r.taskId !== ctx.task.id || !['approved', 'scheduled', 'sending'].includes(r.status)) return { kind: 'skip' as const, r };
+    if (halted) return { kind: 'park' as const, r };
     await lockKey(tx, `comment-send:${r.accountId}`);
-    const hourAgo = new Date(Date.now() - 3600_000);
+    const now = Date.now();
+    const hourAgo = new Date(now - 3600_000);
     const recent = await tx.select({ at: sql<Date>`coalesce(${R.sentAt}, ${R.handedAt}, ${R.updatedAt})` }).from(R).where(and(
       eq(R.accountId, r.accountId), ne(R.id, r.id),
-      or(and(eq(R.status, 'sent'), gte(R.sentAt, hourAgo)), eq(R.status, 'sending'), and(eq(R.status, 'awaiting_operator'), gte(R.handedAt, hourAgo))),
+      or(and(eq(R.status, 'sent'), gte(R.sentAt, hourAgo)), eq(R.status, 'sending'), and(inArray(R.status, ['awaiting_operator', 'dry_run']), gte(R.handedAt, hourAgo))),
     ));
     if (recent.length >= rules.sendsPerHour) {
       const oldest = Math.min(...recent.map((x) => new Date(x.at).getTime()));
-      const retryAt = new Date(Math.max(oldest + 3600_000, Date.now()) + 5_000);
-      const [n] = await tx.update(R).set({ status: 'scheduled', scheduledAt: retryAt, round: r.round + 1, taskId: null }).where(eq(R.id, r.id)).returning();
-      await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.rate_limited',
-        message: `send rate limit reached (${recent.length}/${rules.sendsPerHour} per hour), deferred`, data: { retryAt: retryAt.toISOString(), limit: rules.sendsPerHour }, taskId: ctx.task.id }, tx);
-      return { kind: 'deferred' as const, r: n!, retryAt };
+      return { kind: 'deferred' as const, r, at: new Date(Math.max(oldest + 3600_000, now) + 5_000), code: 'comment.rate_limited',
+        message: `send rate limit reached (${recent.length}/${rules.sendsPerHour} per hour)`, data: { limit: rules.sendsPerHour } };
+    }
+    if (plan.kind === 'device') {
+      const day = await tx.select({ at: doneAt }).from(R).where(and(eq(R.accountId, r.accountId), ne(R.id, r.id), DEVICE_DONE, sql`${doneAt} >= ${new Date(now - 86_400_000).toISOString()}::timestamptz`));
+      if (day.length >= rules.sendsPerDay) {
+        const oldest = Math.min(...day.map((x) => new Date(x.at).getTime()));
+        return { kind: 'deferred' as const, r, at: new Date(Math.max(oldest + 86_400_000, now) + 5_000), code: 'comment.daily_limited',
+          message: `daily limit reached (${day.length}/${rules.sendsPerDay} per 24 h)`, data: { limit: rules.sendsPerDay } };
+      }
+      const last = day.length ? Math.max(...day.map((x) => new Date(x.at).getTime())) : 0;
+      if (rules.minGapSec > 0 && last && now - last < rules.minGapSec * 1000) {
+        return { kind: 'deferred' as const, r, at: new Date(last + rules.minGapSec * 1000 + 1000), code: 'comment.min_gap',
+          message: `minimum gap between two sends not reached (${rules.minGapSec} s)`, data: { minGapSec: rules.minGapSec } };
+      }
     }
     const [n] = await tx.update(R).set({ status: 'sending', error: null, errorCode: null }).where(eq(R.id, r.id)).returning();
     return { kind: 'claimed' as const, r: n! };
@@ -384,39 +516,85 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     await ctx.log('warn', 'not executed: the reply is no longer driven by this task', { status: claim.r.status, currentTaskId: claim.r.taskId });
     return { skipped: true, status: claim.r.status };
   }
-  if (claim.kind === 'deferred') {
-    await ctx.log('warn', 'rate limit reached: deferred to a new round', { retryAt: claim.retryAt.toISOString() });
-    const next = await scheduleSend(claim.r, null);
-    return { deferred: true, retryAt: claim.retryAt.toISOString(), nextTaskId: next.taskId };
-  }
+  if (claim.kind === 'park') return park(claim.r, ctx, (plan as Extract<ReplyPlan, { kind: 'device' }>).inst.name);
+  if (claim.kind === 'deferred') return deferRound(claim.r, claim.at, claim.code, claim.message, ctx, claim.data);
   const r = claim.r;
   const log = async (level: Level, action: string, message: string, data?: Record<string, unknown>, code?: string) => {
     await replyLog(r, { level, action, message, data, code, taskId: ctx.task.id });
     await ctx.log(level, message, { ...data, ...(code ? { code } : {}) });
   };
   await log('info', 'run', `send started (attempt ${ctx.attempt}/${ctx.task.maxAttempts})`);
+  /** Hands the reply to an operator (manual path, also the fallback when the phone can't do it). */
+  const handOver = async (reason: string | null) => {
+    const [done] = await db.update(R).set({ status: 'awaiting_operator', method: 'manual', handedAt: new Date() })
+      .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending'))).returning();
+    await log('info', 'handed_over', 'handed over to an operator: reply by hand on the phone, then record the outcome', { recorded: !!done, ...(reason ? { reason } : {}) }, reason ?? undefined);
+    return { state: 'awaiting_operator', method: 'manual', reason };
+  };
   try {
-    const [comment] = await db.select().from(C).where(eq(C.id, r.commentId));
-    if (!comment) throw new ReplyCheckError('comment.comment_gone', 'the comment no longer exists');
     const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, r.accountId));
     if (!acc) throw new ReplyCheckError('comment.account_gone', 'the social account no longer exists');
     if (acc.userId !== r.userId) throw new ReplyCheckError('comment.account_owner_changed', 'the account now belongs to another user');
     if (acc.accountStatus !== 'active') throw new ReplyCheckError('comment.account_inactive', `account status is ${acc.accountStatus}`);
-    const [sent] = await db.select({ id: R.id }).from(R).where(and(eq(R.commentId, r.commentId), eq(R.status, 'sent'), ne(R.id, r.id)));
-    if (sent) {
-      await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.already_replied', message: 'the comment was already replied to', data: { existing: sent.id }, taskId: ctx.task.id });
-      throw new ReplyCheckError('comment.already_replied', 'the comment was already replied to');
-    }
+    if (r.commentId) {
+      const [comment] = await db.select({ id: C.id }).from(C).where(eq(C.id, r.commentId));
+      if (!comment) throw new ReplyCheckError('comment.comment_gone', 'the comment no longer exists');
+      const [sent] = await db.select({ id: R.id }).from(R).where(and(eq(R.commentId, r.commentId), eq(R.status, 'sent'), ne(R.id, r.id)));
+      if (sent) {
+        await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.already_replied', message: 'the comment was already replied to', data: { existing: sent.id }, taskId: ctx.task.id });
+        throw new ReplyCheckError('comment.already_replied', 'the comment was already replied to');
+      }
+    } else if (!r.postId) throw new ReplyCheckError('comment.comment_gone', 'the reply has neither a comment nor a post');
     if (ctx.signal.aborted) throw ctx.signal.reason;
-    const [done] = await db.update(R).set({ status: 'awaiting_operator', method: 'manual', handedAt: new Date() })
-      .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending'))).returning();
-    await log('info', 'handed_over', 'handed over to an operator: reply by hand on the phone, then record the outcome', { recorded: !!done });
-    return { state: 'awaiting_operator', method: 'manual' };
+    if (plan.kind === 'manual') return await handOver(plan.reason);
+
+    // ---- on the cloud phone
+    const { inst } = plan;
+    const offline = () => new ReplyCheckError('comment.device_offline', `device ${inst.name} is offline`);
+    let res;
+    try {
+      res = await withDevice(inst, ctx.log, offline, (dev) => sendIgComment(dev, {
+        shortcode: plan.shortcode, postPk: plan.postPk, handle: acc.handle, externalId: acc.externalId, replyTo: plan.replyTo, text: r.text,
+        testMode: rules.testMode, log: ctx.log, signal: ctx.signal,
+      }), { lockMs: 6 * 60_000, weight: acc.externalId ? 1 : 2 });
+    } catch (err) {
+      if (err instanceof CollectorDefer) {
+        await db.update(R).set({ status: 'scheduled' }).where(and(eq(R.id, r.id), eq(R.status, 'sending')));
+        return await deferRound({ ...r, status: 'scheduled' }, err.runAt, err.code, `device busy or paced (${err.code})`, ctx);
+      }
+      if (err instanceof ReplyCheckError && err.code === 'comment.device_offline') return await handOver('comment.device_offline');
+      if (err instanceof ReplyDeviceError) {
+        const risky = err.opts.challenge || ['comment.device_wrong_account', 'comment.device_logged_out', 'comment.device_account_unverified', 'comment.send_uncertain', 'comment.device_clear_failed'].includes(err.code ?? '');
+        if (risky) await recordRiskEvent({ instance: inst, socialAccountId: acc.id, source: 'reply', code: err.code ?? 'comment.device_failed', detail: err.opts.excerpt ?? `@${acc.handle}`, userId: r.authorId });
+        if (err.opts.challenge) {
+          await haltDevice(inst, { code: 'comment.device_challenge', source: 'reply', platform: acc.platform, socialAccountId: acc.id });
+          if (!err.opts.afterSend) {
+            await db.update(R).set({ status: 'scheduled' }).where(and(eq(R.id, r.id), eq(R.status, 'sending')));
+            return await park({ ...r, status: 'scheduled' }, ctx, inst.name);
+          }
+        }
+        if (err.opts.excerpt) await ctx.log('warn', 'device screen excerpt', { excerpt: err.opts.excerpt });
+        if (err.opts.final || err.opts.afterSend) throw new ReplyCheckError(err.code ?? 'comment.device_failed', err.message);
+      }
+      throw err;
+    }
+    const evidence = await storeEvidence(r, res.screenshot, res.inputText, res.excerpt);
+    if (res.outcome === 'dry_run') {
+      await db.update(R).set({ status: 'dry_run', method: 'device', handedAt: new Date(), evidence, senderName: inst.name, errorCode: 'comment.test_mode' })
+        .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
+      await log('info', 'dry_run', 'test mode: text pasted and checked on the phone, not sent (field cleared)', { device: inst.name, screens: res.screens, screenshot: !!evidence.key });
+      return { state: 'dry_run', method: 'device', evidence: { key: evidence.key ?? null } };
+    }
+    await db.update(R).set({ status: 'sent', method: 'device', sentAt: new Date(), evidence, senderName: inst.name, senderId: null })
+      .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
+    await markReplied(r.commentId);
+    await log('info', 'sent', 'sent from the cloud phone and seen in the comments', { device: inst.name, screens: res.screens });
+    return { state: 'sent', method: 'device' };
   } catch (err) {
     const e = err as { code?: string; message?: string };
     const code = typeof e.code === 'string' ? e.code : 'comment.failed';
     if (!ctx.signal.aborted) {
-      // Check failures are final; anything else (e.g. a database error) is retried while attempts remain.
+      // Check failures are final; anything else (e.g. a database error, a slow screen) is retried while attempts remain.
       const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
       await db.update(R).set({ status: final ? 'failed' : 'scheduled', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
         .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
@@ -428,7 +606,8 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
 
 registerTaskHandler<ReplyPayload>(REPLY_TYPE, {
   queue: 'task-ops',
-  timeoutMs: 2 * 60_000,
+  // A device send opens the post and the comments and may scroll to the comment: allow a few minutes.
+  timeoutMs: 6 * 60_000,
   maxAttempts: REPLY_MAX_ATTEMPTS,
   backoffMs: 15_000,
   // A new attempt goes through the comments workflow (write a new reply); retry in the task centre would bypass the rules.
@@ -443,6 +622,20 @@ registerTaskHandler<ReplyPayload>(REPLY_TYPE, {
     if (row) await replyLog(row, { level: status === 'cancelled' ? 'warn' : 'error', action: status, code: row.errorCode, message: `task ${task.status}`, taskId: task.id });
   },
 });
+
+/** A comment written directly under one of the account's own posts (sent from the cloud phone; no approval). */
+export async function createPostComment(user: AuthUser, acc: SocialAccount, postId: string, b: { text: string; scheduledAt?: Date | null }): Promise<CommentTask> {
+  const text = b.text.trim();
+  if (!text) throw badRequest('评论内容不能为空', 'comment.text_empty');
+  const [post] = await db.select().from(schema.socialAccountPosts).where(and(eq(schema.socialAccountPosts.id, postId), eq(schema.socialAccountPosts.socialAccountId, acc.id)));
+  if (!post) throw notFound('帖子不存在', 'feed.post_not_found');
+  const [row] = await db.insert(R).values({
+    userId: acc.userId, accountId: acc.id, commentId: null, postId: post.id, platform: acc.platform, text, textHash: textHash(text),
+    status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS, authorId: user.id, authorName: user.username,
+  }).returning();
+  await replyLog(row!, { action: 'created', message: 'post comment written', data: { postId: post.id }, actor: user });
+  return submitReply(user, row!, b.scheduledAt);
+}
 
 // ---------------------------------------------------------------- templates
 

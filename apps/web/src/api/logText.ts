@@ -80,6 +80,27 @@ const EXACT: Record<string, string> = {
   'account check: login screen': 'acctLoginScreen',
   'account check: challenge screen, device halted': 'acctChallenge',
   'account check: profile did not show in time': 'acctTimeout',
+  // 帖子与评论采集 (task feed-collect) / 云手机发评论 (comment-reply on the device)
+  'feed: profile opened': 'feedOpened',
+  'feed: no posts on the profile': 'feedNoPosts',
+  'feed: private account, posts not visible': 'feedPrivate',
+  'feed: post ids read': 'feedIds',
+  'feed: post did not show': 'feedPostMissing',
+  'feed: comments did not open': 'feedCommentsMissing',
+  'feed: post read': 'feedPostRead',
+  'reply: post opened': 'replyPostOpened',
+  'reply: comments opened': 'replyCommentsOpened',
+  'reply: replying to the comment': 'replyReplying',
+  'reply: text pasted and read back': 'replyPasted',
+  'reply: test mode, not sent; field cleared': 'replyTestCleared',
+  'reply: sent and seen in the comments': 'replySeen',
+  'reply: the input field could not be cleared': 'replyClearFailed',
+  'device screen excerpt': 'replyExcerpt',
+  'device halted (risk control): waiting until an admin resumes it': 'replyHalted',
+  'test mode: text pasted and checked on the phone, not sent (field cleared)': 'replyDryRun',
+  'sent from the cloud phone and seen in the comments': 'replySentDevice',
+  'device resumed: queued again': 'replyResumed',
+  'post comment written': 'postCommentWritten',
 }
 
 const RULES: Rule[] = [
@@ -98,6 +119,10 @@ const RULES: Rule[] = [
   [/^(failed|cancelled) \(scheduler task (\w+)\)$/, 'schedulerEnded', (m) => ({ status: status('publish', m[1]!), task: status('tasks', m[2]!) })],
   [/^send started \(attempt (\d+)\/(\d+)\)$/, 'sendStarted', (m) => ({ n: m[1]!, max: m[2]! })],
   [/^send rate limit reached \((\d+)\/(\d+) per hour\), deferred$/, 'rateLimited', (m) => ({ n: m[1]!, max: m[2]! })],
+  [/^(daily limit reached \(\d+\/\d+ per 24 h\)|minimum gap between two sends not reached \(\d+ s\)|device busy or paced \(\S+\)), deferred$/, 'replyDeferred', (_m, d) => ({ msg: coded(String(d?.code ?? ''), d) })],
+  [/^feed collection skipped: (\S+)$/, 'feedSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^feed collection failed: (\S+)$/, 'feedFailed', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^feed collected: (\d+) posts \((\d+) new\), (\d+) comments \((\d+) new\)$/, 'feedCollected', (m) => ({ posts: m[1]!, newPosts: m[2]!, comments: m[3]!, newComments: m[4]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点
   [/^scheduled refresh skipped: (\S+)$/, 'scheduledSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],

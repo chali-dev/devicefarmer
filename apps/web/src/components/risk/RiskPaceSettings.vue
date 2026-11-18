@@ -12,7 +12,7 @@ import type { RiskSettings } from '../../api/types'
  */
 const { t } = useI18n()
 const state = ref<RiskSettings | null>(null)
-const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6 })
+const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6, feedOn: true, feedCollectHours: 24, feedPosts: 3, feedCommentsPerPost: 30 })
 const saving = ref(false)
 
 function fill(s: RiskSettings) {
@@ -20,6 +20,8 @@ function fill(s: RiskSettings) {
   Object.assign(form, {
     minIntervalSec: s.device.minIntervalSec, maxPerHour: s.device.maxPerHour, busyRetrySec: s.device.busyRetrySec,
     checkOn: s.device.accountCheckHours !== null, accountCheckHours: s.device.accountCheckHours ?? s.defaults.accountCheckHours ?? 6,
+    feedOn: s.device.feedCollectHours !== null, feedCollectHours: s.device.feedCollectHours ?? s.defaults.feedCollectHours ?? 24,
+    feedPosts: s.device.feedPosts, feedCommentsPerPost: s.device.feedCommentsPerPost,
   })
 }
 onMounted(async () => { try { fill(await api<RiskSettings>('GET', '/api/risk/settings')) } catch (e) { message.error(errorText(e)) } })
@@ -32,6 +34,7 @@ async function save() {
     fill(await api<RiskSettings>('PUT', '/api/risk/settings', {
       minIntervalSec: form.minIntervalSec, maxPerHour: form.maxPerHour, busyRetrySec: form.busyRetrySec,
       accountCheckHours: form.checkOn ? form.accountCheckHours : null,
+      feedCollectHours: form.feedOn ? form.feedCollectHours : null, feedPosts: form.feedPosts, feedCommentsPerPost: form.feedCommentsPerPost,
     }))
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
@@ -73,6 +76,24 @@ async function save() {
             <a-input-number v-model:value="form.accountCheckHours" :min="1" :max="168" :precision="0" :disabled="!form.checkOn" addon-after="h" style="width: 140px" />
           </a-space>
         </a-form-item>
+
+        <a-typography-title :level="5">{{ t('risk.feed.title') }}</a-typography-title>
+        <a-typography-paragraph type="secondary">{{ t('risk.feed.hint') }}</a-typography-paragraph>
+        <a-form-item>
+          <a-space wrap>
+            <a-switch v-model:checked="form.feedOn" />
+            <span>{{ t('risk.feed.every') }}</span>
+            <a-input-number v-model:value="form.feedCollectHours" :min="1" :max="168" :precision="0" :disabled="!form.feedOn" addon-after="h" style="width: 140px" />
+          </a-space>
+        </a-form-item>
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('risk.feed.posts')"><a-input-number v-model:value="form.feedPosts" :min="1" :max="10" :precision="0" style="width: 100%" /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('risk.feed.comments')"><a-input-number v-model:value="form.feedCommentsPerPost" :min="0" :max="100" :precision="0" style="width: 100%" /></a-form-item>
+          </a-col>
+        </a-row>
         <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
       </a-form>
     </a-spin>

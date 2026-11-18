@@ -19,8 +19,8 @@ import type { Metric, ProfileData, SourceContext, TrackedSource } from './platfo
  * exist leaves the profile shell empty with a spinner (no text at all), reported as profile_unavailable.
  * The login / challenge / "page not available" texts are matched in zh and en but were not seen live.
  */
-const PKG = 'com.instagram.android';
-const ID = `${PKG}:id/`;
+export const PKG = 'com.instagram.android';
+export const ID = `${PKG}:id/`;
 const PROFILE_WAIT_MS = 15_000;
 const FIRST_DUMP_DELAY_MS = 2500;
 const POLL_GAP_MS = 1200;
@@ -28,7 +28,12 @@ const IG_HANDLE = /^[a-z0-9._]{1,30}$/;
 
 // ---------------------------------------------------------------- dump parsing (pure)
 
-export interface UiNode { rid: string; text: string; desc: string; pkg: string; depth: number }
+export interface UiNode {
+  rid: string; text: string; desc: string; pkg: string; depth: number;
+  /** [x1, y1, x2, y2] on screen, null when missing. */
+  bounds: [number, number, number, number] | null;
+  cls: string; hint: string; clickable: boolean; focused: boolean;
+}
 
 const decode = (s: string) => s
   .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
@@ -45,7 +50,12 @@ export function parseUiDump(xml: string): UiNode[] {
   let depth = 0;
   for (const m of xml.matchAll(/<node\b[^>]*?(\/?)>|<\/node>/g)) {
     if (m[0] === '</node>') { depth--; continue; }
-    out.push({ rid: attr(m[0], 'resource-id'), text: attr(m[0], 'text'), desc: attr(m[0], 'content-desc'), pkg: attr(m[0], 'package'), depth });
+    const b = /^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$/.exec(attr(m[0], 'bounds'));
+    out.push({
+      rid: attr(m[0], 'resource-id'), text: attr(m[0], 'text'), desc: attr(m[0], 'content-desc'), pkg: attr(m[0], 'package'), depth,
+      bounds: b ? [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])] : null,
+      cls: attr(m[0], 'class'), hint: attr(m[0], 'hint'), clickable: attr(m[0], 'clickable') === 'true', focused: attr(m[0], 'focused') === 'true',
+    });
     if (m[1] !== '/') depth++;
   }
   return out;
@@ -84,6 +94,18 @@ const CHALLENGE = /confirm (it's|that it's|that this is) you|help us confirm|sus
 const NOT_FOUND = /sorry, this page isn'?t available|user not found|page isn'?t available|无法访问此页面|此页面无法访问|页面不可用|用户未找到|找不到用户|该用户不存在|账户不存在/i;
 const LOGIN_TEXT = /^(log ?in|登录|登入|create new account|创建新账户|创建新帐户|forgot password\??|忘记密码[？?]?|password|密码)$/i;
 const PRIVATE = /this account is private|私密账户|私密帐户|私密账号|帐户为私密|账户为私密/i;
+
+/**
+ * A screen that is not the expected one: challenge / verification / rate limit, login, "page not available".
+ * Only call it when the expected structure is missing (comment texts could contain such words).
+ */
+export function screenProblem(nodes: UiNode[]): 'challenge' | 'login' | 'not_found' | null {
+  const texts = nodes.flatMap((n) => [n.text, n.desc]).filter(Boolean);
+  if (texts.some((t) => CHALLENGE.test(t))) return 'challenge';
+  if (texts.some((t) => NOT_FOUND.test(t))) return 'not_found';
+  if (nodes.some((n) => n.rid.startsWith(`${ID}login_`)) || texts.filter((t) => LOGIN_TEXT.test(t.trim())).length >= 2) return 'login';
+  return null;
+}
 
 /**
  * What the current Instagram screen is, for the profile of `handle`; `handle` null = the logged-in account's
@@ -145,7 +167,7 @@ export function dumpExcerpt(nodes: UiNode[], max = 300): string {
 const coded = (status: number, message: string, code: string, params?: Record<string, string>) => new HttpError(status, message, code, params);
 
 /** The app must be installed on the device (coded error otherwise). */
-async function requireApp(dev: CollectorDevice, code = 'tracked.collector_app_missing'): Promise<void> {
+export async function requireApp(dev: CollectorDevice, code = 'tracked.collector_app_missing'): Promise<void> {
   if (!(await adb.shell(dev.adbPort, `pm path ${PKG}`, 15_000)).includes('package:')) {
     throw coded(409, `设备 ${dev.inst.name} 未安装 Instagram`, code, { name: dev.inst.name });
   }

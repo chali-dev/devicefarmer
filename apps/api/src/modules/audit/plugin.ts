@@ -311,7 +311,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // comments & engagement (评论互动). Comment and reply texts are not copied into the audit log.
   'PUT /api/comments/settings': {
     action: 'comment.rules_update',
-    detail: ({ body }) => ({ duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour }),
+    detail: ({ body }) => ({
+      duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour,
+      sendsPerDay: body.sendsPerDay, minGapSec: body.minGapSec, testMode: body.testMode,
+    }),
   },
   'POST /api/comments': {
     action: 'comment.manual_create', target: ({ body }) => socialAccountName(body.accountId),
@@ -362,7 +365,17 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // 风控 (risk control)
   'PUT /api/risk/settings': {
     action: 'risk.settings',
-    detail: ({ body }) => ({ minIntervalSec: body.minIntervalSec, maxPerHour: body.maxPerHour, busyRetrySec: body.busyRetrySec, accountCheckHours: body.accountCheckHours }),
+    detail: ({ body }) => ({
+      minIntervalSec: body.minIntervalSec, maxPerHour: body.maxPerHour, busyRetrySec: body.busyRetrySec, accountCheckHours: body.accountCheckHours,
+      feedCollectHours: body.feedCollectHours, feedPosts: body.feedPosts, feedCommentsPerPost: body.feedCommentsPerPost,
+    }),
+  },
+  // 帖子与评论 (account feed): collect now, comment directly under an own post (texts are not copied)
+  'POST /api/social/accounts/:id/collect': { action: 'feed.collect', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
+  'POST /api/tracked-accounts/:id/collect': { action: 'feed.collect_tracked', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
+  'POST /api/social/accounts/:id/posts/:postId/comments': {
+    action: 'comment.post_comment_create', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null),
+    detail: ({ body }) => ({ scheduledAt: body.scheduledAt }),
   },
   'POST /api/risk/devices/:id/resume': { action: 'risk.device_resume', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
