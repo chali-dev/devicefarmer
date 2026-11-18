@@ -8,7 +8,7 @@ import { useRouter } from 'vue-router'
 import { logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
 import { deviceListLink } from '../../api/query'
-import type { PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
+import type { PublishAttempt, PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmAction, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
 import MediaStrip from '../content/MediaStrip.vue'
@@ -22,6 +22,8 @@ import EvidenceModal from '../feed/EvidenceModal.vue'
  * Publish task detail + actions: cancel, reschedule, edit texts, record the manual outcome, and
  * 编辑后重新发布 (no automatic or snapshot retries since 2026-11-18: the content opens in the editor with this account,
  * the person edits it and publishes again, which creates a new publish task; this one stays as history).
+ * 发布记录 = every task of this content on this account (编辑后重新发布 leaves several), the shown one marked; a click
+ * shows another one in the same drawer.
  * No 打开设备 / 推送素材到设备 buttons (owner 2026-11-18, too many entry points): the device is the 设备 row's link.
  */
 const props = defineProps<{ open: boolean; taskId: string | null }>()
@@ -32,21 +34,26 @@ const router = useRouter()
 const task = ref<PublishTaskItem | null>(null)
 const logs = ref<PublishLog[]>([])
 const runs = ref<PublishRun[]>([])
+const history = ref<PublishAttempt[]>([])
+/** The task shown: the caller's, or another attempt picked in 发布记录. */
+const shownId = ref<string | null>(props.taskId)
 const loading = ref(false)
 const busy = ref(false)
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 async function load() {
-  if (!props.taskId) return
+  if (!shownId.value) return
   loading.value = true
   try {
-    const r = await api<{ task: PublishTaskItem; logs: PublishLog[]; runs: PublishRun[] }>('GET', `/api/publish/tasks/${props.taskId}`)
+    const r = await api<{ task: PublishTaskItem; logs: PublishLog[]; runs: PublishRun[]; history?: PublishAttempt[] }>('GET', `/api/publish/tasks/${shownId.value}`)
     task.value = r.task
     logs.value = r.logs
     runs.value = r.runs
+    history.value = r.history ?? []
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
-watch(() => [props.open, props.taskId], () => { if (props.open) void load() }, { immediate: true })
+watch(() => [props.open, props.taskId], () => { shownId.value = props.taskId; if (props.open) void load() }, { immediate: true })
+function showAttempt(id: string) { if (id !== shownId.value) { shownId.value = id; void load() } }
 defineExpose({ reload: load })
 
 const s = computed(() => task.value?.status)
@@ -216,6 +223,17 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-descriptions-item v-if="task.ownerName" :label="t('content.colOwner')">{{ task.ownerName }}</a-descriptions-item>
         </a-descriptions>
 
+        <template v-if="history.length > 1">
+          <a-divider orientation="left" plain>{{ t('publish.historyTitle', { n: history.length }) }}</a-divider>
+          <div v-for="a in history" :key="a.id" class="attempt" :class="{ cur: a.id === task.id }">
+            <span class="small">{{ fmt(a.publishedAt ?? a.updatedAt) }}</span>
+            <StatusTag kind="publish" :status="a.status" />
+            <a-typography-text v-if="a.errorCode" type="danger" class="small">{{ codeText(a.errorCode, undefined, a.error ?? a.errorCode) }}</a-typography-text>
+            <a-tag v-if="a.id === task.id" color="blue">{{ t('publish.historyShown') }}</a-tag>
+            <a-button v-else type="link" size="small" @click="showAttempt(a.id)">{{ t('common.view') }}</a-button>
+          </div>
+        </template>
+
         <a-divider orientation="left" plain>{{ t('publish.runs') }}</a-divider>
         <a-table :data-source="runs" row-key="id" size="small" :pagination="false" :columns="runColumns">
           <template #bodyCell="{ column, record, index }">
@@ -280,4 +298,5 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
 <style scoped>
 .text { white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; }
 .data { word-break: break-all; }
+.attempt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 0; }
 </style>

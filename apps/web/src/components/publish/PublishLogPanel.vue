@@ -40,7 +40,7 @@ const page = reactive({ current: 1, pageSize: 20 })
 async function load() {
   loading.value = true
   try {
-    const p = new URLSearchParams({ sort: 'updated_desc', limit: String(page.pageSize), offset: String((page.current - 1) * page.pageSize) })
+    const p = new URLSearchParams({ group: 'content', sort: 'updated_desc', limit: String(page.pageSize), offset: String((page.current - 1) * page.pageSize) })
     if (filters.q.trim()) p.set('q', filters.q.trim())
     if (filters.ownerId) p.set('ownerId', filters.ownerId)
     if (filters.accountId) p.set('accountId', filters.accountId)

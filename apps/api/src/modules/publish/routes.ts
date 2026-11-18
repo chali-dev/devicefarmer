@@ -36,9 +36,37 @@ const ListQuery = z.object({
   to: z.coerce.date().optional(),
   q: z.string().trim().max(100).optional(),
   sort: z.enum(['scheduled_asc', 'scheduled_desc', 'updated_desc']).default('scheduled_desc'),
+  /**
+   * `content`: one row per content + account = its newest task (编辑后重新发布 leaves the failed one + a new one),
+   * the older ones in `previous`. Filters, counts and paging apply to the newest tasks only. Without it: every task.
+   */
+  group: z.enum(['content']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+
+/** No newer task of the same content + account (+ owner, so a viewer never loses a row to one they can't see). */
+export const NEWEST = sql`not exists (select 1 from publish_tasks n where n.content_id = ${pt.contentId} and n.account_id = ${pt.accountId}
+  and n.user_id = ${pt.userId} and (n.created_at, n.id) > (${pt.createdAt}, ${pt.id}))`;
+const pairKey = (r: Pick<PublishTask, 'contentId' | 'accountId' | 'userId'>) => `${r.contentId}|${r.accountId}|${r.userId}`;
+
+/** Every task of the same content + account (+ owner) as `rows`, newest first, keyed by pair (one query). */
+async function attemptsOf(rows: PublishTask[]) {
+  const out = new Map<string, { id: string; status: PublishTask['status']; errorCode: string | null; error: string | null; method: string | null;
+    scheduledAt: Date; publishedAt: Date | null; createdAt: Date; updatedAt: Date; postType: PublishTask['postType'] }[]>();
+  if (!rows.length) return out;
+  const found = await db.select({ id: pt.id, contentId: pt.contentId, accountId: pt.accountId, userId: pt.userId, status: pt.status, errorCode: pt.errorCode, error: pt.error,
+    method: pt.method, scheduledAt: pt.scheduledAt, publishedAt: pt.publishedAt, createdAt: pt.createdAt, updatedAt: pt.updatedAt, postType: pt.postType })
+    .from(pt).where(and(inArray(pt.contentId, idsOf(rows.map((r) => r.contentId))), inArray(pt.accountId, idsOf(rows.map((r) => r.accountId)))))
+    .orderBy(desc(pt.createdAt), desc(pt.id));
+  const want = new Set(rows.map(pairKey));
+  for (const { contentId, accountId, userId, ...a } of found) {
+    const k = pairKey({ contentId, accountId, userId });
+    if (!want.has(k)) continue;
+    out.set(k, [...(out.get(k) ?? []), { ...a, error: a.error?.slice(0, 300) ?? null }]);
+  }
+  return out;
+}
 
 function ownerWhere(user: AuthUser, ownerId?: string): SQL | undefined {
   if (isAdmin(user)) return ownerId ? eq(pt.userId, ownerId) : undefined;
@@ -86,7 +114,7 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
 }
 
 /**
- * Publish scheduler (定时发布): calendar / queue / history of publish tasks, and the actions on them
+ * Publish scheduler (排程发布): calendar / queue / history of publish tasks, and the actions on them
  * (cancel, reschedule, retry, edit, record the outcome of a manual publish).
  */
 export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
@@ -99,7 +127,7 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.get('/api/publish/tasks', { schema: { querystring: ListQuery } }, async (req) => {
     const q = req.query;
-    const base: (SQL | undefined)[] = [ownerWhere(req.user, q.ownerId)];
+    const base: (SQL | undefined)[] = [ownerWhere(req.user, q.ownerId), q.group === 'content' ? NEWEST : undefined];
     if (q.platform) base.push(eq(pt.platform, q.platform));
     if (q.accountId) base.push(eq(pt.accountId, q.accountId));
     if (q.contentId) base.push(eq(pt.contentId, q.contentId));
@@ -124,8 +152,13 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     const sum = (f: (r: typeof byStatus[number]) => boolean) => byStatus.filter(f).reduce((a, r) => a + r.n, 0);
     const typeOk = (t: string) => !q.postType?.length || (q.postType as string[]).includes(t);
     const statOk = (s: string) => !q.status?.length || (q.status as string[]).includes(s);
+    const items = await toPublishItems(rows, req.user);
+    if (q.group === 'content') {
+      const all = await attemptsOf(rows);
+      for (const it of items) (it as typeof it & { previous: unknown }).previous = (all.get(pairKey(it)) ?? []).filter((a) => a.id !== it.id).slice(0, 20);
+    }
     return {
-      items: await toPublishItems(rows, req.user), total: total?.n ?? 0,
+      items, total: total?.n ?? 0,
       byStatus: Object.fromEntries(PUBLISH_STATUSES.map((s) => [s, sum((r) => r.s === s && typeOk(r.t))])),
       byPostType: Object.fromEntries(POST_TYPES.map((t) => [t, sum((r) => r.t === t && statOk(r.s))])),
     };
@@ -142,7 +175,9 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
         createdAt: schema.tasks.createdAt, startedAt: schema.tasks.startedAt, finishedAt: schema.tasks.finishedAt })
         .from(schema.tasks).where(and(eq(schema.tasks.refType, REF_TYPE), eq(schema.tasks.refId, row.id))).orderBy(asc(schema.tasks.createdAt)),
     ]);
-    return { task: item, logs, runs };
+    // Every task of this content on this account, newest first (编辑后重新发布: the drawer lists the attempts).
+    const history = (await attemptsOf([row])).get(pairKey(row)) ?? [];
+    return { task: item, logs, runs, history };
   });
 
   app.post('/api/publish/tasks/:id/cancel', { schema: { params: Id } }, async (req) => {

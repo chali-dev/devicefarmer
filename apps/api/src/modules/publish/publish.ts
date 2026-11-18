@@ -21,7 +21,7 @@ import { getPublishTimeout } from './timeout-settings.js';
 export { PublishCheckError };
 
 /**
- * Publish scheduler (定时发布). One publish_tasks row per (content, account); each scheduling round
+ * Publish scheduler (排程发布). One publish_tasks row per (content, account); each scheduling round
  * (attempt_no) is one task-centre task of type 'publish' (idempotency key publish:<id>:<attempt_no>,
  * run_at = scheduled time, ONE attempt, timeout from 系统配置 → 发布任务).
  *

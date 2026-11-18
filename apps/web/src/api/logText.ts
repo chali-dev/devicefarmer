@@ -113,6 +113,7 @@ const EXACT: Record<string, string> = {
   // 云手机发帖
   'cloud phone: test mode (stops before sharing)': 'deviceTest',
   'cloud phone: live (shares the post)': 'deviceLive',
+  'failed before 分享: not counted toward the daily cap / minimum gap': 'deviceNotCounted',
   'published from the cloud phone and seen on the profile': 'devicePublished',
   'test mode: rehearsed on the cloud phone up to sharing, nothing posted (draft discarded)': 'deviceDryRun',
   'publish: account on the phone verified': 'pubAccountOk',

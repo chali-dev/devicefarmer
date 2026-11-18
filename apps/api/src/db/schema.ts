@@ -739,7 +739,7 @@ export const contentTagLinks = pgTable('content_tag_links', {
 }, (t) => [primaryKey({ columns: [t.contentId, t.tagId] }), index('content_tag_links_tag_idx').on(t.tagId)]);
 
 /**
- * Publish scheduler (定时发布, P4): one row per (content, target social account) distribution.
+ * Publish scheduler (排程发布, P4): one row per (content, target social account) distribution.
  * Business state lives here; scheduling state lives in `tasks` (type 'publish', ref_type 'publish',
  * ref_id = this id, idempotency key publish:<id>:<attempt_no>). `task_id` is the current scheduler task;
  * every reschedule/retry bumps `attempt_no` and creates a new tasks row (older ones stay as history).

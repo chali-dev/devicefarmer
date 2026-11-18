@@ -152,7 +152,7 @@ onMounted(() => { void load(); void loadUsers(); void loadLangs(); void loadCate
 
 /**
  * 编辑后重新发布 (from a failed publish task: `?edit=<content>&account=<account>&postType=`): opens the content in the
- * editor; its 发布 / 定时发布 then preselects only that account (a NEW publish task with the edited texts and media).
+ * editor; its 发布 / 排程发布 then preselects only that account (a NEW publish task with the edited texts and media).
  */
 const republishTo = ref<{ contentId: string; accountId: string; postType: PostType } | null>(null)
 async function openFromQuery() {
@@ -195,6 +195,14 @@ const editorOpen = ref(false)
 const saving = ref(false)
 const editing = ref<Content | null>(null)
 const editorTasks = ref<PublishTaskItem[]>([])
+/** 发布任务 in the editor: one entry per account = its newest task, older attempts (编辑后重新发布) folded under it. */
+const editorTaskGroups = computed(() => {
+  const by = new Map<string, PublishTaskItem[]>()
+  for (const x of [...editorTasks.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) by.set(x.accountId, [...(by.get(x.accountId) ?? []), x])
+  return [...by.values()].map(([latest, ...older]) => ({ ...latest!, older }))
+})
+const openOlder = ref(new Set<string>())
+function toggleOlder(accountId: string) { const n = new Set(openOlder.value); if (!n.delete(accountId)) n.add(accountId); openOlder.value = n }
 /** Platform hints as plain records; hints of platforms without a tab stay as loaded (and are saved again). */
 type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
@@ -487,7 +495,7 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
     return saved
   } catch (e) { message.error(errorText(e)); return null } finally { saving.value = false }
 }
-/** 定时发布 / 立即发布 in the editor: save as ready (closes the editor), then the publishing step for that content. */
+/** 排程发布 / 立即发布 in the editor: save as ready (closes the editor), then the publishing step for that content. */
 async function saveAndPublish(mode: 'now' | 'at') {
   const c = await save('ready')
   if (c) openDistribute(c, mode)
@@ -792,9 +800,10 @@ async function submitBatchForm() {
 
     <template v-if="editing && editorTasks.length && !currentTr">
       <a-divider orientation="left" plain>{{ t('content.tasksOf') }}</a-divider>
-      <a-list size="small" :data-source="editorTasks">
+      <a-list size="small" :data-source="editorTaskGroups">
         <template #renderItem="{ item }">
           <a-list-item>
+            <div>
             <a-space wrap>
               <PlatformTag :platform="item.platform" />
               <PostTypeTag :type="item.postType" />
@@ -803,7 +812,19 @@ async function submitBatchForm() {
               <span class="muted small">{{ fmt(item.scheduledAt) }}</span>
               <a-typography-text v-if="item.errorCode" type="danger" class="small">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</a-typography-text>
               <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
+              <a v-if="item.older.length" class="small" @click="toggleOlder(item.accountId)">{{ t('publish.previousCount', { n: item.older.length }) }}</a>
             </a-space>
+            <div v-if="item.older.length && openOlder.has(item.accountId)" class="older">
+              <div v-for="o in item.older" :key="o.id">
+                <a-space wrap>
+                  <StatusTag kind="publish" :status="o.status" />
+                  <span class="muted small">{{ fmt(o.publishedAt ?? o.updatedAt) }}</span>
+                  <a-typography-text v-if="o.errorCode" type="danger" class="small">{{ codeText(o.errorCode, undefined, o.error ?? o.errorCode) }}</a-typography-text>
+                  <a class="small" @click="router.push({ path: '/publish', query: { tab: 'queue', task: o.id } })">{{ t('common.view') }}</a>
+                </a-space>
+              </div>
+            </div>
+            </div>
             <template #actions>
               <a v-if="item.status === 'failed' || item.status === 'cancelled'" @click="republishTo = { contentId: item.contentId, accountId: item.accountId, postType: item.postType }">{{ t('publish.editRepublish') }}</a>
               <a @click="router.push({ path: '/publish', query: { tab: 'queue', task: item.id } })">{{ t('common.view') }}</a>
@@ -846,6 +867,7 @@ async function submitBatchForm() {
 
 
 <style scoped>
+.older { margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--cp-border); }
 .ai-notice { margin-bottom: 16px; }
 .title-link { display: block; font-weight: 500; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
