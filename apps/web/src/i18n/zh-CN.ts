@@ -1169,7 +1169,6 @@ const zhCN = {
     comments: '评论',
   },
   content: {
-    aiDraft: 'AI 草稿',
     aiDraftNotice: 'AI 生成，请审改后再发布',
     republishTo: "重新发布到 {'@'}{handle}：修改后点「定时发布」或「立即发布」，会创建新的发布任务（失败的记录保留）",
     aiDraftInfo: '人设「{persona}」· {model} · {at}',

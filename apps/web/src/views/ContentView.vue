@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import { langName } from '../api/lang'
 import {
-  AI_DRAFT_TAG, CONTENT_STATUSES, PUBLISH_UNFINISHED,
+  CONTENT_STATUSES, PUBLISH_UNFINISHED,
   type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentLanguages, type ContentTranslation, type ManagedUser, type PostType, type PublishTaskItem,
   type MediaItem, type SocialAccount,
 } from '../api/types'
@@ -110,7 +110,7 @@ async function loadUsers() {
   try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch (e) { message.error(errorText(e)) }
 }
 const search = () => { page.current = 1; void load() }
-/** 「AI 草稿」 quick filter (system tag `ai-draft`); kept in `?tag=` so links like /content?status=draft&tag=ai-draft work. */
+/** `?tag=` (an older link): shown as a closable chip; there is no tag UI any more. */
 function setTagFilter(tag: string | undefined) {
   filters.tag = tag
   void router.replace({ query: { ...route.query, tag } })
@@ -607,8 +607,7 @@ async function submitBatchForm() {
         <a-select v-model:value="filters.categoryId" :placeholder="t('content.colCategory')" allow-clear show-search option-filter-prop="label" style="width: 160px"
           :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
-        <a-checkable-tag :checked="filters.tag === AI_DRAFT_TAG" class="ai-filter" @change="(v: boolean) => setTagFilter(v ? AI_DRAFT_TAG : undefined)">{{ t('content.aiDraft') }}</a-checkable-tag>
-        <a-tag v-if="filters.tag && filters.tag !== AI_DRAFT_TAG" closable @close="setTagFilter(undefined)">#{{ filters.tag }}</a-tag>
+        <a-tag v-if="filters.tag" closable @close="setTagFilter(undefined)">#{{ filters.tag }}</a-tag>
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadCategories()" />
         <template #actions>
@@ -635,9 +634,8 @@ async function submitBatchForm() {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'title'">
             <a class="title-link ellipsis" :title="record.title" @click="openEdit(record)">{{ record.title }}</a>
-            <div v-if="record.category || record.aiGenerated || record.lang || record.translations.length" class="meta">
+            <div v-if="record.category || record.lang || record.translations.length" class="meta">
               <a-tag v-if="record.category" color="blue" class="chip">{{ record.category.name }}</a-tag>
-              <a-tooltip v-if="record.aiGenerated" :title="aiInfo(record)"><a-tag color="purple" class="chip">{{ t('content.aiDraft') }}</a-tag></a-tooltip>
               <a-tooltip v-if="record.lang" :title="`${t('content.lang.source')} · ${langName(record.lang)}`"><a-tag class="chip lang">{{ record.lang }}</a-tag></a-tooltip>
               <a-tooltip v-for="l in record.translations" :key="l" :title="langName(l)"><a-tag class="chip lang">{{ l }}</a-tag></a-tooltip>
             </div>
@@ -868,5 +866,4 @@ async function submitBatchForm() {
 .status-tabs { margin-bottom: 4px; }
 .tab-count { color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
 .only-tag { margin-bottom: var(--cp-gap); }
-.ai-filter { margin: 0; padding-inline: 10px; line-height: 30px; border: 1px solid var(--cp-border); }
 </style>

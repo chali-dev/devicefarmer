@@ -1168,7 +1168,6 @@ const en: Messages = {
     comments: 'Comments',
   },
   content: {
-    aiDraft: 'AI draft',
     aiDraftNotice: 'Written by AI: review and edit before publishing',
     republishTo: "Publish again to {'@'}{handle}: edit, then press Schedule or Publish now; this creates a new publish task (the failed one is kept)",
     aiDraftInfo: 'Persona "{persona}" · {model} · {at}',
