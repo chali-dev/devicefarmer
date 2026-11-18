@@ -25,8 +25,10 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
  * account, with a warning when its language has no translation); its inherited title/caption follow that language.
  * Nothing is queued until the person presses 发布 / 定时发布 here (draft first, 2026-11-18): the phone preview shows the
  * selected account's post as it will be shared, and the notice says the cloud phone really posts it (no test mode).
+ * 编辑后重新发布: `accountIds` (+ `postType`) preselect exactly those accounts instead of the 发布目标 (the account
+ * of a failed publish task; publishing creates a new task with the content's current texts and media).
  */
-const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
+const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at'; accountIds?: string[]; postType?: PostType }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
 const { t } = useI18n()
 const store = useInstancesStore()
@@ -64,7 +66,7 @@ watch(() => props.open, async (o) => {
   for (const k of Object.keys(overrides)) delete overrides[k]
   for (const k of Object.keys(captions)) delete captions[k]
   const when = props.mode ?? 'now'
-  Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, postType: 'feed' })
+  Object.assign(form, { when, at: when === 'at' ? defaultAt() : null, postType: props.postType ?? 'feed' })
   published.value = new Set()
   loading.value = true
   try {
@@ -80,10 +82,11 @@ watch(() => props.open, async (o) => {
     platforms.value = p.platforms
     published.value = new Set(done.items.map((x) => x.accountId))
     // 发布目标: preselect the content's targets that can take this post (enabled platform, media fit)
-    const targetIds = (props.content.targets ?? []).map((x) => x.id)
+    // (编辑后重新发布: exactly the given accounts)
+    const targetIds = props.accountIds ?? (props.content.targets ?? []).map((x) => x.id)
     for (const id of targetIds) {
       const acc = accountById(id)
-      if (acc && !published.value.has(id) && groups.value.some((g) => g.id === acc.platform && !g.reason)) toggle(id, true)
+      if (acc && (props.accountIds || !published.value.has(id)) && groups.value.some((g) => g.id === acc.platform && !g.reason)) toggle(id, true)
     }
     prefilled.value = { n: selected.value.length, of: targetIds.length }
     if (selected.value.length) accountTab.value = selected.value[0]!

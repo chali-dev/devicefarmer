@@ -11,19 +11,19 @@ import { assertNoBannedWords } from '../comments/persona-style.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
-import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
+import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { onDeviceResumed } from '../tracked/collector.js';
 import './device.js'; // registers the `device` method (云手机发帖)
 import { MANUAL_METHOD, PublishCheckError, publishMethods, type PublishInput, type PublishLogLevel, type PublishMethodResult } from './methods.js';
 import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
-import { getPublishRetry } from './retry-settings.js';
+import { getPublishTimeout } from './timeout-settings.js';
 
 export { PublishCheckError };
 
 /**
  * Publish scheduler (定时发布). One publish_tasks row per (content, account); each scheduling round
  * (attempt_no) is one task-centre task of type 'publish' (idempotency key publish:<id>:<attempt_no>,
- * run_at = scheduled time, max_attempts / timeout from config or the distribution).
+ * run_at = scheduled time, ONE attempt, timeout from 系统配置 → 发布任务).
  *
  * A run: claim the publish task (only the task-centre task it currently points at may run it), then the
  * checks — account owner, account status, media still ready and valid for the platform, no earlier
@@ -32,10 +32,12 @@ export { PublishCheckError };
  * in order (methods.ts): `device` (云手机发帖, device.ts: the account's cloud phone publishes in the app; no test
  * mode since 2026-11-18: a run only exists because a person distributed the content) when available, else the task is handed to an operator (`manual`, awaiting_operator; the reason the
  * phone couldn't take it is logged), who publishes by hand on the device and records the outcome. Publishing
- * through official platform APIs was removed on 2026-11-18 (owner decision). Checks that can't change by waiting
- * fail at once (PublishCheckError, no retry); device offline is retried with backoff. A deferred device run (daily
- * cap, min gap, busy / paced phone) is a new round at the allowed time; a run on a halted phone is parked
- * (scheduled without a task) until the phone is resumed on the 风控 page.
+ * through official platform APIs was removed on 2026-11-18 (owner decision). No automatic retries (owner decision
+ * 2026-11-18): any failure (also device offline, a timeout or a device step) ends the round as `failed` with its code;
+ * the person edits the content and distributes it again, which creates a NEW publish task with the current texts and
+ * media (a failed pair is not "published", so no `republish` is needed). The 风控 limits are not retries and stay: a
+ * deferred device run (daily cap, min gap, busy / paced phone) is a new round at the allowed time; a run on a halted
+ * phone is parked (scheduled without a task) until the phone is resumed on the 风控 page.
  */
 
 const pt = schema.publishTasks;
@@ -98,14 +100,12 @@ function postFor(content: Content, texts: AccountTexts, platform: string, t: Dis
  * (content, account) already has an unfinished publish task returns that task (idempotent);
  * one that was already published needs `republish`.
  */
-export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[], opts: { maxAttempts?: number; republish?: boolean } = {}): Promise<DistributeResult> {
+export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[], opts: { republish?: boolean } = {}): Promise<DistributeResult> {
   if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
   const media = await contentMediaOf(db, content.id);
   const notReady = media.find((m) => m.status !== 'ready');
   if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
-  // 系统配置 → 发布重发 (retry-settings.ts); an explicit maxAttempts of the request wins.
-  const maxAttempts = opts.maxAttempts ?? (await getPublishRetry()).maxAttempts;
   const now = new Date();
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
@@ -132,10 +132,10 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const [row] = await tx.insert(pt).values({
         userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
         title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType, lang: texts.lang,
-        scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts, republish: prior.length > 0, createdBy: user.id,
+        scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts: 1, republish: prior.length > 0, createdBy: user.id,
       }).returning();
       await publishLog(row!, 'info', prior.length ? 'distributed (re-publish)' : 'distributed', {
-        account: acc.handle, platform: acc.platform, postType: post.postType, scheduledAt: scheduledAt.toISOString(), media: media.length, maxAttempts,
+        account: acc.handle, platform: acc.platform, postType: post.postType, scheduledAt: scheduledAt.toISOString(), media: media.length,
         lang: texts.lang, accountLang: acc.lang, langFallback: texts.fallback,
       }, user, tx);
       out.created.push(row!);
@@ -154,12 +154,13 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
   const [acc] = await db.select({ handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
   const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
   try {
-    // 系统配置 → 发布任务: backoff + per-attempt timeout are stored on the task (a round keeps them).
-    const { backoffMs, timeoutMs } = await getPublishRetry();
+    // 系统配置 → 发布任务: the attempt's timeout is stored on the task (a round keeps it). One attempt per round,
+    // also for a row an older colour created with more.
+    const { timeoutMs } = await getPublishTimeout();
     const { task } = await createTask({
       type: TASK_TYPE, userId: row.userId, label: `${row.platform}${row.postType !== 'feed' ? ` ${row.postType}` : ''} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
       refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
-      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, backoffMs, timeoutMs, retryOf,
+      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: 1, timeoutMs, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
     return updated ?? row;
@@ -187,8 +188,6 @@ async function currentTask(row: PublishTask): Promise<Task | undefined> {
 async function newRound(user: AuthUser, id: string, from: PublishStatus[], scheduledAt: Date | null, action: 'rescheduled' | 'retried'): Promise<PublishTask> {
   const now = new Date();
   const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
-  // A new round (retry / reschedule) takes the current 发布重发 attempts.
-  const { maxAttempts } = await getPublishRetry();
   const { prev, next } = await db.transaction(async (tx) => {
     const [cur] = await tx.select().from(pt).where(eq(pt.id, id)).for('update');
     if (!cur) throw conflict('发布任务不存在', 'publish.not_found');
@@ -200,7 +199,7 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
     }
     const fresh = action === 'retried' || cur.status === 'dry_run';
     const [n] = await tx.update(pt).set({
-      status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null, maxAttempts,
+      status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null, maxAttempts: 1,
       error: fresh ? null : cur.error, errorCode: fresh ? null : cur.errorCode, method: fresh ? null : cur.method,
     }).where(eq(pt.id, id)).returning().catch((err) => {
       const e = err as { code?: string; cause?: { code?: string } };
@@ -217,8 +216,9 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
   return row;
 }
 
-// dry_run = a test-mode rehearsal of an old colour (test mode removed 2026-11-18; db:migrate turned them into cancelled):
-// such a row can still be scheduled again with retry.
+// retry (POST …/retry) = the same snapshot again: LEGACY for older pages (the UI offers 编辑后重新发布 instead, which
+// distributes the edited content as a new publish task). dry_run = a test-mode rehearsal of an old colour (test mode
+// removed 2026-11-18; db:migrate turned them into cancelled).
 export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled'], at, 'rescheduled');
 export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled', 'dry_run'], at, 'retried');
 
@@ -288,10 +288,19 @@ type Payload = { publishTaskId: string; attemptNo?: number };
 
 async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   const id = ctx.payload.publishTaskId ?? ctx.task.refId;
+  // One attempt per round: a task an older colour created with several attempts (or one redelivered after a timeout)
+  // does not run again; the round ends failed with the first attempt's code.
+  if (ctx.attempt > 1) {
+    const code = ctx.task.errorCode ?? 'publish.failed';
+    const [cur] = await db.update(pt).set({ status: 'failed', errorCode: code, error: ctx.task.error ?? null })
+      .where(and(eq(pt.id, id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+    if (cur) await publishLog(cur, 'error', `failed: ${ctx.task.error ?? code}`, { code, noRetry: true });
+    throw new PublishCheckError(code, ctx.task.error ?? 'the round already had its attempt (no automatic retries)');
+  }
   // Claim: only the task-centre task this publish task currently points at may run it (a rescheduled /
-  // retried round detaches older tasks). `running` is accepted for the next attempt of the same task.
+  // retried round detaches older tasks).
   const [row] = await db.update(pt).set({ status: 'running', error: null, errorCode: null })
-    .where(and(eq(pt.id, id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+    .where(and(eq(pt.id, id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
   if (!row) {
     const [cur] = await db.select().from(pt).where(eq(pt.id, id));
     if (!cur) throw new PublishCheckError('publish.target_gone', 'the publish task no longer exists');
@@ -303,7 +312,7 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
     await ctx.log(level, message, data);
   };
   await refreshContentStatus(row.contentId);
-  await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`, { postType: row.postType });
+  await log('info', `run started (round ${row.attemptNo})`, { postType: row.postType });
   try {
     const input = await preflight(row, log);
     if (ctx.signal.aborted) throw ctx.signal.reason;
@@ -325,15 +334,13 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   } catch (err) {
     const e = err as { code?: string; message?: string; params?: Record<string, unknown> };
     const code = typeof e.code === 'string' ? e.code : 'publish.failed';
-    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over.
-    if (!ctx.signal.aborted) {
-      // Check failures (PublishCheckError) are final; device offline and other errors are retried while attempts remain.
-      const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
-      await db.update(pt).set({ status: final ? 'failed' : 'pending', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
-        .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
-      await log(final ? 'error' : 'warn', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, { code, ...(e.params ?? {}) });
-    }
-    throw err;
+    // Timeout/cancel: the task centre already decided; onFailure mirrors it on the publish task.
+    if (ctx.signal.aborted) throw err;
+    // No automatic retries: every failure ends the round (the person edits the content and publishes it again).
+    await db.update(pt).set({ status: 'failed', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
+      .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
+    await log('error', `failed: ${e.message}`, { code, ...(e.params ?? {}) });
+    throw err instanceof UnrecoverableError ? err : new PublishCheckError(code, e.message ?? String(err), e.params ?? {});
   } finally {
     await refreshContentStatus(row.contentId);
   }
@@ -428,8 +435,8 @@ async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
     .from(schema.instances).where(eq(schema.instances.id, acc.instanceId));
   if (!inst) throw new PublishCheckError('publish.no_device', 'the linked device no longer exists');
   if (inst.status !== 'running' || inst.adbState !== 'device') {
-    // May recover (device starting / reconnecting): retried with backoff.
-    throw new TaskError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
+    // No retry: the round fails; publish again once the phone is back.
+    throw new PublishCheckError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
   }
   await log('info', 'check: device online', { device: inst.name });
   // `unknown` = not checked yet (the automatic account check runs every few hours): allowed; only a known bad state blocks.
@@ -448,9 +455,9 @@ registerTaskHandler<Payload>(TASK_TYPE, {
   queue: 'publish',
   concurrency: 4,
   timeoutMs: config.PUBLISH_TIMEOUT_MS,
-  maxAttempts: config.PUBLISH_MAX_ATTEMPTS,
-  backoffMs: config.PUBLISH_RETRY_BACKOFF_MS,
-  // Retry from the publish scheduler (POST /api/publish/tasks/:id/retry): it keeps the publish task's round history.
+  // One attempt per round, no automatic retries (owner decision 2026-11-18).
+  maxAttempts: 1,
+  // No generic task-centre retry: publishing again goes through the content (a new publish task).
   retryable: false,
   run: runPublish,
   /** Task ended failed/cancelled (also timeouts, interruptions, cancel before start): mirror it on the publish task. */

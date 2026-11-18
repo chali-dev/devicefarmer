@@ -99,6 +99,7 @@ const Target = z.object({
 });
 const DistributeBody = z.object({
   targets: z.array(Target).min(1).max(50),
+  /** LEGACY (older pages / scripts): accepted and ignored, every publish round is one attempt since 2026-11-18. */
   maxAttempts: z.number().int().min(1).max(10).optional(),
   republish: z.boolean().optional(),
 });
@@ -323,9 +324,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.post('/api/contents/:id/distribute', { schema: { params: Id, body: DistributeBody } }, async (req, reply) => {
     const content = await visibleContent(req.user, req.params.id);
     const b = req.body;
-    const res = await distribute(req.user, content, b.targets.map((t) => ({ ...t, scheduledAt: t.scheduledAt ? new Date(t.scheduledAt) : null })), {
-      maxAttempts: b.maxAttempts, republish: b.republish,
-    });
+    const res = await distribute(req.user, content, b.targets.map((t) => ({ ...t, scheduledAt: t.scheduledAt ? new Date(t.scheduledAt) : null })), { republish: b.republish });
     if (req.audit) req.audit.extra = { created: res.created.map((p) => p.id), existing: res.existing.map((p) => p.id) };
     reply.code(res.created.length ? 201 : 200);
     return { created: await toPublishItems(res.created, req.user), existing: await toPublishItems(res.existing, req.user) };

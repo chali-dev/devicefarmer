@@ -10,7 +10,7 @@ import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS,
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
 import { FIXED_MENUS, GRANTABLE_MENUS, DEFAULT_USER_MENUS, getUserMenus, saveUserMenus } from '../auth/role-menus.js';
-import { getPublishRetry, PublishRetryInput, publicRetry, publishRetryDefaults, savePublishRetry } from '../publish/retry-settings.js';
+import { getPublishTimeout, PublishTimeoutInput, publicTimeout, publishTimeoutDefault, savePublishTimeout } from '../publish/timeout-settings.js';
 import { getMediaLimitSettings, MAX_IMAGE_MB, MAX_VIDEO_MB, mediaLimitDefaults, MEDIA_TYPE_IDS, MediaLimitsInput, saveMediaLimitSettings } from '../media/limits.js';
 import { FORMATS } from '../media/formats.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
@@ -99,15 +99,16 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return roleMenus();
   });
 
-  /** 发布任务: attempts + backoff + per-attempt timeout of publish rounds (publish/retry-settings.ts; env values = defaults). */
-  const retryView = async () => {
-    const d = publishRetryDefaults();
-    return { retry: publicRetry(await getPublishRetry()), defaults: publicRetry({ ...d, updatedAt: null }) };
-  };
-  app.get('/api/settings/publish-retry', async () => retryView());
-  app.put('/api/settings/publish-retry', { schema: { body: PublishRetryInput } }, async (req) => {
-    await savePublishRetry(req.body);
-    return retryView();
+  /**
+   * 发布任务: the timeout of a publish round's single attempt (publish/timeout-settings.ts; env value = default). No
+   * retries since 2026-11-18: an older page's maxAttempts/backoffSec are accepted and ignored. `retry` keeps its name
+   * so an older page still reads the timeout.
+   */
+  const timeoutView = async () => ({ retry: publicTimeout(await getPublishTimeout()), defaults: publicTimeout({ timeoutMs: publishTimeoutDefault(), updatedAt: null }) });
+  app.get('/api/settings/publish-retry', async () => timeoutView());
+  app.put('/api/settings/publish-retry', { schema: { body: PublishTimeoutInput } }, async (req) => {
+    await savePublishTimeout(req.body);
+    return timeoutView();
   });
 
   /**
@@ -130,7 +131,7 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /** Env-configured values shown read-only in the UI (publish defaults, audit retention, media limits). Cheap. */
   app.get('/api/settings/config', async () => ({
-    publish: { maxAttempts: config.PUBLISH_MAX_ATTEMPTS, timeoutMs: config.PUBLISH_TIMEOUT_MS, retryBackoffMs: config.PUBLISH_RETRY_BACKOFF_MS },
+    publish: { timeoutMs: config.PUBLISH_TIMEOUT_MS },
     auditRetentionDays: config.AUDIT_RETENTION_DAYS,
     media: { imageMaxMb: config.MEDIA_IMAGE_MAX_MB, videoMaxMb: config.MEDIA_VIDEO_MAX_MB, allowedTypes: config.MEDIA_ALLOWED_TYPES.split(',').map((s) => s.trim()).filter(Boolean) },
     adbPorts: { min: config.ADB_PORT_MIN, max: config.ADB_PORT_MAX },

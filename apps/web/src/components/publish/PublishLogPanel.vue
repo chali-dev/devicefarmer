@@ -16,7 +16,7 @@ import PublishTaskTable from './PublishTaskTable.vue'
 /**
  * 媒体管理 → 发文日志: every publish task of the viewer's accounts (admins: all, or one user's), newest change first,
  * filtered by account / status / date (a task's day = published, else due: the API's from/to). Same rows and drawer as
- * 排程发布; rescheduling, retrying and recording the operator's result happen in the drawer.
+ * 排程发布; rescheduling, 编辑后重新发布 and recording the operator's result happen in the drawer.
  */
 const { t } = useI18n()
 const auth = useAuthStore()

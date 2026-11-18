@@ -314,7 +314,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     detail: ({ body }) => {
       const targets = Array.isArray(body.targets) ? (body.targets as Body[]) : [];
       return {
-        accountIds: targets.map((t) => t.accountId), count: targets.length, republish: body.republish, maxAttempts: body.maxAttempts,
+        accountIds: targets.map((t) => t.accountId), count: targets.length, republish: body.republish,
         scheduledAt: targets.map((t) => t.scheduledAt ?? null), postTypes: targets.map((t) => t.postType ?? 'feed'),
       };
     },
@@ -400,7 +400,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // settings
   // The key itself is never stored in the log.
   'PUT /api/settings/role-menus': { action: 'settings.role_menus', detail: ({ body }) => ({ menus: body.menus }) },
-  'PUT /api/settings/publish-retry': { action: 'settings.publish_retry', detail: ({ body }) => ({ maxAttempts: body.maxAttempts, backoffSec: body.backoffSec, timeoutSec: body.timeoutSec }) },
+  'PUT /api/settings/publish-retry': { action: 'settings.publish_retry', detail: ({ body }) => ({ timeoutSec: body.timeoutSec }) },
   'PUT /api/settings/media-limits': {
     action: 'settings.media_limits', detail: ({ body }) => ({ imageMaxMb: body.imageMaxMb, videoMaxMb: body.videoMaxMb, allowedTypes: body.allowedTypes }),
   },
