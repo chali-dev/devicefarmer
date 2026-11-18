@@ -908,6 +908,16 @@ export const commentTasks = pgTable('comment_tasks', {
   commentId: uuid('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
   /** Direct comment under one of the account's own posts (social_account_posts), sent from the cloud phone. */
   postId: uuid('post_id').references(() => socialAccountPosts.id, { onDelete: 'cascade' }),
+  /**
+   * 评论追踪账号的帖子 (owner decision 2026-11-18): a comment under a tracked account's post (tracked_posts), sent by
+   * the chosen own account's cloud phone. Set null when the tracked post is deleted (the record stays). Expand (0036).
+   */
+  trackedPostId: uuid('tracked_post_id').references(() => trackedPosts.id, { onDelete: 'set null' }),
+  /**
+   * Reply to a comment under a tracked post (tracked_post_comments). Deliberately no FK: a reply whose comment is gone
+   * keeps the id and fails `comment.comment_gone` instead of turning into a comment directly under the post.
+   */
+  trackedCommentId: uuid('tracked_comment_id'),
   /** Test mode run (status dry_run) / device send: screenshot + what the input field showed. */
   evidence: jsonb('evidence').$type<ReplyEvidence>(),
   platform: text('platform').notNull(),
@@ -943,6 +953,9 @@ export const commentTasks = pgTable('comment_tasks', {
   // dry_run (test mode, nothing posted) does not block a real reply afterwards.
   uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
   index('comment_tasks_post_idx').on(t.postId, t.createdAt),
+  index('comment_tasks_tracked_post_idx').on(t.trackedPostId, t.createdAt),
+  // one active reply per tracked comment, like comment_tasks_one_active_idx
+  uniqueIndex('comment_tasks_tracked_one_active_idx').on(t.trackedCommentId).where(sql`tracked_comment_id is not null and status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
   index('comment_tasks_user_status_idx').on(t.userId, t.status, t.updatedAt),
   index('comment_tasks_account_status_idx').on(t.accountId, t.status, t.updatedAt),
   index('comment_tasks_account_hash_idx').on(t.accountId, t.textHash, t.submittedAt),

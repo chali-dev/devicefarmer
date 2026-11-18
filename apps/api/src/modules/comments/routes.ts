@@ -6,6 +6,7 @@ import { COMMENT_REPLY_STATUSES, COMMENT_STATUSES, type Comment, type CommentTas
 import { forbidden, HttpError } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { visibleAccount } from '../social/social.js';
+import { getVisibleAccount } from '../tracked/tracked.js';
 import {
   assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, recordReplyOutcome,
   REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
@@ -43,6 +44,14 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
   ]);
   const posts = rows.some((r) => r.postId) ? await db.select({ id: schema.socialAccountPosts.id, caption: schema.socialAccountPosts.caption, permalink: schema.socialAccountPosts.permalink,
     publishedAt: schema.socialAccountPosts.publishedAt }).from(schema.socialAccountPosts).where(inArray(schema.socialAccountPosts.id, idsOf(rows.map((r) => r.postId)))) : [];
+  // 评论追踪账号的帖子: the tracked post (+ its account's handle) and the tracked comment replied to
+  const TP = schema.trackedPosts;
+  const TK = schema.trackedPostComments;
+  const tposts = rows.some((r) => r.trackedPostId) ? await db.select({ id: TP.id, trackedAccountId: TP.trackedAccountId, caption: TP.title, permalink: TP.url,
+    publishedAt: TP.publishedAt, handle: schema.trackedAccounts.handle, platform: schema.trackedAccounts.platform })
+    .from(TP).innerJoin(schema.trackedAccounts, eq(schema.trackedAccounts.id, TP.trackedAccountId)).where(inArray(TP.id, idsOf(rows.map((r) => r.trackedPostId)))) : [];
+  const tcomments = rows.some((r) => r.trackedCommentId) ? await db.select({ id: TK.id, authorHandle: TK.authorHandle, text: TK.text })
+    .from(TK).where(inArray(TK.id, idsOf(rows.map((r) => r.trackedCommentId)))) : [];
   const [insts, owners] = await Promise.all([
     db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(accs.map((a) => a.instanceId)))),
@@ -61,6 +70,9 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       comment: comments.find((c) => c.id === r.commentId) ?? null,
       post: posts.find((p) => p.id === r.postId) ?? null,
+      trackedPost: tposts.find((p) => p.id === r.trackedPostId) ?? null,
+      /** null with `trackedCommentId` set = the comment is gone (a reply, never a post comment) */
+      trackedComment: tcomments.find((c) => c.id === r.trackedCommentId) ?? null,
       account: acc ? { id: acc.id, handle: acc.handle, platform: acc.platform } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
       canEdit: r.status === 'draft',
@@ -113,6 +125,8 @@ const ReplyQuery = z.object({
   status: csv(z.enum(COMMENT_REPLY_STATUSES)).optional(),
   accountId: z.string().uuid().optional(),
   commentId: z.string().uuid().optional(),
+  /** Replies on this tracked account's posts (追踪账号详情 · 回复记录); the tracked account must be visible (404). */
+  trackedAccountId: z.string().uuid().optional(),
   ownerId: z.string().uuid().optional(),
   q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(20),
@@ -264,6 +278,10 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const base: (SQL | undefined)[] = [ownerWhere(R.userId, req.user, q.ownerId)];
     if (q.accountId) base.push(eq(R.accountId, q.accountId));
     if (q.commentId) base.push(eq(R.commentId, q.commentId));
+    if (q.trackedAccountId) {
+      const ta = await getVisibleAccount(req.user, q.trackedAccountId);
+      base.push(sql`${R.trackedPostId} in (select id from tracked_posts where tracked_account_id = ${ta.id})`);
+    }
     if (q.q) {
       const l = like(q.q);
       base.push(or(ilike(R.text, l), ilike(R.authorName, l), ilike(R.reviewerName, l), ilike(R.error, l),

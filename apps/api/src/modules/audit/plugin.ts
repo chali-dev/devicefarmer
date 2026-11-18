@@ -377,6 +377,15 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'comment.post_comment_create', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null),
     detail: ({ body }) => ({ scheduledAt: body.scheduledAt }),
   },
+  // 评论追踪账号的帖子 with an own account (texts are not copied)
+  'POST /api/tracked-accounts/:id/posts/:postId/comments': {
+    action: 'comment.tracked_comment_create', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null),
+    detail: ({ body, params }) => ({ accountId: body.accountId, postId: params.postId, scheduledAt: body.scheduledAt }),
+  },
+  'POST /api/tracked-accounts/:id/posts/:postId/comments/:commentId/replies': {
+    action: 'comment.tracked_reply_create', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null),
+    detail: ({ body, params }) => ({ accountId: body.accountId, postId: params.postId, commentId: params.commentId, scheduledAt: body.scheduledAt }),
+  },
   'POST /api/risk/devices/:id/resume': { action: 'risk.device_resume', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   // alerts (告警通知): rules

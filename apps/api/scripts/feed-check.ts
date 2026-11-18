@@ -13,6 +13,11 @@
  * - 风控: device halted → the reply stays scheduled without a task (comment.device_halted), the feed says
  *   halted; 恢复 re-queues it; device rate rules (minimum gap, per day) defer to a new round (never dropped);
  *   settings validation + RBAC; test mode on by default; a dry_run reply does not block a real one;
+ * - 评论追踪账号的帖子 (own account on a tracked post): account choice (own, same platform, on a phone; admins anyone's
+ *   with the owner), RBAC (others' account / tracked account 404, no phone / wrong platform 400), comment + reply
+ *   scheduled and handed over like the account's own posts (offline phone, unknown link, unknown author), one active
+ *   reply per tracked comment (dry_run doesn't block), minimum gap defers, 回复记录 on both sides (each filtered),
+ *   tracked post deleted → the record stays; migration 0036 shape;
  * - evidence screenshot endpoint (owner 200 PNG, others 404); migration 0035 shape + db:migrate twice; audit.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/feed-check.ts
@@ -171,9 +176,9 @@ try {
   r = await http('GET', `/api/social/accounts/${accA.id}/feed`, T);
   check('admin sees the feed', r.status === 200 && r.body.posts.total === 12);
   r = await http('GET', `/api/tracked-accounts/${tacc!.id}/feed`, A);
-  check('tracked feed: 2 posts, comments in the app order (position), +500 followers, read only (no send block)',
+  check('tracked feed: 2 posts, comments in the app order (position), +500 followers, send block (Instagram: own accounts can comment, test mode on)',
     r.status === 200 && r.body.posts.total === 2 && r.body.posts.items[0].commentRows.map((c: any) => c.authorHandle).join() === 't4,t3,t2,t1,t0' && r.body.posts.items[0].commentsTotal === 5
-    && r.body.activity.find((a: any) => a.type === 'stats').delta.followers === 500 && !('send' in r.body), r.text.slice(0, 300));
+    && r.body.activity.find((a: any) => a.type === 'stats').delta.followers === 500 && r.body.send?.deviceCapable === true && r.body.send?.testMode === true, r.text.slice(0, 300));
   r = await http('GET', `/api/tracked-accounts/${tacc!.id}/posts/${tposts[0]!.id}/comments?limit=2&offset=1`, A);
   check('tracked comment paging', r.body.total === 5 && r.body.items.map((c: any) => c.authorHandle).join() === 't3,t2', r.text);
 
@@ -217,6 +222,128 @@ try {
   check('回复记录 lists it with the post (caption, permalink), comment null', pci?.post?.caption === `post 2 ${tag}` && pci.comment === null && pci.post.permalink === permalinkOf(pks[2]!), JSON.stringify(pci).slice(0, 300));
   r = await http('GET', `/api/social/accounts/${accA.id}/feed`, A);
   check('feed shows the post comment under its post', r.body.posts.items.find((p: any) => p.id === posts[2]!.id)?.postComments?.[0]?.id === pc.id);
+
+  // ---------------------------------------------------------------- 评论追踪账号的帖子 with an own account
+  const tp0 = tposts[0]!;
+  const tcs = await db.select().from(schema.trackedPostComments).where(eq(schema.trackedPostComments.trackedPostId, tp0.id));
+  const tc = (h: string) => tcs.find((c) => c.authorHandle === h)!;
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/reply-accounts`, A);
+  const ra = (r.body.items ?? []) as any[];
+  check('reply accounts (user): own Instagram accounts on a phone only (no phone / other user excluded), own=true, device shown',
+    r.status === 200 && ra.map((x) => x.id).sort().join() === [accA.id, accS.id].sort().join() && ra.every((x) => x.own === true && x.instance?.name?.startsWith(`feedchk-${tag}`)), r.text.slice(0, 300));
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/reply-accounts`, T);
+  const rb = (r.body.items ?? []) as any[];
+  const rbB = rb.find((x) => x.id === accB.id);
+  check('reply accounts (admin): any user\'s, with the owner name (own=false)', !!rbB && rbB.ownerName === `fdb${tag}` && rbB.own === false && !rb.some((x) => x.id === accN.id), JSON.stringify(rbB));
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/reply-accounts`, B);
+  check('reply accounts of another user\'s tracked account → 404', r.status === 404 && r.body.code === 'tracked.not_found', r.text);
+  const tpath = `/api/tracked-accounts/${tacc!.id}/posts/${tp0.id}/comments`;
+  const refusals = await Promise.all([
+    http('POST', tpath, A, { accountId: accB.id, text: 'x' }),
+    http('POST', tpath, A, { accountId: accN.id, text: 'x' }),
+    http('POST', tpath, B, { accountId: accB.id, text: 'x' }),
+    http('POST', `${tpath}/${tc('t0').id}/replies`, B, { accountId: accB.id, text: 'x' }),
+    http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${tposts[1]!.id}/comments/${tc('t0').id}/replies`, A, { accountId: accA.id, text: 'x' }),
+    http('POST', tpath, A, { accountId: accA.id, text: '   ' }),
+  ]);
+  check('refusals: another user\'s account 404 social.not_found, account without a phone 400 comment.account_no_device, another user\'s tracked account 404 (comment + reply), comment of another post 404, empty text 400',
+    refusals[0]!.status === 404 && refusals[0]!.body.code === 'social.not_found' && refusals[1]!.status === 400 && refusals[1]!.body.code === 'comment.account_no_device'
+    && refusals[2]!.status === 404 && refusals[2]!.body.code === 'tracked.not_found' && refusals[3]!.status === 404 && refusals[4]!.status === 404 && refusals[4]!.body.code === 'comment.not_found'
+    && refusals[5]!.status === 400 && refusals[5]!.body.code === 'comment.text_empty', refusals.map((x) => `${x.status}:${x.body?.code}`).join(','));
+  // a tracked YouTube account (seeded; the platform is disabled by default): an Instagram account doesn't fit
+  const [ytAcc] = await db.insert(schema.trackedAccounts).values({ userId: uA, platform: 'youtube', handle: `@fdyt${tag}`, profileUrl: `https://www.youtube.com/@fdyt${tag}` }).returning();
+  const [ytPost] = await db.insert(schema.trackedPosts).values({ trackedAccountId: ytAcc!.id, externalId: `yt${tag}`, source: 'api', url: `https://www.youtube.com/watch?v=yt${tag}`, title: 'yt' }).returning();
+  r = await http('POST', `/api/tracked-accounts/${ytAcc!.id}/posts/${ytPost!.id}/comments`, A, { accountId: accA.id, text: 'x' });
+  const ytList = await http('GET', `/api/tracked-accounts/${ytAcc!.id}/reply-accounts`, A);
+  check('wrong platform: 400 comment.account_platform_mismatch; no account offered for a YouTube tracked account', r.status === 400 && r.body.code === 'comment.account_platform_mismatch' && ytList.body.items?.length === 0, `${r.text} ${ytList.text}`);
+
+  r = await http('POST', tpath, A, { accountId: accA.id, text: `Tracked note ${tag}` });
+  const tq = r.body.reply;
+  const tqRow = tq ? await reply(tq.id) : null;
+  check('comment on a tracked post: 201, scheduled at once, tracked post linked (no own post / comment), owner = the account\'s owner',
+    r.status === 201 && tq.status === 'scheduled' && tqRow?.trackedPostId === tp0.id && tqRow.trackedCommentId === null && tqRow.postId === null && tqRow.commentId === null && tqRow.userId === uA && tqRow.accountId === accA.id, r.text);
+  const tqDone = await waitFor('tracked comment handed over', async () => { const x = await reply(tq.id); return x.status === 'awaiting_operator' ? x : null; });
+  const tql = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, tq.id), eq(schema.commentLogs.action, 'handed_over')));
+  check('…phone offline → operator (comment.device_offline): the device path was planned (link from the media pk)', tqDone.method === 'manual' && tql[0]?.code === 'comment.device_offline', JSON.stringify(tql[0]));
+  r = await http('POST', `${tpath}/${tc('t0').id}/replies`, A, { accountId: accA.id, text: `Tracked reply ${tag}` });
+  const tr = r.body.reply;
+  const trRow = tr ? await reply(tr.id) : null;
+  const again = await http('POST', `${tpath}/${tc('t0').id}/replies`, A, { accountId: accS.id, text: `Second ${tag}` });
+  check('reply to a tracked comment: 201 scheduled (tracked post + comment linked); a second reply (other own account) → 409 comment.already_replied',
+    r.status === 201 && tr.status === 'scheduled' && trRow?.trackedCommentId === tc('t0').id && trRow.trackedPostId === tp0.id && again.status === 409 && again.body.code === 'comment.already_replied', `${r.text} ${again.text}`);
+  await waitFor('tracked reply handed over', async () => (await reply(tr.id)).status === 'awaiting_operator');
+  const trl = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, tr.id), eq(schema.commentLogs.action, 'handed_over')));
+  check('…reply planned for the phone (author + key known) → offline → operator', trl[0]?.code === 'comment.device_offline', JSON.stringify(trl[0]));
+  // unknown link / unknown author → operator with the reason
+  const [noLink] = await db.insert(schema.trackedPosts).values({ trackedAccountId: tacc!.id, externalId: `nolink${tag}`, source: 'manual', url: null, title: 'old manual row' }).returning();
+  const [noAuthor] = await db.insert(schema.trackedPostComments).values({ trackedPostId: tp0.id, trackedAccountId: tacc!.id, externalId: `noauthor${tag}`, authorHandle: null, text: 'who', position: 9 }).returning();
+  const nl = await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${noLink!.id}/comments`, A, { accountId: accA.id, text: `No link ${tag}` });
+  const na = await http('POST', `${tpath}/${noAuthor!.id}/replies`, A, { accountId: accA.id, text: `No author ${tag}` });
+  await waitFor('no-link / no-author handed over', async () => (await reply(nl.body.reply.id)).status === 'awaiting_operator' && (await reply(na.body.reply.id)).status === 'awaiting_operator');
+  const reasons = await db.select({ id: schema.commentLogs.commentTaskId, code: schema.commentLogs.code }).from(schema.commentLogs)
+    .where(and(inArray(schema.commentLogs.commentTaskId, [nl.body.reply.id, na.body.reply.id]), eq(schema.commentLogs.action, 'handed_over')));
+  check('post link unknown → operator (comment.device_no_post_link); comment author unknown → operator (comment.device_no_author)',
+    reasons.find((x) => x.id === nl.body.reply.id)?.code === 'comment.device_no_post_link' && reasons.find((x) => x.id === na.body.reply.id)?.code === 'comment.device_no_author', JSON.stringify(reasons));
+  // dry_run (as the phone writes it in test mode) doesn't block a real reply; the minimum gap applies to tracked targets too
+  await db.insert(R).values({ userId: uA, accountId: accA.id, trackedPostId: tp0.id, trackedCommentId: tc('t1').id, platform: 'instagram', text: 'dry', textHash: 'td', status: 'dry_run', method: 'device', handedAt: new Date(Date.now() - 10_000), submittedAt: new Date() });
+  await http('PUT', '/api/comments/settings', T, { minGapSec: 120 });
+  r = await http('POST', `${tpath}/${tc('t1').id}/replies`, A, { accountId: accA.id, text: `After dry tracked ${tag}` });
+  const tg = r.body.reply;
+  const tgDef = tg ? await waitFor('tracked reply deferred by gap', async () => { const x = await reply(tg.id); return x.round === 2 ? x : null; }) : null;
+  const tgt = await taskOf(tgDef?.taskId ?? null);
+  check('test mode: a dry_run on a tracked comment does not block a real reply; minimum gap (120 s, the dry run counts) defers it to a new round',
+    r.status === 201 && tgDef?.status === 'scheduled' && !!tgt && Math.abs(tgt.runAt!.getTime() - (Date.now() - 10_000 + 121_000)) < 15_000
+    && (await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, tg.id), eq(schema.commentLogs.code, 'comment.min_gap')))).length === 1, `${r.text} ${JSON.stringify(tgt?.runAt)}`);
+  await http('POST', `/api/comment-replies/${tg.id}/cancel`, A);
+  await http('PUT', '/api/comments/settings', T, { minGapSec: 60 });
+  // admin comments with user B's account on A's tracked post: A never sees B's account there
+  r = await http('POST', tpath, T, { accountId: accB.id, text: `Admin via B ${tag}` });
+  const ab = r.body.reply;
+  check('admin may use any user\'s account (201; the row belongs to that account\'s owner)', r.status === 201 && (await reply(ab.id)).userId === uB, r.text);
+  // 回复记录 on both sides
+  r = await http('GET', `/api/comment-replies?accountId=${accA.id}&limit=100`, A);
+  const ownRows = (r.body.items ?? []) as any[];
+  const oq = ownRows.find((x) => x.id === tq.id);
+  const orr = ownRows.find((x) => x.id === tr.id);
+  check('社交号 回复记录: tracked comment + reply listed with the tracked post (handle, caption, link) and the tracked comment',
+    oq?.trackedPost?.handle === `fd_t_${tag}` && oq.trackedPost.caption === 't0' && oq.trackedPost.permalink === permalinkOf(pks[0]!) && oq.trackedComment === null && oq.comment === null && oq.post === null
+    && orr?.trackedComment?.authorHandle === 't0' && orr.trackedComment.text === 'x0', JSON.stringify({ oq, orr }).slice(0, 500));
+  r = await http('GET', `/api/comment-replies?trackedAccountId=${tacc!.id}&limit=100`, A);
+  const tRows = (r.body.items ?? []) as any[];
+  check('追踪账号 回复记录 (A): only replies on this tracked account\'s posts, only A\'s accounts (not the admin\'s one via B)',
+    r.status === 200 && tRows.length === r.body.total && tRows.every((x) => x.accountId === accA.id && x.trackedPost?.trackedAccountId === tacc!.id) && tRows.some((x) => x.id === tq.id) && tRows.some((x) => x.id === tr.id)
+    && !tRows.some((x) => x.id === ab.id) && !tRows.some((x) => x.id === pc.id), JSON.stringify(tRows.map((x) => x.id)));
+  const tAdmin = await http('GET', `/api/comment-replies?trackedAccountId=${tacc!.id}&limit=100`, T);
+  const tB = await http('GET', `/api/comment-replies?trackedAccountId=${tacc!.id}`, B);
+  check('…admin sees all of them (incl. via B); another user filtering by the tracked account → 404', tAdmin.body.items?.some((x: any) => x.id === ab.id) && tAdmin.body.total === r.body.total + 1 && tB.status === 404, `${tAdmin.body.total} ${r.body.total} ${tB.status}`);
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/feed`, A);
+  const tf0 = r.body.posts?.items?.find((p: any) => p.id === tp0.id);
+  check('tracked feed: the post shows A\'s comment (not the admin\'s via B), comment t0 shows its reply',
+    tf0?.postComments?.some((x: any) => x.id === tq.id) && !tf0.postComments.some((x: any) => x.id === ab.id) && tf0.commentRows.find((c: any) => c.authorHandle === 't0')?.reply?.id === tr.id, JSON.stringify(tf0?.postComments));
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/feed`, T);
+  check('…admin\'s tracked feed shows the one via B too', r.body.posts.items.find((p: any) => p.id === tp0.id)?.postComments?.some((x: any) => x.id === ab.id));
+  r = await http('GET', `/api/tracked-accounts/${tacc!.id}/posts/${tp0.id}/comments?limit=10`, A);
+  check('tracked comment paging carries the reply state', r.body.items.find((c: any) => c.authorHandle === 't0')?.reply?.id === tr.id);
+  // the tracked post is deleted while a reply waits (parked on a halted phone): the record stays (tracked post null),
+  // the reply keeps its comment id and fails comment.comment_gone when it runs (never turned into a post comment)
+  const [tp1] = [tposts[1]!];
+  const [tc1] = await db.insert(schema.trackedPostComments).values({ trackedPostId: tp1.id, trackedAccountId: tacc!.id, externalId: commentKey(pks[1]!, 'z', 'zz'), authorHandle: 'z', text: 'zz', position: 0 }).returning();
+  await haltDevice(d1, { code: 'comment.device_challenge', source: 'reply', platform: 'instagram', socialAccountId: accA.id });
+  const del1 = await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${tp1.id}/comments/${tc1!.id}/replies`, A, { accountId: accA.id, text: `Gone ${tag}` });
+  const parkedT = await waitFor('tracked reply parked on the halted phone', async () => { const x = await reply(del1.body.reply.id); return x.status === 'scheduled' && x.taskId === null && x.errorCode === 'comment.device_halted' ? x : null; });
+  check('halted phone: a tracked reply is parked like any other (scheduled, no task, comment.device_halted)', !!parkedT);
+  r = await http('DELETE', `/api/tracked-accounts/${tacc!.id}/posts/${tp1.id}`, A);
+  const gone = await reply(del1.body.reply.id);
+  check('tracked post deleted: the reply row stays (tracked post null, comment id kept)', [200, 204].includes(r.status) && gone.trackedPostId === null && gone.trackedCommentId === tc1!.id, `${r.status} ${JSON.stringify(gone)}`);
+  await http('POST', `/api/risk/devices/${d1.id}/resume`, T);
+  const goneDone = await waitFor('gone reply ran', async () => { const x = await reply(gone.id); return ['failed', 'awaiting_operator', 'sent', 'dry_run'].includes(x.status) ? x : null; });
+  check('…恢复 → it runs and fails comment.comment_gone (no post comment, no hand-over)', goneDone.status === 'failed' && goneDone.errorCode === 'comment.comment_gone', JSON.stringify(goneDone));
+  r = await http('GET', `/api/comment-replies?accountId=${accA.id}&limit=100`, A);
+  const gi = r.body.items.find((x: any) => x.id === gone.id);
+  check('…回复记录 still lists it (tracked post + comment null = gone)', !!gi && gi.trackedComment === null && gi.trackedPost === null && gi.trackedCommentId === tc1!.id, JSON.stringify(gi).slice(0, 300));
+  const [idx36] = await sqlClient`select indexdef from pg_indexes where indexname = 'comment_tasks_tracked_one_active_idx'`;
+  const [fk36] = await sqlClient`select confdeltype from pg_constraint where conname = 'comment_tasks_tracked_post_id_tracked_posts_id_fk'`;
+  check('migration 0036: one active reply per tracked comment (dry_run ignored), tracked post FK on delete set null', /dry_run/.test(String(idx36?.indexdef)) && fk36?.confdeltype === 'n', `${idx36?.indexdef} ${fk36?.confdeltype}`);
 
   // ---------------------------------------------------------------- 风控: halted phone parks replies, 恢复 re-queues
   await haltDevice(d1, { code: 'comment.device_challenge', source: 'reply', platform: 'instagram', socialAccountId: accA.id });
@@ -301,7 +428,7 @@ try {
   const out1 = mig();
   const out2 = mig();
   const [cnt] = await sqlClient`select count(*)::int as n from drizzle.__drizzle_migrations`;
-  check('db:migrate twice: both succeed, no new migration rows', /migrations applied/.test(out1) && /migrations applied/.test(out2) && Number(cnt?.n) >= 35, `${cnt?.n}`);
+  check('db:migrate twice: both succeed, no new migration rows', /migrations applied/.test(out1) && /migrations applied/.test(out2) && Number(cnt?.n) >= 36, `${cnt?.n}`);
 
   // ---------------------------------------------------------------- audit
   await new Promise((res) => setTimeout(res, 500));
@@ -309,7 +436,11 @@ try {
   check('audit: feed.collect (202 + 409 + 404), comment.post_comment_create without the text, test-mode switch refused 403',
     audits.some((a) => a.action === 'feed.collect' && a.status === 202) && audits.some((a) => a.action === 'feed.collect' && a.status === 409)
     && audits.some((a) => a.action === 'comment.post_comment_create' && a.status === 201 && !JSON.stringify(a.detail ?? {}).includes('Post note'))
-    && audits.some((a) => a.action === 'comment.rules_update' && a.status === 403 && (a.detail as any)?.testMode === false),
+    && audits.some((a) => a.action === 'comment.rules_update' && a.status === 403 && (a.detail as any)?.testMode === false)
+    && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 201 && !!(a.detail as any)?.accountId && !JSON.stringify(a.detail ?? {}).includes('Tracked note'))
+    && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 404)
+    && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 201 && !!(a.detail as any)?.commentId && !JSON.stringify(a.detail ?? {}).includes('Tracked reply'))
+    && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 409),
     audits.filter((a) => /feed|comment/.test(a.action)).map((a) => `${a.action}:${a.status}`).join(','));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);

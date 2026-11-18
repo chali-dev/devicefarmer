@@ -541,6 +541,10 @@ export interface CommentReplyItem {
   ownerName: string | null
   comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual' | 'device'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null
   post: { id: string; caption: string | null; permalink: string | null; publishedAt: string | null } | null
+  /** 评论追踪账号的帖子: the tracked post (with the tracked account's handle) and, for a reply, the comment (null when gone). */
+  trackedPostId?: string | null; trackedCommentId?: string | null
+  trackedPost?: { id: string; trackedAccountId: string; caption: string | null; permalink: string | null; publishedAt: string | null; handle: string; platform: string } | null
+  trackedComment?: { id: string; authorHandle: string | null; text: string } | null
   /** Test run / device send: what the input field showed (the screenshot: GET /api/comment-replies/:id/evidence). */
   evidence: { at: string; inputText: string | null; excerpt: string | null } | null
   hasEvidence: boolean
@@ -572,6 +576,12 @@ export interface FeedCollectState {
   settings: { hours: number | null; posts: number; commentsPerPost: number }
   last: { taskId: string; status: string; at: string; errorCode: string | null; result: Record<string, unknown> | null } | null
   pending: { taskId: string; status: string; runAt: string | null } | null
+}
+/** An own account that may comment on a tracked account's posts (GET /api/tracked-accounts/:id/reply-accounts). */
+export interface ReplyAccountOption {
+  id: string; platform: string; handle: string; displayName: string | null; accountStatus: string; loginStatus: string
+  userId: string; ownerName: string | null; own: boolean
+  instance: { id: string; name: string; online: boolean; halted: boolean }
 }
 export interface FeedResponse {
   account: { id: string; platform: string; handle: string; instanceId?: string | null; userId: string }

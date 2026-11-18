@@ -11,15 +11,16 @@ import { pagination } from '../common/ui'
 
 /**
  * Post cards of the account feed: caption, time, likes / comments, and the comments read on the phone folded
- * under each post with the same V toggle as the 评论互动 threads. Social accounts (not `readonly`): 「评论」 on a
- * post, 「回复」 on a top-level comment (both open the reply composer), the replies' state + screenshot.
+ * under each post with the same V toggle as the 评论互动 threads. Unless `readonly`: 「评论」 on a post, 「回复」 on a
+ * top-level comment (both open the reply composer; on a tracked account's post with one of the viewer's own accounts),
+ * the replies' state + screenshot.
  */
 const props = defineProps<{
   kind: 'social' | 'tracked'; accountId: string; posts: FeedPost[]; total: number; page: number; pageSize: number; loading: boolean; readonly: boolean
   /** Show a delete button per post (tracked accounts keep their per-post delete). */
   deletable?: boolean
 }>()
-const emit = defineEmits<{ page: [number]; reply: [FeedComment]; comment: [FeedPost]; evidence: [string]; remove: [FeedPost] }>()
+const emit = defineEmits<{ page: [number]; reply: [FeedComment, FeedPost]; comment: [FeedPost]; evidence: [string]; remove: [FeedPost] }>()
 const { t, te } = useI18n()
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const num = (n: number | null, approx: boolean) => (n === null ? '—' : `${approx ? `${t('feed.approx')} ` : ''}${approx ? compactNumber(n) : n.toLocaleString(dateLocale())}`)
@@ -55,7 +56,7 @@ const replyError = (r: FeedReply) => (r.errorCode && r.status !== 'sent' && r.st
         <span class="muted">{{ fmt(p.publishedAt ?? p.firstSeenAt) }}</span>
         <a v-if="p.permalink" :href="p.permalink" target="_blank" rel="noopener noreferrer">{{ t('feed.openPost') }}</a>
         <span class="grow" />
-        <a-button v-if="!readonly && kind === 'social'" size="small" @click="emit('comment', p)">{{ t('feed.comment') }}</a-button>
+        <a-button v-if="!readonly" size="small" @click="emit('comment', p)">{{ t('feed.comment') }}</a-button>
         <a-button v-if="deletable" size="small" type="link" danger @click="emit('remove', p)">{{ t('common.delete') }}</a-button>
       </div>
       <div v-if="p.caption" class="caption">{{ p.caption }}</div>
@@ -93,7 +94,7 @@ const replyError = (r: FeedReply) => (r.errorCode && r.status !== 'sent' && r.st
               <span v-if="replyError(m.reply)" class="err">{{ replyError(m.reply) }}</span>
               <a v-if="m.reply.hasEvidence" class="small" @click="emit('evidence', m.reply.id)">{{ t('feed.evidence') }}</a>
             </div>
-            <a-button v-if="!readonly && kind === 'social' && m.id === c.id && canReply(m)" size="small" type="link" class="act" @click="emit('reply', m)">{{ t('feed.reply') }}</a-button>
+            <a-button v-if="!readonly && m.id === c.id && canReply(m)" size="small" type="link" class="act" @click="emit('reply', m, p)">{{ t('feed.reply') }}</a-button>
           </div>
         </div>
         <a-button v-if="shown(p).length < p.commentsTotal" size="small" type="link" :loading="loadingMore === p.id" @click="loadMore(p)">{{ t('feed.moreComments') }}</a-button>
