@@ -23,6 +23,7 @@ watchEffect(() => {
     '--cp-border-secondary': t.colorBorderSecondary,
     '--cp-fill-alter': t.colorFillAlter,
     '--cp-bg-hover': t.colorBgTextHover,
+    '--cp-bg-disabled': t.colorBgContainerDisabled,
     '--cp-primary': t.colorPrimary,
     '--cp-primary-bg': t.colorPrimaryBg,
     '--cp-error': t.colorError,

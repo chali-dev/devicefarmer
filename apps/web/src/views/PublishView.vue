@@ -90,6 +90,78 @@ const dayItems = (d: Dayjs) => calItems.value.filter((x) => when(x).isSame(d, 'd
 function shift(n: number) { cursor.value = cursor.value.add(n, 'week') }
 watch(cursor, () => { if (tab.value === 'calendar') void loadCalendar() })
 
+// Drag a card to another day = reschedule to that day at the same local time (the viewer's tz, like the
+// calendar itself). Only waiting tasks (the API's reschedule rule) the viewer owns (admins: all) can be
+// dragged. Days before today never accept a drop; today only while the card's time is still ahead (the API
+// would publish a past time at once). Keyboard/touch users reschedule in the drawer (cards still open it).
+const now = ref(dayjs())
+const nowTimer = setInterval(() => { now.value = dayjs() }, 30_000)
+const isPast = (d: Dayjs) => d.isBefore(now.value, 'day')
+const canDrag = (x: PublishTaskItem) => (x.status === 'pending' || x.status === 'scheduled') && (auth.isAdmin || x.userId === auth.user?.id) && !moving.has(x.id)
+const dragging = ref<PublishTaskItem | null>(null)
+const overDay = ref<number | null>(null)
+const moving = reactive(new Set<string>())
+/** The card's time of day moved onto day d. */
+const atDay = (x: PublishTaskItem, d: Dayjs) => { const w = when(x); return d.hour(w.hour()).minute(w.minute()).second(w.second()).millisecond(0) }
+type DropState = 'same' | 'ok' | 'past' | 'elapsed'
+function dropState(d: Dayjs): DropState | null {
+  const x = dragging.value
+  if (!x) return null
+  if (when(x).isSame(d, 'day')) return 'same'
+  if (isPast(d)) return 'past'
+  return atDay(x, d).isAfter(dayjs()) ? 'ok' : 'elapsed'
+}
+function onDragStart(e: DragEvent, x: PublishTaskItem) {
+  if (!canDrag(x) || !e.dataTransfer) { e.preventDefault(); return }
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', x.id) // Firefox needs data to start a drag
+  now.value = dayjs()
+  dragging.value = x
+}
+function onDragEnd() { dragging.value = null; overDay.value = null }
+function onDragOver(e: DragEvent, d: Dayjs) {
+  const st = dropState(d)
+  if (!st) return
+  overDay.value = d.valueOf()
+  if (st === 'ok' || st === 'same') { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move' }
+  else if (e.dataTransfer) e.dataTransfer.dropEffect = 'none' // no preventDefault: the browser shows "no drop"
+}
+function onDragLeave(e: DragEvent, d: Dayjs) {
+  const to = e.relatedTarget as Node | null
+  if (to && (e.currentTarget as HTMLElement).contains(to)) return
+  if (overDay.value === d.valueOf()) overDay.value = null
+}
+async function onDrop(e: DragEvent, d: Dayjs) {
+  e.preventDefault()
+  const x = dragging.value
+  const st = dropState(d)
+  onDragEnd()
+  if (!x || st === 'same') return
+  if (st !== 'ok') { message.warning(t(st === 'past' ? 'publish.dropPast' : 'publish.dropElapsed')); return }
+  const at = atDay(x, d)
+  const before = x.scheduledAt
+  x.scheduledAt = at.toISOString() // optimistic: the card shows on the new day while the request runs
+  moving.add(x.id)
+  try {
+    await api('POST', `/api/publish/tasks/${x.id}/reschedule`, { scheduledAt: at.toISOString() })
+    message.success(t('publish.movedTo', { time: at.format('YYYY-MM-DD HH:mm') }))
+  } catch (err) {
+    x.scheduledAt = before // back to where it was
+    message.error(errorText(err))
+  } finally {
+    moving.delete(x.id)
+    void loadCalendar()
+  }
+}
+function dayClass(d: Dayjs) {
+  const st = dropState(d)
+  return {
+    today: d.isSame(now.value, 'day'), past: isPast(d),
+    'drop-ok': st === 'ok', 'drop-no': st === 'past' || st === 'elapsed',
+    'drop-over': overDay.value === d.valueOf() && st === 'ok',
+  }
+}
+
 // ---------------------------------------------------------------- today / queue / history (tables)
 const items = ref<PublishTaskItem[]>([])
 const total = ref(0)
@@ -165,7 +237,7 @@ const off = store.onTaskEvent((ev) => {
     if (drawerOpen.value && ev.task.refId === drawerId.value) void drawer.value?.reload()
   }, 400)
 })
-onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer) })
+onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer); clearInterval(nowTimer) })
 
 onMounted(async () => {
   void load()
@@ -212,9 +284,14 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
           </a-space>
           <a-spin :spinning="calLoading">
             <div class="week">
-              <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="{ today: d.isSame(dayjs(), 'day') }">
+              <div v-for="d in weekDays" :key="d.valueOf()" class="day" :class="dayClass(d)"
+                @dragover="onDragOver($event, d)" @dragleave="onDragLeave($event, d)" @drop="onDrop($event, d)">
                 <div class="day-head">{{ d.format('ddd MM-DD') }} <span v-if="dayItems(d).length" class="muted small">· {{ dayItems(d).length }}</span></div>
-                <div v-for="x in dayItems(d)" :key="x.id" class="ev" role="button" tabindex="0" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">
+                <div v-if="dropState(d) === 'elapsed'" class="drop-hint small">{{ t('publish.dropElapsedHint') }}</div>
+                <div v-for="x in dayItems(d)" :key="x.id" class="ev" role="button" tabindex="0"
+                  :class="{ draggable: canDrag(x), dragging: dragging?.id === x.id, moving: moving.has(x.id) }"
+                  :draggable="canDrag(x) ? 'true' : undefined" :title="canDrag(x) ? t('publish.dragHint') : undefined"
+                  @dragstart="onDragStart($event, x)" @dragend="onDragEnd" @click="openTask(x.id)" @keydown.enter="openTask(x.id)">
                   <div class="ev-time">{{ when(x).format('HH:mm') }} <PlatformTag :platform="x.platform" icon-only /> <PostTypeTag :type="x.postType" /></div>
                   <div class="ellipsis">@{{ x.account?.handle }}</div>
                   <div class="ellipsis muted">{{ x.content?.title }}</div>
@@ -273,11 +350,24 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
 <style scoped>
 .week-label { font-weight: 600; }
 .week { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 8px; overflow-x: auto; }
-.day { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); padding: 8px; min-height: 240px; min-width: 0; }
+.day { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); padding: 8px; min-height: 240px; min-width: 0; transition: background-color .15s, border-color .15s, opacity .15s; }
 .day.today { border-color: var(--cp-primary); background: var(--cp-primary-bg); }
+/* days before today: dimmed, never a drop target */
+.day.past { background: var(--cp-bg-disabled); }
+.day.past .day-head { color: var(--cp-text-tertiary); }
+.day.past .ev { opacity: .75; }
+/* while dragging: droppable days are outlined, the hovered one filled; refused days fade further */
+.day.drop-ok { border-style: dashed; border-color: var(--cp-primary); }
+.day.drop-over { background: var(--cp-primary-bg); box-shadow: inset 0 0 0 1px var(--cp-primary); }
+.day.drop-no { opacity: .55; cursor: not-allowed; }
+.drop-hint { color: var(--cp-text-tertiary); margin-bottom: 6px; }
 .day-head { font-weight: 600; margin-bottom: 8px; }
 .ev { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); background: var(--cp-bg-container); padding: 4px 6px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
 .ev:hover { border-color: var(--cp-primary); }
+.ev.draggable { cursor: grab; }
+.ev.draggable:active { cursor: grabbing; }
+.ev.dragging { opacity: .4; }
+.ev.moving { opacity: .6; cursor: progress; }
 .ev-time { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .empty { text-align: center; }
 .today-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
