@@ -69,6 +69,7 @@ const EXACT: Record<string, string> = {
   'collector: profile not available': 'collectorUnavailable',
   'collector: profile did not show in time': 'collectorTimeout',
   'drafts: skipped (switched off)': 'draftsSkipped',
+  'drafts: the API refused the refusal fallback parameters, retrying once without them': 'draftsNoFallbackRetry',
   // comment replies (no approval step since 2026-11-18)
   submitted: 'replySubmitted',
   'approval removed': 'approvalRemoved',

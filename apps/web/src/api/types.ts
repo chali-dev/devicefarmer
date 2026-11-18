@@ -548,7 +548,7 @@ export interface PersonaDraftSettings {
   draftOwnerId: string | null; draftOwnerName: string | null; draftOwnerDisabled: boolean | null
   runs: PersonaDraftRun[]
 }
-export interface AiSettingsState { enabled: boolean; keySet: boolean; model: string; hour: number; updatedAt: string | null }
+export interface AiSettingsState { enabled: boolean; keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */
 export type Persona = ScopedItem
 /** 内容分类 (count = contents using it). */

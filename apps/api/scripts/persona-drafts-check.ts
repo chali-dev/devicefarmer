@@ -14,14 +14,21 @@
  * - Writing drafts (saveDrafts) from a HAND-MADE structured result (no model involved): owner, language, ai-draft tag,
  *   ai_generated origin, targets = owner's accounts with the persona on enabled platforms only, banned-word drafts
  *   dropped, hashtags appended, suggested media by tag, visibility to other users.
- * - With ANTHROPIC_TEST_API_KEY set: one real generation (count 1) end to end.
+ * - Workspace ID setting (for keys not scoped to a workspace): format validated, set/cleared, shown (not secret), in
+ *   the audit; mapApiError turns the API's documented workspace errors into ai.workspace_required/_invalid/_not_found.
+ * - With ANTHROPIC_TEST_API_KEY set: one real generation (count 1) end to end. With a key that isn't scoped to a
+ *   workspace and no ANTHROPIC_TEST_WORKSPACE_ID, the real call must fail as ai.workspace_required (1 attempt); with
+ *   ANTHROPIC_TEST_WORKSPACE_ID it is sent as anthropic-workspace-id and the generation must succeed.
  * Usage (from apps/api, API running with default ENABLED_PLATFORMS=instagram):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/persona-drafts-check.ts
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { DRAFT_TAG, DRAFT_TASK, saveDrafts, schedulePersonaDrafts } from '../src/modules/ai/drafts.js';
+import Anthropic from '@anthropic-ai/sdk';
+import { Redis } from 'ioredis';
+import { config } from '../src/config.js';
+import { DRAFT_TAG, DRAFT_TASK, mapApiError, saveDrafts, schedulePersonaDrafts } from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -164,6 +171,28 @@ try {
   check('key saved write-only: keySet true, never echoed, sealed in the DB',
     r.status === 200 && r.body.ai.keySet === true && !r.text.includes(INVALID_KEY) && !g.text.includes(INVALID_KEY) && !stored.includes(INVALID_KEY) && stored.includes('"apiKeyEnc":"v1:'));
 
+  // ================================================================ workspace ID (keys not scoped to a workspace)
+  {
+    const bad = await http('PUT', '/api/settings/ai', T, { workspaceId: 'ws-123' });
+    const okWs = await http('PUT', '/api/settings/ai', T, { workspaceId: 'wrkspc_01TestWorkspace0001' });
+    const kept = await http('PUT', '/api/settings/ai', T, { hour: 6 });
+    const cleared = await http('PUT', '/api/settings/ai', T, { workspaceId: '' });
+    const userWs = await http('PUT', '/api/settings/ai', A.token, { workspaceId: 'wrkspc_01TestWorkspace0001' });
+    check('workspace ID: wrong format 400, set/kept/cleared (\'\' clears), users 403, key still set',
+      bad.status === 400 && okWs.status === 200 && okWs.body.ai.workspaceId === 'wrkspc_01TestWorkspace0001' && kept.body.ai.workspaceId === 'wrkspc_01TestWorkspace0001'
+      && cleared.body.ai.workspaceId === null && userWs.status === 403 && cleared.body.ai.keySet === true, `${bad.status} ${okWs.status} ${JSON.stringify(cleared.body?.ai)}`);
+    // The documented error bodies (Authentication → Select a workspace) as the SDK builds them from a real response.
+    const mk = (status: number, type: string, message: string) => Anthropic.APIError.generate(status, { type: 'error', error: { type, message } }, undefined, new Headers());
+    const codes = [
+      mk(400, 'invalid_request_error', 'This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use. Add the header, or use an API key that is scoped to a workspace.'),
+      mk(400, 'invalid_request_error', 'anthropic-workspace-id header must be a valid workspace ID.'),
+      mk(404, 'not_found_error', 'Workspace `wrkspc_01X` not found.'),
+      mk(400, 'invalid_request_error', 'max_tokens: Field required'),
+    ].map((e) => (mapApiError(e) as Error & { code?: string }).code);
+    check('mapApiError: workspace errors → ai.workspace_required / ai.workspace_invalid / ai.workspace_not_found, other 400 → ai.request_failed',
+      codes.join() === 'ai.workspace_required,ai.workspace_invalid,ai.workspace_not_found,ai.request_failed', codes.join());
+  }
+
   // ================================================================ real call with an invalid key
   r = await http('POST', `/api/personas/${pA.id}/drafts/generate`, B.token);
   const r10 = await http('POST', `/api/personas/${pP.id}/drafts/generate`, A.token);
@@ -288,6 +317,7 @@ try {
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const ai = audits.filter((a) => a.action === 'settings.ai');
   const ps = audits.filter((a) => a.action === 'persona.draft_settings');
+  check('audit: settings.ai records the workspace ID (not secret)', ai.some((a) => (a.detail as any)?.workspaceId === 'wrkspc_01TestWorkspace0001'));
   check('audit: settings.ai entries without the key (set flag only)', ai.length >= 3 && !JSON.stringify(audits).includes(INVALID_KEY) && ai.some((a) => (a.detail as any)?.set === true));
   check('audit: persona.draft_settings with field names only (no brief texts)', ps.length >= 5 && ps.every((a) => !JSON.stringify(a.detail).includes('forbiddenword')) && ps.some((a) => ((a.detail as any)?.fields ?? []).includes('brief')));
   check('audit: persona.draft_generate recorded', audits.some((a) => a.action === 'persona.draft_generate'));
@@ -295,16 +325,36 @@ try {
   // ================================================================ optional: one real generation
   const realKey = process.env.ANTHROPIC_TEST_API_KEY;
   if (realKey) {
-    await http('PUT', '/api/settings/ai', T, { apiKey: realKey });
+    const realWs = process.env.ANTHROPIC_TEST_WORKSPACE_ID || null;
+    const redis = new Redis(config.REDIS_URL);
+    await http('PUT', '/api/settings/ai', T, { apiKey: realKey, workspaceId: null });
     await db.update(schema.personas).set({ brief: { ...personaA!.brief, exampleTemplateIds: [] } }).where(eq(schema.personas.id, pP.id));
-    r = await http('POST', `/api/personas/${pP.id}/drafts/generate`, T);
-    const rt = await waitTask(r.body.task.id, 240_000);
-    const res = rt.result as any;
-    const rows = res?.contentIds ? await db.select().from(schema.contents).where(inArray(schema.contents.id, res.contentIds)) : [];
-    check('REAL generation with ANTHROPIC_TEST_API_KEY: success, 1 draft for the draft owner with origin', rt.status === 'success' && rows.length === 1 && rows[0]!.userId === B.id && !!rows[0]!.aiGenerated?.model,
-      `${rt.status} ${rt.errorCode ?? ''} served=${res?.servedModel} fallback=${res?.fallback} usage=${JSON.stringify(res?.usage)}`);
+    const generate = async () => {
+      await redis.del(`ai:drafts:manual:${pP.id}`);
+      const g = await http('POST', `/api/personas/${pP.id}/drafts/generate`, T);
+      return waitTask(g.body.task.id, 240_000);
+    };
+    let rt = await generate();
+    if (rt.status === 'failed' && rt.errorCode === 'ai.workspace_required') {
+      check('REAL call, key not scoped to a workspace, no workspace ID: failed ai.workspace_required after 1 attempt, no content',
+        rt.attempts === 1 && !(rt.result as any)?.contentIds, `${rt.error}`);
+      if (realWs) {
+        await http('PUT', '/api/settings/ai', T, { workspaceId: realWs });
+        rt = await generate();
+      } else {
+        console.log('- ANTHROPIC_TEST_WORKSPACE_ID not set: the key needs a workspace ID, no real generation');
+      }
+    }
+    if (rt.errorCode !== 'ai.workspace_required') {
+      const res = rt.result as any;
+      const rows = res?.contentIds ? await db.select().from(schema.contents).where(inArray(schema.contents.id, res.contentIds)) : [];
+      check('REAL generation with ANTHROPIC_TEST_API_KEY: success, 1 draft for the draft owner with origin', rt.status === 'success' && rows.length === 1 && rows[0]!.userId === B.id && !!rows[0]!.aiGenerated?.model,
+        `${rt.status} ${rt.errorCode ?? ''} ${rt.status === 'failed' ? rt.error : ''} served=${res?.servedModel} fallback=${res?.fallback} usage=${JSON.stringify(res?.usage)}`);
+      if (rows[0]) console.log(`  draft: ${JSON.stringify(rows[0].title)} — ${JSON.stringify(rows[0].body.slice(0, 160))}`);
+    }
     const rlogs = JSON.stringify(await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, rt.id)));
     check('REAL generation: logs carry no key', !rlogs.includes(realKey));
+    redis.disconnect();
   } else {
     console.log('- ANTHROPIC_TEST_API_KEY not set: no real generation (only the invalid-key call reached the model API)');
   }
