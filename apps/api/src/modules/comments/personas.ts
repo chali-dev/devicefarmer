@@ -9,18 +9,18 @@ import { assertDraftOwnerCandidate } from '../ai/drafts.js';
 import { personaDraftRuns } from '../ai/runs.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
-import { assertStyleOk, exampleWhere, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
+import { assertStyleOk, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
  * by everyone; personal ones belong to one user (others get 404; admins see and manage all). Templates reference one
- * via `comment_templates.persona_id`: a shared template only a public persona, a private one a public persona or one of
- * its owner's (`assertPersonaFor`). Deleting a persona clears the reference, never the templates. Personas cannot be
+ * via `comment_templates.persona_id` (required since 2026-11-18): a shared template only a public persona, a private one a
+ * public persona or one of its owner's (`assertPersonaFor`). Deleting a persona deletes its templates. Personas cannot be
  * merged (owner decision 2026-11-18; 内容分类/素材分类 keep their merge).
  *
- * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`,
- * shared by posts and replies, see persona-style.ts), 范例 (= templates of the persona in its own scope, edited through the
- * template API), and AI 草稿 (on/off, per day, draft owner of a public persona). POST/PATCH take all of it.
+ * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`:
+ * shared topics/banned words + 发文风格 + 评论风格, see persona-style.ts), 范例 (≤ 20 post + ≤ 20 comment = templates of
+ * the persona in its own scope, edited through the template API), and AI 草稿 (on/off, per day, draft owner of a public persona). POST/PATCH take all of it.
  */
 const P = schema.personas;
 const TPL = schema.commentTemplates;
@@ -146,7 +146,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
         post: examples.filter((e) => e.kind === 'post').map(({ userId: _u, ...e }) => e),
         comment: examples.filter((e) => e.kind === 'comment').map(({ userId: _u, ...e }) => e),
       },
-      lengths: PERSONA_LENGTHS,
+      lengths: PERSONA_LENGTHS, maxExamples: MAX_EXAMPLES,
     };
   });
 
@@ -176,11 +176,14 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     return { persona: publicPersona(row!, true) };
   });
 
-  /** Templates and accounts using it become 未设人设 (templates' legacy text is cleared too, see persona-data-migration.ts). */
+  /**
+   * Its templates (范例) are deleted with it (every template needs a persona since 2026-11-18); accounts using it become
+   * 未设人设 (logged).
+   */
   app.delete('/api/personas/:id', { schema: { params: Id } }, async (req, reply) => {
     const p = await manageablePersona(req.user, req.params.id);
     await db.transaction(async (tx) => {
-      const moved = await tx.update(TPL).set({ personaId: null, persona: null }).where(eq(TPL.personaId, p.id)).returning({ id: TPL.id });
+      const moved = await tx.delete(TPL).where(eq(TPL.personaId, p.id)).returning({ id: TPL.id });
       const accounts = await tx.update(SA).set({ personaId: null }).where(eq(SA.personaId, p.id)).returning({ id: SA.id });
       await logAccountPersona(tx, req.user, accounts.map((a) => a.id), p.name, null, 'persona deleted');
       await tx.delete(P).where(eq(P.id, p.id));

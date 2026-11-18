@@ -65,6 +65,7 @@ const tag = randomBytes(3).toString('hex');
 const h = (s: string) => `cc_${tag}_${s}`;
 const userIds: string[] = [];
 const sharedTemplates: string[] = [];
+const publicPersonas: string[] = [];
 const contentIds: string[] = [];
 const [rulesBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'comments.rules'));
 // Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
@@ -324,13 +325,18 @@ try {
   r = await http('DELETE', `/api/comments/${apiC!.id}`, A);
   check('delete an API comment → 409 comment.not_manual (hide instead)', r.status === 409 && r.body.code === 'comment.not_manual');
 
-  // ---------------------------------------------------------------- templates
-  r = await http('POST', '/api/comment-templates', A, { name: 'Thanks', text: 'Thanks for watching, {name}!' });
+  // ---------------------------------------------------------------- templates (= 范例 of personas since 2026-11-18)
+  const tplPersonaA = (await http('POST', '/api/personas', A, { scope: 'mine', name: h('tplpersona') })).body.persona?.id as string;
+  const tplPersonaPub = (await http('POST', '/api/personas', T, { scope: 'public', name: h('tplpub') })).body.persona?.id as string;
+  publicPersonas.push(tplPersonaPub);
+  r = await http('POST', '/api/comment-templates', A, { name: 'Loose', text: 'no persona' });
+  check('A: template without a persona → 400 template.persona_required', r.status === 400 && r.body.code === 'template.persona_required', `${r.status} ${r.body?.code}`);
+  r = await http('POST', '/api/comment-templates', A, { name: 'Thanks', text: 'Thanks for watching, {name}!', personaId: tplPersonaA });
   const tplA = r.body.template?.id as string;
-  check('A: private template', r.status === 201 && r.body.template.shared === false);
-  r = await http('POST', '/api/comment-templates', A, { name: 'Shared', text: 'x', shared: true });
+  check('A: private template (comment example of A\'s persona)', r.status === 201 && r.body.template.shared === false && r.body.template.personaId === tplPersonaA);
+  r = await http('POST', '/api/comment-templates', A, { name: 'Shared', text: 'x', shared: true, personaId: tplPersonaPub });
   check('A: shared template → 403', r.status === 403 && r.body.code === 'comment.admin_only');
-  r = await http('POST', '/api/comment-templates', T, { name: h('shared'), text: 'Thanks for your comment!', shared: true });
+  r = await http('POST', '/api/comment-templates', T, { name: h('shared'), text: 'Thanks for your comment!', shared: true, personaId: tplPersonaPub });
   sharedTemplates.push(r.body.template?.id);
   check('admin: shared template', r.status === 201 && r.body.template.shared === true);
   r = await http('GET', '/api/comment-templates', B);
@@ -345,6 +351,7 @@ try {
   check('A: reply started from a template (edited by a person)', r.status === 201 && r.body.reply.templateId === tplA);
   r = await http('DELETE', `/api/comment-templates/${tplA}`, A);
   check('A: delete own template', r.status === 204);
+  await http('DELETE', `/api/personas/${tplPersonaA}`, A);
 
   // ---------------------------------------------------------------- RBAC on replies / history
   r = await http('GET', `/api/comment-replies/${r1}`, B);
@@ -361,11 +368,25 @@ try {
 
   // ---------------------------------------------------------------- 人设禁用词 on replies
   {
-    const pid = (await http('POST', '/api/personas', A, { scope: 'mine', name: h('persona'), style: { bannedWords: ['加微信', 'Spam'] } })).body.persona?.id;
+    const pid = (await http('POST', '/api/personas', A, { scope: 'mine', name: h('persona'), style: {
+      bannedWords: ['加微信', 'Spam'], post: { tone: 'pro', length: 'high' }, comment: { tone: 'warm', toneNote: '暖心短评', length: 'low', emoji: 'high' },
+    } })).body.persona?.id;
     const ib = await mk(A, 'instagram', h('ib'));
     r = await http('PUT', `/api/social/accounts/${ib}`, A, { personaId: pid });
     const cm = (await mc(A, ib, 'banned')).body.comment?.id;
     check('persona with banned words on a fresh account + a comment', !!pid && r.status === 200 && !!cm, r.text.slice(0, 200));
+    // what the comment drawer's persona card reads: the account's persona → 评论风格 + comment length range + 评论范例 only
+    const exC = await http('POST', '/api/comment-templates', A, { kind: 'comment', name: 'c1', text: `谢谢 {name} 的评论 ${tag}`, personaId: pid });
+    const exP = await http('POST', '/api/comment-templates', A, { kind: 'post', name: 'p1', text: `一篇发文范例 ${tag}`, personaId: pid });
+    const cdet = await http('GET', `/api/comments/${cm}`, A);
+    const pdet = await http('GET', `/api/personas/${cdet.body.comment?.account?.personaId}`, A);
+    const cst = pdet.body?.persona?.style?.comment;
+    check('comment → account.personaId → persona: 评论风格 (warm, note, emoji many, length low → comment range 4–30, not the post one)',
+      cdet.body.comment?.account?.personaId === pid && cst?.tone === 'warm' && cst?.toneNote === '暖心短评' && cst?.emoji === 'high' && cst?.length === 'low'
+        && pdet.body.lengths.comment[cst.length].join() === '4,30' && pdet.body.persona.style.post.tone === 'pro', JSON.stringify(pdet.body?.persona?.style));
+    check('插入 lists the persona\'s 评论范例 only (the post example is not among them)',
+      exC.status === 201 && exP.status === 201 && pdet.body.examples.comment.map((e: any) => e.id).join() === exC.body.template.id
+        && !pdet.body.examples.comment.some((e: any) => e.id === exP.body.template.id), JSON.stringify(pdet.body?.examples));
     r = await http('POST', `/api/comments/${cm}/replies`, A, { text: '有问题请加微信聊' });
     const r2 = await http('POST', `/api/comments/${cm}/replies`, A, { text: 'no SPAM here, promise' });
     check('reply with a banned word → 400 persona.banned_word with the words (also case-insensitive), nothing stored',
@@ -382,7 +403,11 @@ try {
     await http('PATCH', `/api/comment-replies/${rid}`, A, { text: `收到，感谢 ${tag}` });
     r = await http('POST', `/api/comment-replies/${rid}/submit`, A, {});
     check('after editing the text the reply is submitted', r.status === 200 && ['scheduled', 'awaiting_operator', 'sending'].includes(r.body.reply?.status), `${r.status} ${r.text.slice(0, 200)}`);
+    r = await http('GET', `/api/comment-replies?accountId=${ib}`, A);
+    check('reply items carry the account\'s personaId (reply drafts open with its 评论风格)', r.status === 200 && r.body.items.some((x: any) => x.id === rid && x.account?.personaId === pid), r.text.slice(0, 200));
     r = await http('DELETE', `/api/personas/${pid}`, A);
+    const gone = await db.select().from(schema.commentTemplates).where(inArray(schema.commentTemplates.id, [exC.body.template.id, exP.body.template.id]));
+    check('deleting the persona deletes its examples', r.status === 204 && gone.length === 0);
   }
 
   // ---------------------------------------------------------------- logs, leaks, audit
@@ -413,6 +438,7 @@ try {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
   for (const id of sharedTemplates.filter(Boolean)) await db.delete(schema.commentTemplates).where(eq(schema.commentTemplates.id, id));
+  for (const id of publicPersonas.filter(Boolean)) await db.delete(schema.personas).where(eq(schema.personas.id, id));
   // cancel anything still waiting so no job runs after the rows are gone
   const open = await db.select().from(schema.tasks).where(and(inArray(schema.tasks.type, ['comment-sync', 'comment-reply']), inArray(schema.tasks.status, ['pending', 'scheduled']), gte(schema.tasks.createdAt, t0)));
   for (const t of open) await http('POST', `/api/tasks/${t.id}/cancel`, T);

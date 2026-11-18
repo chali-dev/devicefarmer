@@ -260,7 +260,7 @@ try {
   const pers = await tl(U, `kind=all&personaId=${pid(uMine, '健身教练Max')}`);
   check('persona filter', eqSet(tplNames(pers), ['demo user 健身日常', 'demo user 粉丝互动']));
   const pNone = await tl(U, 'kind=all&personaId=none&q=demo');
-  check('personaId=none', eqSet(tplNames(pNone), ['demo user 价格回复']));
+  check('personaId=none: nothing (every template has a persona)', tplNames(pNone).length === 0, sorted(tplNames(pNone)));
   const tagF = await tl(U, 'kind=all&tag=FAQ');
   check('tag filter case-insensitive (FAQ)', eqSet(tplNames(tagF), ['demo 物流咨询回复', 'demo user 价格回复']));
   const sh = await tl(U, 'kind=all&scope=shared&q=demo'); const own = await tl(U, 'kind=all&scope=own&q=demo');
@@ -283,13 +283,16 @@ try {
   const cp = r.body.template;
   if (cp?.id) cleanup.push(() => http('DELETE', `/api/comment-templates/${cp.id}`, T));
   check('duplicate a shared template → private copy owned by demo-user, same text/persona/tags', r.status === 201 && cp.shared === false && cp.userId === userId && cp.text === shTpl.text && cp.persona?.id === shTpl.persona?.id && !!cp.persona && eqSet(cp.tags, shTpl.tags));
-  r = await http('PUT', `/api/comment-templates/${cp.id}`, U, { text: '改过的文案', personaId: null, tags: ['New', 'NEW'], kind: 'comment' });
+  r = await http('PUT', `/api/comment-templates/${cp.id}`, U, { personaId: null });
+  check('edit copy: personaId null → 400 template.persona_required', r.status === 400 && r.body.code === 'template.persona_required');
+  const travel = pid(uMine, '旅行博主');
+  r = await http('PUT', `/api/comment-templates/${cp.id}`, U, { text: '改过的文案', personaId: travel, tags: ['New', 'NEW'], kind: 'comment' });
   const cpAfter = (await tl(U, `kind=all&q=${encodeURIComponent(tmp)}`)).find((x) => x.id === cp.id);
-  check('edit copy persists (personaId null clears, tags lowercased+deduped, kind changed)', r.status === 200 && cpAfter?.text === '改过的文案' && cpAfter.persona === null && JSON.stringify(cpAfter.tags) === '["new"]' && cpAfter.kind === 'comment');
+  check('edit copy persists (persona changed to an own one, tags lowercased+deduped, kind changed)', r.status === 200 && cpAfter?.text === '改过的文案' && cpAfter.persona?.id === travel && JSON.stringify(cpAfter.tags) === '["new"]' && cpAfter.kind === 'comment');
   check('shared original unchanged', (await tl(U, 'kind=all&scope=shared&q=demo')).find((x) => x.id === shTpl.id)?.text === TEMPLATES[0]!.text);
   r = await http('DELETE', `/api/comment-templates/${cp.id}`, U);
   check('delete own copy → 204, gone from list', r.status === 204 && !(await tl(U, `kind=all&q=${encodeURIComponent(tmp)}`)).some((x) => x.id === cp.id));
-  r = await http('POST', '/api/comment-templates', U, { name: `${tmp} x`, text: '   ' });
+  r = await http('POST', '/api/comment-templates', U, { name: `${tmp} x`, text: '   ', personaId: travel });
   check('blank text → 400', r.status === 400);
 
   // ======================================================================== 内容管理

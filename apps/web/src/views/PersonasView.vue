@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, errorText } from '../api/client'
 import { queryParam } from '../api/query'
 import type { ScopedItem } from '../api/types'
@@ -16,9 +16,11 @@ import { useAuthStore } from '../stores/auth'
 
 /**
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
- * (账号人设 accounts → /social, 话术 → /scripts) and its tone; row actions 编辑 / AI测试 (one AI draft now) / 更多.
+ * (账号人设 accounts → /social; 范例 count → opens the form, the 话术库 page /scripts was removed 2026-11-18) and its
+ * 发文/评论 tone; row actions 编辑 / AI测试 (one AI draft now) / 更多. `?edit=<id>` opens the form of that persona
+ * (插入话术 links here).
  * AI 草稿 on/off and per day live only in the form (no AI column since 2026-11-18). Public personas are managed by admins; personal ones by their owner (admins: all).
- * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 风格, 范例, 更多, AI 草稿). No merge for personas
+ * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 发文风格 + 发文范例, 评论风格 + 评论范例, AI 草稿). No merge for personas
  * (owner decision 2026-11-18; the shared `useScopedList` merge stays for 内容分类/素材分类).
  * Tabs: 公共 / 我的 (+ admin 全部用户 with an owner filter); `?tab=` keeps the tab in the URL.
  */
@@ -77,11 +79,6 @@ const columns = computed(() => [
 ])
 const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
 
-/** /scripts shows templates per tab: a personal persona's are its owner's personal ones; a public one's start on 公共话术. */
-function scriptsLink(p: ScopedItem): RouteLocationRaw {
-  if (p.ownerType === 'public') return { path: '/scripts', query: { personaId: p.id } }
-  return { path: '/scripts', query: { tab: 'mine', personaId: p.id, ...(p.ownerId !== auth.user?.id ? { owner: 'all-users' } : {}) } }
-}
 
 // ---- AI测试: one AI draft now (same as 立即生成一条 in the form; errors such as ai.not_configured / ai.rate_limited shown by run())
 const generating = ref<string | null>(null)
@@ -104,6 +101,15 @@ function openForm(p?: ScopedItem) {
   newOwner.value = !p && isAllUsers.value ? ownerId.value : undefined
   formOpen.value = true
 }
+/** ?edit=<id> (e.g. from 插入话术): open that persona's form once, then drop the parameter. */
+watch(() => route.query.edit, (id) => {
+  if (typeof id !== 'string' || !id) return
+  editingId.value = id
+  newOwner.value = undefined
+  formOpen.value = true
+  const { edit: _e, ...rest } = route.query
+  void router.replace({ query: rest })
+}, { immediate: true })
 function pickOwner() {
   if (!newOwner.value) { message.warning(t('personas.ownerRequired')); return }
   ownerPick.value = false
@@ -133,7 +139,7 @@ function pickOwner() {
           <template v-if="column.key === 'name'"><span class="strong">{{ record.name }}</span></template>
           <template v-else-if="column.key === 'description'">
             <span v-if="record.description" class="clamp">{{ record.description }}</span><span v-else class="muted">—</span>
-            <div v-if="record.style" class="muted small">{{ t(`personas.tones.${record.style.tone}`) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
+            <div v-if="record.style" class="muted small">{{ t('personas.toneLine', { post: t(`personas.tones.${record.style.post.tone}`), comment: t(`personas.tones.${record.style.comment.tone}`) }) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
           </template>
           <template v-else-if="column.key === 'scope'">
             <a-tag v-if="record.ownerType === 'public'" color="blue">{{ t('scopedList.public') }}</a-tag>
@@ -146,7 +152,7 @@ function pickOwner() {
             <router-link :to="{ path: '/social', query: { personaId: record.id } }">{{ record.accounts ?? 0 }}</router-link>
           </template>
           <template v-else-if="column.key === 'count'">
-            <router-link :to="scriptsLink(record as ScopedItem)">{{ record.count }}</router-link>
+            <a v-if="record.writable" @click="openForm(record as ScopedItem)">{{ record.count }}</a><span v-else>{{ record.count }}</span>
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space v-if="record.writable" :size="0">

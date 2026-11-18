@@ -1,5 +1,5 @@
 import { api } from '../../api/client'
-import type { PersonaDetail } from '../../api/types'
+import type { PersonaDetail, PersonaLevel, PersonaTone } from '../../api/types'
 
 /**
  * Persona details (GET /api/personas/:id: style, 范例, length table) for the persona cards of the post editor and the
@@ -30,3 +30,6 @@ export function bannedHits(words: string[] | undefined, text: string): string[] 
 
 /** Characters as people count them (emoji and CJK = 1). */
 export const charCount = (s: string) => [...s.trim()].length
+
+/** 语气 / 表情 / 长度 of one kind in the persona form (发文风格 or 评论风格). */
+export interface VoiceForm { tone: PersonaTone; toneNote: string; emoji: PersonaLevel; length: PersonaLevel }

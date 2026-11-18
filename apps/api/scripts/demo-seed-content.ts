@@ -100,20 +100,21 @@ export const PERSONAS: PersonaSpec[] = [
   { name: '旅行博主', owner: 'user', description: null },
 ];
 
-export interface TemplateSpec { name: string; owner: 'shared' | 'admin' | 'user'; kind: 'post' | 'comment'; persona: string | null; tags: string[]; text: string }
+/** Every template belongs to a persona (template.persona_required since the 话术库 page was removed, 2026-11-18). */
+export interface TemplateSpec { name: string; owner: 'shared' | 'admin' | 'user'; kind: 'post' | 'comment'; persona: string; tags: string[]; text: string }
 export const TEMPLATES: TemplateSpec[] = [
   { name: 'demo 新品上市文案', owner: 'shared', kind: 'post', persona: '品牌官方', tags: ['demo', '新品'], text: '☕ 秋季限定新品上市！丝滑拿铁 + 焦糖风味，到店即享第二杯半价。\n#新品 #咖啡 #秋天的第一杯' },
   { name: 'demo 节日促销文案', owner: 'shared', kind: 'post', persona: '品牌官方', tags: ['demo', 'promo'], text: '🎁 双十一预热开启：全场满 199 减 50，限时 3 天！点击主页链接抢先加购。' },
   { name: 'demo Coffee caption EN', owner: 'shared', kind: 'post', persona: 'Barista Lily', tags: ['demo', 'coffee'], text: 'Monday mood: oat latte, extra foam ☁️ What is your go-to order? #coffeetime #latteart' },
   { name: 'demo 感谢评论', owner: 'shared', kind: 'comment', persona: '客服小助手', tags: ['demo', 'thanks'], text: '谢谢你的喜欢 ❤️ 我们会继续努力带来更多好内容！' },
   { name: 'demo 物流咨询回复', owner: 'shared', kind: 'comment', persona: '客服小助手', tags: ['demo', 'faq'], text: '您好～订单一般 48 小时内发货，发货后可在订单页查看物流信息哦。' },
-  { name: 'demo admin 测试草稿', owner: 'admin', kind: 'post', persona: null, tags: ['demo', 'draft'], text: '（草稿）品牌十周年活动文案，待市场部确认。' },
+  { name: 'demo admin 测试草稿', owner: 'admin', kind: 'post', persona: '客服主管', tags: ['demo', 'draft'], text: '（草稿）品牌十周年活动文案，待市场部确认。' },
   { name: 'demo admin 差评安抚', owner: 'admin', kind: 'comment', persona: '客服主管', tags: ['demo', 'complaint'], text: '非常抱歉给您带来不好的体验，已私信您处理，请留意消息。' },
   { name: 'demo user 健身日常', owner: 'user', kind: 'post', persona: '健身教练Max', tags: ['demo', 'fitness'], text: '💪 打卡第 30 天：深蹲 5×5，今天比昨天更强一点。#健身 #自律' },
   { name: 'demo user 旅行随笔', owner: 'user', kind: 'post', persona: '旅行博主', tags: ['demo', 'travel'], text: '🌅 海边的日落总是来得刚刚好。下一站，你想看我去哪里？' },
   { name: 'demo user 早安问候', owner: 'user', kind: 'post', persona: '旅行博主', tags: ['demo', 'daily'], text: '早安☀️ 新的一天，从一杯咖啡和一段好音乐开始。' },
   { name: 'demo user 粉丝互动', owner: 'user', kind: 'comment', persona: '健身教练Max', tags: ['demo', 'fans'], text: '加油！坚持就是胜利，有问题随时留言问我～' },
-  { name: 'demo user 价格回复', owner: 'user', kind: 'comment', persona: null, tags: ['demo', 'faq'], text: '价格和购买方式请看主页置顶帖哦，谢谢关注！' },
+  { name: 'demo user 价格回复', owner: 'user', kind: 'comment', persona: '旅行博主', tags: ['demo', 'faq'], text: '价格和购买方式请看主页置顶帖哦，谢谢关注！' },
 ];
 
 /** 多语言内容: human-written versions (the contents themselves are zh-CN). */
@@ -377,7 +378,7 @@ async function seed() {
     const pool = t.owner === 'user' ? tplLists.user : tplLists.admin;
     let row = pool.find((x) => x.name === t.name && (t.owner === 'shared' ? x.shared : t.owner === 'admin' ? !x.shared && x.userId !== U.id : x.userId === U.id));
     note(!row);
-    const personaId = t.persona ? personaIds.get(t.persona)! : null;
+    const personaId = personaIds.get(t.persona)!;
     if (!row) row = must(await http('POST', '/api/comment-templates', tok(t.owner), { name: t.name, text: t.text, kind: t.kind, personaId, tags: t.tags, shared: t.owner === 'shared' || undefined }), `template ${t.name}`).template;
     else if ((row.persona?.id ?? null) !== personaId) must(await http('PUT', `/api/comment-templates/${row.id}`, tok(t.owner), { personaId }), `template persona ${t.name}`);
     addId(st.templates, row.id);

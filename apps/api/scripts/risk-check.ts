@@ -104,6 +104,19 @@ try {
   check('second change: 3600/600 = 6 per hour', cap2.pace.capacityPerHour === 6 && cap2.pace.maxPerHour === 20, JSON.stringify(cap2.pace));
   r = await http('PUT', '/api/risk/settings', T, { accountCheckHours: 12 });
   check('account check interval 12 h stored, pace kept', r.body.device.accountCheckHours === 12 && r.body.device.minIntervalSec === 600, r.text);
+  // 自动发现账号 switch in 采集与检测节奏 (RiskPaceSettings.vue sends the whole form, accountDiscovery included)
+  {
+    const g = (await http('GET', '/api/risk/settings', T)).body;
+    const form = { ...g.device, accountDiscovery: false };
+    const off = await http('PUT', '/api/risk/settings', T, form);
+    const back = (await http('GET', '/api/risk/settings', T)).body;
+    const bad = await http('PUT', '/api/risk/settings', T, { ...form, accountDiscovery: 'no' });
+    const on = await http('PUT', '/api/risk/settings', T, { ...form, accountDiscovery: true });
+    check('自动发现 switch: default on, the page\'s full PUT turns it off (rest kept), non-boolean → 400, on again',
+      g.device.accountDiscovery === true && g.defaults.accountDiscovery === true && off.status === 200 && back.device.accountDiscovery === false
+      && back.device.accountCheckHours === 12 && back.device.minIntervalSec === 600 && bad.status === 400 && on.status === 200 && on.body.device.accountDiscovery === true,
+      JSON.stringify([g.device.accountDiscovery, off.status, back.device.accountDiscovery, bad.status, on.body?.device?.accountDiscovery]));
+  }
 
   // ---------------------------------------------------------------- placeholder devices, account limits from the new entry
   const devs = await db.insert(schema.instances).values([1, 2].map((n) => ({

@@ -4,9 +4,10 @@
  *   admin only, users 403), drafts per day 1..10, draft owner rules (public: required to switch on, must be an enabled
  *   user; personal: not settable), the old 内容设定 endpoints are gone (404), list shows draftEnabled/draftsPerDay and the
  *   draft owner only to managers.
- * - The prompt (buildUserMessage + loadExamples, no model call): 定位, tone preset + note, emoji, length range, topics,
- *   banned words, hashtags, audience, fixed opening/closing, notes, Language zh-CN, the persona's post examples (≤ 5,
- *   in its own scope, oldest first; not reply examples, not other users' templates).
+ * - The prompt (buildUserMessage + loadExamples, no model call): 定位, the 发文风格 (tone preset + note, emoji, post
+ *   length range, hashtags, audience, fixed opening/closing, notes; nothing of the 评论风格), shared topics + banned
+ *   words, Language zh-CN, the persona's oldest 5 post examples (in its own scope; not comment examples, not other
+ *   users' templates). A template without persona is refused (template.persona_required).
  * - Last generation runs in GET /api/personas/:id (persona form; the list has no runs since 2026-11-18): newest first
  *   (trigger, status, error code), only for managers (owner/admin; public personas: admin), users get none.
  * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/hour validation.
@@ -86,9 +87,11 @@ try {
   const C = await mk(`pdc${tag}`);
 
   // ================================================================ AI 草稿 in the persona form: validation, RBAC
+  // 发文风格 differs from the 评论风格 on purpose: the prompt must use the post style only
   const STYLE = {
-    tone: 'warm', toneNote: '像邻家厨师一样温柔', emoji: 'low', length: 'high', topics: ['家常菜', 'weeknight dinners'],
-    bannedWords: ['forbiddenword', '最便宜'], hashtags: ['#homecooking', 'dinner'], audience: '上班族', opening: '今晚吃什么？', closing: '你们最爱哪道？', notes: '不要推荐品牌',
+    topics: ['家常菜', 'weeknight dinners'], bannedWords: ['forbiddenword', '最便宜'],
+    post: { tone: 'warm', toneNote: '像邻家厨师一样温柔', emoji: 'low', length: 'high', hashtags: ['#homecooking', 'dinner'], audience: '上班族', opening: '今晚吃什么？', closing: '你们最爱哪道？', notes: '不要推荐品牌' },
+    comment: { tone: 'funny', toneNote: '评论区抖机灵', emoji: 'high', length: 'low' },
   };
   const pA = (await http('POST', '/api/personas', A.token, { scope: 'mine', name: `Chef ${tag}`, description: '下班后 20 分钟的家常菜', style: STYLE })).body.persona;
   const pP = (await http('POST', '/api/personas', T, { scope: 'public', name: `Brand ${tag}` })).body.persona;
@@ -97,7 +100,7 @@ try {
   let r = await http('GET', `/api/personas/${pA.id}`, A.token);
   check('owner reads a personal persona (AI off, 4/day, draft owner = themselves, style stored)',
     r.status === 200 && r.body.persona.draftEnabled === false && r.body.persona.draftsPerDay === 4 && r.body.persona.draftOwnerName === `pda${tag}`
-      && r.body.persona.style.tone === 'warm' && r.body.persona.style.hashtags.join() === 'homecooking,dinner', JSON.stringify(r.body?.persona ?? r.body).slice(0, 300));
+      && r.body.persona.style.post.tone === 'warm' && r.body.persona.style.post.hashtags.join() === 'homecooking,dinner' && r.body.persona.style.comment.tone === 'funny', JSON.stringify(r.body?.persona ?? r.body).slice(0, 300));
   r = await http('GET', `/api/personas/${pA.id}/drafts`, A.token);
   const rOld = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftsPerDay: 2 });
   check('old 内容设定 endpoints are gone (GET/PUT /api/personas/:id/drafts → 404)', r.status === 404 && rOld.status === 404, `${r.status} ${rOld.status}`);
@@ -124,9 +127,10 @@ try {
   const aPosts = [];
   for (let k = 1; k <= 6; k++) aPosts.push(await tpl(A.token, { kind: 'post', name: `a-post${k} ${tag}`, personaId: pA.id, text: `示例发文 ${k} ${tag}` }));
   const aReply = await tpl(A.token, { kind: 'comment', name: `a-reply ${tag}`, personaId: pA.id, text: `回复范例 ${tag}` });
-  const aLoose = await tpl(A.token, { kind: 'post', name: `a-loose ${tag}`, text: `没有人设的发文 ${tag}` });
+  const aLoose = await http('POST', '/api/comment-templates', A.token, { kind: 'post', name: `a-loose ${tag}`, text: `没有人设的发文 ${tag}` });
   const aOnPublic = await tpl(A.token, { kind: 'post', name: `a-pub ${tag}`, personaId: pP.id, text: `A 的私有发文用公共人设 ${tag}` });
-  check('templates created (6 post + 1 reply example of pA, 1 without persona, 1 private on the public persona)', aPosts.every((x) => !!x?.id) && !!aReply?.id && !!aLoose?.id && !!aOnPublic?.id);
+  check('templates created (6 post + 1 comment example of pA, 1 private on the public persona); one without persona → 400 template.persona_required',
+    aPosts.every((x) => !!x?.id) && !!aReply?.id && aLoose.status === 400 && aLoose.body.code === 'template.persona_required' && !!aOnPublic?.id);
 
   // public persona: draft owner
   r = await http('PATCH', `/api/personas/${pP.id}`, T, { draftEnabled: true });
@@ -159,10 +163,12 @@ try {
     const ex = await loadExamples(row!);
     const msg = buildUserMessage({ persona: row!, count: 3, day: '2026-11-18', examples: ex, recent: [{ title: '上周的汤', body: '番茄蛋汤做法' }] });
     const has = (x: string) => msg.includes(x);
-    check('prompt: examples = the first 5 post examples of the persona (no reply example, no template without persona)',
+    check('prompt: examples = the oldest 5 post examples of the persona (no comment example)',
       ex.length === 5 && ex.every((e, k) => e.text === `示例发文 ${k + 1} ${tag}`) && !has(`回复范例 ${tag}`) && !has(`没有人设的发文 ${tag}`) && !has(`示例发文 6 ${tag}`), ex.map((e) => e.text).join(' | '));
-    check('prompt: 定位, tone preset + note, emoji, length range (high = 500–1500), Language zh-CN',
+    check('prompt: 定位 + the 发文风格 (tone preset + note, emoji, post length range high = 500–1500), Language zh-CN',
       has('Positioning: 下班后 20 分钟的家常菜') && has('Tone: warm — 像邻家厨师一样温柔') && has('Emoji: at most 1 emoji') && has('Length: 500 to 1500 characters') && has('Language: zh-CN'), msg.slice(0, 600));
+    check('prompt: nothing of the 评论风格 (tone funny, its note, plenty of emoji, comment range 4–30)',
+      !has('funny') && !has('评论区抖机灵') && !has('plenty of emoji') && !has('4 to 30'), msg.slice(0, 600));
     check('prompt: topics, banned words, hashtags (# stripped), audience, fixed opening/closing, notes, recent posts',
       has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('Audience: 上班族')
         && has('Fixed opening line (added by the system): 今晚吃什么？') && has('Fixed closing line (added by the system): 你们最爱哪道？') && has('Notes: 不要推荐品牌') && has('上周的汤'));

@@ -1,17 +1,20 @@
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, schema } from '../../db/index.js';
-import { PERSONA_LEVELS, PERSONA_TONES, type Persona, type PersonaLevel, type PersonaStyle, type PersonaTone } from '../../db/schema.js';
+import { db, schema } from '../../db/index.js';import {
+  PERSONA_LEVELS, PERSONA_TONES, type Persona, type PersonaCommentStyle, type PersonaLevel, type PersonaPostStyle, type PersonaStyle, type PersonaTone,
+  type PersonaVoice, type StoredPersonaStyle,
+} from '../../db/schema.js';
 import { badRequest } from '../../lib/errors.js';
 
 /**
- * 人设风格 (owner decision 2026-11-18): one style per persona for posts AND replies — tone preset + editable note,
- * emoji amount, length (a character range per kind), topics, banned words, plus optional hashtags, audience, fixed
- * opening/closing and notes. Used by the AI drafts prompt, the persona card in the post editor / reply composers and
- * the banned-word checks (`assertNoBannedWords`, code `persona.banned_word`) on saving/scheduling posts and replies.
+ * 人设风格 (owner decision 2026-11-18: split into 发文风格 and 评论风格). Shared: topics and banned words (banned words
+ * are checked on posts AND comments). 发文风格 `post`: tone preset + editable note, emoji amount, length (post character
+ * range), hashtags, fixed opening/closing, audience, notes. 评论风格 `comment`: tone + note, emoji, length (comment
+ * range). The AI drafts prompt uses the post style; the persona card of the post editor shows the post style, the one of
+ * the comment composers the comment style. Banned words: `assertNoBannedWords`, code `persona.banned_word`.
  */
 
-/** Characters per length level: posts (body) and replies (replies are shorter). The UI shows these; replies only get a soft hint. */
+/** Characters per length level: posts (body) and comments (shorter). The UI shows these; comments only get a soft hint. */
 export const PERSONA_LENGTHS: Record<'post' | 'comment', Record<PersonaLevel, [number, number]>> = {
   post: { low: [40, 150], medium: [150, 500], high: [500, 1500] },
   comment: { low: [4, 30], medium: [15, 80], high: [60, 200] },
@@ -32,18 +35,27 @@ export const EMOJI_PROMPT: Record<PersonaLevel, string> = {
 };
 
 const Words = (max: number, len: number) => z.array(z.string().trim().min(1).max(len)).max(max);
-export const PersonaStyleInput = z.object({
+const Voice = {
   tone: z.enum(PERSONA_TONES).optional(),
   toneNote: z.string().trim().max(200).optional(),
   emoji: z.enum(PERSONA_LEVELS).optional(),
   length: z.enum(PERSONA_LEVELS).optional(),
-  topics: Words(20, 60).optional(),
-  bannedWords: Words(50, 50).optional(),
+};
+export const PostStyleInput = z.object({
+  ...Voice,
   hashtags: Words(15, 50).optional(),
   audience: z.string().trim().max(200).optional(),
   opening: z.string().trim().max(200).optional(),
   closing: z.string().trim().max(200).optional(),
   notes: z.string().trim().max(1000).optional(),
+}).strict();
+export const CommentStyleInput = z.object(Voice).strict();
+/** The whole style (PATCH replaces it): shared lists + 发文风格 + 评论风格. The flat pre-split shape is refused (strict). */
+export const PersonaStyleInput = z.object({
+  topics: Words(20, 60).optional(),
+  bannedWords: Words(50, 50).optional(),
+  post: PostStyleInput.optional(),
+  comment: CommentStyleInput.optional(),
 }).strict();
 
 /** Case-insensitive de-duplication (first spelling wins). */
@@ -51,22 +63,47 @@ const uniq = (xs: string[] | undefined, map = (x: string) => x) => {
   const seen = new Set<string>();
   return (xs ?? []).map(map).filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
 };
+const dropEmpty = <T extends object>(o: T, keys: (keyof T)[]): T => {
+  for (const k of keys) if (!o[k]) delete o[k];
+  return o;
+};
 
-/** Stored form of a style input: lists de-duplicated, hashtags without '#', empty texts dropped. */
+/** Stored form of a style input (split shape only): lists de-duplicated, hashtags without '#', empty texts dropped. */
 export function normaliseStyle(s: z.infer<typeof PersonaStyleInput>): PersonaStyle {
-  const out: PersonaStyle = {
-    ...s,
-    topics: uniq(s.topics), bannedWords: uniq(s.bannedWords), hashtags: uniq(s.hashtags, (h) => h.replace(/^#+/, '').replace(/\s+/g, '')),
-  };
-  for (const k of ['toneNote', 'audience', 'opening', 'closing', 'notes'] as const) if (!out[k]) delete out[k];
-  return out;
+  const post: PersonaPostStyle = dropEmpty({ ...s.post, hashtags: uniq(s.post?.hashtags, (h) => h.replace(/^#+/, '').replace(/\s+/g, '')) },
+    ['toneNote', 'audience', 'opening', 'closing', 'notes']);
+  const comment: PersonaCommentStyle = dropEmpty({ ...s.comment }, ['toneNote']);
+  return { topics: uniq(s.topics), bannedWords: uniq(s.bannedWords), post, comment };
 }
 
-/** The style with defaults (亲切日常, 适中, 中). */
-export const styleOf = (p: Pick<Persona, 'style'>): Required<Pick<PersonaStyle, 'tone' | 'emoji' | 'length' | 'topics' | 'bannedWords' | 'hashtags'>> & PersonaStyle => ({
-  ...p.style, tone: p.style?.tone ?? 'casual', emoji: p.style?.emoji ?? 'medium', length: p.style?.length ?? 'medium',
-  topics: p.style?.topics ?? [], bannedWords: p.style?.bannedWords ?? [], hashtags: p.style?.hashtags ?? [],
-});
+type Voiced<T> = T & Required<Pick<PersonaVoice, 'tone' | 'emoji' | 'length'>>;
+/** A style as read (defaults filled, both kinds present). */
+export interface FullStyle {
+  topics: string[];
+  bannedWords: string[];
+  post: Voiced<PersonaPostStyle> & { hashtags: string[] };
+  comment: Voiced<PersonaCommentStyle>;
+}
+const voiced = <T extends PersonaVoice>(v: T): Voiced<T> => ({ ...v, tone: v.tone ?? 'casual', emoji: v.emoji ?? 'medium', length: v.length ?? 'medium' });
+const defined = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== '')) as T;
+
+/**
+ * The style with defaults (亲切日常, 适中, 中). Reads the flat pre-split shape too: a missing `post` takes the flat
+ * tone/note/emoji/length + hashtags/audience/opening/closing/notes, a missing `comment` the flat tone/note/emoji/length,
+ * so a persona saved before the split shows its one style as both until it is saved again.
+ */
+export function styleOf(p: { style: StoredPersonaStyle | null | undefined }): FullStyle {
+  const s = p.style ?? {};
+  const flatVoice: PersonaVoice = { tone: s.tone, toneNote: s.toneNote, emoji: s.emoji, length: s.length };
+  const post: PersonaPostStyle = defined(s.post ?? { ...flatVoice, hashtags: s.hashtags, audience: s.audience, opening: s.opening, closing: s.closing, notes: s.notes });
+  const c = s.comment ?? flatVoice;
+  return {
+    topics: s.topics ?? [], bannedWords: s.bannedWords ?? [],
+    post: { ...voiced(post), hashtags: post.hashtags ?? [] },
+    comment: voiced(defined({ tone: c.tone, toneNote: c.toneNote, emoji: c.emoji, length: c.length })),
+  };
+}
+
 
 /** Banned words found in the texts (case-insensitive substring), in the persona's order. */
 export function bannedHits(words: string[] | undefined, texts: (string | null | undefined)[]): string[] {
@@ -106,10 +143,14 @@ export function exampleWhere(p: Pick<Persona, 'id' | 'ownerType' | 'ownerId'>, k
   return and(eq(T.personaId, p.id), p.ownerType === 'public' ? isNull(T.userId) : eq(T.userId, p.ownerId!), kind ? eq(T.kind, kind) : undefined);
 }
 
-export const MAX_EXAMPLES = 5;
+/** 范例 per persona and kind (form + template API: `persona.examples_full`). */
+export const MAX_EXAMPLES = 20;
+/** Post 范例 sent with the AI drafts prompt (the oldest ones). */
+export const PROMPT_EXAMPLES = 5;
 
+/** A banned word inside the fixed opening/closing of the 发文风格 → 400 `persona.banned_in_style`. */
 export const assertStyleOk = (s: PersonaStyle) => {
-  if ((s.bannedWords ?? []).some((w) => (s.opening ?? '').toLowerCase().includes(w.toLowerCase()) || (s.closing ?? '').toLowerCase().includes(w.toLowerCase()))) {
+  if (bannedHits(s.bannedWords, [s.post?.opening, s.post?.closing]).length) {
     throw badRequest('固定开头/结尾包含禁用词', 'persona.banned_in_style');
   }
 };

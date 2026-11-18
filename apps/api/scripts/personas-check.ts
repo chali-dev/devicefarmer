@@ -2,15 +2,18 @@
  * 人设 (personas) of the script library against the real API and DB. No mocks.
  * - CRUD + RBAC per scope: public personas admin-managed (users 403), personal ones private (others 404), admin all-users
  *   view with owner filter; names unique per owner, case-insensitive; validation.
- * - Template persona rules: shared template → public persona only; personal template → public or the owner's persona.
+ * - Template persona rules: every template needs a persona (template.persona_required, 2026-11-18: the 话术库 page is gone,
+ *   templates are the 范例 of personas); shared template → public persona only; personal template → public or the owner's.
+ * - 范例 limit: 20 per persona and kind (persona.examples_full; parallel inserts at 18 → exactly 2 more), moves between kinds.
  * - Counts per persona (templates and 账号人设 accounts, exact, per viewer), template filter personaId / none, facets without personas.
- * - 人设 page links: the counts equal what the linked lists return (/social?personaId → accounts total; /scripts?personaId
- *   → shared + own templates for users, shared + all-users for admins; a personal persona → its owner's templates only).
- * - Delete → templates become 未设人设. No merge for personas (owner decision 2026-11-18): POST …/merge → 404 for
+ * - Counts equal what the lists return (/social?personaId → accounts total; templates per persona: shared + own for users,
+ *   shared + all-users for admins; a personal persona → its owner's templates only).
+ * - Delete → its templates are deleted, accounts become 未设人设. No merge for personas (owner decision 2026-11-18): POST …/merge → 404 for
  *   everyone, nothing moved.
- * - The one persona form (owner decision 2026-11-18): 定位 (description), style (tone preset + note, emoji, length,
- *   topics, banned words, hashtags, audience, fixed opening/closing, notes; strict validation, normalisation, defaults,
- *   no language), GET /api/personas/:id (style for everyone who may see it, 范例 per kind in the persona's own scope,
+ * - The one persona form (owner decision 2026-11-18): 定位 (description), style = shared topics + banned words,
+ *   发文风格 `post` (tone + note, emoji, length, hashtags, audience, fixed opening/closing, notes) and 评论风格 `comment`
+ *   (tone + note, emoji, length); strict validation (the old flat shape is refused), normalisation, defaults, no language;
+ *   an old flat style stored in the DB is read as both kinds and only rewritten on save, GET /api/personas/:id (style for everyone who may see it, 范例 per kind in the persona's own scope,
  *   length ranges, draft owner/runs only for managers), admin-created examples for a user's personal persona (ownerId),
  *   banned words inside the fixed opening/closing refused.
  * - Migration 0037 (persona reset) executed inside a transaction on seeded rows and rolled back: personas, their
@@ -81,7 +84,7 @@ try {
   check('user cannot create public personas or personas for others (403 persona.admin_only)', r.status === 403 && r.body.code === 'persona.admin_only' && r2.status === 403);
   const [brand, chef, old, pre] = await Promise.all(['Brand', 'Chef', 'Old', 'Pre'].map(async (n) => (await persona(T, { scope: 'public', name: `${n} ${tag}` })).body.persona));
   check('admin creates public personas', [brand, chef, old, pre].every((p) => p?.ownerType === 'public' && p.ownerId === null));
-  check('persona responses carry the style with defaults (no legacy brief)', !('brief' in brand) && brand.style?.tone === 'casual');
+  check('persona responses carry the style with defaults (no legacy brief)', !('brief' in brand) && brand.style?.post?.tone === 'casual' && brand.style?.comment?.tone === 'casual');
   r = await persona(T, { scope: 'public', name: `brand ${tag.toUpperCase()}` });
   check('public names unique case-insensitively → 409', r.status === 409 && r.body.code === 'persona.exists');
   r = await persona(T, { scope: 'mine', ownerId: A.id, name: `Coach2 ${tag}` });
@@ -120,47 +123,116 @@ try {
   r = await http('PATCH', `/api/personas/${bCoach.id}`, T, { description: 'by admin' });
   check('admin edits a user\'s personal persona', r.status === 200 && r.body.persona.description === 'by admin');
 
-  // ================================================================ the persona form: style, examples, GET /:id
+  // ================================================================ the persona form: style (shared + 发文风格 + 评论风格), examples, GET /:id
   {
     const st = await persona(A.token, { scope: 'mine', name: `Style ${tag}`, description: '一句话定位', style: {
-      tone: 'funny', toneNote: '  轻松吐槽  ', emoji: 'high', length: 'low', topics: ['跑步', ' 跑步 ', 'Run', 'run'], bannedWords: ['Spam', 'spam', '违禁'],
-      hashtags: ['#Run', 'run', 'morning run'], audience: '', opening: '早！', closing: '', notes: 'n',
+      topics: ['跑步', ' 跑步 ', 'Run', 'run'], bannedWords: ['Spam', 'spam', '违禁'],
+      post: { tone: 'funny', toneNote: '  轻松吐槽  ', emoji: 'high', length: 'low', hashtags: ['#Run', 'run', 'morning run'], audience: '', opening: '早！', closing: '', notes: 'n' },
+      comment: { tone: 'warm', toneNote: '', emoji: 'low', length: 'high' },
     } });
     const sp = st.body.persona;
-    check('create with style: stored normalised (trimmed, lists de-duplicated case-insensitively, hashtags without # / spaces, empty texts dropped)',
-      st.status === 201 && sp.style.tone === 'funny' && sp.style.toneNote === '轻松吐槽' && sp.style.topics.join() === '跑步,Run' && sp.style.bannedWords.join() === 'Spam,违禁'
-        && sp.style.hashtags.join() === 'Run,morningrun' && !('audience' in sp.style) && sp.style.opening === '早！' && !('closing' in sp.style) && sp.description === '一句话定位',
+    const ps = sp?.style?.post ?? {};
+    const cs = sp?.style?.comment ?? {};
+    check('create with style: shared lists + post + comment stored normalised (trimmed, de-duplicated case-insensitively, hashtags without # / spaces, empty texts dropped)',
+      st.status === 201 && sp.style.topics.join() === '跑步,Run' && sp.style.bannedWords.join() === 'Spam,违禁'
+        && ps.tone === 'funny' && ps.toneNote === '轻松吐槽' && ps.emoji === 'high' && ps.length === 'low' && ps.hashtags.join() === 'Run,morningrun'
+        && !('audience' in ps) && ps.opening === '早！' && !('closing' in ps) && ps.notes === 'n'
+        && cs.tone === 'warm' && !('toneNote' in cs) && cs.emoji === 'low' && cs.length === 'high' && !('hashtags' in cs)
+        && !('tone' in sp.style) && !('hashtags' in sp.style) && sp.description === '一句话定位',
       JSON.stringify(sp?.style ?? st.body));
+    const [stored] = await db.select({ brief: P.style }).from(P).where(eq(P.id, sp.id));
+    check('stored shape (personas.brief): { topics, bannedWords, post, comment } only, no flat keys',
+      Object.keys(stored?.brief ?? {}).sort().join() === 'bannedWords,comment,post,topics', JSON.stringify(stored?.brief));
     const plain = (await persona(A.token, { scope: 'mine', name: `Plain ${tag}` })).body.persona;
-    check('defaults on read: tone casual, emoji medium, length medium, empty lists', plain.style.tone === 'casual' && plain.style.emoji === 'medium' && plain.style.length === 'medium'
-      && plain.style.topics.length === 0 && plain.style.bannedWords.length === 0 && plain.style.hashtags.length === 0);
+    check('defaults on read: both kinds tone casual, emoji medium, length medium; empty lists',
+      ['post', 'comment'].every((k) => plain.style[k].tone === 'casual' && plain.style[k].emoji === 'medium' && plain.style[k].length === 'medium')
+      && plain.style.topics.length === 0 && plain.style.bannedWords.length === 0 && plain.style.post.hashtags.length === 0, JSON.stringify(plain.style));
     const bad = await Promise.all([
-      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'angry' } }),
-      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { emoji: 'tons' } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { post: { tone: 'angry' } } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { comment: { emoji: 'tons' } } }),
       http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { lang: 'en' } }),
       http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { bannedWords: Array.from({ length: 51 }, (_, k) => `w${k}`) } }),
-      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { notes: 'n'.repeat(1001) } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { post: { notes: 'n'.repeat(1001) } } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'pro' } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { comment: { hashtags: ['x'] } } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { comment: { opening: 'x' } } }),
     ]);
-    check('style validation: unknown tone/emoji, a language, > 50 banned words, notes > 1000 → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join());
-    let x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { bannedWords: ['早'], opening: '早上好' } });
-    check('a banned word inside the fixed opening/closing → 400 persona.banned_in_style', x.status === 400 && x.body.code === 'persona.banned_in_style', `${x.status} ${x.body?.code}`);
-    x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'pro', length: 'high' }, description: '专业' });
-    check('PATCH replaces the whole style together with the description', x.status === 200 && x.body.persona.style.tone === 'pro' && x.body.persona.style.length === 'high'
-      && x.body.persona.style.emoji === 'medium' && x.body.persona.description === '专业');
+    check('style validation: unknown tone/emoji, a language, > 50 banned words, notes > 1000, the old flat shape, post-only fields in comment → 400',
+      bad.every((x) => x.status === 400), bad.map((x) => x.status).join());
+    let x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { bannedWords: ['早'], post: { opening: '早上好' } } });
+    check('a banned word inside the fixed opening/closing of the post style → 400 persona.banned_in_style', x.status === 400 && x.body.code === 'persona.banned_in_style', `${x.status} ${x.body?.code}`);
+    x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { post: { tone: 'pro', length: 'high' } }, description: '专业' });
+    check('PATCH replaces the whole style together with the description (comment back to defaults)', x.status === 200 && x.body.persona.style.post.tone === 'pro'
+      && x.body.persona.style.post.length === 'high' && x.body.persona.style.post.emoji === 'medium' && x.body.persona.style.comment.tone === 'casual' && x.body.persona.description === '专业');
+
+    // compatibility: a persona saved before the split (flat brief) is read as both post and comment style
+    const [flat] = await db.insert(P).values({ ownerType: 'user', ownerId: A.id, name: `Flat ${tag}`, style: {
+      tone: 'cool', toneNote: '少说话', emoji: 'low', length: 'high', topics: ['咖啡'], bannedWords: ['便宜'], hashtags: ['coffee'], audience: '上班族', opening: '嗨', closing: '回见', notes: '旧备注',
+    } }).returning();
+    x = await http('GET', `/api/personas/${flat!.id}`, A.token);
+    const fs = x.body?.persona?.style;
+    check('old flat style read: shared topics/banned words; post = tone/note/emoji/length + hashtags/audience/opening/closing/notes; comment = the same tone/note/emoji/length',
+      x.status === 200 && fs.topics.join() === '咖啡' && fs.bannedWords.join() === '便宜'
+        && fs.post.tone === 'cool' && fs.post.toneNote === '少说话' && fs.post.emoji === 'low' && fs.post.length === 'high' && fs.post.hashtags.join() === 'coffee'
+        && fs.post.audience === '上班族' && fs.post.opening === '嗨' && fs.post.closing === '回见' && fs.post.notes === '旧备注'
+        && fs.comment.tone === 'cool' && fs.comment.toneNote === '少说话' && fs.comment.emoji === 'low' && fs.comment.length === 'high' && !('opening' in fs.comment)
+        && !('tone' in fs), JSON.stringify(fs));
+    const flatList = (await plist(A.token, 'scope=mine')).items.find((p) => p.id === flat!.id);
+    check('old flat style read the same way in the list', flatList?.style?.comment?.tone === 'cool' && flatList?.style?.post?.closing === '回见', JSON.stringify(flatList?.style));
+    const [flatRow] = await db.select({ brief: P.style }).from(P).where(eq(P.id, flat!.id));
+    check('reading does not rewrite the stored flat style (no data migration)', (flatRow?.brief as any)?.tone === 'cool' && !('post' in (flatRow?.brief ?? {})));
+    x = await http('PATCH', `/api/personas/${flat!.id}`, A.token, { style: { ...fs, comment: { ...fs.comment, tone: 'warm' } } });
+    const [flatRow2] = await db.select({ brief: P.style }).from(P).where(eq(P.id, flat!.id));
+    check('saving an old persona stores the split shape (post keeps the old values, comment changed)',
+      x.status === 200 && (flatRow2?.brief as any)?.post?.closing === '回见' && (flatRow2?.brief as any)?.comment?.tone === 'warm' && !('tone' in (flatRow2?.brief ?? {})),
+      JSON.stringify(flatRow2?.brief));
+
     // examples: own templates of the persona; admin adds one for A (ownerId)
     const ex1 = await http('POST', '/api/comment-templates', A.token, { kind: 'post', name: 'e1', text: `发文范例 ${tag}`, personaId: sp.id });
     const ex2 = await http('POST', '/api/comment-templates', A.token, { kind: 'comment', name: 'e2', text: `回复范例 ${tag}`, personaId: sp.id });
     const ex3 = await http('POST', '/api/comment-templates', T, { kind: 'comment', name: 'e3', text: `管理员替 A 写的回复范例 ${tag}`, personaId: sp.id, ownerId: A.id });
     const ex4 = await http('POST', '/api/comment-templates', B.token, { kind: 'comment', name: 'e4', text: 'x', personaId: sp.id, ownerId: A.id });
     for (const e of [ex1, ex2, ex3]) if (e.body?.template?.id) templateIds.push(e.body.template.id);
-    check('examples: owner adds post + reply examples; admin adds one for A (ownerId → A\'s private template); a user cannot use ownerId (403)',
+    check('examples: owner adds post + comment examples; admin adds one for A (ownerId → A\'s private template); a user cannot use ownerId (403)',
       ex1.status === 201 && ex2.status === 201 && ex3.status === 201 && ex3.body.template.userId === A.id && ex3.body.template.shared === false && ex4.status === 403,
       `${ex1.status} ${ex2.status} ${ex3.status} ${ex4.status}`);
     x = await http('GET', `/api/personas/${sp.id}`, A.token);
-    check('GET /api/personas/:id: style, examples per kind (oldest first), lengths, draft owner + runs for the owner',
+    check('GET /api/personas/:id: style, examples per kind (oldest first), lengths, maxExamples 20, draft owner + runs for the owner',
       x.status === 200 && x.body.examples.post.map((e: any) => e.text).join() === `发文范例 ${tag}` && x.body.examples.comment.map((e: any) => e.text).join() === `回复范例 ${tag},管理员替 A 写的回复范例 ${tag}`
-        && x.body.lengths.comment.low.join() === '4,30' && x.body.lengths.post.medium.join() === '150,500' && x.body.persona.draftOwnerName === `pea${tag}` && Array.isArray(x.body.persona.runs)
+        && x.body.lengths.comment.low.join() === '4,30' && x.body.lengths.post.medium.join() === '150,500' && x.body.maxExamples === 20
+        && x.body.persona.draftOwnerName === `pea${tag}` && Array.isArray(x.body.persona.runs)
         && x.body.persona.style.bannedWords.join() === 'Spam,违禁', JSON.stringify(x.body).slice(0, 400));
+
+    // 范例 limit: 20 per persona and kind (post / comment counted separately), under a lock on the persona row
+    const lim = (await persona(A.token, { scope: 'mine', name: `Limit ${tag}` })).body.persona;
+    const add = async (kind: string, i: number) => {
+      const y = await http('POST', '/api/comment-templates', A.token, { kind, name: `lim ${tag} ${kind} ${i}`, text: `范例 ${i}`, personaId: lim.id });
+      if (y.body?.template?.id) templateIds.push(y.body.template.id);
+      return y;
+    };
+    const first = [];
+    for (let i = 0; i < 18; i++) first.push((await add('post', i)).status);
+    const race = await Promise.all([18, 19, 20, 21].map((i) => add('post', i)));
+    const raceOk = race.filter((y) => y.status === 201).length;
+    const full = race.filter((y) => y.status === 400 && y.body.code === 'persona.examples_full');
+    const [cnt] = await sqlClient`select count(*)::int n from comment_templates where persona_id = ${lim.id} and kind = 'post'`;
+    check('20 post examples accepted (4 parallel at 18 → exactly 2 more), the rest → 400 persona.examples_full {max: 20}',
+      first.every((s) => s === 201) && raceOk === 2 && full.length === 2 && full[0]!.body.params?.max === 20 && cnt!.n === 20, `${raceOk} ${cnt!.n} ${race.map((y) => y.status).join()}`);
+    const c1 = await add('comment', 0);
+    check('comment examples are counted separately (21st example as comment → 201)', c1.status === 201);
+    let y = await http('PUT', `/api/comment-templates/${c1.body.template.id}`, A.token, { kind: 'post' });
+    check('moving a comment example onto the full post list → 400 persona.examples_full', y.status === 400 && y.body.code === 'persona.examples_full', `${y.status} ${y.body?.code}`);
+    const one = race.find((z) => z.status === 201)!.body.template.id;
+    y = await http('PUT', `/api/comment-templates/${one}`, A.token, { text: '改过的范例', name: 'renamed' });
+    check('editing the text of an example of a full list → 200', y.status === 200);
+    await http('DELETE', `/api/comment-templates/${one}`, A.token);
+    y = await http('PUT', `/api/comment-templates/${c1.body.template.id}`, A.token, { kind: 'post' });
+    check('after deleting one, the move fits again (→ 200)', y.status === 200);
+    const bigOwn = await http('POST', '/api/comment-templates', T, { kind: 'post', name: `lim ${tag} admin`, text: 'x', personaId: lim.id, ownerId: A.id });
+    check('the limit also applies to an admin writing for the owner (ownerId) → 400', bigOwn.status === 400 && bigOwn.body.code === 'persona.examples_full');
+    x = await http('GET', `/api/personas/${lim.id}`, A.token);
+    check('GET /:id lists all 20 post examples', x.body.examples.post.length === 20 && x.body.examples.comment.length === 0, `${x.body.examples.post.length}/${x.body.examples.comment.length}`);
+
     x = await http('GET', `/api/personas/${sp.id}`, B.token);
     check('GET /api/personas/:id of another user\'s personal persona → 404', x.status === 404 && x.body.code === 'persona.not_found');
     const pubStyle = (await persona(T, { scope: 'public', name: `PubStyle ${tag}`, style: { bannedWords: ['广告'] } })).body.persona;
@@ -172,7 +244,10 @@ try {
       x.status === 200 && x.body.persona.style.bannedWords.join() === '广告' && x.body.examples.post.length === 1 && x.body.examples.post[0].text === `公共范例 ${tag}`
         && !('draftOwnerId' in x.body.persona) && !('runs' in x.body.persona) && x.body.persona.writable === false);
     const l2 = await http('GET', '/api/personas?scope=mine', A.token);
-    check('list carries style and the length table', l2.body.personas.find((p: any) => p.id === sp.id)?.style?.tone === 'funny' && !!l2.body.lengths?.post?.high);
+    check('list carries style and the length table', l2.body.personas.find((p: any) => p.id === sp.id)?.style?.post?.tone === 'funny' && !!l2.body.lengths?.post?.high);
+    await http('DELETE', `/api/personas/${lim.id}`, A.token);
+    const [limLeft] = await sqlClient`select count(*)::int n from comment_templates where persona_id = ${lim.id}`;
+    check('deleting a persona deletes its examples (templates need a persona)', limLeft!.n === 0);
   }
 
   // ================================================================ template persona rules
@@ -192,12 +267,16 @@ try {
   const A1 = (await tpl(A.token, { name: `a1 ${tag}`, personaId: aCoach.id })).body.template;
   const A2 = (await tpl(A.token, { name: `a2 ${tag}`, personaId: brand.id })).body.template;
   const A3 = (await tpl(A.token, { name: `a3 ${tag}`, personaId: aCoach2.id })).body.template;
-  const A4 = (await tpl(A.token, { name: `a4 ${tag}` })).body.template;
+  r = await tpl(A.token, { name: `a0 ${tag}` });
+  const r0 = await tpl(A.token, { name: `a0 ${tag}`, personaId: null });
+  check('template without a persona → 400 template.persona_required (missing or null)', r.status === 400 && r.body.code === 'template.persona_required' && r0.status === 400
+    && r0.body.code === 'template.persona_required', `${r.status} ${r.body?.code} ${r0.status}`);
+  const A4 = (await tpl(A.token, { name: `a4 ${tag}`, personaId: pre.id })).body.template;
   const B1 = (await tpl(B.token, { name: `b1 ${tag}`, personaId: brand.id })).body.template;
   const B2 = (await tpl(B.token, { name: `b2 ${tag}`, personaId: bCoach.id })).body.template;
   check('templates with allowed personas (shared → public; personal → public or own); persona returned as an object',
     S1?.persona?.name === `Brand ${tag}` && S1.persona.ownerType === 'public' && A1?.persona?.id === aCoach.id && A2?.persona?.id === brand.id
-      && B2?.persona?.id === bCoach.id && A4?.persona === null && A1.persona.description === null);
+      && B2?.persona?.id === bCoach.id && A4?.persona?.id === pre.id && A1.persona.description === null);
   r = await http('PUT', `/api/comment-templates/${A4.id}`, A.token, { personaId: bCoach.id });
   check('update personal template to another user\'s persona → 400', r.status === 400 && r.body.code === 'persona.not_allowed');
   r = await http('PUT', `/api/comment-templates/${S2.id}`, T, { personaId: aCoach.id });
@@ -206,7 +285,9 @@ try {
   const r6 = await http('PUT', `/api/comment-templates/${A4.id}`, T, { personaId: bCoach.id });
   check('admin editing A\'s template: A\'s persona ok, B\'s → 400', r.status === 200 && r.body.template.persona?.id === aCoach.id && r6.status === 400);
   r = await http('PUT', `/api/comment-templates/${A4.id}`, A.token, { personaId: null });
-  check('personaId null clears', r.status === 200 && r.body.template.persona === null && r.body.template.personaId === null);
+  check('personaId null → 400 template.persona_required (a template keeps its persona)', r.status === 400 && r.body.code === 'template.persona_required', `${r.status} ${r.body?.code}`);
+  r = await http('DELETE', `/api/comment-templates/${A4.id}`, A.token);
+  check('owner deletes the template', r.status === 204);
 
   // ================================================================ counts, filters, facets
   const count = (xs: any[], id: string) => xs.find((x) => x.id === id)?.count;
@@ -239,7 +320,7 @@ try {
   const tl = async (token: string, q: string) => ((await http('GET', `/api/comment-templates?kind=all&${q}`, token)).body.templates as any[]).filter((x) => x.name.includes(tag)).map((x) => x.name).sort().join();
   check('filter personaId (A sees s1, a2 — not B\'s b1)', await tl(A.token, `personaId=${brand.id}`) === [`a2 ${tag}`, `s1 ${tag}`].sort().join());
   check('filter personaId as admin (s1, a2, b1)', await tl(T, `personaId=${brand.id}`) === [`a2 ${tag}`, `b1 ${tag}`, `s1 ${tag}`].sort().join());
-  check('filter personaId=none', await tl(A.token, 'personaId=none') === `a4 ${tag}`);
+  check('filter personaId=none: nothing (every template has a persona)', await tl(A.token, 'personaId=none') === '');
   r = await http('GET', '/api/comment-templates?kind=all&personaId=nope', A.token);
   check('invalid personaId → 400', r.status === 400);
   r = await http('GET', '/api/comment-templates/facets?kind=all', A.token);
@@ -248,7 +329,7 @@ try {
   // ================================================================ delete + merge
   r = await http('DELETE', `/api/personas/${old.id}`, T);
   const [s2row] = await db.select().from(TPL).where(eq(TPL.id, S2.id));
-  check('delete public persona → 204, its templates become 未设人设', r.status === 204 && s2row?.personaId === null);
+  check('delete public persona → 204, its templates (范例) are deleted with it', r.status === 204 && s2row === undefined);
   {
     // no merge for personas: the endpoint is gone for owners and admins alike, nothing moves
     const tries = await Promise.all([
@@ -264,7 +345,7 @@ try {
   }
   r = await http('DELETE', `/api/personas/${bCoach.id}`, B.token);
   const [b2row] = await db.select().from(TPL).where(eq(TPL.id, B2.id));
-  check('owner deletes own persona → template becomes 未设人设', r.status === 204 && b2row?.personaId === null);
+  check('owner deletes own persona → its template is deleted too', r.status === 204 && b2row === undefined);
 
   // ================================================================ audit
   await sleep(500);
@@ -304,7 +385,7 @@ try {
   check('migration: an existing public persona with the same name covers a personal text; blank text skipped',
     pid(L.bPre) === pre.id && pid(L.bBlank) === null);
   r = await http('DELETE', `/api/personas/${aMig!.id}`, A.token);
-  r = await http('PUT', `/api/comment-templates/${L.s1}`, T, { personaId: null });
+  await db.update(TPL).set({ personaId: null, persona: null }).where(eq(TPL.id, L.s1)); // cleared as the old API did (no longer possible through it)
   const run3 = await migratePersonaTexts(sqlClient, () => {});
   const after = await db.select().from(TPL).where(inArray(TPL.id, [L.aCoach1, L.aCoach2, L.s1]));
   check('migration does not re-link templates whose persona was deleted or cleared', run3.created === 0 && run3.linked === 0 && after.every((x) => x.personaId === null && x.persona === null), JSON.stringify(run3));

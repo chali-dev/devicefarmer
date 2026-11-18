@@ -6,9 +6,8 @@ import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
-import { PlusOutlined } from '@ant-design/icons-vue'
 import {
-  type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentStatus, type CommentTemplate,
+  type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentStatus,
 } from '../api/types'
 import CommentDrawer from '../components/comments/CommentDrawer.vue'
 import FoldToggle from '../components/comments/FoldToggle.vue'
@@ -25,7 +24,7 @@ import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 /**
- * Comments & engagement (评论互动): threads, reply composer, sending queue / history, templates. No approval step
+ * Comments & engagement (评论互动): threads, reply composer, sending queue / history (评论范例: persona form). No approval step
  * (removed 2026-11-18); the reply rules are edited on the 风控 page. Draft first (2026-11-18): every reply starts as a
  * draft; the queue's drafts have 编辑 / 排程 (preview + time) / 删除, nothing is sent before 排程.
  */
@@ -35,8 +34,8 @@ const store = useInstancesStore()
 const route = useRoute()
 const router = useRouter()
 
-type Tab = 'comments' | 'queue' | 'history' | 'templates'
-const TABS: Tab[] = ['comments', 'queue', 'history', 'templates']
+type Tab = 'comments' | 'queue' | 'history'
+const TABS: Tab[] = ['comments', 'queue', 'history']
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'comments'),
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
@@ -51,7 +50,6 @@ const errText = (code: string | null, raw: string | null, platform?: string) => 
 
 const accounts = ref<CommentAccount[]>([])
 const posts = ref<{ postId: string; postUrl: string | null; n: number; title: string | null }[]>([])
-const templates = ref<CommentTemplate[]>([])
 const filters = reactive({
   accountId: (typeof route.query.account === 'string' ? route.query.account : undefined) as string | undefined,
   postId: undefined as string | undefined, status: (typeof route.query.status === 'string' ? route.query.status : undefined) as CommentStatus | undefined, source: undefined as 'api' | 'manual' | 'device' | undefined, q: '',
@@ -65,9 +63,6 @@ async function loadPosts() {
   posts.value = []
   if (!filters.accountId) return
   try { posts.value = (await api<{ posts: typeof posts.value }>('GET', `/api/comments/posts?accountId=${filters.accountId}`)).posts } catch (e) { message.error(errorText(e)) }
-}
-async function loadTemplates() {
-  try { templates.value = (await api<{ templates: CommentTemplate[] }>('GET', '/api/comment-templates')).templates } catch (e) { message.error(errorText(e)) }
 }
 
 // ---------------------------------------------------------------- comments
@@ -196,38 +191,10 @@ function removeDraft(r: CommentReplyItem) {
   })
 }
 
-// ---------------------------------------------------------------- templates
-const tplOpen = ref(false)
-const tpl = reactive({ id: null as string | null, name: '', text: '', shared: false })
-const tplColumns = computed(() => [
-  { title: t('comments.templateName'), dataIndex: 'name', key: 'name', width: 200 },
-  { title: t('comments.templateText'), dataIndex: 'text', key: 'text', width: 420 },
-  { title: t('scripts.visibility'), key: 'shared', width: 140 },
-  actionColumn(120),
-])
-function openTpl(x?: CommentTemplate) {
-  Object.assign(tpl, x ? { id: x.id, name: x.name, text: x.text, shared: x.shared } : { id: null, name: '', text: '', shared: false })
-  tplOpen.value = true
-}
-async function saveTpl() {
-  if (!tpl.name.trim() || !tpl.text.trim()) { message.warning(t('common.required')); return }
-  try {
-    if (tpl.id) await api('PUT', `/api/comment-templates/${tpl.id}`, { name: tpl.name, text: tpl.text })
-    else await api('POST', '/api/comment-templates', { name: tpl.name, text: tpl.text, shared: tpl.shared })
-    message.success(t('common.saved')); tplOpen.value = false; await loadTemplates()
-  } catch (e) { message.error(errorText(e)) }
-}
-function removeTpl(x: CommentTemplate) {
-  confirmDanger({
-    title: t('comments.deleteTemplateConfirm'),
-    onOk: async () => { try { await api('DELETE', `/api/comment-templates/${x.id}`); await loadTemplates() } catch (e) { message.error(errorText(e)) } },
-  })
-}
 
 // ---------------------------------------------------------------- loading / live updates
 function load() {
   if (tab.value === 'comments') return loadComments()
-  if (tab.value === 'templates') return loadTemplates()
   return loadReplies()
 }
 const search = () => { page.current = 1; rPage.current = 1; void load() }
@@ -268,7 +235,7 @@ const off = store.onTaskEvent((ev) => {
 })
 onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer) })
 onMounted(() => {
-  void load(); void loadAccounts(); void loadTemplates()
+  void load(); void loadAccounts()
   if (filters.accountId) void loadPosts()
 })
 </script>
@@ -283,7 +250,6 @@ onMounted(() => {
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="comments" :tab="t('comments.tabs.comments')" />
         <a-tab-pane v-for="k in (['queue', 'history'] as const)" :key="k" :tab="t(`comments.tabs.${k}`)" />
-        <a-tab-pane key="templates" :tab="t('comments.tabs.templates')" />
       </a-tabs>
 
       <SearchBar @reset="reset">
@@ -302,11 +268,7 @@ onMounted(() => {
           <a-select-option value="api">{{ t('comments.sourceApi') }}</a-select-option>
           <a-select-option value="manual">{{ t('comments.sourceManual') }}</a-select-option>
         </a-select>
-        <a-input-search v-if="tab !== 'templates'" v-model:value="filters.q" :placeholder="t('comments.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
-        <template v-if="tab === 'templates'" #actions>
-          <a-button @click="$router.push({ path: '/scripts', query: { kind: 'comment' } })">{{ t('scripts.manage') }}</a-button>
-          <a-button type="primary" @click="openTpl()"><template #icon><PlusOutlined /></template>{{ t('comments.newTemplate') }}</a-button>
-        </template>
+        <a-input-search v-model:value="filters.q" :placeholder="t('comments.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
       </SearchBar>
 
       <div v-if="account" class="acc-bar">
@@ -365,7 +327,7 @@ onMounted(() => {
       </a-spin>
 
       <!-- queue / history -->
-      <a-table v-else-if="tab !== 'templates'" :data-source="replies" :columns="replyColumns" row-key="id" :size="TABLE_SIZE" :loading="rLoading" :scroll="{ x: 1230 }"
+      <a-table v-else :data-source="replies" :columns="replyColumns" row-key="id" :size="TABLE_SIZE" :loading="rLoading" :scroll="{ x: 1230 }"
         :pagination="pagination({ current: rPage.current, pageSize: rPage.pageSize, total: rTotal })"
         @change="onRepliesChange">
         <template #bodyCell="{ column, record }">
@@ -408,26 +370,10 @@ onMounted(() => {
         </template>
       </a-table>
 
-      <!-- templates -->
-      <a-table v-else :data-source="templates" :columns="tplColumns" row-key="id" :size="TABLE_SIZE" :scroll="{ x: 880 }" :pagination="pagination({ defaultPageSize: 50, hideOnSinglePage: true })">
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'text'"><span class="pre">{{ record.text }}</span></template>
-          <template v-else-if="column.key === 'shared'">
-            <a-tag v-if="record.shared" color="blue">{{ t('scripts.public') }}</a-tag>
-            <span v-else>{{ t('scripts.personal') }}<span v-if="auth.isAdmin && record.ownerName" class="muted"> · {{ record.ownerName }}</span></span>
-          </template>
-          <template v-else-if="column.key === 'ops'">
-            <a-space v-if="record.writable" :size="0">
-              <a-button size="small" type="link" @click="openTpl(record as CommentTemplate)">{{ t('common.edit') }}</a-button>
-              <a-button size="small" type="link" danger @click="removeTpl(record as CommentTemplate)">{{ t('common.delete') }}</a-button>
-            </a-space>
-          </template>
-        </template>
-      </a-table>
     </a-card>
   </PageContainer>
 
-  <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" :templates="templates" @changed="changed" />
+  <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" @changed="changed" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
   <FeedReplyModal v-model:open="draftEditOpen" :draft="currentDraft" @done="changed" />
   <ReplyScheduleModal v-model:open="scheduleOpen" :reply="currentDraft" @done="changed" />
@@ -463,18 +409,6 @@ onMounted(() => {
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="tplOpen" :title="tpl.id ? t('comments.editTemplate') : t('comments.newTemplate')" :width="MODAL_WIDTH.md" @ok="saveTpl">
-    <a-form layout="vertical">
-      <a-form-item :label="t('comments.templateName')" required><a-input v-model:value="tpl.name" :maxlength="100" /></a-form-item>
-      <a-form-item :label="t('comments.templateText')" required><a-textarea v-model:value="tpl.text" :auto-size="{ minRows: 3, maxRows: 8 }" :maxlength="5000" /></a-form-item>
-      <a-form-item v-if="auth.isAdmin && !tpl.id" :label="t('scripts.visibility')" :extra="tpl.shared ? t('scripts.publicHint') : undefined">
-        <a-radio-group v-model:value="tpl.shared">
-          <a-radio :value="true">{{ t('scripts.tabs.public') }}</a-radio>
-          <a-radio :value="false">{{ t('scripts.tabs.mine') }}</a-radio>
-        </a-radio-group>
-      </a-form-item>
-    </a-form>
-  </a-modal>
 
 </template>
 

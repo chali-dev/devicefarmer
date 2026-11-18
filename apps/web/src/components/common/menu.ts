@@ -1,7 +1,7 @@
 import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  AlertOutlined, ApiOutlined, AppstoreOutlined, BookOutlined, CalendarOutlined, CloudOutlined, ClusterOutlined, CommentOutlined, ControlOutlined, DatabaseOutlined,
+  AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ClusterOutlined, CommentOutlined, ControlOutlined, DatabaseOutlined,
   EyeOutlined, FileSearchOutlined, FileTextOutlined, FireOutlined, IdcardOutlined, MobileOutlined, PictureOutlined, ReadOutlined, RiseOutlined, SafetyOutlined,
   ScheduleOutlined, SecurityScanOutlined, SettingOutlined, ShareAltOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
@@ -28,7 +28,7 @@ export const MENU_GROUPS: MenuGroup[] = [
     { key: 'tracked', icon: EyeOutlined }, { key: 'comments', icon: CommentOutlined },
   ] },
   { key: 'content', icon: ReadOutlined, items: [
-    { key: 'media', icon: PictureOutlined }, { key: 'scripts', icon: BookOutlined }, { key: 'trending', icon: FireOutlined, feature: 'trending' },
+    { key: 'media', icon: PictureOutlined }, { key: 'trending', icon: FireOutlined, feature: 'trending' },
     { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
   ] },
   { key: 'system', icon: ControlOutlined, items: [
