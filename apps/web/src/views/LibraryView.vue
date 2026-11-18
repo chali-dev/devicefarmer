@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { QuestionCircleOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons-vue'
+import { QuestionCircleOutlined, UploadOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import type { LibraryApp } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import { actionColumn, confirmDanger, pagination, TABLE_SIZE } from '../components/common/ui'
+import LibraryInstallModal from '../components/library/LibraryInstallModal.vue'
+import LibraryLogDrawer from '../components/library/LibraryLogDrawer.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 const auth = useAuthStore()
-const store = useInstancesStore()
 const { t } = useI18n()
 const apps = ref<LibraryApp[]>([])
 const loading = ref(false)
@@ -23,6 +24,11 @@ async function load() {
   finally { loading.value = false }
 }
 onMounted(load)
+// No refresh button: the list reloads after own changes and when an import into the library finishes.
+const off = useInstancesStore().onTaskEvent((ev) => {
+  if (ev.type === 'task.updated' && ev.task.type === 'import-app' && ev.task.status === 'success') void load()
+})
+onBeforeUnmount(off)
 
 /** Admin upload: .apk or split bundle; package/version are read from the manifests by the API. */
 const UPLOAD_ACCEPT = '.apk,.apks,.xapk,.apkm,.zip'
@@ -56,17 +62,9 @@ function remove(a: LibraryApp) {
   })
 }
 
+/** Install modal (one batch request for the picked devices) and install log drawer. */
 const target = ref<LibraryApp | null>(null)
-const targetIds = ref<string[]>([])
-async function install() {
-  if (!target.value || !targetIds.value.length) return
-  try {
-    const r = await api<{ accepted: unknown[]; skipped: { reason: string }[] }>('POST', `/api/library/${target.value.id}/install`, { instanceIds: targetIds.value })
-    message.success(t('library.submitted', { n: r.accepted.length }))
-    if (r.skipped.length) message.warning(t('common.skipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((s) => s.reason))].join(t('common.reasonSep')) }))
-    target.value = null
-  } catch (e) { message.error(errorText(e)) }
-}
+const logsOf = ref<LibraryApp | null>(null)
 
 const columns = computed(() => [
   { title: t('library.package'), dataIndex: 'package', key: 'package', width: 260 },
@@ -74,7 +72,7 @@ const columns = computed(() => [
   { title: t('library.files'), key: 'files', width: 140 },
   { title: t('library.source'), dataIndex: 'sourceInstance', key: 'source', width: 160 },
   { title: t('library.preinstall'), key: 'preinstall', width: 110 },
-  actionColumn(170),
+  actionColumn(190),
 ])
 </script>
 
@@ -84,9 +82,6 @@ const columns = computed(() => [
       <a-tooltip :title="t('library.howToBody')"><QuestionCircleOutlined class="muted" /></a-tooltip>
     </template>
     <template #extra>
-      <a-tooltip :title="t('common.refresh')">
-        <a-button :loading="loading" :aria-label="t('common.refresh')" @click="load"><template #icon><ReloadOutlined /></template></a-button>
-      </a-tooltip>
       <a-tooltip v-if="auth.isAdmin" :title="t('library.uploadTip')">
         <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
           <a-button type="primary" :loading="uploading"><template #icon><UploadOutlined /></template>{{ t('library.upload') }}</a-button>
@@ -107,7 +102,8 @@ const columns = computed(() => [
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-button type="link" size="small" @click="target = record; targetIds = []">{{ t('library.installTo') }}</a-button>
+              <a-button type="link" size="small" @click="target = record">{{ t('common.install') }}</a-button>
+              <a-button type="link" size="small" @click="logsOf = record">{{ t('library.logs') }}</a-button>
               <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
             </a-space>
           </template>
@@ -116,8 +112,6 @@ const columns = computed(() => [
     </a-card>
   </PageContainer>
 
-  <a-modal :open="!!target" :width="MODAL_WIDTH.sm" :title="t('library.installTitle', { pkg: target?.package ?? '' })" :ok-text="t('common.install')" :cancel-text="t('common.cancel')" :ok-button-props="{ disabled: !targetIds.length }" @ok="install" @cancel="target = null">
-    <a-select v-model:value="targetIds" mode="multiple" style="width: 100%" :placeholder="t('library.pickRunning')"
-      :options="store.list.filter((i) => i.status === 'running').map((i) => ({ value: i.id, label: i.name }))" />
-  </a-modal>
+  <LibraryInstallModal :app="target" @close="target = null" @submitted="target = null" />
+  <LibraryLogDrawer :app="logsOf" @close="logsOf = null" />
 </template>

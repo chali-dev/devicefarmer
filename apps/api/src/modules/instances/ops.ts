@@ -1,7 +1,7 @@
 import type { Instance } from '../../db/schema.js';
 import { adb, network, runtimeFor, stf } from '../../services.js';
 import { applyDeviceSettings } from './device-settings.js';
-import { importFromDevice, libraryApks, libraryAppsByIds, preinstallApps } from '../library/library.js';
+import { importFromDevice, libraryAppsByIds, libraryInstallJob, libraryTaskRef, preinstallApps } from '../library/library.js';
 import { enqueue } from './queue.js';
 import { getMedia, withMediaFile } from '../media/media.js';
 import { mediaTarget } from '../../adapters/adb.js';
@@ -169,7 +169,7 @@ export async function opCreate(id: string, appIds?: string[]): Promise<void> {
   await refreshProxyStatus(await mustGet(id));
   // Preinstall library apps as separate, visible tasks (a failed install doesn't fail the create).
   for (const app of appIds ? await libraryAppsByIds(appIds) : await preinstallApps()) {
-    await enqueue('install-apk', inst, inst.createdBy, libraryApks(app), `预装 ${app.package} ${app.versionName ?? app.versionCode}`);
+    await enqueue('install-apk', inst, inst.createdBy, libraryInstallJob(app, true), `预装 ${app.package} ${app.versionName ?? app.versionCode}`, libraryTaskRef(app));
   }
 }
 
