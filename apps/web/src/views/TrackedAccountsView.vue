@@ -17,6 +17,7 @@ import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue
 import ScheduleCapacityHint from '../components/tracked/ScheduleCapacityHint.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
@@ -203,9 +204,10 @@ async function saveBatchSchedule() {
   finally { batchSaving.value = false }
 }
 
-async function refreshBatch() {
+/** 全部刷新 (every collectable row of the list) or 批量操作 → 刷新数据 (the selected collectable rows). */
+async function refreshBatch(selectedOnly: boolean) {
   const ok = new Set(collectable.value.map((a) => a.id))
-  const ids = selectedKeys.value.length ? selectedKeys.value.filter((k) => ok.has(k)) : [...ok]
+  const ids = selectedOnly ? selectedKeys.value.filter((k) => ok.has(k)) : [...ok]
   if (!ids.length) return
   try {
     const r = await api<{ queued: { id: string }[]; skipped: { id: string; code: string }[] }>('POST', '/api/tracked-accounts/refresh', { ids })
@@ -213,6 +215,14 @@ async function refreshBatch() {
     message.info(t('tracked.batchQueued', { queued: r.queued.length }) + (r.skipped.length ? ` ${t('common.skipped', { n: r.skipped.length, reasons })}` : ''))
     await load(true)
   } catch (e) { message.error(errorText(e)) }
+}
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'refresh', label: t('tracked.refreshBatch'), disabled: !selectedCollectable.value },
+  { key: 'schedule', label: t('collect.batchSet'), disabled: !selectedCollectable.value },
+])
+function onBatch(key: string) {
+  if (key === 'refresh') void refreshBatch(true)
+  else if (key === 'schedule') openBatchSchedule()
 }
 function remove(a: TrackedAccount) {
   confirmDanger({
@@ -335,14 +345,8 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
         <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
         <template #actions>
-          <a-button v-if="collectable.length" @click="refreshBatch">
-            {{ t('tracked.refreshBatch') }}{{ selectedCollectable ? ` (${selectedCollectable})` : '' }}
-          </a-button>
-          <a-tooltip v-if="collectable.length" :title="selectedCollectable ? undefined : t('collect.batchSelectHint')">
-            <a-button :disabled="!selectedCollectable" @click="openBatchSchedule">
-              {{ t('collect.batchSet') }}{{ selectedCollectable ? ` (${selectedCollectable})` : '' }}
-            </a-button>
-          </a-tooltip>
+          <a-button v-if="collectable.length" @click="refreshBatch(false)">{{ t('tracked.refreshAll') }}</a-button>
+          <BatchActions v-if="collectable.length" :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>
       </SearchBar>
 

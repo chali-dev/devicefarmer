@@ -15,6 +15,7 @@ import {
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 
 const { t } = useI18n()
@@ -196,9 +197,8 @@ function remove(p: PoolProxy) {
 
 // ---- batch (批量操作, POST /api/proxies/batch): delete skips proxies bound to a device; set-kind moves rows to another tab
 interface BatchResult { ok: string[]; skipped: { id: string; code: string; params?: ErrorParams }[]; changed: number }
-const batchKind = ref<ProxyKind | undefined>()
 const batchBusy = ref(false)
-function batch(action: 'delete' | 'set-kind') {
+function batch(action: 'delete' | 'set-kind', toKind?: ProxyKind) {
   const ids = [...selectedKeys.value]
   if (!ids.length) return
   // Name/address only, never credentials.
@@ -207,7 +207,7 @@ function batch(action: 'delete' | 'set-kind') {
     batchBusy.value = true
     try {
       const body: Record<string, unknown> = { ids, action }
-      if (action === 'set-kind') body.kind = batchKind.value
+      if (action === 'set-kind') body.kind = toKind
       const r = await api<BatchResult>('POST', '/api/proxies/batch', body)
       const done = action === 'delete' ? t('proxies.batch.doneDelete', { n: r.ok.length }) : t('proxies.batch.doneKind', { n: r.changed })
       if (r.skipped.length) {
@@ -221,7 +221,6 @@ function batch(action: 'delete' | 'set-kind') {
         })
       } else message.success(done)
       selectedKeys.value = []
-      batchKind.value = undefined
       void load()
     } catch (e) { message.error(errorText(e)) }
     finally { batchBusy.value = false }
@@ -230,6 +229,17 @@ function batch(action: 'delete' | 'set-kind') {
     const bound = items.value.filter((p) => ids.includes(p.id) && p.boundInstance).length
     confirmDanger({ title: t('proxies.batch.confirmDelete', { n: ids.length }), content: t('proxies.batch.deleteHint', { bound }), onOk: run })
   } else void run()
+}
+/** 批量操作 menu: check, move to the other kind tab (the current kind is disabled: rows are already that kind), delete. */
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'check', label: t('proxies.check'), disabled: batchChecking.value || batchBusy.value },
+  ...PROXY_KINDS.map((k) => ({ key: `kind:${k}`, label: t('proxies.batch.toKind', { kind: t(`proxies.kinds.${k}`) }), disabled: k === kind.value || batchBusy.value })),
+  { key: 'delete', label: t('common.delete'), danger: true, disabled: batchBusy.value },
+])
+function onBatch(key: string) {
+  if (key === 'check') void checkBatch(true)
+  else if (key === 'delete') batch('delete')
+  else if (key.startsWith('kind:')) batch('set-kind', key.slice(5) as ProxyKind)
 }
 
 // ---- bulk import (preview = dry run, then import)
@@ -277,7 +287,7 @@ async function openUsage(p: PoolProxy) {
 </script>
 
 <template>
-  <PageContainer :title="t('proxies.title')" :subtitle="t(`proxies.kindDesc.${kind}`)">
+  <PageContainer :title="t('proxies.title')">
     <template #title-suffix>
       <a-popover trigger="click" placement="bottomLeft" :overlay-style="{ maxWidth: '440px' }">
         <template #title>{{ t('proxies.guideTitle') }}</template>
@@ -320,18 +330,10 @@ async function openUsage(p: PoolProxy) {
               {{ t('proxies.checkAll') }}
             </a-button>
           </a-tooltip>
+          <BatchActions :count="selectedKeys.length" :items="batchItems" :loading="(batchChecking && !!selectedKeys.length) || batchBusy"
+            @select="onBatch" @clear="selectedKeys = []" />
         </template>
       </SearchBar>
-
-      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
-        <span>{{ t('proxies.batch.selected', { n: selectedKeys.length }) }}</span>
-        <a-button size="small" :loading="batchChecking" :disabled="batchBusy" @click="checkBatch(true)">{{ t('proxies.check') }}</a-button>
-        <a-select v-model:value="batchKind" :placeholder="t('proxies.kind')" size="small" style="width: 120px"
-          :options="PROXY_KINDS.map((k) => ({ value: k, label: t(`proxies.kinds.${k}`) }))" />
-        <a-button size="small" :disabled="!batchKind || batchBusy" @click="batch('set-kind')">{{ t('proxies.batch.setKind') }}</a-button>
-        <a-button size="small" danger :disabled="batchBusy" @click="batch('delete')">{{ t('common.delete') }}</a-button>
-        <a-button size="small" type="link" @click="selectedKeys = []">{{ t('proxies.batch.clear') }}</a-button>
-      </a-space>
 
       <a-table
         :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1340 }"
@@ -536,5 +538,4 @@ async function openUsage(p: PoolProxy) {
 .test-result { margin-top: 4px; }
 .modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .test-btn { padding-left: 0; }
-.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
 </style>
