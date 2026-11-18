@@ -41,6 +41,8 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
     db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, platform: schema.socialAccounts.platform, instanceId: schema.socialAccounts.instanceId,
       userId: schema.socialAccounts.userId }).from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))),
   ]);
+  const posts = rows.some((r) => r.postId) ? await db.select({ id: schema.socialAccountPosts.id, caption: schema.socialAccountPosts.caption, permalink: schema.socialAccountPosts.permalink,
+    publishedAt: schema.socialAccountPosts.publishedAt }).from(schema.socialAccountPosts).where(inArray(schema.socialAccountPosts.id, idsOf(rows.map((r) => r.postId)))) : [];
   const [insts, owners] = await Promise.all([
     db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(accs.map((a) => a.instanceId)))),
@@ -53,8 +55,12 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
     return {
       ...r,
       textHash: undefined,
+      // evidence: the storage key stays server-side; the screenshot is served by GET …/evidence
+      evidence: r.evidence ? { at: r.evidence.at, inputText: r.evidence.inputText ?? null, excerpt: r.evidence.excerpt ?? null } : null,
+      hasEvidence: !!r.evidence?.key,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       comment: comments.find((c) => c.id === r.commentId) ?? null,
+      post: posts.find((p) => p.id === r.postId) ?? null,
       account: acc ? { id: acc.id, handle: acc.handle, platform: acc.platform } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
       canEdit: r.status === 'draft',
@@ -67,7 +73,7 @@ async function latestReplies(commentIds: string[]) {
   if (!commentIds.length) return new Map<string, CommentTask>();
   const rows = await db.select().from(R).where(inArray(R.commentId, commentIds)).orderBy(desc(R.createdAt));
   const out = new Map<string, CommentTask>();
-  for (const r of rows) if (!out.has(r.commentId)) out.set(r.commentId, r);
+  for (const r of rows) if (r.commentId && !out.has(r.commentId)) out.set(r.commentId, r);
   return out;
 }
 
@@ -95,7 +101,7 @@ const CommentQuery = z.object({
   accountId: z.string().uuid().optional(),
   platform: z.string().max(32).optional(),
   status: csv(z.enum(COMMENT_STATUSES)).optional(),
-  source: z.enum(['api', 'manual']).optional(),
+  source: z.enum(['api', 'manual', 'device']).optional(),
   postId: z.string().max(200).optional(),
   ownerId: z.string().uuid().optional(),
   q: z.string().trim().max(100).optional(),
@@ -128,6 +134,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
         duplicateMax: z.number().int().min(1).max(100).optional(),
         duplicateWindowHours: z.number().int().min(1).max(24 * 30).optional(),
         sendsPerHour: z.number().int().min(1).max(500).optional(),
+        sendsPerDay: z.number().int().min(1).max(2000).optional(),
+        minGapSec: z.number().int().min(0).max(86_400).optional(),
+        testMode: z.boolean().optional(),
       }).strict(),
     },
   }, async (req) => {

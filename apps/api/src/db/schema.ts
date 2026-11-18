@@ -389,12 +389,44 @@ export const trackedPosts = pgTable('tracked_posts', {
   views: bigint('views', { mode: 'number' }),
   likes: bigint('likes', { mode: 'number' }),
   comments: bigint('comments', { mode: 'number' }),
-  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  /** `device`: read in the Instagram app on the collector phone (modules/feed; externalId = media pk, title = caption). */
+  source: text('source', { enum: ['api', 'manual', 'device'] }).notNull(),
+  /** Device source: photo | video | carousel as the app labels the post. */
+  mediaType: text('media_type'),
+  /** Metrics the app abbreviated (likes / comments), like snapshots. */
+  approx: text('approx').array(),
+  /** Last time its comments were read (device source). */
+  commentsFetchedAt: timestamp('comments_fetched_at', { withTimezone: true }),
   firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('tracked_posts_account_external').on(t.trackedAccountId, t.externalId),
   index('tracked_posts_account_published_idx').on(t.trackedAccountId, t.publishedAt),
+]);
+
+/**
+ * Comments under a tracked account's posts as read on the collector phone (modules/feed, read only; never
+ * replied to). Unique per post + stable id: Instagram shows no comment id, so `external_id` is a hash of
+ * post pk + author + normalised text (feed/ig-ui.ts commentKey). `published_at` is approximate (the app shows
+ * "11小时前"), set on first sight and kept.
+ */
+export const trackedPostComments = pgTable('tracked_post_comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  trackedPostId: uuid('tracked_post_id').notNull().references(() => trackedPosts.id, { onDelete: 'cascade' }),
+  trackedAccountId: uuid('tracked_account_id').notNull().references(() => trackedAccounts.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(),
+  authorHandle: text('author_handle'),
+  text: text('text').notNull(),
+  likes: integer('likes'),
+  replyCount: integer('reply_count'),
+  /** Position in the list as the app showed it on the last read (0 = first). */
+  position: integer('position'),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique('tracked_post_comments_post_external').on(t.trackedPostId, t.externalId),
+  index('tracked_post_comments_account_idx').on(t.trackedAccountId, t.firstSeenAt),
 ]);
 
 /**
@@ -755,6 +787,12 @@ export const socialAccountPosts = pgTable('social_account_posts', {
   publishedAt: timestamp('published_at', { withTimezone: true }),
   likes: bigint('likes', { mode: 'number' }),
   comments: bigint('comments', { mode: 'number' }),
+  /** api (history) | device: read in the Instagram app on the account's cloud phone (modules/feed, externalId = media pk). */
+  source: text('source', { enum: ['api', 'device'] }).notNull().default('api'),
+  /** Metrics the app abbreviated (likes / comments). */
+  approx: text('approx').array(),
+  /** Last time its comments were read (device source). */
+  commentsFetchedAt: timestamp('comments_fetched_at', { withTimezone: true }),
   firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
   fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -791,7 +829,8 @@ export const comments = pgTable('comments', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
   platform: text('platform').notNull(),
-  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  /** manual | api (history) | device (read in the app on the account's cloud phone by modules/feed; external_id = feed/ig-ui.ts commentKey). */
+  source: text('source', { enum: ['api', 'manual', 'device'] }).notNull(),
   externalId: text('external_id').notNull(),
   /** Thread: external id of the top-level comment this one replies to (null = top level). */
   parentExternalId: text('parent_external_id'),
@@ -843,14 +882,22 @@ export const commentSyncStates = pgTable('comment_sync_states', {
  * rejected / cancelled. At most one reply per comment that is not failed / rejected / cancelled.
  * `round` is bumped when a rate-limited send is deferred (idempotency key comment-reply:<id>:<round>).
  */
-export const COMMENT_REPLY_STATUSES = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'rejected', 'cancelled'] as const;
+export const COMMENT_REPLY_STATUSES = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'rejected', 'cancelled', 'dry_run'] as const;
 export type CommentReplyStatus = (typeof COMMENT_REPLY_STATUSES)[number];
+
+/** What a test-mode run (dry_run) or a device send left as proof: screenshot in storage + a short screen excerpt. */
+export interface ReplyEvidence { at: string; storage?: string | null; key?: string | null; inputText?: string | null; excerpt?: string | null }
 
 export const commentTasks = pgTable('comment_tasks', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   accountId: uuid('account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
-  commentId: uuid('comment_id').notNull().references(() => comments.id, { onDelete: 'cascade' }),
+  /** The comment replied to; null = a comment written directly under a post (`post_id`). Nullable since 0034 (expand). */
+  commentId: uuid('comment_id').references(() => comments.id, { onDelete: 'cascade' }),
+  /** Direct comment under one of the account's own posts (social_account_posts), sent from the cloud phone. */
+  postId: uuid('post_id').references(() => socialAccountPosts.id, { onDelete: 'cascade' }),
+  /** Test mode run (status dry_run) / device send: screenshot + what the input field showed. */
+  evidence: jsonb('evidence').$type<ReplyEvidence>(),
   platform: text('platform').notNull(),
   text: text('text').notNull(),
   /** sha256 of the normalized text (lower case, collapsed whitespace): duplicate-text rule. */
@@ -881,7 +928,9 @@ export const commentTasks = pgTable('comment_tasks', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [
-  uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled')`),
+  // dry_run (test mode, nothing posted) does not block a real reply afterwards.
+  uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
+  index('comment_tasks_post_idx').on(t.postId, t.createdAt),
   index('comment_tasks_user_status_idx').on(t.userId, t.status, t.updatedAt),
   index('comment_tasks_account_status_idx').on(t.accountId, t.status, t.updatedAt),
   index('comment_tasks_account_hash_idx').on(t.accountId, t.textHash, t.submittedAt),
@@ -1225,6 +1274,8 @@ export type TrackedAccount = typeof trackedAccounts.$inferSelect;
 export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
 export type SocialAccountStats = typeof socialAccountStats.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
+export type TrackedPostComment = typeof trackedPostComments.$inferSelect;
+export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
 export type Content = typeof contents.$inferSelect;
 export type ContentTranslation = typeof contentTranslations.$inferSelect;
 export type PublishTask = typeof publishTasks.$inferSelect;

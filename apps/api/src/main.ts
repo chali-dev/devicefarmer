@@ -53,6 +53,8 @@ import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly 
 import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels
 import { riskRoutes } from './modules/risk/routes.js'; // 风控: device pace, device halts, risk events
 import { scheduleAccountDeviceChecks } from './modules/social/check.js'; // 社交号自动检测 (task account-device-check)
+import { feedRoutes } from './modules/feed/routes.js'; // 帖子与评论 (account feed): feed API, collect now, post comments, reply evidence
+import { scheduleFeedCollects } from './modules/feed/collect.js'; // 帖子与评论采集 (task feed-collect)
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 import { logSink } from './modules/system/logs.js';
@@ -111,6 +113,7 @@ await app.register(dashboardRoutes);
 await app.register(systemRoutes);
 await app.register(notifyRoutes);
 await app.register(riskRoutes);
+await app.register(feedRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
@@ -165,6 +168,7 @@ async function startBackground(): Promise<void> {
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
+    void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
     alertsHourly(app.log);
   };
   const firstRun = setTimeout(() => {
@@ -174,6 +178,7 @@ async function startBackground(): Promise<void> {
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
+    void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
     alertsHourly(app.log);
   }, 10_000);
   firstRun.unref();

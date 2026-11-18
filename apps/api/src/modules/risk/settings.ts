@@ -22,6 +22,12 @@ export const RiskDeviceInput = z.object({
   busyRetrySec: z.number().int().min(5).max(86_400),
   /** 社交号自动检测 interval in hours; null = off. */
   accountCheckHours: z.number().int().min(1).max(168).nullable(),
+  /** 帖子与评论采集 (modules/feed): interval in hours per account (social + scheduled tracked IG accounts); null = off. */
+  feedCollectHours: z.number().int().min(1).max(168).nullable(),
+  /** Newest posts read per account. */
+  feedPosts: z.number().int().min(1).max(10),
+  /** Top-level comments read per post (0 = counts only). */
+  feedCommentsPerPost: z.number().int().min(0).max(100),
 });
 export type RiskDeviceSettings = z.infer<typeof RiskDeviceInput>;
 
@@ -31,6 +37,9 @@ export const riskDefaults = (): RiskDeviceSettings => ({
   maxPerHour: config.TRACKED_DEVICE_MAX_PER_HOUR,
   busyRetrySec: config.TRACKED_DEVICE_BUSY_RETRY_SEC,
   accountCheckHours: DEFAULT_ACCOUNT_CHECK_HOURS,
+  feedCollectHours: 24,
+  feedPosts: 3,
+  feedCommentsPerPost: 30,
 });
 
 let cache: { at: number; value: RiskDeviceSettings } | null = null;
@@ -46,9 +55,7 @@ export async function getRiskSettings(fresh = false): Promise<RiskDeviceSettings
     const r = RiskDeviceInput.shape[k].safeParse(stored[k]);
     return r.success ? (r.data as RiskDeviceSettings[K]) : d[k];
   };
-  const value: RiskDeviceSettings = {
-    minIntervalSec: pick('minIntervalSec'), maxPerHour: pick('maxPerHour'), busyRetrySec: pick('busyRetrySec'), accountCheckHours: pick('accountCheckHours'),
-  };
+  const value = Object.fromEntries((Object.keys(d) as (keyof RiskDeviceSettings)[]).map((k) => [k, pick(k)])) as RiskDeviceSettings;
   cache = { at: Date.now(), value };
   return value;
 }

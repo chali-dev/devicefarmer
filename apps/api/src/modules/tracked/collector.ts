@@ -57,7 +57,7 @@ const lockKey = (instanceId: string) => `tracked:collector:lock:${instanceId}`;
 const visitsKey = (instanceId: string) => `tracked:collector:visits:${instanceId}`;
 const lastKey = (instanceId: string) => `tracked:collector:last:${instanceId}`;
 const HOUR_MS = 3600_000;
-/** A visit takes ≤ ~30 s; the lock outlives a crashed worker by at most this. */
+/** A visit takes ≤ ~30 s; the lock outlives a crashed worker by at most this (longer operations pass `lockMs`). */
 const LOCK_MS = 120_000;
 
 /** Visits in the last hour (oldest first, ms) after dropping older ones. */
@@ -66,11 +66,15 @@ async function recentVisits(instanceId: string, now = Date.now()): Promise<numbe
   return (await redis.zrangebyscore(visitsKey(instanceId), '-inf', '+inf', 'WITHSCORES')).filter((_, i) => i % 2 === 1).map(Number);
 }
 
-/** Earliest time the next visit may start (pace rules), or null = now. */
-function nextAllowed(visits: number[], now: number, pace: Pick<RiskDeviceSettings, 'minIntervalSec' | 'maxPerHour'>): number | null {
+/**
+ * Earliest time the next operation may start (pace rules), or null = now. `weight` = screens the operation
+ * opens (a feed collection opens the profile, the grid and N posts); all of them must fit under the hourly cap.
+ */
+function nextAllowed(visits: number[], now: number, pace: Pick<RiskDeviceSettings, 'minIntervalSec' | 'maxPerHour'>, weight = 1): number | null {
   let t = 0;
   if (visits.length) t = visits[visits.length - 1]! + pace.minIntervalSec * 1000;
-  if (visits.length >= pace.maxPerHour) t = Math.max(t, visits[visits.length - pace.maxPerHour]! + HOUR_MS);
+  const over = visits.length + Math.min(weight, pace.maxPerHour) - pace.maxPerHour;
+  if (over > 0) t = Math.max(t, visits[over - 1]! + HOUR_MS);
   return t > now ? t : null;
 }
 
@@ -89,7 +93,7 @@ const HALTS_KEY = 'risk.halts';
 export interface DeviceHalt {
   at: string;
   code: string;
-  source: 'collector' | 'account_check';
+  source: 'collector' | 'account_check' | 'feed' | 'reply';
   platform: string;
   socialAccountId?: string | null;
   trackedAccountId?: string | null;
@@ -119,6 +123,13 @@ export async function haltDevice(inst: Pick<Instance, 'id' | 'name'>, halt: Omit
   await collectorBlocked(inst, halt.platform, true, halt.code);
 }
 
+/**
+ * Called after a device was resumed (e.g. comments re-queue the replies parked while it was halted). Modules
+ * register at import time; collector.ts never imports them (no cycle). A failing hook never fails the resume.
+ */
+const resumeHooks: ((instanceId: string) => Promise<unknown>)[] = [];
+export const onDeviceResumed = (fn: (instanceId: string) => Promise<unknown>) => { resumeHooks.push(fn); };
+
 /** Clears the device's halt (also a legacy collector-entry halt) and recovers its alert. Returns whether it was halted. */
 export async function resumeDevice(instanceId: string): Promise<boolean> {
   const halt = await deviceHalt(instanceId);
@@ -135,6 +146,7 @@ export async function resumeDevice(instanceId: string): Promise<boolean> {
     const inst = await getInstance(instanceId);
     if (inst) await collectorBlocked(inst, halt.platform, false);
   }
+  for (const fn of resumeHooks) await fn(instanceId).catch(() => undefined);
   return !!halt;
 }
 
@@ -232,7 +244,14 @@ export async function deviceUsage(instanceId: string): Promise<{ visitsLastHour:
  * the 风控 settings (minimum interval, hourly cap). The rules are per device, so the collector and the
  * account checks on one phone share one pace and one lock. Throws CollectorDefer for "not now".
  */
-export async function withDevice<T>(inst: Instance, log: Log, offline: () => Error, fn: (dev: CollectorDevice) => Promise<T>): Promise<T> {
+export interface DeviceOpOptions {
+  /** Lock lifetime for operations longer than one visit (default LOCK_MS). */
+  lockMs?: number;
+  /** Screens the operation opens (counted in the hourly cap; default 1). */
+  weight?: number;
+}
+
+export async function withDevice<T>(inst: Instance, log: Log, offline: () => Error, fn: (dev: CollectorDevice) => Promise<T>, opts: DeviceOpOptions = {}): Promise<T> {
   if (inst.status !== 'running' || inst.adbState !== 'device') throw offline();
   if ((await adb.states().catch(() => new Map<string, string>())).get(adb.serialFor(inst.adbPort)) !== 'device') throw offline();
   const pace = await getRiskSettings();
@@ -241,13 +260,16 @@ export async function withDevice<T>(inst: Instance, log: Log, offline: () => Err
     throw new CollectorDefer('tracked.collector_busy', `设备 ${inst.name} 正在被远程查看/控制，稍后再执行`, new Date(now + pace.busyRetrySec * 1000));
   }
   const token = randomBytes(8).toString('hex');
-  if ((await redis.set(lockKey(inst.id), token, 'PX', LOCK_MS, 'NX')) !== 'OK') {
+  if ((await redis.set(lockKey(inst.id), token, 'PX', opts.lockMs ?? LOCK_MS, 'NX')) !== 'OK') {
     throw new CollectorDefer('tracked.collector_queued', '设备正在执行其他自动操作', new Date(now + pace.minIntervalSec * 1000));
   }
   try {
-    const at = nextAllowed(await recentVisits(inst.id, now), now, pace);
+    const weight = Math.max(1, Math.min(opts.weight ?? 1, pace.maxPerHour));
+    const at = nextAllowed(await recentVisits(inst.id, now), now, pace, weight);
     if (at) throw new CollectorDefer('tracked.collector_paced', '设备节奏限制：稍后再访问', new Date(at));
-    await redis.multi().zadd(visitsKey(inst.id), now, `${now}:${token}`).pexpire(visitsKey(inst.id), HOUR_MS + 60_000).set(lastKey(inst.id), String(now)).exec();
+    const m = redis.multi();
+    for (let i = 0; i < weight; i++) m.zadd(visitsKey(inst.id), now, `${now}:${token}:${i}`);
+    await m.pexpire(visitsKey(inst.id), HOUR_MS + 60_000).set(lastKey(inst.id), String(now)).exec();
     await log('info', 'collector: visit started', { device: inst.name, at: new Date(now).toISOString() });
     return await fn({ inst, adbPort: inst.adbPort });
   } finally {
