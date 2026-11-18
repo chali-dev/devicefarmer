@@ -9,7 +9,7 @@ import { visibleTasks } from '../tasks/routes.js';
 import { registerDashboardWidget, type DashboardCtx } from './registry.js';
 
 /**
- * Core dashboard widgets (概览). Every number is RBAC-scoped through `ctx.scope`:
+ * Core dashboard widgets (仪表板). Every number is RBAC-scoped through `ctx.scope`:
  * admin = everything; user = own rows (accounts, content, publish runs, tracked accounts, private media),
  * granted devices, and tasks the task centre shows them (own + on granted devices).
  * All counts are single aggregate queries.

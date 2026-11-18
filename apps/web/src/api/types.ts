@@ -452,7 +452,7 @@ export interface PublishCapability {
 }
 export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; known: boolean }
 
-// ---------------------------------------------------------------- dashboard (概览) + settings (设置)
+// ---------------------------------------------------------------- dashboard (仪表板) + settings (设置)
 export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
 export interface DashboardWidgets {
   devices?: { total: number; running: number; stopped: number; error: number; busy: number; online: number; byStatus: Record<string, number>; capacity: DashboardCapacity | null }

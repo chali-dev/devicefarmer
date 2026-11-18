@@ -8,7 +8,6 @@ import AiSettings from '../components/settings/AiSettings.vue'
 import AlertSettings from '../components/settings/AlertSettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
-import SystemInfo from '../components/settings/SystemInfo.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
 import TrackedCollectorSettings from '../components/settings/TrackedCollectorSettings.vue'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -23,7 +22,7 @@ const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['storage', 'tracked', 'publish', 'ai', 'retention', 'system', 'alerts'] as const
+const TABS = ['storage', 'tracked', 'publish', 'ai', 'retention', 'alerts'] as const
 type Tab = (typeof TABS)[number]
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'storage'),
@@ -75,7 +74,6 @@ const envGroups = computed(() => {
         </a-tab-pane>
         <a-tab-pane key="ai" :tab="t('settings.tabs.ai')"><AiSettings /></a-tab-pane>
         <a-tab-pane key="retention" :tab="t('settings.tabs.retention')"><RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" /></a-tab-pane>
-        <a-tab-pane key="system" :tab="t('settings.tabs.system')"><SystemInfo /></a-tab-pane>
         <a-tab-pane key="alerts" :tab="t('alerts.settings.tab')"><AlertSettings /></a-tab-pane>
       </a-tabs>
     </a-card>
