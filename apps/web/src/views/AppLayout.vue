@@ -38,13 +38,13 @@ const visibleGroups = computed(() => MENU_GROUPS
   .filter((g) => g.items.length > 0))
 const loc = useMenuLocation()
 const selected = computed(() => [loc.itemKey.value])
-/** All module groups start open (sub-menu keys are prefixed: 'content' and 'system' are also item keys). */
+/** All remaining groups start open (sub-menu keys are prefixed: 'content' and 'system' are also item keys). */
 const openKeys = ref<string[]>(MENU_GROUPS.map((g) => `group-${g.key}`))
 
 /** Breadcrumb from the menu: module › page (› device name on a device's own page). */
 const crumbs = computed(() => {
   const out: { label: string; to?: string }[] = []
-  if (loc.group.value) out.push({ label: t(`nav.group.${loc.group.value.key}`) })
+  if (loc.group.value && !loc.group.value.flat) out.push({ label: t(`nav.group.${loc.group.value.key}`) })
   const sub = route.name === 'instance' ? store.byId.get(String(route.params.id))?.name ?? String(route.params.id).slice(0, 8) : null
   out.push({ label: loc.title.value, to: sub ? `/${loc.itemKey.value}` : undefined })
   if (sub) out.push({ label: sub })
@@ -154,14 +154,22 @@ async function savePassword() {
           <DashboardOutlined />
           <span>{{ t('nav.dashboard') }}</span>
         </a-menu-item>
-        <a-sub-menu v-for="g in visibleGroups" :key="`group-${g.key}`">
-          <template #icon><component :is="g.icon" /></template>
-          <template #title>{{ t(`nav.group.${g.key}`) }}</template>
-          <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
-            <component :is="it.icon" />
-            <span>{{ navLabel(it.key) }}</span>
-          </a-menu-item>
-        </a-sub-menu>
+        <template v-for="g in visibleGroups" :key="`group-${g.key}`">
+          <template v-if="g.flat">
+            <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
+              <component :is="it.icon" />
+              <span>{{ navLabel(it.key) }}</span>
+            </a-menu-item>
+          </template>
+          <a-sub-menu v-else :key="`group-${g.key}`">
+            <template #icon><component :is="g.icon" /></template>
+            <template #title>{{ t(`nav.group.${g.key}`) }}</template>
+            <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
+              <component :is="it.icon" />
+              <span>{{ navLabel(it.key) }}</span>
+            </a-menu-item>
+          </a-sub-menu>
+        </template>
       </a-menu>
     </a-layout-sider>
     <a-layout class="main">
