@@ -5,6 +5,10 @@
  * test media, verifies storage on disk (ASSET_DIR) and rows in the DB, and deletes everything it created.
  * Optional S3 part (same env as assets-check used): S3_TEST_ENDPOINT, S3_TEST_BUCKET, S3_TEST_ACCESS_KEY,
  * S3_TEST_SECRET_KEY [, S3_TEST_REGION]; it switches storage to S3 and back to local.
+ * 素材上传限制 (系统配置 → 素材上传, settings key `media.limits`): a stored row is set aside for the run (the env values
+ * are then in effect) and put back at the end; the section checks GET/PUT RBAC, strict validation, normalisation, the
+ * effective values in GET /api/media/limits, an upload over the lowered image limit (413 media.too_large) and a type
+ * removed from allowedTypes (415 media.unsupported_type), the audit row, and the restore to the env defaults.
  * Usage (from apps/api): npx tsx --env-file=../../.env scripts/media-check.ts
  */
 import { execFile } from 'node:child_process';
@@ -95,6 +99,13 @@ const users: { id: string; name: string; token: string }[] = [];
 const admin = await login(process.env.ADMIN_USERNAME ?? 'admin', process.env.ADMIN_PASSWORD ?? '');
 check('admin login', Boolean(admin));
 if (!admin) process.exit(1);
+// 素材上传限制: run on the env defaults; a stored row is put back in `finally`. The API caches the setting for 5 s,
+// so wait that long after removing a row it may have cached.
+const prevLimits = await db.select().from(schema.settings).where(eq(schema.settings.key, 'media.limits'));
+if (prevLimits.length) {
+  await db.delete(schema.settings).where(eq(schema.settings.key, 'media.limits'));
+  await new Promise((r) => setTimeout(r, 5500));
+}
 
 try {
   await http('PUT', '/api/settings/storage', admin, { type: 'local' });
@@ -177,6 +188,51 @@ try {
   }
   const [A, B] = users as [typeof users[0], typeof users[0]];
   check('two throwaway users created + logged in', Boolean(A.token && B.token));
+
+  // ---------- 素材上传限制 (系统配置 → 素材上传, admin; key media.limits; env values = defaults)
+  {
+    const g = await http('GET', '/api/settings/media-limits', admin);
+    const d = g.body?.defaults;
+    check('GET media-limits: defaults = env, nothing stored, ceilings 100 / 4096 MB, every validator type listed',
+      g.status === 200 && d.imageMaxMb === IMAGE_MAX_MB && g.body.limits.imageMaxMb === IMAGE_MAX_MB && g.body.updatedAt === null
+      && g.body.max.imageMaxMb === 100 && g.body.max.videoMaxMb === 4096
+      && ['jpeg', 'png', 'webp', 'gif', 'heic', 'mp4', 'mov', 'webm'].every((id) => g.body.types.some((x: any) => x.id === id)), g.text.slice(0, 300));
+    const rbac = await Promise.all([http('GET', '/api/settings/media-limits', A.token), http('PUT', '/api/settings/media-limits', A.token, { imageMaxMb: 1, videoMaxMb: 1, allowedTypes: ['png'] })]);
+    check('media-limits: user GET/PUT → 403', rbac.every((x) => x.status === 403), rbac.map((x) => x.status).join(','));
+    const ok = { imageMaxMb: 1, videoMaxMb: 50, allowedTypes: ['png', 'jpeg', 'mp4', 'png'] };
+    const bads = [{ ...ok, imageMaxMb: 0 }, { ...ok, imageMaxMb: 101 }, { ...ok, imageMaxMb: 1.5 }, { ...ok, videoMaxMb: 4097 }, { ...ok, allowedTypes: [] },
+      { ...ok, allowedTypes: ['bmp'] }, { ...ok, allowedTypes: 'png' }, { ...ok, extra: 1 }, { imageMaxMb: 1, videoMaxMb: 50 }];
+    const bad = await Promise.all(bads.map((b) => http('PUT', '/api/settings/media-limits', admin, b)));
+    check('media-limits: out-of-range / fractional / empty or unknown types / unknown or missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+    const put = await http('PUT', '/api/settings/media-limits', admin, ok);
+    check('media-limits saved: image 1 MB, video 50 MB, types normalised (validator order, de-duplicated)', put.status === 200 && put.body.limits.imageMaxMb === 1 && put.body.limits.videoMaxMb === 50
+      && JSON.stringify(put.body.limits.allowedTypes) === '["jpeg","png","mp4"]' && typeof put.body.updatedAt === 'string', put.text.slice(0, 300));
+    const lim = await http('GET', '/api/media/limits', A.token);
+    check('GET /api/media/limits (user) follows the setting at once', lim.status === 200 && lim.body.image.maxMb === 1 && lim.body.video.maxMb === 50
+      && JSON.stringify(lim.body.image.formats.map((f: any) => f.id)) === '["jpeg","png"]' && JSON.stringify(lim.body.video.formats.map((f: any) => f.id)) === '["mp4"]', JSON.stringify(lim.body));
+    const big15 = Buffer.concat([png, Buffer.alloc(Math.ceil(1.5 * 1024 * 1024))]);
+    const over1 = await upload(A.token, 'mine', `over1mb-${tag}.png`, big15, 'image/png');
+    check('upload of a 1.5 MB png over the lowered 1 MB limit → 413 media.too_large (max 1)', over1.status === 413 && over1.body.code === 'media.too_large' && over1.body.params?.max === 1, `${over1.status} ${over1.body?.code} ${JSON.stringify(over1.body?.params)}`);
+    const webp = await sharp({ create: { width: 64, height: 64, channels: 3, background: { r: 1, g: 2, b: 3 } } }).webp().toBuffer();
+    const noWebp = await upload(A.token, 'mine', `removed-${tag}.webp`, webp, 'image/webp');
+    check('upload of a webp (removed from allowedTypes) → 415 media.unsupported_type, webp not offered', noWebp.status === 415 && noWebp.body.code === 'media.unsupported_type' && !String(noWebp.body.params?.exts).includes('webp'),
+      `${noWebp.status} ${noWebp.body?.code} ${noWebp.body?.params?.exts}`);
+    const small = await upload(A.token, 'mine', `under1mb-${tag}.jpg`, jpg, 'image/jpeg');
+    check('a small jpeg (allowed, under 1 MB) still uploads', small.status === 201, `${small.status} ${small.text.slice(0, 120)}`);
+    if (small.body?.item?.id) { await waitDone(small.body.item.id, A.token); created.push(small.body.item.id); }
+    const n = await db.select({ n: sql<number>`count(*)::int` }).from(schema.mediaAssets).where(inArray(schema.mediaAssets.fileName, [`over1mb-${tag}.png`, `removed-${tag}.webp`]));
+    check('refused uploads left no rows', n[0]!.n === 0, `${n[0]!.n}`);
+    await new Promise((r) => setTimeout(r, 1000));
+    const au = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'settings.media_limits')));
+    const au200 = au.find((a) => a.status === 200);
+    check('audit settings.media_limits: the save (values) + the user 403', JSON.stringify((au200?.detail as any)?.allowedTypes) === '["png","jpeg","mp4","png"]' && (au200?.detail as any)?.imageMaxMb === 1
+      && au.some((a) => a.status === 403), JSON.stringify(au.map((a) => [a.status, a.detail])));
+    // Restore: save the env defaults through the API (clears its cache), then drop the row (the defaults stay in effect).
+    const back = await http('PUT', '/api/settings/media-limits', admin, { imageMaxMb: d.imageMaxMb, videoMaxMb: d.videoMaxMb, allowedTypes: d.allowedTypes });
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'media.limits'));
+    const after = await http('GET', '/api/media/limits', A.token);
+    check('media-limits restored to the env defaults', back.status === 200 && after.body.image.maxMb === IMAGE_MAX_MB && after.body.image.formats.some((f: any) => f.id === 'webp'), `${back.status} ${after.body?.image?.maxMb}`);
+  }
 
   const upA = await upload(A.token, 'mine', `私有A-${tag}.jpg`, jpg, 'image/jpeg');
   const upB = await upload(B.token, null, `privB-${tag}.png`, png, 'image/png'); // scope defaults to mine
@@ -526,6 +582,10 @@ try {
   failures++;
   console.log('✗ unexpected error', err);
 } finally {
+  if (prevLimits.length) {
+    await db.delete(schema.settings).where(eq(schema.settings.key, 'media.limits'));
+    await db.insert(schema.settings).values(prevLimits);
+  }
   for (const id of created) {
     const d = await http('DELETE', `/api/media/${id}`, admin);
     if (d.status !== 204 && d.status !== 404) check(`cleanup: delete media ${id}`, false, `${d.status}`);

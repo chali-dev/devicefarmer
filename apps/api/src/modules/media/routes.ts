@@ -8,6 +8,7 @@ import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/
 import { assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { maxBytes, mediaLimits } from './formats.js';
+import { getMediaLimitSettings } from './limits.js';
 import {
   assertCanManage, assertMetaFor, canManage, createMedia, deleteMedia, getVisibleMedia, MediaMetaSchema, openMedia, ownerForScope, setTags,
   type MediaMeta, type Owner,
@@ -108,7 +109,7 @@ function sendObject(reply: FastifyReply, stream: NodeJS.ReadableStream, type: st
 export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
-  app.get('/api/media/limits', async () => mediaLimits());
+  app.get('/api/media/limits', async () => mediaLimits(await getMediaLimitSettings()));
 
   app.get('/api/media', { schema: { querystring: ListQuery } }, async (req) => {
     const qy = req.query;
@@ -157,7 +158,9 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
    * Returns 201 with status 'processing'; a media-process task does the rest.
    */
   app.post('/api/media/upload', async (req, reply) => {
-    const file = await req.file({ limits: { fileSize: Math.max(maxBytes('image'), maxBytes('video')), files: 1, fields: 10 } });
+    // The multipart cap follows 系统配置 → 素材上传 (media.limits); createMedia checks the per-kind limit.
+    const lim = await getMediaLimitSettings();
+    const file = await req.file({ limits: { fileSize: Math.max(maxBytes(lim, 'image'), maxBytes(lim, 'video')), files: 1, fields: 10 } });
     if (!file) throw badRequest('missing file', 'media.missing_file');
     const field = (name: string) => {
       const f = file.fields[name] as { value?: unknown } | undefined;
