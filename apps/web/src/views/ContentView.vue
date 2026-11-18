@@ -14,10 +14,11 @@ import {
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
+import BatchFormModal from '../components/common/BatchFormModal.vue'
 import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import VNodes from '../components/common/VNodes'
 import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
@@ -510,14 +511,13 @@ async function submitBatchForm() {
         </template>
       </SearchBar>
 
-      <a-modal :open="!!batchForm" :title="batchForm ? batchFormLabel(batchForm) : ''" :width="MODAL_WIDTH.sm" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')"
-        :confirm-loading="batchFormBusy" :ok-button-props="{ disabled: !batchFormReady }" @ok="submitBatchForm" @cancel="batchForm = null">
-        <p class="muted">{{ t('content.selected', { n: selectedKeys.length }) }}</p>
+      <BatchFormModal :open="!!batchForm" :title="batchForm ? batchFormLabel(batchForm) : ''" :note="t('content.selected', { n: selectedKeys.length })"
+        :ready="batchFormReady" :busy="batchFormBusy" @ok="submitBatchForm" @update:open="(v: boolean) => { if (!v) batchForm = null }">
         <a-select v-if="batchForm === 'set-category'" v-model:value="batchCategory" :placeholder="t('content.batch.category')" show-search option-filter-prop="label"
           style="width: 100%" :options="batchCategoryOptions" />
         <a-select v-else v-model:value="batchTags" mode="tags" :placeholder="t('content.batch.tags')" style="width: 100%"
           :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
-      </a-modal>
+      </BatchFormModal>
 
       <a-tabs :active-key="tab" size="small" class="status-tabs" @change="(k: string | number) => setTab(k as Tab)">
         <a-tab-pane v-for="k in TAB_KEYS" :key="k">

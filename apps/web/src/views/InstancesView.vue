@@ -11,6 +11,7 @@ import { BUSY_STATUSES, egressGeo, profileLabel, proxyLabel, taskText, type Devi
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -134,6 +135,15 @@ function canDo(key: MenuKey, i: Instance) {
   if (key === 'install' || key === 'uninstall') return i.status === 'running'
   return true
 }
+/** 批量操作 menu; confirmations (delete/stop/restart, billed power-on) stay in run(). */
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'start', label: t('devices.start') },
+  { key: 'stop', label: t('devices.stop') },
+  { key: 'restart', label: t('devices.restart') },
+  { key: 'install', label: t('devices.installApp') },
+  { key: 'uninstall', label: t('devices.uninstallApp') },
+  ...(auth.isAdmin ? [{ key: 'delete', label: t('devices.delete'), danger: true }] : []),
+])
 function onMenu(key: MenuKey, ids: string[]) {
   if (key === 'install' || key === 'uninstall') openApp(key, ids)
   else void run(key, ids)
@@ -463,23 +473,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         <a-select :value="statusFilter ?? ''" :options="statusOptions" style="width: 150px" @change="(v: any) => (statusFilter = v || undefined)" />
         <a-tag v-if="ownerFilter" closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
         <a-tag v-if="focusId" closable color="blue" @close="clearFocus">{{ t('devices.focusTag', { name: store.byId.get(focusId)?.name ?? focusId.slice(0, 8) }) }}</a-tag>
-        <a-dropdown :disabled="!selectedKeys.length" :trigger="['click']">
-          <a-button :disabled="!selectedKeys.length">{{ selectedKeys.length ? t('devices.batchCount', { n: selectedKeys.length }) : t('devices.batch') }} <DownOutlined /></a-button>
-          <template #overlay>
-            <a-menu @click="({ key }: any) => onMenu(key as MenuKey, selectedKeys)">
-              <a-menu-item key="start">{{ t('devices.start') }}</a-menu-item>
-              <a-menu-item key="stop">{{ t('devices.stop') }}</a-menu-item>
-              <a-menu-item key="restart">{{ t('devices.restart') }}</a-menu-item>
-              <a-menu-item key="install">{{ t('devices.installApp') }}</a-menu-item>
-              <a-menu-item key="uninstall">{{ t('devices.uninstallApp') }}</a-menu-item>
-              <template v-if="auth.isAdmin">
-                <a-menu-divider />
-                <a-menu-item key="delete" danger>{{ t('devices.delete') }}</a-menu-item>
-              </template>
-            </a-menu>
-          </template>
-        </a-dropdown>
         <template #actions>
+          <BatchActions :count="selectedKeys.length" :items="batchItems" @select="(k: string) => onMenu(k as MenuKey, selectedKeys)" @clear="selectedKeys = []" />
           <a-segmented v-model:value="pref.view" :options="[{ value: 'grid', label: t('cloud.viewGrid') }, { value: 'table', label: t('cloud.viewTable') }]" />
         </template>
       </SearchBar>

@@ -14,6 +14,8 @@ import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
+import BatchFormModal from '../components/common/BatchFormModal.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -303,6 +305,38 @@ async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-t
   else if (action === 'unlink') confirmAction({ title: t('social.confirmBatchUnlink', { n: ids.length }), onOk: run })
   else await run()
 }
+/** 批量操作 menu; persona, language and tag actions first ask for the value in a small dialog. */
+type BatchFormAction = 'set-persona' | 'set-lang' | 'add-tags' | 'remove-tags'
+const BATCH_FORM_LABEL: Record<BatchFormAction, string> = { 'set-persona': 'setPersona', 'set-lang': 'setLang', 'add-tags': 'addTags', 'remove-tags': 'removeTags' }
+const batchForm = ref<BatchFormAction | null>(null)
+const batchFormOpen = computed({ get: () => !!batchForm.value, set: (v: boolean) => { if (!v) batchForm.value = null } })
+const batchFormBusy = ref(false)
+const batchFormLabel = (a: BatchFormAction) => t(`social.${BATCH_FORM_LABEL[a]}`)
+const batchFormReady = computed(() => {
+  if (batchForm.value === 'set-persona') return !!batchPersona.value
+  if (batchForm.value === 'set-lang') return !!batchLang.value || batchLangNone.value
+  return batchTags.value.length > 0
+})
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'set-persona', label: t('social.setPersona') },
+  { key: 'set-lang', label: t('social.setLang') },
+  { key: 'add-tags', label: t('social.addTags') },
+  { key: 'remove-tags', label: t('social.removeTags') },
+  { key: 'unlink', label: t('social.unlink') },
+  { key: 'delete', label: t('common.delete'), danger: true },
+])
+function onBatch(key: string) {
+  if (key in BATCH_FORM_LABEL) {
+    batchPersona.value = undefined; batchLang.value = null; batchLangNone.value = false; batchTags.value = []
+    batchForm.value = key as BatchFormAction
+  } else void batch(key as 'unlink' | 'delete')
+}
+async function submitBatchForm() {
+  if (!batchForm.value || !batchFormReady.value) return
+  batchFormBusy.value = true
+  try { await batch(batchForm.value); batchForm.value = null }
+  finally { batchFormBusy.value = false }
+}
 </script>
 
 <template>
@@ -343,26 +377,26 @@ async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-t
         <a-checkbox v-model:checked="filters.exception" @change="search">
           <a-tooltip :title="t('social.exceptionHint')">{{ t('social.exceptionOnly') }}</a-tooltip>
         </a-checkbox>
+        <template #actions>
+          <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
+        </template>
       </SearchBar>
 
-      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
-        <span>{{ t('social.selected', { n: selectedKeys.length }) }}</span>
-        <a-tooltip :title="batchOwner ? undefined : t('social.batchPersonaPublicOnly')">
-          <a-select v-model:value="batchPersona" :placeholder="t('social.colPersona')" size="small" show-search option-filter-prop="label" style="width: 140px" :options="batchPersonaOptions" />
-        </a-tooltip>
-        <a-button size="small" :disabled="!batchPersona" @click="batch('set-persona')">{{ t('social.setPersona') }}</a-button>
-        <LangSelect v-model="batchLang" :extra="accountLangs" size="small" :placeholder="t('social.colLang')" style="width: 150px" :disabled="batchLangNone" />
-        <a-checkbox v-model:checked="batchLangNone">{{ t('social.noLang') }}</a-checkbox>
-        <a-button size="small" :disabled="!batchLang && !batchLangNone" @click="batch('set-lang')">{{ t('social.setLang') }}</a-button>
+      <BatchFormModal v-model:open="batchFormOpen" :title="batchForm ? batchFormLabel(batchForm) : ''" :note="t('social.selected', { n: selectedKeys.length })"
+        :ready="batchFormReady" :busy="batchFormBusy" @ok="submitBatchForm">
+        <template v-if="batchForm === 'set-persona'">
+          <a-select v-model:value="batchPersona" :placeholder="t('social.colPersona')" show-search option-filter-prop="label" style="width: 100%" :options="batchPersonaOptions" />
+          <div v-if="!batchOwner" class="muted small batch-hint">{{ t('social.batchPersonaPublicOnly') }}</div>
+        </template>
+        <a-space v-else-if="batchForm === 'set-lang'" wrap>
+          <LangSelect v-model="batchLang" :extra="accountLangs" :placeholder="t('social.colLang')" style="width: 220px" :disabled="batchLangNone" />
+          <a-checkbox v-model:checked="batchLangNone">{{ t('social.noLang') }}</a-checkbox>
+        </a-space>
         <a-select
-          v-model:value="batchTags" mode="tags" size="small" :placeholder="t('social.colTags')" style="min-width: 160px"
-          :options="allTags.map((x) => ({ value: x, label: x }))"
+          v-else v-model:value="batchTags" mode="tags" :placeholder="t('social.colTags')" style="width: 100%"
+          :options="allTags.map((x) => ({ value: x, label: x }))" :token-separators="[',']"
         />
-        <a-button size="small" :disabled="!batchTags.length" @click="batch('add-tags')">{{ t('social.addTags') }}</a-button>
-        <a-button size="small" :disabled="!batchTags.length" @click="batch('remove-tags')">{{ t('social.removeTags') }}</a-button>
-        <a-button size="small" @click="batch('unlink')">{{ t('social.unlink') }}</a-button>
-        <a-button size="small" danger @click="batch('delete')">{{ t('common.delete') }}</a-button>
-      </a-space>
+      </BatchFormModal>
 
       <a-table
         :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1910 }"
@@ -530,6 +564,6 @@ async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-t
 </template>
 
 <style scoped>
-.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
+.batch-hint { margin-top: 6px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
 </style>
