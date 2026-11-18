@@ -60,7 +60,7 @@ const collectActivity = (runs: Task[]) => runs
   .filter((t) => ['success', 'failed'].includes(t.status) && (t.result as { outcome?: string } | null)?.outcome !== 'deferred')
   .map((t) => {
     const r = (t.result ?? {}) as Record<string, number | string | null>;
-    return { type: 'collect' as const, at: (t.finishedAt ?? t.createdAt).toISOString(), status: t.status, errorCode: t.errorCode, outcome: r.outcome ?? null,
+    return { type: 'collect' as const, at: (t.finishedAt ?? t.createdAt).toISOString(), status: t.status, errorCode: t.errorCode ?? (typeof r.code === 'string' ? r.code : null), outcome: r.outcome ?? null,
       posts: r.posts ?? null, newPosts: r.newPosts ?? null, comments: r.comments ?? null, newComments: r.newComments ?? null };
   });
 

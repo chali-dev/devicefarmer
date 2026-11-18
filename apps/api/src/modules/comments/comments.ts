@@ -427,8 +427,8 @@ const doneAt = sql<Date>`coalesce(${R.sentAt}, ${R.handedAt})`;
 async function deferRound(r: CommentTask, at: Date, code: string, message: string, ctx: TaskContext<ReplyPayload>, data: Record<string, unknown> = {}) {
   const [n] = await db.update(R).set({ status: 'scheduled', scheduledAt: at, round: r.round + 1, taskId: null })
     .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id))).returning();
-  await replyLog(r, { level: 'warn', action: 'blocked', code, message, data: { ...data, retryAt: at.toISOString() }, taskId: ctx.task.id });
-  await ctx.log('warn', `${message}: deferred to a new round`, { code, retryAt: at.toISOString() });
+  await replyLog(r, { level: 'warn', action: 'blocked', code, message: `${message}, deferred`, data: { ...data, retryAt: at.toISOString() }, taskId: ctx.task.id });
+  await ctx.log('warn', code === 'comment.rate_limited' ? 'rate limit reached: deferred to a new round' : `${message}, deferred`, { code, retryAt: at.toISOString() });
   const next = n ? await scheduleSend(n, null) : null;
   return { deferred: true, code, retryAt: at.toISOString(), nextTaskId: next?.taskId ?? null };
 }
