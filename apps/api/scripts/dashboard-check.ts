@@ -252,7 +252,7 @@ try {
   const codes = await Promise.all(adminOnly.map(([m, p, body]) => http(m, p, TA, body).then((x) => x.status)));
   check('every settings route is admin-only (403 for a user)', codes.every((c) => c === 403), codes.join(','));
   r = await http('GET', '/api/settings/config', T);
-  check('config: env publish defaults + audit retention (read-only)', r.status === 200 && Number.isInteger(r.body.publish.maxAttempts) && r.body.publish.timeoutMs > 0 && r.body.auditRetentionDays > 0, j(r.body));
+  check('config: env publish defaults + audit retention (read-only)', r.status === 200 && !('maxAttempts' in r.body.publish) && r.body.publish.timeoutMs > 0 && r.body.auditRetentionDays > 0, j(r.body));
   r = await http('GET', '/api/settings/system', T);
   check('system: real health checks for postgres/redis/docker/adb/stf + versions', r.status === 200 && ['postgres', 'redis', 'docker', 'adb', 'stf'].every((k) => k in r.body.health.checks)
     && r.body.health.checks.postgres === 'ok' && typeof r.body.versions.postgres === 'string' && !r.text.includes(process.env.DATABASE_URL!), j(r.body.health));

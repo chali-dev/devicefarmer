@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type ContentStatus, type MediaAsset, type PostType, type PublishStatus } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
@@ -136,12 +136,25 @@ export function deriveStatus(stage: Content['stage'], counts: Partial<Record<Pub
   return 'failed';
 }
 
+/**
+ * Publish task counts per status. Per (content, account) only the LATEST task counts (cancelled / dry_run rows aside,
+ * which are counted as they are): a failed task that was followed by a new one (编辑后重新发布, no automatic retries
+ * since 2026-11-18) is history and no longer makes the content 发布失败 / 部分发布.
+ */
 export async function publishCounts(exec: Exec, contentIds: string[]): Promise<Map<string, Partial<Record<PublishStatus, number>>>> {
   const out = new Map<string, Partial<Record<PublishStatus, number>>>();
   if (!contentIds.length) return out;
-  const rows = await exec.select({ id: pt.contentId, s: pt.status, n: sql<number>`count(*)::int` }).from(pt)
-    .where(inArray(pt.contentId, contentIds)).groupBy(pt.contentId, pt.status);
-  for (const r of rows) out.set(r.id, { ...out.get(r.id), [r.s]: r.n });
+  const IGNORED: PublishStatus[] = ['cancelled', 'dry_run'];
+  const [latest, ignored] = await Promise.all([
+    exec.selectDistinctOn([pt.contentId, pt.accountId], { id: pt.contentId, s: pt.status }).from(pt)
+      .where(and(inArray(pt.contentId, contentIds), notInArray(pt.status, IGNORED)))
+      .orderBy(pt.contentId, pt.accountId, desc(pt.createdAt), desc(pt.id)),
+    exec.select({ id: pt.contentId, s: pt.status, n: sql<number>`count(*)::int` }).from(pt)
+      .where(and(inArray(pt.contentId, contentIds), inArray(pt.status, IGNORED))).groupBy(pt.contentId, pt.status),
+  ]);
+  const add = (id: string, s: PublishStatus, n: number) => { const m = out.get(id) ?? {}; m[s] = (m[s] ?? 0) + n; out.set(id, m); };
+  for (const r of latest) add(r.id, r.s, 1);
+  for (const r of ignored) add(r.id, r.s, r.n);
   return out;
 }
 

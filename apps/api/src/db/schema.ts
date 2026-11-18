@@ -167,7 +167,7 @@ export const tasks = pgTable('tasks', {
   attempts: integer('attempts').notNull().default(0),
   maxAttempts: integer('max_attempts').notNull().default(1),
   timeoutMs: integer('timeout_ms'),
-  /** Base delay of the retry backoff for this task; null = the handler's (publish rounds: 系统配置 → 发布重发). */
+  /** Base delay of the retry backoff for this task; null = the handler's (publish rounds: LEGACY, no retries since 2026-11-18, written null). */
   backoffMs: integer('backoff_ms'),
   priority: integer('priority').notNull().default(0),
   /** Unique per type (see tasks_idem_idx): creating again with the same key returns the existing task. */

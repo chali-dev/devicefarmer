@@ -2,7 +2,8 @@
  * 云手机发帖 without a phone (owner decision 2026-11-18): method selection and the fallback to an operator, the
  * 风控 → 云手机发帖 settings (validation, RBAC, audit), the daily cap / minimum gap deferral, the halted phone
  * (parked, 恢复 re-queues), legacy test-mode rows (dry_run, only left by an older colour: not counted as failed, retry
- * allowed, reschedule refused, evidence RBAC), an uncertain share (awaiting the operator, never re-sent), through the
+ * allowed, reschedule refused, evidence RBAC), an uncertain share (awaiting the operator, never re-sent: retry refused,
+ * distributing the content again returns the waiting task; 编辑后重新发布 = cancel it, then a new task), through the
  * real HTTP API and the real task centre. Test mode was removed on 2026-11-18 (draft first): the settings have no
  * testMode (an older page's value is accepted and ignored), and a content is only a draft until it is distributed.
  * The on/off switch was removed the same day (cloud-phone posting is always on): a stored `enabled: false` is ignored
@@ -265,10 +266,27 @@ try {
   await db.update(pt).set({ status: 'awaiting_operator', method: 'device', errorCode: 'publish.send_uncertain', error: '已点“分享”，但没能在主页确认新帖子', taskId: null }).where(eq(pt.id, p.id));
   r = await http('POST', `/api/publish/tasks/${p.id}/retry`, A, {});
   check('uncertain share: retry refused (409, it may have been posted)', r.status === 409 && r.body.code === 'publish.bad_status', r.text);
+  r = await http('POST', `/api/contents/${p.contentId}/distribute`, A, { targets: [{ accountId: a1.id }] });
+  check('uncertain share: distributing the content again creates nothing (returns the waiting task)', r.status === 200 && r.body.created.length === 0 && r.body.existing[0]?.id === p.id, r.text.slice(0, 200));
   r = await http('POST', `/api/publish/tasks/${p.id}/outcome`, A, { result: 'published', url: 'https://www.instagram.com/p/TESTONLY/' });
   check('uncertain share: the operator records the outcome after checking the phone', r.status === 200 && r.body.task.status === 'published', r.text);
   const tasksOf = await db.select().from(schema.tasks).where(and(eq(schema.tasks.refId, p.id), inArray(schema.tasks.status, ['pending', 'scheduled', 'running'])));
   check('uncertain share: no task was queued again', tasksOf.length === 0);
+  // 编辑后重新发布 after an uncertain share (the UI confirms first): cancel the waiting task, edit, distribute → a NEW task.
+  {
+    const cid = await content('uncertain2', [img]);
+    const q = await dist(cid, a1.id, { scheduledAt: new Date(Date.now() + 2 * 86400_000).toISOString() });
+    await http('POST', `/api/publish/tasks/${q.id}/cancel`, A);
+    await db.update(pt).set({ status: 'awaiting_operator', method: 'device', errorCode: 'publish.send_uncertain', error: 'uncertain', taskId: null }).where(eq(pt.id, q.id));
+    r = await http('POST', `/api/publish/tasks/${q.id}/cancel`, A);
+    check('uncertain share: cancel (编辑后重新发布 confirmed) → cancelled', r.status === 200 && r.body.task.status === 'cancelled', r.text.slice(0, 160));
+    await http('PUT', `/api/contents/${cid}`, A, { body: `edited ${tag}` });
+    r = await http('POST', `/api/contents/${cid}/distribute`, A, { targets: [{ accountId: a1.id, scheduledAt: new Date(Date.now() + 2 * 86400_000).toISOString() }] });
+    const n = r.body.created?.[0];
+    check('then distributing again creates a NEW task with the edited text (1 attempt); the uncertain one stays cancelled', r.status === 201 && n?.id !== q.id && n?.caption === `edited ${tag}` && n?.maxAttempts === 1
+      && (await ptask(A, q.id)).task.status === 'cancelled', r.text.slice(0, 200));
+    if (n) await http('POST', `/api/publish/tasks/${n.id}/cancel`, A);
+  }
 
   // ---------------------------------------------------------------- audit
   await sleep(500);
