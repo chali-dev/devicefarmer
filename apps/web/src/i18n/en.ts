@@ -2358,6 +2358,8 @@ const en: Messages = {
       pubShareConfirmed: 'Share confirmed on the follow-up screen',
       pubSeen: 'New post seen on the profile',
       pubNotYet: 'The new post is not on the profile yet',
+      pubStoryNotYet: 'The new story is not on the profile yet',
+      pubProfileNotYet: 'The own profile did not open yet',
       pubKept: 'Media kept on the phone (upload not confirmed)',
       pubCopyRetry: 'Copying the caption for the read-back gave nothing: trying again',
       postCommentWritten: 'Post comment written',

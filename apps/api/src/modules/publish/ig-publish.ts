@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { MediaAsset, PostType } from '../../db/schema.js';
 import { HttpError } from '../../lib/errors.js';
 import { adb, stf } from '../../services.js';
-import { firstGridItem, IgScreenSession, normText, parseMediaIdList, permalinkOf, pkTime } from '../feed/ig-ui.js';
+import { firstGridItem, IgScreenSession, isGridEmpty, normText, parseMediaIdList, permalinkOf, pkTime } from '../feed/ig-ui.js';
 import { withMediaFile } from '../media/media.js';
 import type { CollectorDevice } from '../tracked/collector.js';
 import { classifyIgDump, dumpExcerpt, ID, igDeviceAccounts, PKG, requireApp, screenProblem, type UiNode } from '../tracked/instagram-device.js';
@@ -387,7 +387,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
       }
       await log('info', 'publish: caption pasted and read back', { length: inputText.length });
     }
-    const screenshot = shot ?? await s.screenshot().catch(() => null);
+    let screenshot = shot ?? await s.screenshot().catch(() => null);
     const excerpt = `${publishScreen(await s.dump()) ?? '?'} · media ${pushed.length}${inputText ? ` · caption: ${inputText}` : ''}`.slice(0, 300);
 
     if (input.probeOnly) {
@@ -399,6 +399,8 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     const now = await s.dump();
     const shareAt = shareButton(input.postType, now);
     if (!shareAt) throw fail('publish.device_timeout', '找不到“分享”按钮', { retry: true, excerpt: dumpExcerpt(now) });
+    // Evidence = the screen as it is shared (keyboard hidden), else the one after the paste.
+    screenshot = await s.screenshot().catch(() => null) ?? screenshot;
     const sharedAt = new Date();
     keep = true;
     input.onShare?.();
@@ -412,7 +414,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     }
     // ---- 6. confirm: the new post on the own profile (media pk), story: the profile shows a story
     const seen = await confirmPublished(s, input.handle, input.postType, sharedAt, log, input.signal);
-    if (!seen) throw fail('publish.send_uncertain', '已点“分享”，但没能在主页确认新帖子：请在手机上检查后记录结果', { afterSend: true });
+    if (!seen) throw fail('publish.send_uncertain', '已点“分享”，但没能在主页确认新帖子：请在手机上检查后记录结果', { afterSend: true, shot: screenshot, excerpt });
     keep = false;
     await log('info', 'publish: post seen on the profile', { externalId: seen.externalId, url: seen.url });
     return { outcome: 'published', inputText, excerpt, screenshot, screens: s.screens, externalId: seen.externalId, url: seen.url, publishedAt: seen.publishedAt, keptFiles: [] };
@@ -460,23 +462,35 @@ function confirmShare(nodes: UiNode[]): { x: number; y: number } | null {
 }
 
 /**
+ * How long after 分享 the new post is looked for on the own profile. The upload runs in the background after the tap:
+ * on 2026-11-18 (bit-ins-02, one photo) the media was created 127 s after the tap, after the former ~100 s window.
+ */
+export const CONFIRM_WINDOW_MS = 5 * 60_000;
+
+/**
  * After 分享: the new post must show on the account's own profile. Feed / Reels: the newest media pk of the grid
  * (`dumpsys activity top` after tapping the first grid item, as the feed collection reads it) created after the
- * tap. Story: the profile picture is no longer marked "发布快拍" (no story) — a heuristic, not seen live.
+ * tap. The own profile's grid is cached (it kept the empty state, header already "1 帖子", minutes after the post
+ * was online), so every look pulls to refresh first. Tries at ~15 s, then every ~40 s until CONFIRM_WINDOW_MS
+ * (2 screens each). Story: the profile picture is no longer marked "发布快拍" (no story) — a heuristic, not seen live.
  */
 async function confirmPublished(s: IgScreenSession, handle: string, postType: PostType, since: Date, log: Log, signal?: AbortSignal):
   Promise<{ externalId: string | null; url: string | null; publishedAt: Date | null } | null> {
-  for (let i = 0; i < 4; i++) {
-    await sleep(i === 0 ? 12_000 : 20_000, undefined, { signal });
+  for (let i = 0; i === 0 || Date.now() - since.getTime() < CONFIRM_WINDOW_MS; i++) {
+    await sleep(i === 0 ? 15_000 : 40_000, undefined, { signal });
+    const attempt = i + 1;
     await s.open(`https://www.instagram.com/${handle}/`);
     const { nodes } = await s.waitFor((n) => classifyIgDump(n, handle).kind === 'profile', 15_000, 2500);
-    if (classifyIgDump(nodes, handle).kind !== 'profile') continue;
+    if (classifyIgDump(nodes, handle).kind !== 'profile') { await log('info', 'publish: own profile not shown yet', { attempt }); continue; }
     if (postType === 'story') {
       if (!nodes.some((n) => n.rid === `${ID}reel_empty_badge`)) return { externalId: null, url: `https://www.instagram.com/stories/${handle}/`, publishedAt: new Date() };
+      await log('info', 'publish: new story not on the profile yet', { attempt });
       continue;
     }
-    const grid = firstGridItem(nodes);
-    if (!grid?.bounds) continue;
+    await s.pullToRefresh();
+    const g = await s.waitFor((n) => !!firstGridItem(n) || isGridEmpty(n), 10_000, 2500);
+    const grid = firstGridItem(g.nodes);
+    if (!grid?.bounds) { await log('info', 'publish: new post not on the profile yet', { attempt, grid: isGridEmpty(g.nodes) ? 'empty' : 'not shown' }); continue; }
     await s.tap(center(grid.bounds));
     s.screens++;
     await sleep(3000, undefined, { signal });
@@ -484,7 +498,7 @@ async function confirmPublished(s: IgScreenSession, handle: string, postType: Po
     const newest = ids.map((x) => x.pk).sort((a, b) => (BigInt(b) > BigInt(a) ? 1 : -1))[0];
     await s.keys(4);
     if (newest && pkTime(newest).getTime() >= since.getTime() - 120_000) return { externalId: newest, url: permalinkOf(newest), publishedAt: pkTime(newest) };
-    await log('info', 'publish: new post not on the profile yet', { attempt: i + 1 });
+    await log('info', 'publish: new post not on the profile yet', { attempt, newest: newest ? pkTime(newest).toISOString() : null });
   }
   return null;
 }

@@ -22,12 +22,15 @@
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/device-publish-check.ts
  */
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { runDevicePublish, type DeviceRunDeps } from '../src/modules/publish/device.js';
-import { PublishDeviceError } from '../src/modules/publish/ig-publish.js';
+import { CONFIRM_WINDOW_MS, PublishDeviceError } from '../src/modules/publish/ig-publish.js';
+import { firstGridItem, isGridEmpty, permalinkOf, pkTime } from '../src/modules/feed/ig-ui.js';
+import { classifyIgDump, parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
 
@@ -229,7 +232,8 @@ try {
     const fakeDevice = (async (inst: any, _log: any, _off: any, fn: any) => fn({ inst, adbPort: inst.adbPort })) as unknown as DeviceRunDeps['withDevice'];
     const failBefore = (async () => { throw new PublishDeviceError('publish.device_text_mismatch', 'mismatch (test)', { excerpt: 'read back: x' }); }) as unknown as DeviceRunDeps['flow'];
     const plainBefore = (async () => { throw new Error('boom before share (test)'); }) as unknown as DeviceRunDeps['flow'];
-    const uncertain = (async (_d: any, inp: any) => { inp.onShare(); throw new PublishDeviceError('publish.send_uncertain', 'uncertain (test)', { afterSend: true }); }) as unknown as DeviceRunDeps['flow'];
+    const shotPng = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#0a0' } }).png().toBuffer();
+    const uncertain = (async (_d: any, inp: any) => { inp.onShare(); throw new PublishDeviceError('publish.send_uncertain', 'uncertain (test)', { afterSend: true, shot: shotPng, excerpt: 'feed_caption · media 1' }); }) as unknown as DeviceRunDeps['flow'];
     const plainAfter = (async (_d: any, inp: any) => { inp.onShare(); throw new Error('boom after share (test)'); }) as unknown as DeviceRunDeps['flow'];
     const [accRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, a0.id));
     const runWith = async (taskId: string, flow: DeviceRunDeps['flow']) => {
@@ -257,6 +261,10 @@ try {
     rr = await runWith(x.id, uncertain);
     check('after 分享 without confirmation (send_uncertain): awaiting operator, reservation KEPT (device_run_at ≈ now)',
       rr.out?.state === 'awaiting_operator' && rr.out?.code === 'publish.send_uncertain' && !!rr.runAt && Date.now() - rr.runAt.getTime() < 60_000, `${JSON.stringify(rr.out)} ${rr.err?.message} ${String(rr.runAt)}`);
+    const [ev] = await db.select({ evidence: pt.evidence }).from(pt).where(eq(pt.id, x.id));
+    const evr = await http('GET', `/api/publish/tasks/${x.id}/evidence`, A);
+    check('send_uncertain keeps the screenshot of the shared screen as evidence (row + evidence endpoint 200 PNG)',
+      !!(ev?.evidence as any)?.key && evr.status === 200, `${JSON.stringify(ev?.evidence)} ${evr.status}`);
     rr = await runWith(x.id, plainAfter);
     check('any error after 分享: reservation kept', !!rr.err && !!rr.runAt && Date.now() - rr.runAt.getTime() < 60_000, `${rr.err?.message} ${String(rr.runAt)}`);
     p = await dist(await content('after shared', [img2]), a0.id);
@@ -335,6 +343,22 @@ try {
     check('then distributing again creates a NEW task with the edited text (1 attempt); the uncertain one stays cancelled', r.status === 201 && n?.id !== q.id && n?.caption === `edited ${tag}` && n?.maxAttempts === 1
       && (await ptask(A, q.id)).task.status === 'cancelled', r.text.slice(0, 200));
     if (n) await http('POST', `/api/publish/tasks/${n.id}/cancel`, A);
+  }
+
+  // ---------------------------------------------------------------- confirmation after 分享 (real dumps of bit-ins-02, 2026-11-18, other users' names replaced)
+  {
+    const fx = (n: string) => parseUiDump(readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8'));
+    const stale = fx('ig-own-profile-stale-grid.xml');
+    const fresh = fx('ig-own-profile-refreshed.xml');
+    check('own profile minutes after the post was online: header counts 1 post, the cached grid is still empty (no grid item)',
+      classifyIgDump(stale, 'conchadoroperto650').kind === 'profile' && (classifyIgDump(stale, 'conchadoroperto650') as any).counts.posts?.value === 1 && isGridEmpty(stale) && !firstGridItem(stale),
+      JSON.stringify(classifyIgDump(stale, 'conchadoroperto650')).slice(0, 300));
+    check('after pull to refresh: the grid item is there, no empty state', !!firstGridItem(fresh)?.bounds && !isGridEmpty(fresh));
+    // The real post: media pk read from the contextual feed, shared at 16:03:12 UTC, created by Instagram 127 s later.
+    const pk = '4033225091115777362';
+    check('media pk → creation time 16:05:19.431Z (127 s after 分享) and permalink /p/Df45Nn3Jf1S/; inside the confirmation window',
+      pkTime(pk).toISOString() === '2026-11-18T16:05:19.431Z' && permalinkOf(pk) === 'https://www.instagram.com/p/Df45Nn3Jf1S/'
+      && pkTime(pk).getTime() - Date.parse('2026-11-18T16:03:12.838Z') < CONFIRM_WINDOW_MS, `${pkTime(pk).toISOString()} ${permalinkOf(pk)}`);
   }
 
   // ---------------------------------------------------------------- audit

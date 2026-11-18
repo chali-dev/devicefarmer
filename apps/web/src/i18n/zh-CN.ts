@@ -2369,6 +2369,8 @@ const zhCN = {
       pubShareConfirmed: '已在后续页面确认分享',
       pubSeen: '已在主页看到新帖子',
       pubNotYet: '主页上还没有出现新帖子',
+      pubStoryNotYet: '主页上还没有出现新快拍',
+      pubProfileNotYet: '还没打开自己的主页',
       pubKept: '素材保留在手机上（上传未确认）',
       pubCopyRetry: '回读配文时没有复制到内容，重试',
       postCommentWritten: '已写帖子评论',

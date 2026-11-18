@@ -129,6 +129,8 @@ const EXACT: Record<string, string> = {
   'publish: share confirmed on the follow-up screen': 'pubShareConfirmed',
   'publish: post seen on the profile': 'pubSeen',
   'publish: new post not on the profile yet': 'pubNotYet',
+  'publish: new story not on the profile yet': 'pubStoryNotYet',
+  'publish: own profile not shown yet': 'pubProfileNotYet',
   'publish: media kept on the phone (upload not confirmed)': 'pubKept',
   'publish: caption copy for the read-back gave nothing, trying again': 'pubCopyRetry',
 }
