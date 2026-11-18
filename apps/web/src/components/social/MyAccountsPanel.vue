@@ -288,6 +288,10 @@ const showGuide = computed(() => loaded.value && !loading.value && total.value =
 const feedOpen = ref(false)
 const feedFor = ref<SocialAccount | null>(null)
 function openFeed(a: SocialAccount) { feedFor.value = a; feedOpen.value = true }
+/** 立即采集 (帖子与评论) of one account, from the row's 更多 menu (owner 2026-11-18: not in the feed drawer). */
+async function collectNow(a: SocialAccount) {
+  try { await api('POST', `/api/social/accounts/${a.id}/collect`); message.success(t('feed.collectQueued')) } catch (e) { message.error(errorText(e)) }
+}
 /** A click on the row's own controls (links, buttons, checkbox, dropdown) is not a row click. */
 const rowProps = (record: SocialAccount) => ({
   class: record.id === highlightId.value ? 'row-click row-synced' : 'row-click',
@@ -542,6 +546,7 @@ async function submitBatchForm() {
                 <template #overlay>
                   <a-menu>
                     <a-menu-item key="feed" @click="openFeed(record as SocialAccount)">{{ t('feed.tabs.posts') }}</a-menu-item>
+                    <a-menu-item key="collect" :disabled="!record.instance" @click="collectNow(record as SocialAccount)">{{ t('feed.collectNow') }}</a-menu-item>
                     <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
                     <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
