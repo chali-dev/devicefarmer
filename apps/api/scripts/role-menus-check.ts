@@ -10,11 +10,18 @@
  *   `settings.role_menus` with the menu list.
  * - device logs: GET /api/system/device-logs on two placeholder devices (no container; status events written as rows):
  *   exact totals per device / type (status, adb, offline) / time range, paging, names, 400 on a bad type, user 403.
+ * - 自定义角色: migration shape (roles table, users.role_id nullable FK RESTRICT, case-insensitive unique name); admin CRUD
+ *   (validation: empty / too long / reserved names, unknown + admin-only menus, strict body, duplicate name in another
+ *   case → 409 role.name_taken, unknown id → 404), user 403; a user with a custom role gets exactly the role's menus in
+ *   the login body and /api/auth/me, its switched-off menus' endpoints → 403 rbac.menu_disabled while its own answer,
+ *   remote control 4003 without 我的云机; the role's menus and the user's role change apply on the next request (same
+ *   process); 普通用户 unaffected; role admin clears / refuses a roleId; unknown roleId → 400 role.not_found; delete in
+ *   use → 409 role.in_use {count}, then 204 and 404; audit role.* and user.update roleId.
  * Restores the previous role-menu setting and removes its users/devices afterwards.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 API_PORT=3000 npx tsx --env-file=../../.env scripts/role-menus-check.ts
  */
 import { randomBytes } from 'node:crypto';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray } from 'drizzle-orm';
 import WebSocket from 'ws';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
@@ -56,6 +63,7 @@ const tag = randomBytes(3).toString('hex');
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const userIds: string[] = [];
 const fakeIds: string[] = [];
+const roleIds: string[] = [];
 const [prevRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'rbac.userMenus'));
 
 try {
@@ -163,6 +171,152 @@ try {
   const again = await Promise.all(['/api/analytics/summary?days=7', '/api/trending', '/api/tasks/stats', '/api/publish/tasks', '/api/tracked-accounts'].map(async (p) => (await http('GET', p, UT)).status));
   check('re-enabled: every endpoint answers again', r.status === 200 && again.every((s) => s === 200), again.join(','));
 
+  // ---------------------------------------------------------------- 自定义角色: migration shape
+  const cols = await sqlClient`select table_name, column_name, data_type, is_nullable from information_schema.columns
+    where (table_name = 'roles') or (table_name = 'users' and column_name = 'role_id') order by table_name, ordinal_position`;
+  const fk = await sqlClient`select rc.delete_rule from information_schema.referential_constraints rc
+    where rc.constraint_name = 'users_role_id_roles_id_fk'`;
+  const idx = await sqlClient`select indexdef from pg_indexes where indexname = 'roles_name_lower'`;
+  const colNames = cols.filter((c) => c.table_name === 'roles').map((c) => c.column_name).join(',');
+  const rid = cols.find((c) => c.table_name === 'users');
+  check('migration: roles table + users.role_id nullable uuid FK RESTRICT + unique lower(name)',
+    colNames === 'id,name,description,menus,created_at,updated_at' && rid?.data_type === 'uuid' && rid?.is_nullable === 'YES'
+    && fk[0]?.delete_rule === 'RESTRICT' && /UNIQUE/.test(idx[0]?.indexdef ?? '') && /lower\(name\)/.test(idx[0]?.indexdef ?? ''),
+    JSON.stringify({ colNames, rid, fk, idx }));
+
+  // ---------------------------------------------------------------- 自定义角色: CRUD + validation + RBAC
+  const RN = `rmrole-${tag}`;
+  r = await http('GET', '/api/roles', T);
+  check('GET /api/roles (admin) 200', r.status === 200 && Array.isArray(r.body.roles));
+  check('user GET/POST /api/roles → 403', (await http('GET', '/api/roles', UT)).status === 403 && (await http('POST', '/api/roles', UT, { name: `${RN}-u` })).status === 403);
+  const badRoles = await Promise.all([
+    http('POST', '/api/roles', T, { name: '' }),
+    http('POST', '/api/roles', T, { name: 'x'.repeat(33) }),
+    http('POST', '/api/roles', T, { name: '管理员' }),
+    http('POST', '/api/roles', T, { name: ' User ' }),
+    http('POST', '/api/roles', T, { name: '普通用户' }),
+    http('POST', '/api/roles', T, { name: `${RN}-b`, menus: ['users'] }),
+    http('POST', '/api/roles', T, { name: `${RN}-b`, menus: ['nope'] }),
+    http('POST', '/api/roles', T, { name: `${RN}-b`, extra: 1 }),
+  ]);
+  check('POST role: empty / 33 chars / extra field → 400', [0, 1, 7].every((i) => badRoles[i]!.status === 400));
+  check('POST role: reserved names (管理员, " User ", 普通用户) → 400 role.name_reserved', [2, 3, 4].every((i) => badRoles[i]!.status === 400 && badRoles[i]!.body.code === 'role.name_reserved'),
+    [2, 3, 4].map((i) => badRoles[i]!.body?.code).join(','));
+  check('POST role: admin-only menu → rbac.menu_not_grantable, unknown → rbac.menu_unknown',
+    badRoles[5]!.body.code === 'rbac.menu_not_grantable' && badRoles[6]!.body.code === 'rbac.menu_unknown');
+  check('refused POSTs created nothing', (await db.select().from(schema.roles).where(ilike(schema.roles.name, `${RN}%`))).length === 0);
+  r = await http('POST', '/api/roles', T, { name: RN, description: '只看分析和内容', menus: ['content', 'analytics', 'content'] });
+  const role = r.body.role;
+  if (role?.id) roleIds.push(role.id);
+  check('POST role → 201 (menus deduplicated, sidebar order, userCount 0)', r.status === 201 && JSON.stringify(role.menus) === '["analytics","content"]'
+    && role.description === '只看分析和内容' && role.userCount === 0, r.text.slice(0, 200));
+  r = await http('POST', '/api/roles', T, { name: RN.toUpperCase() });
+  check('duplicate name in another case → 409 role.name_taken', r.status === 409 && r.body.code === 'role.name_taken');
+  r = await http('POST', '/api/roles', T, { name: `${RN}-2`, menus: [] });
+  const role2 = r.body.role;
+  if (role2?.id) roleIds.push(role2.id);
+  const badPatch = await Promise.all([
+    http('PATCH', `/api/roles/${role2.id}`, T, { name: RN }),
+    http('PATCH', `/api/roles/${role2.id}`, T, { name: 'admin' }),
+    http('PATCH', `/api/roles/${role2.id}`, T, {}),
+    http('PATCH', '/api/roles/00000000-0000-0000-0000-000000000000', T, { description: 'x' }),
+    http('PATCH', `/api/roles/${role2.id}`, T, { menus: ['settings'] }),
+  ]);
+  check('PATCH role: taken name 409 / reserved 400 / empty 400 / unknown id 404 / admin-only menu 400',
+    badPatch[0]!.status === 409 && badPatch[0]!.body.code === 'role.name_taken' && badPatch[1]!.body.code === 'role.name_reserved'
+    && badPatch[2]!.status === 400 && badPatch[3]!.status === 404 && badPatch[3]!.body.code === 'role.not_found' && badPatch[4]!.body.code === 'rbac.menu_not_grantable',
+    badPatch.map((x) => `${x.status} ${x.body?.code}`).join(','));
+  r = await http('PATCH', `/api/roles/${role2.id}`, T, { name: `${RN}-2b`, description: '' });
+  check('PATCH role rename + clear description', r.status === 200 && r.body.role.name === `${RN}-2b` && r.body.role.description === null);
+
+  // ---------------------------------------------------------------- a user with a custom role
+  r = await http('POST', '/api/users', T, { username: `rmr${tag}`, password: pw, role: 'user', roleId: role.id });
+  const cuId = r.body.user?.id as string;
+  userIds.push(cuId);
+  check('POST /api/users with roleId → 201, roleId returned', r.status === 201 && r.body.user.roleId === role.id, r.text.slice(0, 200));
+  r = await http('POST', '/api/users', T, { username: `rmx${tag}`, password: pw, role: 'admin', roleId: role.id });
+  check('POST /api/users role admin + roleId → 400 users.role_id_admin', r.status === 400 && r.body.code === 'users.role_id_admin');
+  r = await http('POST', '/api/users', T, { username: `rmx${tag}`, password: pw, role: 'user', roleId: '00000000-0000-0000-0000-000000000000' });
+  check('POST /api/users unknown roleId → 400 role.not_found (no user)', r.status === 400 && r.body.code === 'role.not_found'
+    && (await db.select().from(schema.users).where(eq(schema.users.username, `rmx${tag}`))).length === 0);
+  const C = await loginBody(`rmr${tag}`, pw);
+  const CT = C.token;
+  check('custom-role login body: menus = dashboard + exactly the role\'s menus', JSON.stringify(C.menus) === '["dashboard","analytics","content"]', JSON.stringify(C.menus));
+  r = await http('GET', '/api/auth/me', CT);
+  check('custom-role /api/auth/me: same menus', JSON.stringify(r.body.menus) === '["dashboard","analytics","content"]');
+  const plainMe = await http('GET', '/api/auth/me', UT);
+  check('普通用户 unaffected by the custom role', sameSet(plainMe.body.menus, ['dashboard', ...ALL]), JSON.stringify(plainMe.body.menus));
+  const cDisabled = async (method: string, path: string, body?: unknown) => {
+    const x = await http(method, path, CT, body);
+    return x.status === 403 && x.body?.code === 'rbac.menu_disabled' ? true : `${x.status} ${x.body?.code ?? x.text.slice(0, 80)}`;
+  };
+  const cDenied = {
+    trending: await cDisabled('GET', '/api/trending'),
+    taskStats: await cDisabled('GET', '/api/tasks/stats'),
+    personaCreate: await cDisabled('POST', '/api/personas', { scope: 'mine', name: `rm-${tag}` }),
+    tracked: await cDisabled('GET', '/api/tracked-accounts'),
+    instanceActions: await cDisabled('POST', '/api/instances/actions', { ids: [], action: 'start' }),
+  };
+  check('custom role: switched-off menus → 403 rbac.menu_disabled', Object.values(cDenied).every((v) => v === true), JSON.stringify(cDenied));
+  const cOk = await Promise.all(['/api/analytics/summary?days=7', '/api/content-categories', '/api/personas', '/api/instances', '/api/dashboard'].map(async (p) => [p, (await http('GET', p, CT)).status] as const));
+  check('custom role: its own menus + shared endpoints answer 200', cOk.every(([, st]) => st === 200), JSON.stringify(cOk));
+  const [devR] = await db.insert(schema.instances).values({ name: `rmfake-${tag}-r`, image: 'none', adbPort: 5585, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+  fakeIds.push(devR!.id);
+  await db.insert(schema.instanceGrants).values({ userId: cuId, instanceId: devR!.id });
+  check('custom role without 我的云机: remote control session → 4003', await sessionClose(CT, devR!.id) === 4003);
+
+  // the role's menus change → next request (same process: cache cleared on save)
+  r = await http('PATCH', `/api/roles/${role.id}`, T, { menus: ['analytics', 'trending', 'instances'] });
+  check('PATCH role menus → 200', r.status === 200 && JSON.stringify(r.body.role.menus) === '["instances","analytics","trending"]', r.text.slice(0, 200));
+  r = await http('GET', '/api/auth/me', CT);
+  const trendingNow = (await http('GET', '/api/trending', CT)).status;
+  const contentNow = await cDisabled('POST', '/api/contents', { title: 'x' });
+  check('role menu change applies on the next request (me, trending 200, content writes 403)',
+    JSON.stringify(r.body.menus) === '["dashboard","instances","analytics","trending"]' && trendingNow === 200 && contentNow === true, `${JSON.stringify(r.body.menus)} ${trendingNow} ${contentNow}`);
+  const sess = await sessionClose(CT, devR!.id);
+  check('with 我的云机 on: the session gets past the menu check (not 4003)', sess !== 4003, String(sess));
+
+  // the user's role changes → next request
+  r = await http('PATCH', `/api/users/${cuId}`, T, { roleId: null });
+  const meNull = await http('GET', '/api/auth/me', CT);
+  check('user back to 普通用户 (roleId null) → 普通用户 menus at once', r.status === 200 && r.body.user.roleId === null && sameSet(meNull.body.menus, ['dashboard', ...ALL]), JSON.stringify(meNull.body.menus));
+  r = await http('PATCH', `/api/users/${cuId}`, T, { roleId: role2.id });
+  const me2 = await http('GET', '/api/auth/me', CT);
+  check('user moved to a role with no menus → dashboard only; analytics 403', r.status === 200 && JSON.stringify(me2.body.menus) === '["dashboard"]'
+    && (await cDisabled('GET', '/api/analytics/summary?days=7')) === true, JSON.stringify(me2.body.menus));
+  r = await http('PATCH', `/api/users/${cuId}`, T, { roleId: '00000000-0000-0000-0000-000000000000' });
+  check('PATCH user unknown roleId → 400 role.not_found', r.status === 400 && r.body.code === 'role.not_found');
+  r = await http('PATCH', `/api/users/${cuId}`, T, { role: 'admin', roleId: role.id });
+  check('PATCH role admin + roleId → 400 users.role_id_admin', r.status === 400 && r.body.code === 'users.role_id_admin');
+  r = await http('PATCH', `/api/users/${cuId}`, T, { roleId: role.id });
+  r = await http('GET', '/api/users', T);
+  const listed = r.body.users.find((u: any) => u.id === cuId);
+  check('GET /api/users: roleId + roleName', listed?.roleId === role.id && listed?.roleName === RN, JSON.stringify(listed));
+  r = await http('GET', '/api/roles', T);
+  check('GET /api/roles: userCount 1', r.body.roles.find((x: any) => x.id === role.id)?.userCount === 1);
+  r = await http('DELETE', `/api/roles/${role.id}`, T);
+  check('DELETE role in use → 409 role.in_use {count: 1}', r.status === 409 && r.body.code === 'role.in_use' && r.body.params.count === 1, r.text.slice(0, 200));
+  await db.delete(schema.instanceGrants).where(eq(schema.instanceGrants.userId, cuId));
+  r = await http('PATCH', `/api/users/${cuId}`, T, { role: 'admin' });
+  const promoted = (await http('GET', '/api/users', T)).body.users.find((u: any) => u.id === cuId);
+  const [rowAfter] = await db.select({ roleId: schema.users.roleId }).from(schema.users).where(eq(schema.users.id, cuId));
+  check('PATCH role admin clears roleId', r.status === 200 && r.body.user.roleId === null && promoted.roleId === null && rowAfter?.roleId === null);
+  // a stale role_id on an admin (as an older colour would leave it) neither counts nor blocks the delete
+  await db.update(schema.users).set({ roleId: role.id }).where(eq(schema.users.id, cuId));
+  r = await http('GET', '/api/roles', T);
+  check('stale role_id on an admin is not counted', r.body.roles.find((x: any) => x.id === role.id)?.userCount === 0);
+  r = await http('DELETE', `/api/roles/${role.id}`, T);
+  const gone = await http('DELETE', `/api/roles/${role.id}`, T);
+  check('DELETE unused role → 204, again → 404 role.not_found', r.status === 204 && gone.status === 404 && gone.body.code === 'role.not_found', `${r.status} ${gone.status}`);
+  check('user DELETE/PATCH role → 403', (await http('DELETE', `/api/roles/${role2.id}`, UT)).status === 403 && (await http('PATCH', `/api/roles/${role2.id}`, UT, { name: 'x' })).status === 403);
+  const rAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), inArray(schema.auditLogs.action, ['role.create', 'role.update', 'role.delete', 'user.update'])));
+  check('audit: role.create (name + menus), role.update (fields), role.delete (target name), user.update with roleId',
+    rAudit.some((a) => a.ok && a.action === 'role.create' && (a.detail as any)?.name === RN && JSON.stringify((a.detail as any)?.menus) === '["content","analytics","content"]')
+    && rAudit.some((a) => a.ok && a.action === 'role.update' && (a.detail as any)?.fields?.includes('menus'))
+    && rAudit.some((a) => a.ok && a.action === 'role.delete' && a.target === RN)
+    && rAudit.some((a) => a.ok && a.action === 'user.update' && (a.detail as any)?.roleId === role2.id)
+    && rAudit.some((a) => !a.ok && a.action === 'role.delete' && a.status === 409), `${rAudit.length} rows`);
+
   // ---------------------------------------------------------------- audit
   const audit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.action, 'settings.role_menus')));
   const okRows = audit.filter((a) => a.ok);
@@ -215,9 +369,10 @@ try {
   if (prevRow) await db.insert(schema.settings).values({ key: 'rbac.userMenus', value: prevRow.value }).onConflictDoUpdate({ target: schema.settings.key, set: { value: prevRow.value } });
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'rbac.userMenus'));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
+  if (roleIds.length) await db.delete(schema.roles).where(inArray(schema.roles.id, roleIds));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
   const left = fakeIds.length ? await db.select().from(schema.instances).where(inArray(schema.instances.id, fakeIds)) : [];
-  check('cleanup: placeholder devices + user removed, setting restored', left.length === 0);
+  check('cleanup: placeholder devices + users + roles removed, setting restored', left.length === 0);
   await sqlClient.end();
   const failed = results.filter((x) => !x[1]).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);

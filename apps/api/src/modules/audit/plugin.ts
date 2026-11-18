@@ -119,12 +119,19 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/auth/password': { action: 'auth.password_change', target: self, targetId: selfId },
   // users
   'POST /api/users': {
-    action: 'user.create', target: ({ body }) => body.username as string, detail: ({ body }) => ({ role: body.role }),
+    action: 'user.create', target: ({ body }) => body.username as string, detail: ({ body }) => ({ role: body.role, roleId: body.roleId ?? undefined }),
   },
   'PATCH /api/users/:id': {
     action: 'user.update',
-    detail: ({ body }) => ({ role: body.role, disabled: body.disabled, pwReset: body.password !== undefined ? true : undefined }),
+    detail: ({ body }) => ({ role: body.role, roleId: body.roleId, disabled: body.disabled, pwReset: body.password !== undefined ? true : undefined }),
   },
+  // 自定义角色 (auth/roles.ts)
+  'POST /api/roles': { action: 'role.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ name: body.name, menus: body.menus ?? [] }) },
+  'PATCH /api/roles/:id': {
+    action: 'role.update',
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, menus: body.menus }),
+  },
+  'DELETE /api/roles/:id': { action: 'role.delete' },
   'DELETE /api/users/:id': { action: 'user.delete' },
   'PUT /api/users/:id/grants': {
     action: 'grants.update', detail: ({ body }) => ({ scope: 'user', instanceIds: ids(body.instanceIds), count: ids(body.instanceIds).length }),
@@ -480,6 +487,10 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   }
   if (pattern.startsWith('/api/alert-channels/:id')) {
     const [r] = await db.select({ name: schema.alertChannels.name }).from(schema.alertChannels).where(eq(schema.alertChannels.id, id));
+    return r?.name ?? null;
+  }
+  if (pattern.startsWith('/api/roles/:id')) {
+    const [r] = await db.select({ name: schema.roles.name }).from(schema.roles).where(eq(schema.roles.id, id));
     return r?.name ?? null;
   }
   if (pattern.startsWith('/api/users/:id')) {

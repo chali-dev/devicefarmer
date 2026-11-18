@@ -6,7 +6,9 @@ export const roleText = (r: Role) => t(`roles.${r}`)
 export type InstanceStatus = 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'restarting' | 'deleting' | 'error'
 
 export interface User { id: string; username: string; role: Role; displayName?: string | null; email?: string | null; builtin?: boolean }
-export interface ManagedUser extends User { disabled: boolean; builtin: boolean; createdAt: string; instanceIds: string[] }
+export interface ManagedUser extends User { disabled: boolean; builtin: boolean; createdAt: string; instanceIds: string[]; roleId: string | null; roleName: string | null }
+/** 自定义角色 (权限管理): a variant of the user role with its own grantable menus. */
+export interface CustomRole { id: string; name: string; description: string | null; menus: string[]; userCount: number; createdAt: string; updatedAt: string }
 
 export interface Instance {
   id: string

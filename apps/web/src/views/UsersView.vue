@@ -5,24 +5,47 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { ROLES, roleText, type ManagedUser, type Role } from '../api/types'
+import type { CustomRole, ManagedUser, Role } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import { actionColumn, confirmAction, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const users = ref<ManagedUser[]>([])
+const roles = ref<CustomRole[]>([])
 const loading = ref(false)
 
 const { t } = useI18n()
 
-const roleHelp = (r: Role) => (r === 'admin' ? t('users.roleHelpAdmin') : t('users.roleHelpUser'))
+/**
+ * Role choice = 'admin' | 'user' (普通用户) | a 自定义角色 id (权限管理). A custom role is a variant of the user role
+ * (same data scope, own menus), so it is sent as { role: 'user', roleId }.
+ */
+type RoleKey = string
+const roleKey = (u: { role: Role; roleId: string | null }): RoleKey => (u.role === 'admin' ? 'admin' : u.roleId ?? 'user')
+const roleLabel = (k: RoleKey, fallback?: string | null) => (k === 'admin' ? t('roleMenus.roleAdmin') : k === 'user' ? t('roleMenus.roleUser')
+  : roles.value.find((r) => r.id === k)?.name ?? fallback ?? k)
+const roleBody = (k: RoleKey) => (k === 'admin' ? { role: 'admin' as Role } : { role: 'user' as Role, roleId: k === 'user' ? null : k })
+const roleOptions = computed(() => [
+  { value: 'admin', label: t('roleMenus.roleAdmin') },
+  { value: 'user', label: t('roleMenus.roleUser') },
+  ...roles.value.map((r) => ({ value: r.id, label: r.name })),
+])
+const roleHelp = (k: RoleKey) => (k === 'admin' ? t('users.roleHelpAdmin') : k === 'user' ? t('users.roleHelpUser') : t('users.roleHelpCustom'))
 const builtinTip = () => t('users.builtinTip')
+const roleFilter = ref<RoleKey | undefined>(undefined)
+const shown = computed(() => (roleFilter.value ? users.value.filter((u) => roleKey(u) === roleFilter.value) : users.value))
 
 async function load() {
   loading.value = true
-  try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users }
-  catch (e) { message.error(errorText(e)) }
+  try {
+    const [u, r] = await Promise.all([
+      api<{ users: ManagedUser[] }>('GET', '/api/users'),
+      api<{ roles: CustomRole[] }>('GET', '/api/roles'),
+    ])
+    users.value = u.users
+    roles.value = r.roles
+  } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 onMounted(load)
@@ -31,27 +54,27 @@ const columns = computed(() => [
   { title: t('common.username'), key: 'username', width: 200 },
   { title: t('profile.displayName'), dataIndex: 'displayName', key: 'displayName', width: 160, ellipsis: true },
   { title: t('profile.email'), dataIndex: 'email', key: 'email', width: 200, ellipsis: true },
-  { title: t('common.role'), key: 'role', width: 100 },
+  { title: t('common.role'), key: 'role', width: 140 },
   { title: t('users.enabled'), key: 'enabled', width: 80 },
   { title: t('users.createdAt'), key: 'createdAt', width: 180 },
-  actionColumn(280),
+  actionColumn(320),
 ])
 
 /** Why the dangerous controls of a row are locked (null = editable). */
 const lockReason = (u: ManagedUser) => (u.builtin ? t('users.builtinTip') : u.id === auth.user?.id ? t('users.selfTip') : null)
 
-async function patch(u: ManagedUser, body: Partial<{ role: Role; disabled: boolean; password: string }>): Promise<boolean> {
+async function patch(u: ManagedUser, body: Partial<{ role: Role; roleId: string | null; disabled: boolean; password: string }>): Promise<boolean> {
   try { await api('PATCH', `/api/users/${u.id}`, body); message.success(t('common.saved')); return true }
   catch (e) { message.error(errorText(e)); return false }
   finally { await load() }
 }
 
-function changeRole(u: ManagedUser, role: Role) {
-  if (role === u.role) return
+function changeRole(u: ManagedUser, k: RoleKey) {
+  if (k === roleKey(u)) return
   confirmAction({
-    title: t('users.confirmRole', { name: u.username, role: roleText(role) }),
-    content: role === 'admin' ? t('users.toAdmin') : t('users.toUser'),
-    onOk: () => patch(u, { role }),
+    title: t('users.confirmRole', { name: u.username, role: roleLabel(k) }),
+    content: k === 'admin' ? t('users.toAdmin') : u.role === 'admin' ? t('users.toUser') : k === 'user' ? undefined : t('users.toCustom'),
+    onOk: () => patch(u, roleBody(k)),
   })
 }
 
@@ -69,13 +92,13 @@ function remove(u: ManagedUser) {
 // create
 const createOpen = ref(false)
 const creating = ref(false)
-const form = reactive({ username: '', password: '', role: 'user' as Role })
+const form = reactive({ username: '', password: '', role: 'user' as RoleKey })
 async function create() {
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(form.username)) return message.error(t('users.badUsername'))
   if (form.password.length < 8) return message.error(t('users.initialPasswordShort'))
   creating.value = true
   try {
-    await api('POST', '/api/users', form)
+    await api('POST', '/api/users', { username: form.username, password: form.password, ...roleBody(form.role) })
     message.success(t('common.created'))
     createOpen.value = false
     Object.assign(form, { username: '', password: '', role: 'user' })
@@ -103,8 +126,14 @@ async function savePw() {
       <a-button type="primary" @click="createOpen = true"><template #icon><PlusOutlined /></template>{{ t('users.newUser') }}</a-button>
     </template>
     <a-card :bordered="false">
+      <div class="filters">
+        <a-select
+          v-model:value="roleFilter" allow-clear :placeholder="t('users.filterRole')" :options="roleOptions" style="width: 180px"
+          :aria-label="t('users.filterRole')"
+        />
+      </div>
       <a-table
-        :data-source="users" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
+        :data-source="shown" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
         :pagination="pagination({ defaultPageSize: 50, hideOnSinglePage: true })" :scroll="{ x: 1200 }"
       >
         <template #bodyCell="{ column, record }">
@@ -119,7 +148,7 @@ async function savePw() {
             {{ record[column.key] || '—' }}
           </template>
           <template v-else-if="column.key === 'role'">
-            <a-tag :color="record.role === 'admin' ? 'blue' : 'default'">{{ roleText(record.role as Role) }}</a-tag>
+            <a-tag :color="record.role === 'admin' ? 'blue' : record.roleId ? 'purple' : 'default'">{{ roleLabel(roleKey(record as ManagedUser), record.roleName) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'enabled'">
             <a-tooltip :title="lockReason(record)">
@@ -131,11 +160,9 @@ async function savePw() {
             <a-space :size="0">
               <a-tooltip :title="lockReason(record)">
                 <a-select
-                  :value="record.role" size="small" style="width: 96px; margin-inline-end: 4px" :disabled="!!lockReason(record)"
-                  :aria-label="t('common.role')" @change="(v: any) => changeRole(record, v)"
-                >
-                  <a-select-option v-for="r in ROLES" :key="r" :value="r">{{ roleText(r) }}</a-select-option>
-                </a-select>
+                  :value="roleKey(record as ManagedUser)" size="small" style="width: 136px; margin-inline-end: 4px" :disabled="!!lockReason(record)"
+                  :aria-label="t('common.role')" :options="roleOptions" @change="(v: any) => changeRole(record as ManagedUser, v)"
+                />
               </a-tooltip>
               <a-tooltip :title="record.builtin ? builtinTip() : null">
                 <a-button type="link" size="small" :disabled="record.builtin" @click="pwUser = record; newPw = ''">{{ t('users.resetPassword') }}</a-button>
@@ -162,9 +189,7 @@ async function savePw() {
         <a-input-password v-model:value="form.password" autocomplete="new-password" :placeholder="t('users.min8')" />
       </a-form-item>
       <a-form-item :label="t('common.role')" :extra="roleHelp(form.role)">
-        <a-select v-model:value="form.role">
-          <a-select-option v-for="r in ROLES" :key="r" :value="r">{{ roleText(r) }}</a-select-option>
-        </a-select>
+        <a-select v-model:value="form.role" :options="roleOptions" />
       </a-form-item>
     </a-form>
   </a-modal>
@@ -176,3 +201,7 @@ async function savePw() {
     <a-input-password v-model:value="newPw" :placeholder="t('users.newPasswordPlaceholder')" autocomplete="new-password" />
   </a-modal>
 </template>
+
+<style scoped>
+.filters { margin-bottom: 12px; }
+</style>

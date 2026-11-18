@@ -22,8 +22,24 @@ export const users = pgTable('users', {
   builtin: boolean('builtin').notNull().default(false),
   displayName: text('display_name'),
   email: text('email'),
+  /**
+   * 自定义角色 (权限管理, owner decision 2026-11-18): only meaningful when role = 'user'; null = 普通用户 (menus from the
+   * `rbac.userMenus` setting). A custom role only changes which grantable menus the user sees, never the data scope.
+   * RESTRICT: a role in use cannot be deleted (the API answers 409 role.in_use first).
+   */
+  roleId: uuid('role_id').references((): AnyPgColumn => roles.id, { onDelete: 'restrict' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [index('users_role_id_idx').on(t.roleId)]);
+
+/** 自定义角色 (modules/auth/roles.ts): a variant of the `user` role with its own set of grantable menus. */
+export const roles = pgTable('roles', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  description: text('description'),
+  menus: text('menus').array().notNull().default(sql`'{}'::text[]`),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex('roles_name_lower').on(sql`lower(${t.name})`)]);
 
 export const instances = pgTable('instances', {
   id: uuid('id').primaryKey().defaultRandom(),

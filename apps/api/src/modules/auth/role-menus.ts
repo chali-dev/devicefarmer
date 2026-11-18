@@ -4,9 +4,14 @@ import { badRequest, forbidden } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from './rbac.js';
 
 /**
- * 权限管理 (角色菜单权限, owner decision 2026-11-18): the roles stay fixed (admin / user); an admin ticks which
- * business menus the `user` role sees (settings key `rbac.userMenus` = `{ menus: string[] }`). Admins always see
- * everything. The default is exactly what users saw before (every grantable menu), so nothing changes until edited.
+ * 权限管理 (角色菜单权限, owner decision 2026-11-18): two built-in roles (admin / user) plus admin-defined 自定义角色
+ * (`roles` table, auth/roles.ts). An admin ticks which business menus the `user` role sees (settings key
+ * `rbac.userMenus` = `{ menus: string[] }`) and, per custom role, its own menus (`roles.menus`). A custom role is a
+ * variant of `user` (`users.role` stays 'user', `users.role_id` points at the role): same data scope and RBAC, only the
+ * grantable menus differ; admin-only menus are never grantable. Admins always see everything. The default of
+ * `rbac.userMenus` is exactly what users saw before (every grantable menu), so nothing changes until edited.
+ * The user row (incl. role_id) is re-read on every request (auth/plugin.ts), so a user's role change applies at once;
+ * the menus of the setting and of the roles are cached 5 s per process (cleared in the process that saves).
  *
  * Enforced in the web (sidebar + router guard) and here: `assertMenuAllowed` runs in a global onRequest hook of the
  * auth plugin (before body validation) for every path a MENU_API rule matches, so a disabled menu's own endpoints answer 403 `rbac.menu_disabled` for
@@ -66,39 +71,69 @@ export const MENU_API: MenuApiRule[] = [
 const isRead = (m: string) => m === 'GET' || m === 'HEAD' || m === 'OPTIONS';
 
 let cache: { at: number; menus: GrantableMenu[]; updatedAt: string | null } | null = null;
+let roleCache: { at: number; byId: Map<string, GrantableMenu[]> } | null = null;
+
+/** Drops both caches (after saving the setting, a role, or deleting a role). */
+export function invalidateMenuCache() { cache = null; roleCache = null; }
+
+/** Stored menus → known grantable keys in sidebar order (unknown keys, e.g. a menu removed later, are dropped). */
+export const normaliseMenus = (stored: readonly string[]): GrantableMenu[] => GRANTABLE_MENUS.filter((k) => stored.includes(k));
+
+async function roleMenusById(fresh = false): Promise<Map<string, GrantableMenu[]>> {
+  if (!fresh && roleCache && Date.now() - roleCache.at < CACHE_MS) return roleCache.byId;
+  const rows = await db.select({ id: schema.roles.id, menus: schema.roles.menus }).from(schema.roles);
+  roleCache = { at: Date.now(), byId: new Map(rows.map((r) => [r.id, normaliseMenus(r.menus)])) };
+  return roleCache.byId;
+}
+
+/** Grantable menus of a (non-admin) user: their custom role's, else the 普通用户 setting's. */
+async function grantedMenus(user: AuthUser): Promise<GrantableMenu[]> {
+  if (user.roleId) {
+    let m = (await roleMenusById()).get(user.roleId);
+    // A role created in another process within the cache window: read once more before falling back.
+    if (!m) m = (await roleMenusById(true)).get(user.roleId);
+    if (m) return m;
+  }
+  return (await getUserMenus()).menus;
+}
 
 export async function getUserMenus(fresh = false): Promise<{ menus: GrantableMenu[]; updatedAt: string | null }> {
   if (!fresh && cache && Date.now() - cache.at < CACHE_MS) return cache;
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));
   const stored = (row?.value as { menus?: unknown } | undefined)?.menus;
   // An unreadable stored value falls back to the default; unknown keys (e.g. a menu removed later) are dropped.
-  const menus = Array.isArray(stored) ? GRANTABLE_MENUS.filter((k) => stored.includes(k)) : DEFAULT_USER_MENUS;
+  const menus = Array.isArray(stored) ? normaliseMenus(stored) : DEFAULT_USER_MENUS;
   cache = { at: Date.now(), menus, updatedAt: row?.updatedAt.toISOString() ?? null };
   return cache;
 }
 
-/** Validates (unknown key → rbac.menu_unknown, dashboard / admin-only key → rbac.menu_not_grantable) and stores. */
-export async function saveUserMenus(input: string[]) {
+/** Unknown key → rbac.menu_unknown, dashboard / admin-only key → rbac.menu_not_grantable; returns sidebar order, deduplicated. */
+export function validateMenus(input: readonly string[]): GrantableMenu[] {
   const fixed: string[] = [...FIXED_MENUS.always, ...FIXED_MENUS.adminOnly];
   for (const k of input) {
     if (fixed.includes(k)) throw badRequest(`菜单「${k}」不能分配给用户角色`, 'rbac.menu_not_grantable', { menu: k });
     if (!(GRANTABLE_MENUS as readonly string[]).includes(k)) throw badRequest(`未知菜单：${k}`, 'rbac.menu_unknown', { menu: k });
   }
-  const menus = GRANTABLE_MENUS.filter((k) => input.includes(k));
+  return normaliseMenus(input);
+}
+
+/** Validates and stores the 普通用户 menus. */
+export async function saveUserMenus(input: string[]) {
+  const menus = validateMenus(input);
   await db.insert(schema.settings).values({ key: KEY, value: { menus } })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value: { menus }, updatedAt: new Date() } });
-  cache = null;
+  invalidateMenuCache();
   return getUserMenus(true);
 }
 
 /** Menu keys the user may open: admins every key, users dashboard + the enabled grantable menus. */
 export async function effectiveMenus(user: AuthUser): Promise<string[]> {
   if (isAdmin(user)) return [...FIXED_MENUS.always, ...GRANTABLE_MENUS, ...FIXED_MENUS.adminOnly];
-  return [...FIXED_MENUS.always, ...(await getUserMenus()).menus];
+  return [...FIXED_MENUS.always, ...(await grantedMenus(user))];
 }
 
 export async function menuEnabled(user: AuthUser, menu: GrantableMenu): Promise<boolean> {
-  return isAdmin(user) || (await getUserMenus()).menus.includes(menu);
+  return isAdmin(user) || (await grantedMenus(user)).includes(menu);
 }
 
 /** The MENU_API rule of a request (first match), or null when the switch never blocks it. */
@@ -107,10 +142,10 @@ export function menuRuleFor(method: string, url: string): MenuApiRule | null {
   return MENU_API.find((r) => (r.methods === 'all' || (r.methods === 'read') === isRead(method)) && r.pattern.test(path)) ?? null;
 }
 
-/** 403 rbac.menu_disabled when every page using this endpoint is switched off for the user role. */
+/** 403 rbac.menu_disabled when every page using this endpoint is switched off for the user's role. */
 export async function assertMenuAllowed(user: AuthUser, rule: MenuApiRule): Promise<void> {
   if (isAdmin(user)) return;
-  const { menus } = await getUserMenus();
+  const menus = await grantedMenus(user);
   if (!rule.menus.some((m) => menus.includes(m))) {
     throw forbidden('该菜单未对用户角色开放', 'rbac.menu_disabled', { menu: rule.menus[0]! });
   }

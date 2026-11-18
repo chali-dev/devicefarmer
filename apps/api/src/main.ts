@@ -26,6 +26,7 @@ import { scheduleTaskCleanup } from './modules/tasks/retention.js'; // registers
 import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { startMonitor } from './modules/monitor/monitor.js';
 import { userRoutes } from './modules/users/routes.js';
+import { roleRoutes } from './modules/auth/roles.js';
 import { appRoutes } from './modules/apps/routes.js';
 import { libraryRoutes } from './modules/library/routes.js';
 import { mediaRoutes } from './modules/media/routes.js';
@@ -87,6 +88,7 @@ await app.register(authPlugin);
 await app.register(auditPlugin);
 await app.register(authRoutes);
 await app.register(userRoutes);
+await app.register(roleRoutes);
 await app.register(instanceRoutes);
 await app.register(controlRoutes);
 await app.register(eventsRoutes);

@@ -3,7 +3,8 @@ import { db, schema } from '../../db/index.js';
 import type { Role } from '../../db/schema.js';
 import { forbidden } from '../../lib/errors.js';
 
-export interface AuthUser { id: string; username: string; role: Role }
+/** `roleId` = the user's 自定义角色 (menus only, auth/role-menus.ts); absent/null = 普通用户. Ignored for admins. */
+export interface AuthUser { id: string; username: string; role: Role; roleId?: string | null }
 
 /**
  * view    – see status
