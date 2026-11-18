@@ -1,0 +1,216 @@
+<script setup lang="ts">
+import { computed, onMounted, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
+import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
+import { api, errorText } from '../api/client'
+import { queryParam } from '../api/query'
+import type { ScopedItem } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import SearchBar from '../components/common/SearchBar.vue'
+import { useScopedList } from '../components/common/scopedList'
+import { actionColumn, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import DraftRunInfo from '../components/comments/DraftRunInfo.vue'
+import PersonaDraftDrawer from '../components/comments/PersonaDraftDrawer.vue'
+import { useAuthStore } from '../stores/auth'
+
+/**
+ * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
+ * (账号人设 accounts → /social, 话术 → /scripts) and 人设每日草稿 (AI) state (on/off, per day, newest generation task on
+ * rows the viewer manages). Public personas are managed by admins; personal ones by their owner (admins: all).
+ * Tabs: 公共 / 我的 (+ admin 全部用户 with an owner filter); `?tab=` keeps the tab in the URL.
+ */
+const { t } = useI18n()
+const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
+
+type PageTab = 'public' | 'mine' | 'all-users'
+const pageTabs = computed<PageTab[]>(() => (auth.isAdmin ? ['public', 'mine', 'all-users'] : ['public', 'mine']))
+const pageTab = computed<PageTab>({
+  get: () => queryParam<PageTab>(route.query, 'tab', pageTabs.value) ?? 'public',
+  set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
+})
+
+const {
+  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, run, create, update, move, remove, merging, mergeInto, mergeTargets, startMerge, doMerge,
+} = useScopedList({ path: '/api/personas', listKey: 'personas', texts: 'scripts.personas' })
+const isAllUsers = computed(() => pageTab.value === 'all-users')
+function applyTab() {
+  tab.value = pageTab.value === 'public' ? 'public' : 'mine'
+  owner.value = isAllUsers.value ? 'all-users' : 'own'
+  void load()
+}
+watch(pageTab, applyTab)
+watch(ownerId, () => { if (isAllUsers.value) void load() })
+
+// ---- admin: users for the owner filter / owner of a new personal persona
+const users = ref<{ id: string; username: string; disabled: boolean }[]>([])
+const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label: u.username })))
+onMounted(async () => {
+  applyTab()
+  if (auth.isAdmin) {
+    try { users.value = (await api<{ users: typeof users.value }>('GET', '/api/users')).users } catch (e) { message.error(errorText(e)) }
+  }
+})
+
+// ---- search (name or description, in the loaded tab)
+const q = ref('')
+const rows = computed(() => {
+  const s = q.value.trim().toLowerCase()
+  return s ? list.value.filter((p) => p.name.toLowerCase().includes(s) || (p.description ?? '').toLowerCase().includes(s)) : list.value
+})
+/** Reordering works on the whole, unfiltered list of one owner. */
+const canMove = computed(() => !q.value.trim() && !isAllUsers.value)
+const indexOf = (p: ScopedItem) => list.value.findIndex((x) => x.id === p.id)
+function reset() { q.value = ''; ownerId.value = undefined }
+
+const columns = computed(() => [
+  { title: t('personas.colName'), key: 'name', width: 180 },
+  { title: t('personas.colDesc'), key: 'description', width: 240 },
+  { title: t('personas.colScope'), key: 'scope', width: 140 },
+  { title: t('personas.colAccounts'), key: 'accounts', width: 100, align: 'right' as const },
+  { title: t('personas.colTemplates'), key: 'count', width: 100, align: 'right' as const },
+  { title: t('personas.colDrafts'), key: 'drafts', width: 300 },
+  actionColumn(230),
+])
+const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
+
+/** /scripts shows templates per tab: a personal persona's are its owner's personal ones; a public one's start on 公共话术. */
+function scriptsLink(p: ScopedItem): RouteLocationRaw {
+  if (p.ownerType === 'public') return { path: '/scripts', query: { personaId: p.id } }
+  return { path: '/scripts', query: { tab: 'mine', personaId: p.id, ...(p.ownerId !== auth.user?.id ? { owner: 'all-users' } : {}) } }
+}
+
+// ---- create / edit (name + description)
+const formOpen = ref(false)
+const editing = ref<ScopedItem | null>(null)
+const form = ref({ name: '', description: '', ownerId: undefined as string | undefined })
+function openForm(p?: ScopedItem) {
+  editing.value = p ?? null
+  form.value = { name: p?.name ?? '', description: p?.description ?? '', ownerId: p ? undefined : ownerId.value }
+  formOpen.value = true
+}
+async function save() {
+  const name = form.value.name.trim()
+  const description = form.value.description.trim() || null
+  if (!name) { message.warning(t('personas.nameRequired')); return }
+  const p = editing.value
+  if (!p && isAllUsers.value && !form.value.ownerId) { message.warning(t('personas.ownerRequired')); return }
+  const ok = p ? await update(p, name, description) : await create(name, description, isAllUsers.value ? form.value.ownerId : undefined)
+  if (ok) { formOpen.value = false; if (!p) message.success(t('scripts.personas.created')) }
+}
+
+// ---- 内容设定 (AI drafts) and "generate one now"
+const draftPersona = ref<string | null>(null)
+const generating = ref<string | null>(null)
+async function generate(p: ScopedItem) {
+  generating.value = p.id
+  try {
+    // run() shows errors (e.g. ai.not_configured, ai.rate_limited); the new task is the newest run after its reload
+    await run(async () => { await api('POST', `/api/personas/${p.id}/drafts/generate`); message.success(t('scripts.drafts.generated')) })
+  } finally { generating.value = null }
+}
+</script>
+
+<template>
+  <PageContainer>
+    <template #extra>
+      <a-button v-if="canEdit" type="primary" @click="openForm()"><template #icon><PlusOutlined /></template>{{ tx('add') }}</a-button>
+    </template>
+
+    <a-card :bordered="false" class="tabs-card">
+      <a-tabs v-model:active-key="pageTab">
+        <a-tab-pane v-for="k in pageTabs" :key="k" :tab="t(`personas.tabs.${k}`)" />
+      </a-tabs>
+      <SearchBar :loading="loading" @reset="reset" @refresh="load">
+        <a-input v-model:value="q" :placeholder="t('personas.searchPlaceholder')" allow-clear style="width: 240px" />
+        <a-select v-if="isAllUsers" v-model:value="ownerId" :placeholder="t('personas.allOwners')" allow-clear show-search option-filter-prop="label"
+          style="width: 160px" :options="userOptions" />
+      </SearchBar>
+
+      <a-table :data-source="rows" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
+        :locale="{ emptyText: tx('empty') }" :pagination="pagination({ defaultPageSize: 50, totalText: (n) => t('personas.total', { n }) })">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'name'"><span class="strong">{{ record.name }}</span></template>
+          <template v-else-if="column.key === 'description'">
+            <span v-if="record.description" class="clamp">{{ record.description }}</span><span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'scope'">
+            <a-tag v-if="record.ownerType === 'public'" color="blue">{{ t('scopedList.public') }}</a-tag>
+            <template v-else>
+              <a-tag>{{ t('scripts.personal') }}</a-tag>
+              <span class="small">{{ record.ownerId === auth.user?.id ? t('scopedList.ownerOwn') : record.ownerName ?? '—' }}</span>
+            </template>
+          </template>
+          <template v-else-if="column.key === 'accounts'">
+            <router-link :to="{ path: '/social', query: { personaId: record.id } }">{{ record.accounts ?? 0 }}</router-link>
+          </template>
+          <template v-else-if="column.key === 'count'">
+            <router-link :to="scriptsLink(record as ScopedItem)">{{ record.count }}</router-link>
+          </template>
+          <template v-else-if="column.key === 'drafts'">
+            <div>
+              <a-tag v-if="record.draftEnabled" color="purple">{{ tx('draftOn', { n: record.draftsPerDay ?? 0 }) }}</a-tag>
+              <a-tag v-else>{{ t('personas.draftOff') }}</a-tag>
+            </div>
+            <div v-if="record.writable" class="last-run">
+              <DraftRunInfo v-if="record.lastDraftRun" :run="record.lastDraftRun" />
+              <span v-else class="muted small">{{ t('personas.noRun') }}</span>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space v-if="record.writable" :size="0">
+              <a-button type="link" size="small" @click="openForm(record as ScopedItem)">{{ t('common.edit') }}</a-button>
+              <a-button type="link" size="small" @click="draftPersona = record.id">{{ tx('draftSettings') }}</a-button>
+              <a-button type="link" size="small" :loading="generating === record.id" @click="generate(record as ScopedItem)">{{ t('scripts.drafts.generate') }}</a-button>
+              <a-dropdown>
+                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
+                <template #overlay>
+                  <a-menu>
+                    <template v-if="canMove">
+                      <a-menu-item key="up" :disabled="indexOf(record as ScopedItem) === 0 || busy" @click="move(list, indexOf(record as ScopedItem), -1)">{{ t('scopedList.moveUp') }}</a-menu-item>
+                      <a-menu-item key="down" :disabled="indexOf(record as ScopedItem) === list.length - 1 || busy" @click="move(list, indexOf(record as ScopedItem), 1)">{{ t('scopedList.moveDown') }}</a-menu-item>
+                    </template>
+                    <a-menu-item key="merge" @click="startMerge(record as ScopedItem)">{{ t('scopedList.merge') }}</a-menu-item>
+                    <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
+            <span v-else class="muted">—</span>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-modal v-model:open="formOpen" :title="editing ? t('personas.edit') : tx('add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')"
+      :confirm-loading="busy" :width="MODAL_WIDTH.sm" @ok="save">
+      <a-form layout="vertical">
+        <a-form-item v-if="!editing && isAllUsers" :label="t('personas.owner')" required>
+          <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="userOptions" />
+        </a-form-item>
+        <a-form-item :label="t('personas.colName')" required><a-input v-model:value="form.name" :maxlength="50" :placeholder="tx('namePlaceholder')" /></a-form-item>
+        <a-form-item :label="t('personas.colDesc')">
+          <a-textarea v-model:value="form.description" :maxlength="200" :auto-size="{ minRows: 2, maxRows: 4 }" show-count :placeholder="tx('descPlaceholder')" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal :open="!!merging" :title="merging ? tx('mergeTitle', { name: merging.name }) : ''" :width="MODAL_WIDTH.sm"
+      :ok-text="t('scopedList.merge')" :cancel-text="t('common.cancel')" :ok-button-props="{ disabled: !mergeInto }" :confirm-loading="busy"
+      @ok="doMerge" @cancel="merging = null">
+      <a-select v-model:value="mergeInto" show-search option-filter-prop="label" style="width: 100%" :options="mergeTargets" />
+    </a-modal>
+
+    <PersonaDraftDrawer :persona-id="draftPersona" @close="draftPersona = null" @changed="load" />
+  </PageContainer>
+</template>
+
+<style scoped>
+.tabs-card :deep(.ant-card-body) { padding-top: 4px; }
+.strong { font-weight: 500; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.last-run { margin-top: 4px; }
+</style>

@@ -2,12 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
-import { api, codeText, errorText } from '../../api/client'
+import { api, errorText } from '../../api/client'
 import { langName } from '../../api/lang'
 import type { CommentTemplate, PersonaBrief, PersonaDraftSettings } from '../../api/types'
-import { dateLocale } from '../../i18n'
 import { useAuthStore } from '../../stores/auth'
 import { DRAWER_WIDTH } from '../common/ui'
+import DraftRunInfo from './DraftRunInfo.vue'
 
 /**
  * 人设内容设定 (人设每日草稿, AI): brief, drafts per day, draft owner (public personas), "generate one now" and the
@@ -15,7 +15,7 @@ import { DRAWER_WIDTH } from '../common/ui'
  */
 const props = defineProps<{ personaId: string | null }>()
 const emit = defineEmits<{ close: []; changed: [] }>()
-const { t, te } = useI18n()
+const { t } = useI18n()
 const auth = useAuthStore()
 
 const s = ref<PersonaDraftSettings | null>(null)
@@ -83,10 +83,6 @@ async function generate() {
     await load(s.value.id)
   } catch (e) { message.error(errorText(e)) } finally { generating.value = false }
 }
-
-const fmt = (v: string) => new Date(v).toLocaleString(dateLocale())
-const triggerText = (x: string | null) => (x && te(`scripts.drafts.runTrigger.${x}`) ? t(`scripts.drafts.runTrigger.${x}`) : x ?? '')
-const statusText = (x: string) => (te(`tasks.status.${x}`) ? t(`tasks.status.${x}`) : x)
 </script>
 
 <template>
@@ -132,13 +128,7 @@ const statusText = (x: string) => (te(`tasks.status.${x}`) ? t(`tasks.status.${x
         </a-form>
         <a-divider orientation="left" plain>{{ t('scripts.drafts.runs') }}</a-divider>
         <a-empty v-if="!s.runs.length" />
-        <div v-for="r in s.runs" :key="r.id" class="run">
-          <span class="muted small">{{ fmt(r.createdAt) }}</span>
-          <a-tag>{{ triggerText(r.trigger) }}</a-tag>
-          <a-tag :color="r.status === 'success' ? 'success' : r.status === 'failed' ? 'error' : 'processing'">{{ statusText(r.status) }}</a-tag>
-          <span v-if="r.created !== null" class="small">{{ t('scripts.drafts.runCreated', { n: r.created }) }}</span>
-          <span v-if="r.errorCode" class="small err">{{ codeText(r.errorCode, undefined, r.errorCode) }}</span>
-        </div>
+        <div v-for="r in s.runs" :key="r.id" class="run"><DraftRunInfo :run="r" /></div>
       </template>
     </a-spin>
   </a-drawer>
@@ -146,6 +136,5 @@ const statusText = (x: string) => (te(`tasks.status.${x}`) ? t(`tasks.status.${x
 
 <style scoped>
 .gap { margin-bottom: 16px; }
-.run { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; }
-.err { color: var(--cp-error); }
+.run { padding: 4px 0; }
 </style>

@@ -15,7 +15,6 @@ import {
   type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import PersonaManager from '../components/comments/PersonaManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
@@ -277,17 +276,12 @@ async function batch(action: 'set-persona' | 'add-tags' | 'remove-tags' | 'unlin
   else if (action === 'unlink') confirmAction({ title: t('social.confirmBatchUnlink', { n: ids.length }), onOk: run })
   else await run()
 }
-
-// ---------------------------------------------------------------- personas (人设管理, shared ScopedListManager)
-const personasOpen = ref(false)
-function personasChanged() { void loadMeta(); void load() }
-
 </script>
 
 <template>
   <PageContainer :title="t('social.title')">
     <template #extra>
-      <a-button @click="personasOpen = true">{{ t('scripts.personas.manage') }}</a-button>
+      <router-link v-slot="{ href, navigate }" to="/personas" custom><a-button :href="href" @click="navigate">{{ t('scripts.personas.manage') }}</a-button></router-link>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
     </template>
 
@@ -490,8 +484,6 @@ function personasChanged() { void loadMeta(); void load() }
       </a-timeline>
     </a-spin>
   </a-drawer>
-
-  <PersonaManager v-model:open="personasOpen" @changed="personasChanged" />
 </template>
 
 <style scoped>

@@ -9,7 +9,6 @@ import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import type { CommentTemplate, Persona, TemplateKind } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import PersonaManager from '../components/comments/PersonaManager.vue'
 import VNodes from '../components/common/VNodes'
 import SearchBar from '../components/common/SearchBar.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
@@ -33,8 +32,8 @@ const tab = computed<Tab>({
   get: () => queryParam<Tab>(route.query, 'tab', TABS) ?? 'public',
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
-/** Admin, personal tab: own templates or every user's personal templates. */
-const owner = ref<'own' | 'all-users'>('own')
+/** Admin, personal tab: own templates or every user's personal templates (?owner=all-users from the 人设 page). */
+const owner = ref<'own' | 'all-users'>(auth.isAdmin && queryParam(route.query, 'owner', ['all-users']) ? 'all-users' : 'own')
 const apiScope = computed(() => (tab.value === 'public' ? 'shared' : auth.isAdmin ? owner.value : 'own'))
 const canCreate = computed(() => tab.value === 'mine' || auth.isAdmin)
 
@@ -43,7 +42,8 @@ const loading = ref(false)
 const facets = ref<{ tags: string[] }>({ tags: [] })
 const filters = reactive({
   kind: (queryParam<TemplateKind>(route.query, 'kind', ['comment', 'post']) ?? 'all') as TemplateKind | 'all',
-  personaId: undefined as string | undefined, tag: undefined as string | undefined, q: '',
+  /** ?personaId= from the 人设 page's template count */
+  personaId: queryParam(route.query, 'personaId'), tag: undefined as string | undefined, q: '',
 })
 
 // ---- personas (人设): public ones + own (admin, all-users: every user's personal ones)
@@ -67,8 +67,8 @@ const filterOptions = computed(() => [
   { value: 'none', label: t('scripts.noPersona') },
   ...personaGroups(publicPersonas.value, tab.value === 'public' ? [] : personalPersonas.value),
 ])
-const managerOpen = ref(false)
-function personasChanged() { void loadPersonas(); void load() }
+/** Persona filter values offered on the current tab (a public persona's filter survives a tab switch). */
+const filterIds = computed(() => new Set(filterOptions.value.flatMap((o) => ('options' in o ? o.options.map((x) => x.value) : [o.value]))))
 
 async function load() {
   loading.value = true
@@ -85,7 +85,11 @@ async function loadFacets() {
 function onKind() { filters.tag = undefined; void load(); void loadFacets() }
 function reset() { Object.assign(filters, { kind: 'all', personaId: undefined, tag: undefined, q: '' }); owner.value = 'own'; onKind() }
 onMounted(() => { void load(); void loadFacets(); void loadPersonas() })
-watch(apiScope, () => { filters.personaId = undefined; void loadPersonas(); onKind() })
+watch(apiScope, async () => {
+  await loadPersonas()
+  if (filters.personaId && !filterIds.value.has(filters.personaId)) filters.personaId = undefined
+  onKind()
+})
 
 const columns = computed(() => [
   { title: t('scripts.name'), key: 'name', width: 220 },
@@ -176,7 +180,7 @@ function remove(x: CommentTemplate) {
 <template>
   <PageContainer :title="t('scripts.title')">
     <template #extra>
-      <a-button @click="managerOpen = true">{{ t('scripts.personas.manage') }}</a-button>
+      <router-link v-slot="{ href, navigate }" to="/personas" custom><a-button :href="href" @click="navigate">{{ t('scripts.personas.manage') }}</a-button></router-link>
       <a-button v-if="canCreate" type="primary" @click="openForm()"><template #icon><PlusOutlined /></template>{{ t('scripts.add') }}</a-button>
     </template>
 
@@ -277,7 +281,6 @@ function remove(x: CommentTemplate) {
         </a-form-item>
       </a-form>
     </a-modal>
-    <PersonaManager v-model:open="managerOpen" @changed="personasChanged" />
   </PageContainer>
 </template>
 

@@ -21,6 +21,7 @@ const router = createRouter({
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
+        { path: 'personas', name: 'personas', component: () => import('../views/PersonasView.vue') },
         { path: 'scripts', name: 'scripts', component: () => import('../views/ScriptsView.vue') },
         { path: 'trending', name: 'trending', component: () => import('../views/TrendingView.vue') },
         { path: 'notifications', name: 'notifications', component: () => import('../views/NotificationsView.vue') },

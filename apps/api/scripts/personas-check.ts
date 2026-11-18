@@ -4,6 +4,8 @@
  *   view with owner filter; names unique per owner, case-insensitive; validation.
  * - Template persona rules: shared template → public persona only; personal template → public or the owner's persona.
  * - Counts per persona (templates and 账号人设 accounts, exact, per viewer), template filter personaId / none, facets without personas.
+ * - 人设 page links: the counts equal what the linked lists return (/social?personaId → accounts total; /scripts?personaId
+ *   → shared + own templates for users, shared + all-users for admins; a personal persona → its owner's templates only).
  * - Delete → templates become 未设人设; merge moves templates and deletes the source (scope rules).
  * - Audit entries (names only).
  * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
@@ -159,6 +161,18 @@ try {
   check('account counts per viewer (Brand: A 1, admin 2; Old 0)', accA.status === 201 && accB.status === 201
     && accounts(pubA2, brand.id) === 1 && accounts(pubT2, brand.id) === 2 && accounts(pubA2, old.id) === 0,
     JSON.stringify([accA.status, accB.status, accounts(pubA2, brand.id), accounts(pubT2, brand.id)]));
+  // 人设 page links (/social?personaId=, /scripts?personaId=&tab=…): the numbers shown equal the linked lists
+  const socialTotal = async (token: string, id: string) => (await http('GET', `/api/social/accounts?personaId=${id}`, token)).body.total as number;
+  const tplCount = async (token: string, q: string) => ((await http('GET', `/api/comment-templates?kind=all&${q}`, token)).body.templates as any[]).length;
+  const linkA = [await socialTotal(A.token, brand.id), await tplCount(A.token, `scope=shared&personaId=${brand.id}`) + await tplCount(A.token, `scope=own&personaId=${brand.id}`),
+    await tplCount(A.token, `scope=own&personaId=${aCoach.id}`)];
+  const linkT = [await socialTotal(T, brand.id), await tplCount(T, `scope=shared&personaId=${brand.id}`) + await tplCount(T, `scope=all-users&personaId=${brand.id}`),
+    await tplCount(T, `scope=all-users&personaId=${aCoach.id}`)];
+  const mineT = (await plist(T, `scope=all-users&ownerId=${A.id}`)).items;
+  check('人设 page links: counts = linked lists (A: accounts 1, Brand scripts 1+1 = 2, Coach 1; admin: accounts 2, Brand 1+2 = 3, A\'s Coach 1)',
+    linkA.join() === [accounts(pubA2, brand.id), count(pubA2, brand.id), count(mineA, aCoach.id)].join() && linkA.join() === '1,2,1'
+    && linkT.join() === [accounts(pubT2, brand.id), count(pubT2, brand.id), count(mineT, aCoach.id)].join() && linkT.join() === '2,3,1',
+    JSON.stringify({ linkA, linkT }));
   const tl = async (token: string, q: string) => ((await http('GET', `/api/comment-templates?kind=all&${q}`, token)).body.templates as any[]).filter((x) => x.name.includes(tag)).map((x) => x.name).sort().join();
   check('filter personaId (A sees s1, a2 — not B\'s b1)', await tl(A.token, `personaId=${brand.id}`) === [`a2 ${tag}`, `s1 ${tag}`].sort().join());
   check('filter personaId as admin (s1, a2, b1)', await tl(T, `personaId=${brand.id}`) === [`a2 ${tag}`, `b1 ${tag}`, `s1 ${tag}`].sort().join());

@@ -532,7 +532,11 @@ export interface ScopedItem extends PersonaRef {
   accounts?: number
   /** 人设 only: 人设每日草稿 (AI) on and drafts per day. */
   draftEnabled?: boolean; draftsPerDay?: number
+  /** 人设 only: newest generation task, on rows the viewer manages (else null). */
+  lastDraftRun?: PersonaDraftRun | null
 }
+/** A 人设每日草稿 generation task (trigger schedule|manual; `created` = drafts written, null until it succeeded). */
+export interface PersonaDraftRun { id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null; created: number | null }
 /** 人设内容设定 (GET/PUT /api/personas/:id/drafts). */
 export interface PersonaBrief {
   tone?: string; topics?: string[]; audience?: string; lang?: string | null; hashtags?: string[]; bannedWords?: string[]
@@ -542,7 +546,7 @@ export interface PersonaDraftSettings {
   id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null
   draftEnabled: boolean; draftsPerDay: number; brief: PersonaBrief
   draftOwnerId: string | null; draftOwnerName: string | null; draftOwnerDisabled: boolean | null
-  runs: { id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null; created: number | null }[]
+  runs: PersonaDraftRun[]
 }
 export interface AiSettingsState { enabled: boolean; keySet: boolean; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */

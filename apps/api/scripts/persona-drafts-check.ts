@@ -3,6 +3,8 @@
  * - 内容设定 CRUD + validation + RBAC: personal persona (owner / admin; others 404), public persona (admin only, users
  *   403), drafts per day 1..10, language must be offered, examples must be post templates visible to the persona,
  *   draft owner rules (public: required to switch on, must be an enabled user; personal: not settable), list without brief.
+ * - Persona list `lastDraftRun` (人设 page): newest generation task (trigger, status, error code) only on rows the viewer
+ *   manages (owner/admin; public personas: admin only, users get null), others' personal personas not listed at all.
  * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/hour validation.
  * - Without a key: the schedule creates nothing (reason ai.not_configured), "generate now" → 400 ai.not_configured.
  * - With an obviously invalid key: a real call to the Anthropic API fails the task as ai.key_invalid after ONE attempt,
@@ -181,6 +183,26 @@ try {
   let aDrafts = await db.select().from(schema.contents).where(and(eq(schema.contents.userId, A.id)));
   check('no content created by the failed run', aDrafts.length === 0);
 
+  // ---- persona list: lastDraftRun (RBAC = managing the persona)
+  const lastRun = async (token: string, q: string, id: string) => {
+    const res = await http('GET', `/api/personas?${q}`, token);
+    return { status: res.status, row: (res.body?.personas as any[] | undefined)?.find((x) => x.id === id) };
+  };
+  let lr = await lastRun(A.token, 'scope=mine', pA.id);
+  check('list: owner sees lastDraftRun of a personal persona (manual, failed ai.key_invalid, created null)',
+    lr.row?.lastDraftRun?.id === manualId && lr.row.lastDraftRun.trigger === 'manual' && lr.row.lastDraftRun.status === 'failed'
+    && lr.row.lastDraftRun.errorCode === 'ai.key_invalid' && lr.row.lastDraftRun.created === null && !!lr.row.lastDraftRun.createdAt && !('payload' in lr.row.lastDraftRun),
+    JSON.stringify(lr.row?.lastDraftRun));
+  lr = await lastRun(T, `scope=all-users&ownerId=${A.id}`, pA.id);
+  const lrB = await lastRun(B.token, 'scope=mine', pA.id);
+  const lrBall = await lastRun(B.token, 'scope=all-users', pA.id);
+  check('list: admin (all-users, ownerId) sees the same run; another user never gets the persona (mine: absent, all-users: 403)',
+    lr.row?.lastDraftRun?.id === manualId && lrB.status === 200 && !lrB.row && lrBall.status === 403);
+  lr = await lastRun(T, 'scope=public', pP.id);
+  const lrUserPub = await lastRun(A.token, 'scope=public', pP.id);
+  check('list: public persona without runs → null for admin; users never get lastDraftRun of a public persona (null)',
+    lr.row && lr.row.lastDraftRun === null && lrUserPub.row && lrUserPub.row.lastDraftRun === null && lrUserPub.row.writable === false);
+
   // ================================================================ schedule (idempotent per local day)
   sch = await schedulePersonaDrafts(localAt(3));
   check('before the configured hour (06:00): reason ai.not_due', sch.reason === 'ai.not_due' && sch.created === 0);
@@ -202,6 +224,19 @@ try {
   const done = await Promise.all(sTasks.map((x) => waitTask(x.id)));
   check('scheduled runs reach the real API and fail ai.key_invalid once each', done.every((x) => x.status === 'failed' && x.errorCode === 'ai.key_invalid' && x.attempts === 1),
     done.map((x) => `${x.status}/${x.errorCode}/${x.attempts}`).join(' '));
+  {
+    const sA = sTasks.find((x) => x.refId === pA.id)!;
+    const sP = sTasks.find((x) => x.refId === pP.id)!;
+    const listA = (await http('GET', '/api/personas?scope=mine', A.token)).body.personas as any[];
+    const listT = (await http('GET', '/api/personas?scope=public', T)).body.personas as any[];
+    const listU = (await http('GET', '/api/personas?scope=public', A.token)).body.personas as any[];
+    const ra = listA.find((x) => x.id === pA.id)?.lastDraftRun;
+    const rp = listT.find((x) => x.id === pP.id)?.lastDraftRun;
+    const rq = listT.find((x) => x.id === pQ.id)?.lastDraftRun;
+    check('list after the schedule: newest run wins (pA scheduled, not the older manual one), public pP for admin, pQ (skipped) null, users still null',
+      ra?.id === sA.id && ra.trigger === 'schedule' && ra.status === 'failed' && rp?.id === sP.id && rp.trigger === 'schedule' && rq === null
+      && listU.find((x) => x.id === pP.id)?.lastDraftRun === null, JSON.stringify({ ra, rp, rq }));
+  }
 
   // ================================================================ writing drafts from a hand-made structured result (no model)
   const acc = async (token: string, handle: string, personaId: string | null) =>
