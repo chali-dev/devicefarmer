@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, h, onMounted, reactive, ref, watch } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { queryParam } from '../api/query'
-import { api, codeText, errorText } from '../api/client'
+import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import { langName } from '../api/lang'
 import {
   CONTENT_STATUSES, PUBLISH_UNFINISHED,
@@ -17,7 +16,7 @@ import PageContainer from '../components/common/PageContainer.vue'
 import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import VNodes from '../components/common/VNodes'
 import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
@@ -38,26 +37,63 @@ const { t } = useI18n()
 const auth = useAuthStore()
 const platforms = usePlatformsStore()
 const router = useRouter()
+const route = useRoute()
 
 const items = ref<Content[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = reactive({ current: 1, pageSize: 20 })
-const filters = reactive({ q: '', status: queryParam<ContentStatus>(useRoute().query, 'status'), categoryId: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
+const filters = reactive({ q: '', categoryId: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
 const facets = ref<{ tags: string[] }>({ tags: [] })
 const users = ref<ManagedUser[]>([])
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`content.status.${s}`)
+
+/**
+ * 分区 tabs over the derived contents.status (no extra field). `?status=` in the URL holds the tab's csv; a narrower
+ * value (e.g. ?status=scheduled from a dashboard link) opens the tab containing it and keeps that filter until cleared.
+ */
+const TABS = {
+  all: [], draft: ['draft'], pending: ['ready', 'scheduled'], published: ['published', 'partially_published'], failed: ['failed'], archived: ['archived'],
+} as const satisfies Record<string, readonly ContentStatus[]>
+type Tab = keyof typeof TABS
+const TAB_KEYS = Object.keys(TABS) as Tab[]
+function tabFromQuery(): { tab: Tab; only: ContentStatus[] } {
+  const v = route.query.status
+  const want = (typeof v === 'string' ? v.split(',') : []).filter((x): x is ContentStatus => (CONTENT_STATUSES as string[]).includes(x))
+  if (!want.length) return { tab: 'all', only: [] }
+  const same = (a: readonly string[]) => a.length === want.length && want.every((x) => a.includes(x))
+  const exact = TAB_KEYS.find((k) => k !== 'all' && same(TABS[k]))
+  if (exact) return { tab: exact, only: [] }
+  return { tab: TAB_KEYS.find((k) => k !== 'all' && want.every((x) => (TABS[k] as readonly string[]).includes(x))) ?? 'all', only: want }
+}
+const initial = tabFromQuery()
+const tab = ref<Tab>(initial.tab)
+const onlyStatus = ref<ContentStatus[]>(initial.only)
+const byStatus = ref<Partial<Record<ContentStatus, number>>>({})
+const tabCount = (k: Tab) => (k === 'all' ? CONTENT_STATUSES : TABS[k]).reduce((n, s) => n + (byStatus.value[s] ?? 0), 0)
+const statusParam = () => (onlyStatus.value.length ? onlyStatus.value : TABS[tab.value]).join(',')
+function setTab(k: Tab) {
+  tab.value = k
+  onlyStatus.value = []
+  selectedKeys.value = []
+  void router.replace({ query: { ...route.query, status: statusParam() || undefined } })
+  search()
+}
 
 async function load() {
   loading.value = true
   try {
     const p = new URLSearchParams({ page: String(page.current), pageSize: String(page.pageSize) })
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    for (const k of ['status', 'categoryId', 'tag', 'lang', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
-    const r = await api<{ items: Content[]; total: number }>('GET', `/api/contents?${p}`)
+    if (statusParam()) p.set('status', statusParam())
+    for (const k of ['categoryId', 'tag', 'lang', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
+    const r = await api<{ items: Content[]; total: number; byStatus: Partial<Record<ContentStatus, number>> }>('GET', `/api/contents?${p}`)
     items.value = r.items
     total.value = r.total
+    byStatus.value = r.byStatus
+    const ids = new Set(r.items.map((i) => i.id))
+    selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
 async function loadFacets() {
@@ -67,7 +103,7 @@ async function loadFacets() {
   } catch (e) { message.error(errorText(e)) }
 }
 const search = () => { page.current = 1; void load() }
-function reset() { Object.assign(filters, { q: '', status: undefined, categoryId: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search(); void loadCategories() }
+function reset() { Object.assign(filters, { q: '', categoryId: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search(); void loadCategories() }
 
 // ---------------------------------------------------------------- 内容分类: public + personal (admins: every user's, or the owner filter's)
 const myId = computed(() => auth.user?.id)
@@ -349,6 +385,51 @@ function remove(c: Content) {
   })
 }
 const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishCounts[s] ?? 0) > 0)
+
+// ---------------------------------------------------------------- batch (批量操作, POST /api/contents/batch)
+type BatchAction = 'delete' | 'archive' | 'unarchive' | 'cancel-publish' | 'set-category' | 'add-tags' | 'remove-tags'
+interface BatchResult { ok: string[]; skipped: { id: string; code: string; params?: ErrorParams }[]; changed: number; cancelledTasks?: number }
+const selectedKeys = ref<string[]>([])
+const batchCategory = ref<string | undefined>()
+const batchTags = ref<string[]>([])
+const batchCategoryOptions = computed(() => [{ value: 'none', label: t('content.batch.clearCategory') }, ...categoryGroups(publicCats.value, personalCats.value)])
+/** Only the actions that make sense in the current tab. */
+const batchShows = computed(() => ({
+  archive: tab.value !== 'archived',
+  unarchive: tab.value === 'all' || tab.value === 'archived',
+  cancel: tab.value === 'all' || tab.value === 'pending' || tab.value === 'published',
+}))
+function batch(action: BatchAction) {
+  const ids = [...selectedKeys.value]
+  if (!ids.length) return
+  const titles = new Map(items.value.map((i) => [i.id, i.title]))
+  const run = async () => {
+    try {
+      const body: Record<string, unknown> = { ids, action }
+      if (action === 'set-category') body.categoryId = batchCategory.value === 'none' ? null : batchCategory.value
+      if (action === 'add-tags' || action === 'remove-tags') body.tags = batchTags.value
+      const r = await api<BatchResult>('POST', '/api/contents/batch', body)
+      const done = action === 'cancel-publish' ? t('content.batch.doneCancel', { tasks: r.cancelledTasks ?? 0, n: r.ok.length }) : t('content.batch.done', { n: r.ok.length })
+      if (r.skipped.length) {
+        Modal.warning({
+          title: t('content.batch.skippedTitle', { ok: r.ok.length, skipped: r.skipped.length }),
+          content: h('div', [
+            h('p', done),
+            h('ul', { style: 'padding-inline-start: 18px; margin: 0; max-height: 240px; overflow: auto' },
+              r.skipped.map((x) => h('li', `${titles.get(x.id) ?? x.id}: ${codeText(x.code, x.params, x.code)}`))),
+          ]),
+        })
+      } else message.success(done)
+      selectedKeys.value = []
+      void load(); void loadFacets(); void loadCategories()
+    } catch (e) { message.error(errorText(e)) }
+  }
+  const n = ids.length
+  if (action === 'delete') confirmDanger({ title: t('content.batch.confirmDelete', { n }), content: t('content.batch.deleteHint'), onOk: run })
+  else if (action === 'cancel-publish') confirmDanger({ title: t('content.batch.confirmCancel', { n }), content: t('content.batch.cancelHint'), okText: t('content.batch.cancelPublish'), onOk: run })
+  else if (action === 'archive') confirmAction({ title: t('content.batch.confirmArchive', { n }), content: t('content.batch.archiveHint'), onOk: run })
+  else void run()
+}
 </script>
 
 <template>
@@ -362,9 +443,6 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
     <a-card :bordered="false">
       <SearchBar :loading="loading" @reset="reset" @refresh="load">
         <a-input-search v-model:value="filters.q" :placeholder="t('content.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
-        <a-select v-model:value="filters.status" :placeholder="t('content.colStatus')" allow-clear style="width: 140px" @change="search">
-          <a-select-option v-for="s in CONTENT_STATUSES" :key="s" :value="s">{{ statusText(s) }}</a-select-option>
-        </a-select>
         <a-select v-model:value="filters.categoryId" :placeholder="t('content.colCategory')" allow-clear show-search option-filter-prop="label" style="width: 160px"
           :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
@@ -373,7 +451,30 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
       </SearchBar>
 
+      <a-tabs :active-key="tab" size="small" class="status-tabs" @change="(k: string | number) => setTab(k as Tab)">
+        <a-tab-pane v-for="k in TAB_KEYS" :key="k">
+          <template #tab>{{ t(`content.tabs.${k}`) }} <span class="tab-count">{{ tabCount(k) }}</span></template>
+        </a-tab-pane>
+      </a-tabs>
+      <a-tag v-if="onlyStatus.length" closable class="only-tag" @close="setTab(tab)">{{ t('content.onlyStatus', { status: onlyStatus.map(statusText).join(' / ') }) }}</a-tag>
+
+      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
+        <span>{{ t('content.selected', { n: selectedKeys.length }) }}</span>
+        <a-select v-model:value="batchCategory" :placeholder="t('content.batch.category')" size="small" show-search option-filter-prop="label" style="width: 160px"
+          :dropdown-style="{ minWidth: '220px' }" :options="batchCategoryOptions" />
+        <a-button size="small" :disabled="!batchCategory" @click="batch('set-category')">{{ t('content.batch.setCategory') }}</a-button>
+        <a-select v-model:value="batchTags" mode="tags" size="small" :placeholder="t('content.batch.tags')" style="min-width: 160px"
+          :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
+        <a-button size="small" :disabled="!batchTags.length" @click="batch('add-tags')">{{ t('content.batch.addTags') }}</a-button>
+        <a-button size="small" :disabled="!batchTags.length" @click="batch('remove-tags')">{{ t('content.batch.removeTags') }}</a-button>
+        <a-button v-if="batchShows.archive" size="small" @click="batch('archive')">{{ t('content.batch.archive') }}</a-button>
+        <a-button v-if="batchShows.unarchive" size="small" @click="batch('unarchive')">{{ t('content.batch.unarchive') }}</a-button>
+        <a-button v-if="batchShows.cancel" size="small" danger @click="batch('cancel-publish')">{{ t('content.batch.cancelPublish') }}</a-button>
+        <a-button size="small" danger @click="batch('delete')">{{ t('common.delete') }}</a-button>
+      </a-space>
+
       <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
+        :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" @change="onTableChange">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'title'">
@@ -601,4 +702,8 @@ const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishC
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 .new-category { display: flex; gap: 4px; padding: 4px 8px; }
+.status-tabs { margin-bottom: 4px; }
+.tab-count { color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
+.only-tag { margin-bottom: var(--cp-gap); }
+.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
 </style>

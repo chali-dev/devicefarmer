@@ -315,6 +315,18 @@ try {
     const got = await cl(T, `status=${s}&q=demo`);
     check(`status=${s} filter (admin, all owners)`, eqSet(ctitles(got), CONTENTS.filter((c) => c.stage === s && !withPublish.has(c.title)).map((c) => c.title)), sorted(ctitles(got)));
   }
+  // 分区 tabs: csv status filter + byStatus (counts under the other filters, never the status one).
+  {
+    const tab = await cl(T, 'status=draft,archived&q=demo');
+    const want = aC.filter((x) => x.status === 'draft' || x.status === 'archived');
+    check('status=draft,archived (csv) = draft + archived demo contents', eqSet(ctitles(tab), ctitles(want)), sorted(ctitles(tab)));
+    const byA = (await http('GET', '/api/contents?q=demo&status=published', T)).body.byStatus as Record<string, number>;
+    const byU = (await http('GET', '/api/contents?q=demo', U)).body.byStatus as Record<string, number>;
+    const tally = (xs: any[]) => xs.reduce((m: Record<string, number>, x) => ({ ...m, [x.status]: (m[x.status] ?? 0) + 1 }), {});
+    const same = (b: Record<string, number>, xs: any[]) => Object.entries(tally(xs)).every(([s, n]) => b[s] === n) && Object.values(b).reduce((a, n) => a + n, 0) === xs.length;
+    check('byStatus (admin, q=demo, status filter ignored) matches the list', same(byA, aC), JSON.stringify(byA));
+    check('byStatus (demo-user) counts only its own contents', same(byU, uC), JSON.stringify(byU));
+  }
   // List publish summary (媒体号 / 发布时间), recomputed here from the DB rows: accounts of non-cancelled tasks
   // (users: only tasks whose user_id is themselves), next due time of an unfinished task, latest published time.
   {

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -6,7 +6,8 @@ import { CONTENT_STATUSES, POST_TYPES } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { distribute } from '../publish/publish.js';
-import { toPublishItems } from '../publish/routes.js';
+import { csv, toPublishItems } from '../publish/routes.js';
+import { BATCH_ACTIONS, BATCH_MAX, batchContents } from './batch.js';
 import {
   assertNoUnfinishedPublish, assertTargetAccounts, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, setContentTargets,
   toContentItems, visibleContent,
@@ -54,7 +55,8 @@ const CreateBody = z.object({ ...Editable, ownerId: z.string().uuid().optional()
 const UpdateBody = z.object({ ...Editable, title: Editable.title.optional() });
 
 const ListQuery = z.object({
-  status: z.enum(CONTENT_STATUSES).optional(),
+  /** One status or a csv (list tabs: draft | ready,scheduled | published,partially_published | failed | archived). */
+  status: csv(z.enum(CONTENT_STATUSES)).optional(),
   /** category id, or 'none' (未分类) */
   categoryId: z.union([z.literal('none'), z.string().uuid()]).optional(),
   tag: z.string().trim().max(32).optional(),
@@ -103,7 +105,6 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/contents', { schema: { querystring: ListQuery } }, async (req) => {
     const q = req.query;
     const where: (SQL | undefined)[] = [ownerWhere(req.user, q.ownerId)];
-    if (q.status) where.push(eq(c.status, q.status));
     if (q.categoryId === 'none') where.push(isNull(c.categoryId));
     else if (q.categoryId) where.push(eq(c.categoryId, q.categoryId));
     if (q.tag) {
@@ -111,10 +112,15 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     if (q.lang) where.push(or(eq(c.lang, q.lang), sql`exists (select 1 from content_translations x where x.content_id = ${c.id} and x.lang = ${q.lang})`)!);
     if (q.q) where.push(or(ilike(c.title, like(q.q)), ilike(c.body, like(q.q)))!);
-    const cond = and(...where);
-    const [{ total } = { total: 0 }] = await db.select({ total: sql<number>`count(*)::int` }).from(c).where(cond);
-    const rows = await db.select().from(c).where(cond).orderBy(desc(c.updatedAt), desc(c.id)).limit(q.pageSize).offset((q.page - 1) * q.pageSize);
-    return { items: await toContentItems(rows, req.user), total, page: q.page, pageSize: q.pageSize };
+    const cond = and(...where, q.status?.length ? inArray(c.status, q.status) : undefined);
+    // byStatus: counts per status under every filter except the status one (the list tabs).
+    const [[{ total } = { total: 0 }], rows, counts] = await Promise.all([
+      db.select({ total: sql<number>`count(*)::int` }).from(c).where(cond),
+      db.select().from(c).where(cond).orderBy(desc(c.updatedAt), desc(c.id)).limit(q.pageSize).offset((q.page - 1) * q.pageSize),
+      db.select({ s: c.status, n: sql<number>`count(*)::int` }).from(c).where(and(...where)).groupBy(c.status),
+    ]);
+    const byStatus = Object.fromEntries(CONTENT_STATUSES.map((s) => [s, counts.find((x) => x.s === s)?.n ?? 0]));
+    return { items: await toContentItems(rows, req.user), total, page: q.page, pageSize: q.pageSize, byStatus };
   });
 
   /** Tags in use (filter suggestions); categories come from /api/content-categories. */
@@ -148,6 +154,26 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     if (req.audit) req.audit.extra = { id: row.id, media: media.length, ...(category ? { category: category.name } : {}) };
     reply.code(201);
     return { content: (await toContentItems([row], req.user))[0] };
+  });
+
+  /**
+   * Batch actions (批量操作) on visible contents: an invisible id fails the whole batch with 404; refused rows are
+   * returned in `skipped` with their code while the others go through (see batch.ts).
+   */
+  app.post('/api/contents/batch', {
+    schema: {
+      body: z.object({
+        ids: z.array(z.string().uuid()).min(1).max(BATCH_MAX),
+        action: z.enum(BATCH_ACTIONS),
+        /** set-category: null clears */
+        categoryId: z.string().uuid().nullable().optional(),
+        tags: Tags.optional(),
+      }),
+    },
+  }, async (req) => {
+    const res = await batchContents(req.user, req.body);
+    if (req.audit) req.audit.extra = { ok: res.ok.length, skipped: res.skipped.length, changed: res.changed, ...(res.cancelledTasks !== undefined ? { cancelledTasks: res.cancelledTasks } : {}) };
+    return res;
   });
 
   app.get('/api/contents/:id', { schema: { params: Id } }, async (req) => {
