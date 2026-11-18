@@ -6,6 +6,7 @@ import { db, schema } from '../../db/index.js';
 import { badRequest, unauthorized } from '../../lib/errors.js';
 import { auditRequest } from '../audit/audit.js';
 import { captchaEnabled, checkCaptcha, createChallenge, isCaptchaError } from './captcha.js';
+import { effectiveMenus } from './role-menus.js';
 
 /** Public profile of a user (never includes passwordHash). */
 const profileColumns = {
@@ -72,10 +73,14 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     const token = app.jwt.sign({ sub: u.id });
     auditRequest(req, { action: 'auth.login', userId: u.id, username: u.username, target: u.username, targetId: u.id, status: 200 });
-    return { token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email, builtin: u.builtin } };
+    return {
+      token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email, builtin: u.builtin },
+      menus: await effectiveMenus({ id: u.id, username: u.username, role: u.role }),
+    };
   });
 
-  app.get('/api/auth/me', { preHandler: app.authenticate }, async (req) => ({ user: await loadProfile(req.user.id) }));
+  // `menus` = the sidebar keys this user may open (角色菜单权限, role-menus.ts); the web reads it once.
+  app.get('/api/auth/me', { preHandler: app.authenticate }, async (req) => ({ user: await loadProfile(req.user.id), menus: await effectiveMenus(req.user) }));
 
   app.patch('/api/auth/me', {
     preHandler: app.authenticate,

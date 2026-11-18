@@ -6,6 +6,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { forbidden, unauthorized } from '../../lib/errors.js';
 import type { AuthUser } from './rbac.js';
+import { assertMenuAllowed } from './role-menus.js';
 
 declare module '@fastify/jwt' {
   interface FastifyJWT { payload: { sub: string }; user: AuthUser }
@@ -43,6 +44,8 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { throw unauthorized(); }
     req.user = await loadUser(payload.sub);
+    // 角色菜单权限 (role-menus.ts): a menu switched off for users closes its own endpoints.
+    await assertMenuAllowed(req.user, req.method, req.url);
   });
 
   app.decorate('requireAdmin', async (req: FastifyRequest) => {
