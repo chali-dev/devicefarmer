@@ -19,6 +19,7 @@ import { and, eq, gte, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -103,6 +104,8 @@ try {
     if (r.status !== 201) throw new Error(`account create failed ${r.status} ${r.text}`);
     // login/account status are written by the automatic account check (风控) since 2026-11-18, not by the API: set them like that check would
     if (body.loginStatus || body.accountStatus) await sqlClient`update social_accounts set login_status = coalesce(${(body.loginStatus as string) ?? null}, login_status), account_status = coalesce(${(body.accountStatus as string) ?? null}, account_status) where id = ${r.body.account.id}`;
+    // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+    if (typeof body.instanceId === 'string') await linkAccount(r.body.account.id, body.instanceId);
     return r.body.account as { id: string; handle: string };
   };
   const igOn = await acc(A, { instanceId: DON!.id, loginStatus: 'logged_in' });

@@ -28,6 +28,11 @@ export const RiskDeviceInput = z.object({
   feedPosts: z.number().int().min(1).max(10),
   /** Top-level comments read per post (0 = counts only). */
   feedCommentsPerPost: z.number().int().min(0).max(100),
+  /**
+   * 自动发现 (social/sync.ts): the hourly tick reads `dumpsys account` on running phones; an Instagram account
+   * not yet recorded is synced for the phone's only assigned user (else a notice). false = off.
+   */
+  accountDiscovery: z.boolean(),
 });
 export type RiskDeviceSettings = z.infer<typeof RiskDeviceInput>;
 
@@ -40,6 +45,7 @@ export const riskDefaults = (): RiskDeviceSettings => ({
   feedCollectHours: 24,
   feedPosts: 3,
   feedCommentsPerPost: 30,
+  accountDiscovery: true,
 });
 
 let cache: { at: number; value: RiskDeviceSettings } | null = null;

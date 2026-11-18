@@ -18,6 +18,7 @@ import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -89,8 +90,10 @@ try {
   const [D0, D1, D2] = fakes as [typeof fakes[number], typeof fakes[number], typeof fakes[number]];
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: fakeIds });
   const acc = async (instanceId: string | null) => {
-    const r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `dpc_${tag}_${randomBytes(2).toString('hex')}`, ...(instanceId ? { instanceId } : {}) });
+    const r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `dpc_${tag}_${randomBytes(2).toString('hex')}` });
     if (r.status !== 201) throw new Error(`account create failed ${r.status} ${r.text}`);
+    // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+    if (instanceId) await linkAccount(r.body.account.id, instanceId);
     return r.body.account as { id: string; handle: string };
   };
   const a0 = await acc(D0.id);

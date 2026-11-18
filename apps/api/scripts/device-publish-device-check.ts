@@ -36,6 +36,7 @@ import { parseClipParcel } from '../src/modules/publish/ig-publish.js';
 import { activeStorage } from '../src/modules/settings/storage.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
@@ -130,7 +131,9 @@ try {
   }).returning();
   extRows.push({ source: src!.id, instance: dev!.id });
   await db.insert(schema.instanceGrants).values({ userId: userIds[0]!, instanceId: dev!.id }).onConflictDoNothing();
-  const sa = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', handle: OWN_HANDLE, externalId: OWN_ID, ownerId: userIds[0], instanceId: dev!.id });
+  const sa = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', handle: OWN_HANDLE, externalId: OWN_ID, ownerId: userIds[0] });
+  // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+  if (sa.body?.account?.id) await linkAccount(sa.body.account.id, dev!.id);
   if (sa.status !== 201) throw new Error(`social create: ${sa.text}`);
   const own = sa.body.account;
 

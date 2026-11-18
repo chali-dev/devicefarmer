@@ -33,6 +33,7 @@ import { commentKey, permalinkOf } from '../src/modules/feed/ig-ui.js';
 import { activeStorage } from '../src/modules/settings/storage.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -103,8 +104,10 @@ try {
   const [d1, d2, d3] = devs as [typeof devs[0], typeof devs[0], typeof devs[0]];
   for (const [u, d] of [[uA, d1], [uB, d2], [uA, d3]] as const) await db.insert(schema.instanceGrants).values({ userId: u, instanceId: d.id }).onConflictDoNothing();
   const mk = async (owner: string, handle: string, instanceId: string | null, externalId?: string) => {
-    const x = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle, ownerId: owner, instanceId, ...(externalId ? { externalId } : {}) });
+    const x = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle, ownerId: owner, ...(externalId ? { externalId } : {}) });
     if (x.status !== 201) throw new Error(`account: ${x.text}`);
+    // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+    if (instanceId) await linkAccount(x.body.account.id, instanceId);
     return x.body.account as { id: string };
   };
   const accA = await mk(uA, `fd_a_${tag}`, d1.id, '1234567');

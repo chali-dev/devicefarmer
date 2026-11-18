@@ -53,6 +53,7 @@ import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly 
 import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels
 import { riskRoutes } from './modules/risk/routes.js'; // 风控: device pace, device halts, risk events
 import { scheduleAccountDeviceChecks } from './modules/social/check.js'; // 社交号自动检测 (task account-device-check)
+import { discoverDeviceAccounts } from './modules/social/sync.js'; // 从云手机同步 + 自动发现 (task account-device-sync)
 import { feedRoutes } from './modules/feed/routes.js'; // 帖子与评论 (account feed): feed API, collect now, post comments, reply evidence
 import { scheduleFeedCollects } from './modules/feed/collect.js'; // 帖子与评论采集 (task feed-collect)
 import { cleanupUploads } from './modules/apps/package.js';
@@ -168,6 +169,7 @@ async function startBackground(): Promise<void> {
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
+    void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
     alertsHourly(app.log);
   };
@@ -178,6 +180,7 @@ async function startBackground(): Promise<void> {
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
+    void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
     alertsHourly(app.log);
   }, 10_000);

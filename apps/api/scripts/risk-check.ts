@@ -22,6 +22,7 @@ import { recordRiskEvent } from '../src/modules/risk/events.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { scheduleAccountDeviceChecks } from '../src/modules/social/check.js';
 import { withCaptcha } from './lib/login.js';
+import { tryLink } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -105,12 +106,16 @@ try {
   check('账号上限: non-admin PUT /api/social/settings → 403', r.status === 403);
   r = await http('PUT', '/api/social/settings', T, { limits: { instagram: 1 } });
   check('账号上限: admin sets instagram = 1', r.status === 200 && r.body.limits.instagram === 1, r.text);
-  const acc1 = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: `rk_${tag}_a`, instanceId: D2.id, ownerId: userId });
-  const acc2 = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: `rk_${tag}_b`, instanceId: D2.id, ownerId: userId });
-  check('账号上限 enforced: second IG account on the device → 409 social.device_limit', acc1.status === 201 && acc2.status === 409 && acc2.body.code === 'social.device_limit', acc2.text);
+  // device link: read only in the API since 2026-11-18; linked here with the sync's rules (lib/social-link.ts tryLink)
+  const acc1c = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: `rk_${tag}_a`, ownerId: userId });
+  const acc2 = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: `rk_${tag}_b`, ownerId: userId });
+  const l1 = await tryLink(acc1c.body.account.id, D2.id);
+  const l2 = await tryLink(acc2.body.account.id, D2.id);
+  check('账号上限 enforced: second IG account on the device → social.device_limit', acc1c.status === 201 && l1 === null && l2 === 'social.device_limit', `${l1} ${l2}`);
   await http('PUT', '/api/social/settings', T, { limits: { instagram: 2 } });
-  const acc2b = await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: `rk_${tag}_b`, instanceId: D2.id, ownerId: userId });
-  check('账号上限 raised to 2 → the second account links', acc2b.status === 201, acc2b.text);
+  const l2b = await tryLink(acc2.body.account.id, D2.id);
+  check('账号上限 raised to 2 → the second account links', l2b === null, String(l2b));
+  const acc1 = await http('GET', `/api/social/accounts/${acc1c.body.account.id}`, T);
   const accId = acc1.body.account.id as string;
   check('social account: automatic check supported (IG + device), no manual status fields accepted',
     acc1.body.account.autoCheckUnsupported === null && acc1.body.account.loginStatus === 'unknown', JSON.stringify(acc1.body.account).slice(0, 200));
@@ -130,7 +135,7 @@ try {
   const alertKey = `${D1.id}:instagram`;
   const [st1] = await db.select().from(schema.alertStates).where(and(eq(schema.alertStates.kind, 'collector.blocked'), eq(schema.alertStates.key, alertKey)));
   check('halt raised collector.blocked (alert state active)', st1?.active === true, JSON.stringify(st1));
-  r = await http('POST', `/api/social/accounts/${(acc2b.body.account.id as string)}/check`, T);
+  r = await http('POST', `/api/social/accounts/${(acc2.body.account.id as string)}/check`, T);
   check('立即检测 refused on a device without the halt? (D2 not halted: queued 202)', r.status === 202 && !!r.body.task?.id, r.text);
   if (r.body?.task?.id) extraTaskIds.push(r.body.task.id);
   // An account on the halted device: refused with the coded reason.
@@ -174,11 +179,11 @@ try {
   check('schedule off (accountCheckHours null) → nothing created', s0.hours === null && s0.created === 0, JSON.stringify(s0));
   await http('PUT', '/api/risk/settings', T, { accountCheckHours: 6 });
   const s1 = await scheduleAccountDeviceChecks(new Date(), 6 * 3600_000);
-  const sched = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'account-device-check'), inArray(schema.tasks.refId, [accId, acc2b.body.account.id]), like(schema.tasks.idempotencyKey, 'acct-check:%')));
+  const sched = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'account-device-check'), inArray(schema.tasks.refId, [accId, acc2.body.account.id]), like(schema.tasks.idempotencyKey, 'acct-check:%')));
   extraTaskIds.push(...sched.map((x) => x.id));
   const s2 = await scheduleAccountDeviceChecks(new Date(), 6 * 3600_000);
   check('schedule 6 h: one check per account on a running, not halted device (account on the stopped device skipped), key acct-check:<id>:<slot>',
-    s1.hours === 6 && sched.length === 1 && sched[0]!.refId === acc2b.body.account.id && /^acct-check:[0-9a-f-]{36}:\d+$/.test(sched[0]!.idempotencyKey ?? '') && (sched[0]!.payload as any)?.scheduled === true && s1.skipped >= 1,
+    s1.hours === 6 && sched.length === 1 && sched[0]!.refId === acc2.body.account.id && /^acct-check:[0-9a-f-]{36}:\d+$/.test(sched[0]!.idempotencyKey ?? '') && (sched[0]!.payload as any)?.scheduled === true && s1.skipped >= 1,
     JSON.stringify({ s1, keys: sched.map((x) => x.idempotencyKey) }));
   check('schedule run twice in the same window → nothing new (idempotent)', s2.created === 0, JSON.stringify(s2));
 

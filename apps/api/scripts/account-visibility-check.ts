@@ -19,6 +19,8 @@ import { db, schema, sqlClient } from '../src/db/index.js';
 import { seedStatsDay } from './lib/analytics-seed.js';
 import { accountChecked } from '../src/modules/notify/triggers.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
+import { applySync } from '../src/modules/social/sync.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -108,8 +110,10 @@ try {
   };
   const a = await seed('a', A);
   const b = await seed('b', B);
-  let r = await http('PUT', `/api/social/accounts/${b.account}`, T, { instanceId: D1.id });
-  check('setup: admin links B\'s account to D1 (A has a grant on D1, B none)', r.status === 200 && r.body.account.instance?.id === D1.id, r.text);
+  // The device link is read only in the API (set by 从云手机同步); written here with the sync's rules (lib/social-link.ts).
+  await linkAccount(b.account, D1.id);
+  let r = await http('GET', `/api/social/accounts/${b.account}`, T);
+  check('setup: B\'s account linked to D1 (A has a grant on D1, B none)', r.status === 200 && r.body.account.instance?.id === D1.id, r.text);
 
   const later = new Date(Date.now() + 2 * 86400_000).toISOString();
   const dA = await http('POST', `/api/contents/${a.content}/distribute`, A, { targets: [{ accountId: a.account, scheduledAt: later }] });
@@ -196,9 +200,12 @@ try {
   await deny('set B\'s personal persona on own account', 'PUT', `/api/social/accounts/${a.account}`, { personaId: b.persona }, [400, 404]);
   await deny('DELETE B\'s account', 'DELETE', `/api/social/accounts/${b.account}`);
   // A second instagram account of A on D1: refused by the per-device limit, which counts B's account (open question, see report).
-  r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `ava_${tag}_second`, instanceId: D1.id });
-  check('A: device limit on D1 (counts B\'s account) answers without B\'s handle', !leaks(r.text).length, r.text);
-  console.log(`  (info) linking a 2nd instagram account of A to D1 → ${r.status} ${r.body?.code ?? ''}`);
+  // 从云手机同步 of a 2nd instagram account of A on D1 (DB part of the sync; the phone read is covered elsewhere).
+  const [d1Row] = await db.select().from(schema.instances).where(eq(schema.instances.id, D1.id));
+  const so = await applySync({ inst: d1Row!, ownerId: uA, actor: null, handle: `ava_${tag}_second`, displayName: null, deviceIds: [] });
+  check('A: sync on D1 hits the device limit (counts B\'s account) without B\'s handle', so.result === 'limit_reached' && !leaks(JSON.stringify(so)).length, JSON.stringify(so));
+  const st = await applySync({ inst: d1Row!, ownerId: uA, actor: null, handle: `avb_${tag}_main`, displayName: null, deviceIds: [] });
+  check('A: sync of B\'s handle → taken, nothing about B returned', st.result === 'taken' && Object.keys(st).join() === 'result', JSON.stringify(st));
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `avb_${tag}_main` });
   console.log(`  (info) creating B's handle as A → ${r.status} ${r.body?.code ?? ''} (handles are unique across owners)`);
 

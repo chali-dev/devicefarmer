@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
+import { tryLink } from './lib/social-link.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -100,36 +101,42 @@ try {
   check('admin creates an account for user B', r.status === 201 && r.body.account.userId === uB && r.body.account.ownerName === `scb${tag}`);
   const b1: string = r.body.account.id;
 
-  // ---------------------------------------------------------------- device links: grants + limit
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { instanceId: D2.id });
-  check('user A: link to a device without grant → 403', r.status === 403 && r.body.code === 'auth.no_instance_access', r.text);
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { instanceId: '00000000-0000-4000-8000-000000000000' });
-  check('link to a missing device → 404', r.status === 404 && r.body.code === 'instances.not_found', r.text);
+  // ---------------------------------------------------------------- device links: read only in the API, set by 从云手机同步
+  // Since 2026-11-18 the account API ignores instanceId (zod strips it; the link comes from the sync, see
+  // account-sync-check.ts). Placeholder devices have no phone, so links below are written with the sync's own rules
+  // (scripts/lib/social-link.ts: per (device, platform) limit + advisory lock, link log "synced from device").
   r = await http('PUT', `/api/social/accounts/${a1}`, A, { instanceId: D1.id });
-  check('user A: link to granted device', r.status === 200 && r.body.account.instance?.id === D1.id && r.body.account.instance.accessible === true, r.text);
+  check('PUT instanceId is ignored (read only): 200, still unlinked', r.status === 200 && r.body.account.instance === null && r.body.account.instanceId === null, r.text);
+  r = await http('PUT', `/api/social/accounts/${a1}`, T, { instanceId: D2.id });
+  check('admin PUT instanceId is ignored too', r.status === 200 && r.body.account.instanceId === null, r.text);
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: h('Second'), instanceId: D1.id });
-  check('second instagram account on the same device → 409 social.device_limit', r.status === 409 && r.body.code === 'social.device_limit' && r.body.params?.limit === 1, r.text);
-  check('refused create left no row', (await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.handle, h('Second')))).length === 0);
-  r = await http('PUT', `/api/social/accounts/${y1}`, A, { instanceId: D1.id });
-  check('a youtube account on the same device is allowed (per-platform limit)', r.status === 200);
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { instanceId: D1.id, notes: 'n1' });
-  check('re-saving the same link does not count itself', r.status === 200);
+  check('POST with instanceId → 201, created unlinked', r.status === 201 && r.body.account.instanceId === null, r.text);
+  const second: string = r.body.account?.id;
+  check('no link log for the ignored instanceId', !(await db.select().from(schema.socialAccountLogs).where(eq(schema.socialAccountLogs.accountId, a1))).some((l) => l.action === 'link'));
+  check('sync link of A\'s account to its granted device', (await tryLink(a1, D1.id)) === null);
+  r = await http('GET', `/api/social/accounts/${a1}`, A);
+  check('the link shows (device accessible to the owner)', r.status === 200 && r.body.account.instance?.id === D1.id && r.body.account.instance.accessible === true, r.text);
+  check('second instagram account on the same device → social.device_limit', (await tryLink(second, D1.id)) === 'social.device_limit');
+  await http('DELETE', `/api/social/accounts/${second}`, A);
+  check('a youtube account on the same device is allowed (per-platform limit)', (await tryLink(y1, D1.id)) === null);
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { notes: 'n1', instanceId: null });
+  check('editing a linked account keeps the link (instanceId null ignored)', r.status === 200 && r.body.account.instance?.id === D1.id);
 
   // Race: 6 concurrent links of different instagram accounts to one device, limit 1 → exactly 1 wins.
   const raceIds: string[] = [];
   for (let i = 0; i < 6; i++) raceIds.push((await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: h(`race${i}`) })).body.account.id);
-  let rs = await Promise.all(raceIds.map((id) => http('PUT', `/api/social/accounts/${id}`, T, { instanceId: D3.id })));
+  let rs = await Promise.all(raceIds.map((id) => tryLink(id, D3.id)));
   let [{ n } = { n: 0 }] = await sqlClient`select count(*)::int as n from social_accounts where instance_id = ${D3.id} and platform = 'instagram'` as any;
-  check('concurrent links (limit 1): exactly 1 succeeds, others 409', rs.filter((x) => x.status === 200).length === 1 && rs.filter((x) => x.status === 409 && x.body.code === 'social.device_limit').length === 5 && n === 1,
-    `${rs.map((x) => x.status)} n=${n}`);
-  // Race: 6 concurrent creates with a device, limit 3 → exactly 3.
+  check('concurrent links (limit 1): exactly 1 succeeds, others social.device_limit', rs.filter((x) => x === null).length === 1 && rs.filter((x) => x === 'social.device_limit').length === 5 && n === 1, `${rs} n=${n}`);
+  // Race: 6 concurrent links, limit 3 → exactly 3.
   await http('PUT', '/api/social/settings', T, { limits: { instagram: 3 } });
-  rs = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: h(`rc${i}`), instanceId: D4.id })));
+  const rcIds: string[] = [];
+  for (let i = 0; i < 6; i++) rcIds.push((await http('POST', '/api/social/accounts', T, { platform: 'instagram', handle: h(`rc${i}`) })).body.account.id);
+  rs = await Promise.all(rcIds.map((id) => tryLink(id, D4.id)));
   [{ n } = { n: 0 }] = await sqlClient`select count(*)::int as n from social_accounts where instance_id = ${D4.id} and platform = 'instagram'` as any;
-  check('concurrent creates (limit 3): exactly 3 succeed', rs.filter((x) => x.status === 201).length === 3 && n === 3, `${rs.map((x) => x.status)} n=${n}`);
+  check('concurrent links (limit 3): exactly 3 succeed', rs.filter((x) => x === null).length === 3 && n === 3, `${rs} n=${n}`);
   await http('PUT', '/api/social/settings', T, { limits: { instagram: 1 } });
-  r = await http('PUT', `/api/social/accounts/${b1}`, T, { instanceId: D1.id });
-  check('admin may link any owner\'s account to any device', r.status === 200 && r.body.account.instance?.id === D1.id);
+  check('an account of B linked to a device B has no grant on', (await tryLink(b1, D1.id)) === null);
   r = await http('GET', `/api/social/accounts/${b1}`, B);
   check('owner without a grant sees the device as not accessible and no proxy', r.status === 200 && r.body.account.instance?.accessible === false && r.body.account.proxy === null);
 
@@ -140,25 +147,27 @@ try {
   check('admin: unknown platform → 400', r.status === 400);
   r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: ['facebook', 'instagram', 'facebook'] });
   check('admin: allow instagram + facebook (deduped, registry order)', r.status === 200 && JSON.stringify(r.body.instance.allowedPlatforms) === '["instagram","facebook"]', r.text);
-  r = await http('POST', '/api/social/accounts', B, { platform: 'tiktok', handle: h('tt1'), instanceId: D2.id });
-  check('link a turned-off platform → 409 social.platform_disabled', r.status === 409 && r.body.code === 'social.platform_disabled' && r.body.params?.platform === 'TikTok', r.text);
-  check('refused create left no row', (await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.handle, h('tt1')))).length === 0);
-  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb1'), instanceId: D2.id });
-  check('facebook account on a device allowing facebook → 201, profile URL derived',
-    r.status === 201 && r.body.account.instance?.id === D2.id && r.body.account.profileUrl === `https://www.facebook.com/${h('fb1')}`, r.text);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'tiktok', handle: h('tt1') });
+  const tt1: string = r.body.account?.id;
+  check('link a turned-off platform → social.platform_disabled, stays unlinked', (await tryLink(tt1, D2.id)) === 'social.platform_disabled'
+    && (await http('GET', `/api/social/accounts/${tt1}`, B)).body.account.instanceId === null);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb1') });
   const fb1: string = r.body.account?.id;
+  check('facebook account → profile URL derived; link to a device allowing facebook', r.status === 201 && r.body.account.profileUrl === `https://www.facebook.com/${h('fb1')}` && (await tryLink(fb1, D2.id)) === null, r.text);
   r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: [] });
   check('admin: turn every platform off while an account is linked → 200', r.status === 200 && JSON.stringify(r.body.instance.allowedPlatforms) === '[]', r.text);
   r = await http('GET', `/api/social/accounts/${fb1}`, B);
   check('already linked account stays linked', r.status === 200 && r.body.account.instance?.id === D2.id);
   r = await http('PUT', `/api/social/accounts/${fb1}`, B, { notes: 'still here' });
   check('editing the linked account (same device) is still allowed', r.status === 200, r.text);
-  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb2'), instanceId: D2.id });
-  check('new link after turning it off → 409', r.status === 409 && r.body.code === 'social.platform_disabled', r.text);
+  r = await http('POST', '/api/social/accounts', B, { platform: 'facebook', handle: h('fb2') });
+  const fb2: string = r.body.account?.id;
+  check('new link after turning it off → social.platform_disabled', (await tryLink(fb2, D2.id)) === 'social.platform_disabled');
   r = await http('PUT', `/api/instances/${D2.id}/platforms`, T, { platforms: null });
   check('admin: back to all platforms (null)', r.status === 200 && r.body.instance.allowedPlatforms === null, r.text);
-  r = await http('POST', '/api/social/accounts', B, { platform: 'tiktok', handle: h('tt2'), instanceId: D2.id });
-  check('null = every platform allowed again', r.status === 201, r.text);
+  check('null = every platform allowed again', (await tryLink(tt1, D2.id)) === null);
+  for (const id of [fb2, tt1]) if (id) await http('DELETE', `/api/social/accounts/${id}`, T);
+  r = { status: 0, body: { account: { id: fb1 } }, text: '' };
   for (const id of [fb1, r.body.account?.id]) if (id) await http('DELETE', `/api/social/accounts/${id}`, T);
   await new Promise((res) => setTimeout(res, 500));
   const pa = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'device.platforms'), eq(schema.auditLogs.targetId, D2.id)));
@@ -323,7 +332,7 @@ try {
   check('batch set persona (only changed rows count)', r.status === 200 && r.body.changed === 1);
   r = await http('POST', '/api/social/accounts/batch', A, { ids: [y1], action: 'unlink' });
   check('batch unlink', r.status === 200 && r.body.changed === 1 && (await logsOf(A, y1)).some((l) => l.action === 'unlink' && l.fromValue === D1.name));
-  r = await http('PUT', `/api/social/accounts/${y1}`, A, { instanceId: D1.id });
+  await tryLink(y1, D1.id); // re-link (as a sync would)
 
   // ---------------------------------------------------------------- persona deletion
   r = await http('DELETE', `/api/personas/${gA}`, A);
@@ -341,7 +350,8 @@ try {
     check(`device deletion: ${who} unlinked + system log (from ${D1.name})`, acc.instanceId === null && !!ul && ul.fromValue === D1.name && ul.actorId === null);
   }
   // FK backstop for a raw delete
-  const rawAcc = (await http('POST', '/api/social/accounts', T, { platform: 'tiktok', handle: h('raw'), instanceId: D2.id })).body.account.id;
+  const rawAcc = (await http('POST', '/api/social/accounts', T, { platform: 'tiktok', handle: h('raw') })).body.account.id;
+  await tryLink(rawAcc, D2.id);
   await db.delete(schema.instances).where(eq(schema.instances.id, D2.id));
   fakeIds.splice(fakeIds.indexOf(D2.id), 1);
   const [raw] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, rawAcc));

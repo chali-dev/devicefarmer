@@ -26,6 +26,12 @@ export const ALERT_KINDS = {
    * successful delivery or test. In-app only and to admins only, so a broken channel never alerts itself.
    * Params: name[, code].
    */
+  /**
+   * 自动发现 (social/sync.ts) found an Instagram account on a cloud phone that no social account records, and
+   * the phone is assigned to several users or to nobody (with exactly one it is synced for that user instead).
+   * In-app only (admins + the phone's users). Params: name (device), platform, count, reason multiple_users|no_user.
+   */
+  'account.discovered': { severity: 'info', refType: 'instance', recoverable: false, defaultOn: true, channel: false },
   'channel.failed': { severity: 'warning', refType: 'alert_channel', recoverable: true, defaultOn: true, channel: false },
 } as const satisfies Record<string, { severity: 'info' | 'warning' | 'error'; refType: string; recoverable: boolean; defaultOn: boolean; channel: boolean }>;
 export type AlertKind = keyof typeof ALERT_KINDS;

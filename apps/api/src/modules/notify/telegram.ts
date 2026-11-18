@@ -45,6 +45,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'publish.failed': { problem: '发布失败：{platform} @{handle}《{title}》' },
       'task.failed': { problem: '任务失败：{type}（{label}）' },
       'collector.blocked': { problem: '采集设备 {name} 遇到 {platform} 验证/限制页面，采集已停止，需人工处理', recovered: '采集设备 {name} 的 {platform} 采集已恢复' },
+      'account.discovered': { problem: '云手机 {name} 上发现 {count} 个未录入的 {platform} 账号' },
       'channel.failed': { problem: '告警通道 {name} 发送失败', recovered: '告警通道 {name} 已恢复' },
     },
     words: {
@@ -63,6 +64,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'publish.failed': { problem: 'Publish failed: {platform} @{handle} "{title}"' },
       'task.failed': { problem: 'Task failed: {type} ({label})' },
       'collector.blocked': { problem: 'Collector device {name} hit a {platform} verification / limit screen: collection stopped, needs a person', recovered: '{platform} collection on device {name} works again' },
+      'account.discovered': { problem: 'Cloud phone {name} has {count} {platform} account(s) not recorded yet' },
       'channel.failed': { problem: 'Alert channel {name} failed to deliver', recovered: 'Alert channel {name} works again' },
     },
     words: {

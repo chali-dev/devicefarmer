@@ -7,11 +7,12 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { requestAccountCheck } from './check.js';
+import { discoverDeviceAccounts, requestAccountSync } from './sync.js';
 import { assertPersonaFor } from '../comments/personas.js';
 import { Lang } from '../content/languages.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
-  assertLinkable, EXCEPTION_SQL, getLimits, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
+  EXCEPTION_SQL, getLimits, instanceNames, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
   setAccountTags, tagsOf, toItems, visibleAccount, writeLogs, type LogEntry, type Tx,
 } from './social.js';
 
@@ -32,7 +33,8 @@ const Editable = {
   profileUrl: Url,
   externalId: opt(100),
   tags: Tags.optional(),
-  instanceId: z.string().uuid().nullable().optional(),
+  // instanceId: the device link is read only since 2026-11-18 (owner decision): it is set by 从云手机同步 (sync.ts)
+  // and removed by the batch 解除设备关联. An old client sending it is ignored (zod strips unknown keys).
   /** 账号人设: public persona or one of the account owner's; null clears. */
   personaId: z.string().uuid().nullable().optional(),
   /** 账号语言 (BCP-47, canonicalised); null clears. Publishing uses the content's translation in it. */
@@ -163,17 +165,15 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const platform = platformById(b.platform)!;
     const id = await db.transaction(async (tx) => {
       if (b.personaId) await assertPersonaFor(ownerId, b.personaId, 'account', tx);
-      if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, b.platform);
       const [row] = await tx.insert(sa).values({
         userId: ownerId, platform: b.platform, handle: b.handle,
         displayName: blank(b.displayName) ?? null, profileUrl: blank(b.profileUrl) ?? platform.profileUrl(b.handle),
-        externalId: blank(b.externalId) ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null, lang: b.lang ?? null,
+        externalId: blank(b.externalId) ?? null, personaId: b.personaId ?? null, lang: b.lang ?? null,
         notes: blank(b.notes) ?? null, createdBy: req.user.id,
       }).returning().catch((err) => { throw isUniqueViolation(err, 'social_accounts_platform_handle') ? handleTaken(b.platform, b.handle) : err; });
       if (b.tags?.length) await setAccountTags(tx, row!.id, b.tags);
       await writeLogs(tx, req.user, [
         { accountId: row!.id, action: 'create', field: null, fromValue: null, toValue: `${platform.name} @${row!.handle}` },
-        ...(await linkLogs(tx, row!.id, null, row!.instanceId)),
       ]);
       return row!.id;
     });
@@ -205,11 +205,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         set.lang = b.lang;
         logs.push({ accountId, action: 'update', field: 'lang', fromValue: cur.lang, toValue: b.lang });
       }
-      if (b.instanceId !== undefined && b.instanceId !== cur.instanceId) {
-        if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, cur.platform, cur.id);
-        set.instanceId = b.instanceId;
-        logs.push(...await linkLogs(tx, accountId, cur.instanceId, b.instanceId));
-      }
       if (b.tags !== undefined) {
         const before = (await tagsOf(tx, [cur.id])).get(cur.id) ?? [];
         if (!sameTags(before, b.tags)) {
@@ -240,6 +235,22 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(202);
     return { task: { id: task.id, status: task.status } };
   });
+
+  /**
+   * 从云手机同步 (sync.ts): reads the Instagram account logged in on a phone the caller may operate and creates /
+   * updates the social account. Owner = the caller; admins may pick any user. 202 + task (result via the task).
+   */
+  app.post('/api/social/sync-from-device', {
+    schema: { body: z.object({ instanceId: z.string().uuid(), ownerId: z.string().uuid().optional() }) },
+  }, async (req, reply) => {
+    const task = await requestAccountSync(req.user, req.body.instanceId, req.body.ownerId);
+    if (req.audit) req.audit.extra = { taskId: task.id };
+    reply.code(202);
+    return { task: { id: task.id, status: task.status } };
+  });
+
+  /** 自动发现 now (admin): the hourly `dumpsys account` round over every eligible phone. */
+  app.post('/api/social/discover', { preHandler: app.requireAdmin }, async () => ({ discovery: await discoverDeviceAccounts() }));
 
   app.delete('/api/social/accounts/:id', { schema: { params: Id } }, async (req, reply) => {
     const cur = await visibleAccount(req.user, req.params.id);

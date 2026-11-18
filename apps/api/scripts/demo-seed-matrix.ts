@@ -592,7 +592,8 @@ try {
     const s2 = await http('GET', '/api/social/settings', ADMIN);
     check('per-device limits: user 403, admin sees instagram limit', s1.status === 403 && s2.status === 200 && Number.isInteger(s2.body.limits.instagram));
     const fake = await http('PUT', `/api/social/accounts/${userAcc.id}`, DU.token, { instanceId: '00000000-0000-4000-8000-000000000001' });
-    check('linking an unknown device → 404 instances.not_found (no link written)', fake.status === 404 && codeOf(fake) === 'instances.not_found', fake.text);
+    // device link is read only in the API since 2026-11-18 (set by 从云手机同步): instanceId is ignored
+    check('instanceId in an edit is ignored (read only, no link written)', fake.status === 200 && fake.body?.account?.instanceId === null, fake.text);
   }
 
   // ---------------------------------------------------------------- social: edits, logs, mark checked, batch (throw-away accounts)

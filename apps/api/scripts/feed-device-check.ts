@@ -33,6 +33,7 @@ import { pkTime, shortcodeOf } from '../src/modules/feed/ig-ui.js';
 import { activeStorage } from '../src/modules/settings/storage.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
@@ -126,7 +127,9 @@ try {
   const tr = await http('POST', '/api/tracked-accounts', U, { input: TRACKED, platform: 'instagram', refreshIntervalHours: null });
   if (tr.status !== 201) throw new Error(`tracked create: ${tr.text}`);
   const tracked = tr.body.account;
-  const sa = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', handle: OWN_HANDLE, externalId: OWN_ID, ownerId: userIds[0], instanceId: phone!.id });
+  const sa = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', handle: OWN_HANDLE, externalId: OWN_ID, ownerId: userIds[0] });
+  // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+  if (sa.body?.account?.id) await linkAccount(sa.body.account.id, phone!.id);
   if (sa.status !== 201) throw new Error(`social create: ${sa.text}`);
   const own = sa.body.account;
 

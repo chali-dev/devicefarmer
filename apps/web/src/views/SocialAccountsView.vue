@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { countryName } from '../api/lang'
 import { dateLocale } from '../i18n'
-import { ExclamationCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { ExclamationCircleOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
@@ -24,6 +24,7 @@ import LangSelect from '../components/common/LangSelect.vue'
 import { langName } from '../api/lang'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
+import SyncFromDeviceModal from '../components/social/SyncFromDeviceModal.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -90,6 +91,7 @@ async function load() {
     const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
     items.value = r.items
     total.value = r.total
+    loaded.value = true
     const ids = new Set(r.items.map((x) => x.id))
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) }
@@ -149,7 +151,7 @@ const editing = ref<SocialAccount | null>(null)
 const formRef = ref<FormInstance>()
 const blank = () => ({
   platform: undefined as string | undefined, ownerId: undefined as string | undefined, handle: '', displayName: '', profileUrl: '', externalId: '',
-  personaId: undefined as string | undefined, lang: null as string | null, tags: [] as string[], instanceId: undefined as string | undefined, notes: '',
+  personaId: undefined as string | undefined, lang: null as string | null, tags: [] as string[], notes: '',
 })
 const form = reactive(blank())
 const HANDLE_RE = /^@?[\p{L}\p{N}._-]{1,100}$/u
@@ -161,12 +163,11 @@ const rules = computed<Record<string, Rule[]>>(() => ({
 /** Personas that may be set on the account: public ones and its owner's. */
 const formOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth.user?.id)
 const formPersonas = computed(() => personasFor(formOwner.value))
-const deviceOptions = computed(() => store.list.map((i) => ({ value: i.id, label: i.name })))
 const formLimit = computed(() => platforms.value.find((p) => p.id === (editing.value?.platform ?? form.platform))?.limit)
 
 function openAdd() {
   editing.value = null
-  Object.assign(form, blank(), { instanceId: filters.instanceId })
+  Object.assign(form, blank())
   formRef.value?.clearValidate()
   editOpen.value = true
 }
@@ -174,7 +175,7 @@ function openEdit(a: SocialAccount) {
   editing.value = a
   Object.assign(form, {
     ...blank(), platform: a.platform, handle: a.handle, displayName: a.displayName ?? '', profileUrl: a.profileUrl ?? '', externalId: a.externalId ?? '',
-    personaId: a.personaId ?? undefined, lang: a.lang, tags: [...a.tags], instanceId: a.instanceId ?? undefined, notes: a.notes ?? '',
+    personaId: a.personaId ?? undefined, lang: a.lang, tags: [...a.tags], notes: a.notes ?? '',
   })
   formRef.value?.clearValidate()
   editOpen.value = true
@@ -189,7 +190,7 @@ async function save() {
   saving.value = true
   const body: Record<string, unknown> = {
     handle: form.handle.trim(), displayName: form.displayName, profileUrl: form.profileUrl, externalId: form.externalId,
-    personaId: form.personaId ?? null, lang: form.lang, tags: form.tags, instanceId: form.instanceId ?? null, notes: form.notes,
+    personaId: form.personaId ?? null, lang: form.lang, tags: form.tags, notes: form.notes,
   }
   try {
     if (editing.value) {
@@ -229,13 +230,32 @@ async function checkNow(a: SocialAccount) {
   finally { checking.value = null }
 }
 
+// ---------------------------------------------------------------- 从云手机同步 + empty-state guide
+const syncOpen = ref(false)
+const loaded = ref(false)
+/** The account the last sync created / updated: highlighted in the list for a while. */
+const highlightId = ref<string | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | undefined
+function onSynced(accountId: string) {
+  highlightId.value = accountId
+  clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => { highlightId.value = null }, 15_000)
+  page.current = 1
+  void load()
+  void loadMeta()
+}
+const filtersActive = computed(() => !!(filters.q.trim() || filters.platform || filters.personaId || filters.lang || filters.loginStatus || filters.accountStatus
+  || filters.exception || filters.tags.length || filters.ownerId || filters.instanceId))
+/** Three-step guide while the viewer has no account at all (not just none matching a filter). */
+const showGuide = computed(() => loaded.value && !loading.value && total.value === 0 && !filtersActive.value)
+
 // ---------------------------------------------------------------- detail (动态 / 帖子 / 回复记录), opened by clicking a row
 const feedOpen = ref(false)
 const feedFor = ref<SocialAccount | null>(null)
 function openFeed(a: SocialAccount) { feedFor.value = a; feedOpen.value = true }
 /** A click on the row's own controls (links, buttons, checkbox, dropdown) is not a row click. */
 const rowProps = (record: SocialAccount) => ({
-  class: 'row-click',
+  class: record.id === highlightId.value ? 'row-click row-synced' : 'row-click',
   onClick: (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('a, button, input, label, .ant-dropdown, .ant-checkbox-wrapper, .ant-typography')) openFeed(record) },
 })
 
@@ -259,6 +279,7 @@ function logValue(l: SocialAccountLog, v: string | null) {
 const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue', connect: 'cyan', disconnect: 'gray' }
 const LOG_MSG: Record<string, string> = {
   'device deleted': 'social.msgDeviceDeleted', 'group deleted': 'social.msgGroupDeleted', 'persona deleted': 'social.msgPersonaDeleted', 'persona merged': 'social.msgPersonaMerged',
+  'synced from device': 'social.msgSynced',
 }
 /** Log message text; `group migrated: <name>` comes from the 分组 → 人设 data migration (older logs may mention groups). */
 function logMessage(m: string) {
@@ -343,12 +364,33 @@ async function submitBatchForm() {
   <PageContainer :title="t('social.title')">
     <template #extra>
       <router-link v-slot="{ href, navigate }" to="/personas" custom><a-button :href="href" @click="navigate">{{ t('scripts.personas.manage') }}</a-button></router-link>
+      <a-button @click="syncOpen = true"><template #icon><SyncOutlined /></template>{{ t('social.sync.button') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
     </template>
 
     <a-alert v-if="filters.instanceId" type="info" show-icon :message="t('social.filteredByDevice', { name: deviceName })">
       <template #action><a-button size="small" type="link" @click="reset">{{ t('common.reset') }}</a-button></template>
     </a-alert>
+
+    <a-card v-if="showGuide" :bordered="false" class="sync-guide">
+      <div class="guide-title">{{ t('social.sync.guideTitle') }}</div>
+      <a-steps direction="vertical" size="small" :current="-1">
+        <a-step :title="t('social.sync.step1')">
+          <template #description>
+            <a-space v-if="store.list.length" wrap>
+              <router-link v-for="d in store.list" :key="d.id" :to="`/instances/${d.id}`">{{ d.name }}</router-link>
+            </a-space>
+            <span v-else class="muted">{{ t('social.sync.step1None') }}</span>
+          </template>
+        </a-step>
+        <a-step :title="t('social.sync.step2')" />
+        <a-step :title="t('social.sync.step3')">
+          <template #description>
+            <a-button type="primary" size="small" @click="syncOpen = true"><template #icon><SyncOutlined /></template>{{ t('social.sync.button') }}</a-button>
+          </template>
+        </a-step>
+      </a-steps>
+    </a-card>
 
     <a-card :bordered="false">
       <SearchBar :loading="loading" @reset="reset" @refresh="load">
@@ -481,10 +523,14 @@ async function submitBatchForm() {
   </PageContainer>
 
   <SocialAccountFeedDrawer v-model:open="feedOpen" :account="feedFor" />
+  <SyncFromDeviceModal v-model:open="syncOpen" :users="users" :instance-id="filters.instanceId" @synced="onSynced" />
 
   <!-- create / edit -->
   <a-drawer v-model:open="editOpen" :title="editing ? t('social.edit') : t('social.add')" :width="DRAWER_WIDTH.md" destroy-on-close>
     <a-form ref="formRef" :model="form" :rules="rules" layout="vertical">
+      <a-alert v-if="!editing" type="info" show-icon :message="t('social.manualAddHint')" style="margin-bottom: 12px">
+        <template #action><a-button size="small" type="link" @click="editOpen = false; syncOpen = true">{{ t('social.sync.button') }}</a-button></template>
+      </a-alert>
       <a-row :gutter="12">
         <a-col :span="12">
           <a-form-item :label="t('social.colPlatform')" name="platform">
@@ -519,8 +565,13 @@ async function submitBatchForm() {
       <a-form-item :label="t('social.colTags')" name="tags">
         <a-select v-model:value="form.tags" mode="tags" :options="allTags.map((x) => ({ value: x, label: x }))" />
       </a-form-item>
-      <a-form-item :label="t('social.colDevice')" name="instanceId" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
-        <a-select v-model:value="form.instanceId" allow-clear show-search option-filter-prop="label" :options="deviceOptions" :placeholder="t('social.notLinked')" />
+      <!-- read only: the link is made by 从云手机同步 and removed by the batch 解除设备关联 -->
+      <a-form-item :label="t('social.colDevice')" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
+        <template v-if="editing?.instance">
+          <router-link v-if="editing.instance.accessible" :to="deviceListLink(editing.instance.id)">{{ editing.instance.name }}</router-link>
+          <span v-else class="muted">{{ editing.instance.name }}</span>
+        </template>
+        <span v-else class="muted">{{ t('social.deviceReadonlyNone') }}</span>
       </a-form-item>
       <a-form-item v-if="editing" :label="t('social.lastCheck')">
         <a-space wrap>
@@ -566,4 +617,7 @@ async function submitBatchForm() {
 <style scoped>
 .batch-hint { margin-top: 6px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
+.sync-guide { margin-bottom: 12px; }
+.guide-title { font-weight: 600; margin-bottom: 12px; }
+:deep(.row-synced) > td { background: var(--cp-primary-bg) !important; transition: background 0.6s; }
 </style>
