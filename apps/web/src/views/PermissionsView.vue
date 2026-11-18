@@ -134,7 +134,6 @@ function remove(r: CustomRole) {
     </template>
     <a-card :bordered="false">
       <a-spin :spinning="!loaded">
-        <a-alert type="info" show-icon class="block" :message="t('roleMenus.hint')" />
         <div class="scroll">
           <table class="grid">
             <thead>

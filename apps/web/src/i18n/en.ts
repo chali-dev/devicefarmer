@@ -88,7 +88,6 @@ const en: Messages = {
   },
   roleMenus: {
     subtitle: 'Role menu permissions: two built-in roles (admin and user) plus custom roles you add; tick the menus each role can see.',
-    hint: 'Admins always see every menu (not editable); the dashboard is always shown; menus marked "Admins only" cannot be granted to any other role. A custom role has the same data scope as a user (own data and the cloud phones assigned to them); only the visible menus differ. A menu switched off is hidden in the sidebar, and its page and its own endpoints refuse that role\'s users too (data endpoints shared by several pages are not affected).',
     menu: 'Menu',
     roleAdmin: 'Admin',
     roleUser: 'User',
