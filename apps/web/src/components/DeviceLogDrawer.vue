@@ -9,13 +9,13 @@ import StatusTag from './common/StatusTag.vue'
 import { DRAWER_WIDTH, pagination } from './common/ui'
 import { useInstancesStore } from '../stores/instances'
 
-/** Per-device log: task history (live) and Android logcat on demand. */
+/** Per-device log (日志): task history (live), connection history (status/adb changes) and Android logcat on demand. */
 const props = defineProps<{ instance: Instance | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const store = useInstancesStore()
 const { t } = useI18n()
 
-const tab = ref<'tasks' | 'logcat'>('tasks')
+const tab = ref<'tasks' | 'conn' | 'logcat'>('tasks')
 
 // ---- 操作记录
 const fetched = ref<Task[]>([])
@@ -52,6 +52,26 @@ const taskColumns = computed(() => [
   { title: t('common.error'), key: 'error' },
 ])
 
+// ---- 连线: status/adb changes (instance_status_events, GET /api/system/connections/:id/history, same view access)
+interface ConnEvent { id: number; field: 'status' | 'adb'; from: string | null; to: string | null; status: string; at: string; offline: boolean }
+const CONN_HOURS = [24, 72, 168, 720] as const
+const connHours = ref<number>(24)
+const connRanges = computed(() => CONN_HOURS.map((h) => ({ value: h, label: h < 48 ? t('logs.connRangeHours', { n: h }) : t('logs.connRangeDays', { n: h / 24 }) })))
+const connEvents = ref<ConnEvent[]>([])
+const connLoading = ref(false)
+const connError = ref<string | null>(null)
+const connLoaded = ref(false)
+async function loadConn() {
+  if (!props.instance) return
+  connLoading.value = true
+  connError.value = null
+  try {
+    connEvents.value = (await api<{ events: ConnEvent[] }>('GET', `/api/system/connections/${props.instance.id}/history?hours=${connHours.value}`)).events
+    connLoaded.value = true
+  } catch (e) { connError.value = errorText(e) } finally { connLoading.value = false }
+}
+const stateText = (field: string, v: string | null) => (v === null ? '—' : field === 'status' ? t(`status.${v}`) : v)
+
 // ---- 系统日志
 const LEVELS = computed(() => (['E', 'W', 'I', 'D'] as const).map((value) => ({ value, label: t(`logs.level${value}`) })))
 const level = ref<'E' | 'W' | 'I' | 'D'>('W')
@@ -82,9 +102,16 @@ watch([open, () => props.instance?.id], ([o]) => {
   logLoaded.value = false
   logError.value = null
   keyword.value = ''
+  connEvents.value = []
+  connLoaded.value = false
+  connError.value = null
+  connHours.value = 24
   void loadTasks()
 }, { immediate: true })
-watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
+watch(tab, (t) => {
+  if (t === 'logcat' && !logLoaded.value) void loadLogcat()
+  if (t === 'conn' && !connLoaded.value) void loadConn()
+})
 </script>
 
 <template>
@@ -106,6 +133,26 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
             </template>
           </template>
         </a-table>
+      </a-tab-pane>
+      <a-tab-pane key="conn" :tab="t('logs.conn')">
+        <a-space wrap style="margin-bottom: 12px">
+          <a-select v-model:value="connHours" :options="connRanges" style="width: 140px" @change="loadConn" />
+          <a-tooltip :title="t('common.refresh')">
+            <a-button :loading="connLoading" :aria-label="t('common.refresh')" @click="loadConn"><template #icon><ReloadOutlined /></template></a-button>
+          </a-tooltip>
+          <span v-if="connEvents.length >= 500" class="muted small">{{ t('logs.connLimit') }}</span>
+        </a-space>
+        <a-alert v-if="connError" type="error" :message="connError" show-icon style="margin-bottom: 12px" />
+        <a-spin :spinning="connLoading">
+          <a-empty v-if="connLoaded && !connEvents.length" :description="t('logs.noConn')" />
+          <a-timeline v-else class="conn">
+            <a-timeline-item v-for="e in connEvents" :key="e.id" :color="e.offline ? 'red' : 'blue'">
+              <div class="muted small">{{ new Date(e.at).toLocaleString(dateLocale()) }}</div>
+              {{ t(`logs.connField.${e.field}`) }}: {{ stateText(e.field, e.from) }} → {{ stateText(e.field, e.to) }}
+              <a-tag v-if="e.offline" color="red" class="tag">{{ t('logs.offlineTag') }}</a-tag>
+            </a-timeline-item>
+          </a-timeline>
+        </a-spin>
       </a-tab-pane>
       <a-tab-pane key="logcat" :tab="t('logs.logcat')">
         <a-space wrap style="margin-bottom: 12px">
@@ -138,4 +185,6 @@ watch(tab, (t) => { if (t === 'logcat' && !logLoaded.value) void loadLogcat() })
 .lv-E, .lv-F { color: var(--cp-error); }
 .lv-W { color: var(--cp-warning); }
 .empty { padding: 16px; text-align: center; }
+.conn { padding-top: 6px; }
+.tag { margin-left: 6px; }
 </style>

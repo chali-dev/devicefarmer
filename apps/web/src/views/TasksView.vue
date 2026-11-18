@@ -4,8 +4,9 @@ import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { logText } from '../api/logText'
-import { useRoute } from 'vue-router'
+import { useRoute, type RouteLocationRaw } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
+import { deviceListLink } from '../api/query'
 import {
   TASK_STATUSES, taskStatusText, taskText,
   type ManagedUser, type Task, type TaskDetail, type TaskLog, type TaskStats, type TaskStatus,
@@ -113,8 +114,8 @@ function owner(task: Task) {
   if (task.createdByName) return task.createdByName
   return task.createdBy ? '—' : t('common.system')
 }
-function targetLink(task: Task): string | null {
-  if (task.instanceId && store.byId.has(task.instanceId)) return `/instances/${task.instanceId}`
+function targetLink(task: Task): RouteLocationRaw | null {
+  if (task.instanceId && store.byId.has(task.instanceId)) return deviceListLink(task.instanceId)
   if (task.refType === 'media') return '/media'
   if (task.refType === 'social-account') return '/social'
   return null

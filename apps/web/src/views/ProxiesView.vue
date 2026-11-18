@@ -7,7 +7,7 @@ import type { Rule } from 'ant-design-vue/es/form'
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { queryParam } from '../api/query'
+import { deviceListLink, queryParam } from '../api/query'
 import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import {
   PROXY_KINDS, proxyLabel, type PoolProxy, type ProxyCheck, type ProxyImportResult, type ProxyKind, type ProxyStatus, type ProxyType,
@@ -366,7 +366,7 @@ async function openUsage(p: PoolProxy) {
             <div v-if="record.lastCheck" class="faint small">{{ t('proxies.checkedAt', { time: new Date(record.lastCheck.at).toLocaleString(dateLocale()) }) }}</div>
           </template>
           <template v-else-if="column.key === 'device'">
-            <a v-if="record.boundInstance" @click="router.push(`/instances/${record.boundInstance.id}`)">{{ record.boundInstance.name }}</a>
+            <a v-if="record.boundInstance" @click="router.push(deviceListLink(record.boundInstance.id))">{{ record.boundInstance.name }}</a>
             <a-tag v-else color="green">{{ t('proxies.free') }}</a-tag>
           </template>
           <template v-else-if="column.key === 'ops'">
@@ -506,7 +506,7 @@ async function openUsage(p: PoolProxy) {
       <template v-if="usage">
         <p>
           <span class="muted">{{ t('proxies.usageCurrent') }}：</span>
-          <a v-if="usage.boundInstance" @click="usageOpen = false; router.push(`/instances/${usage.boundInstance.id}`)">{{ usage.boundInstance.name }}</a>
+          <a v-if="usage.boundInstance" @click="usageOpen = false; router.push(deviceListLink(usage.boundInstance.id))">{{ usage.boundInstance.name }}</a>
           <a-tag v-else color="green">{{ t('proxies.free') }}</a-tag>
         </p>
         <a-timeline v-if="usage.history.length">

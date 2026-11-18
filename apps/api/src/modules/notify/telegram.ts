@@ -78,7 +78,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
 /** Web path of the referenced object (shared with the UI's links). */
 export function alertPath(refType: string | null, refId: string | null, params: Record<string, string | number>): string | null {
   if (!refId) return null;
-  if (refType === 'instance') return `/instances/${refId}`;
+  if (refType === 'instance') return `/instances?id=${refId}`;
   if (refType === 'social_account') return `/social?q=${encodeURIComponent(String(params.handle ?? ''))}`;
   if (refType === 'publish') return `/publish?task=${refId}`;
   if (refType === 'task') return `/tasks?task=${refId}`;

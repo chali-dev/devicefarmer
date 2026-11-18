@@ -28,22 +28,20 @@ export function noteAdbRtt(instanceId: string, adbPort: number): void {
 
 const DAY_MS = 86_400_000;
 
-/** One grouped query: devices (RBAC-scoped) + their offline events / changes in the last 24 h. */
+/** One grouped query: devices (RBAC-scoped) + their last offline event in the last 24 h (the full history is the device log's 连线 tab). */
 export async function connectionPanel(viewer: AuthUser, now = new Date()) {
   const I = schema.instances;
   const E = schema.instanceStatusEvents;
   const since = new Date(now.getTime() - DAY_MS);
   const agg = db.select({
     instanceId: E.instanceId,
-    changes: sql<number>`count(*)::int`.as('changes'),
-    offline: sql<number>`count(*) filter (where ${offlineEventCond()})::int`.as('offline'),
-    lastOfflineAt: sql<string | null>`max(${E.at}) filter (where ${offlineEventCond()})`.as('last_offline_at'),
-  }).from(E).where(gte(E.at, since)).groupBy(E.instanceId).as('agg');
+    lastOfflineAt: sql<string | null>`max(${E.at})`.as('last_offline_at'),
+  }).from(E).where(and(gte(E.at, since), offlineEventCond())).groupBy(E.instanceId).as('agg');
   const rows = await db.select({
     id: I.id, name: I.name, engine: I.engine, sourceId: I.sourceId, adbPort: I.adbPort, status: I.status,
     adbState: I.adbState, bootCompleted: I.bootCompleted, stfReady: I.stfReady, lastError: I.lastError,
     proxyId: I.proxyId, proxyStatus: I.proxyStatus, updatedAt: I.updatedAt,
-    changes24h: agg.changes, offline24h: agg.offline, lastOfflineAt: agg.lastOfflineAt,
+    lastOfflineAt: agg.lastOfflineAt,
   }).from(I).leftJoin(agg, eq(agg.instanceId, I.id))
     .where(isAdmin(viewer) ? undefined : sql`exists (select 1 from ${schema.instanceGrants} g where g.instance_id = ${I.id} and g.user_id = ${viewer.id})`)
     .orderBy(I.name);
@@ -51,8 +49,6 @@ export async function connectionPanel(viewer: AuthUser, now = new Date()) {
     const m = rtt.get(r.id);
     return {
       ...r,
-      changes24h: r.changes24h ?? 0,
-      offline24h: r.offline24h ?? 0,
       lastOfflineAt: r.lastOfflineAt ? new Date(r.lastOfflineAt).toISOString() : null,
       adbRttMs: r.adbState === 'device' ? m?.ms ?? null : null,
       adbRttAt: r.adbState === 'device' && m?.at ? new Date(m.at).toISOString() : null,

@@ -6,6 +6,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
+import { deviceListLink } from '../../api/query'
 import type { PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
@@ -162,7 +163,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-descriptions-item :label="t('common.device')">
             <template v-if="task.instance">
               <a-badge :status="task.instance.online ? 'success' : 'default'" />
-              <router-link v-if="task.instance.accessible" :to="`/instances/${task.instance.id}`">{{ task.instance.name }}</router-link>
+              <router-link v-if="task.instance.accessible" :to="deviceListLink(task.instance.id)">{{ task.instance.name }}</router-link>
               <span v-else>{{ task.instance.name }}</span>
               · {{ task.instance.online ? t('distribute.online') : t('distribute.offline') }}
             </template>
