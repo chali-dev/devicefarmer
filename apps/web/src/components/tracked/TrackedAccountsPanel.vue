@@ -155,7 +155,13 @@ async function toggleFavorite(a: TrackedAccount) {
 const canCollect = (a: TrackedAccount) => a.dataMode !== 'manual_only'
 const unconfigured = (a: TrackedAccount) => a.dataMode.endsWith('_unconfigured')
 const refreshTip = (a: TrackedAccount) => (a.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint')
-  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : undefined)
+  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : t('tracked.syncHint'))
+/** 定时采集 cell tooltip: next slot and the last skip reason (no second line in the cell). */
+const schedTip = (a: TrackedAccount) => [
+  a.nextRefreshAt ? t('collect.next', { time: new Date(a.nextRefreshAt).toLocaleString(dateLocale()) }) : '',
+  a.scheduleSkipCode ? t('collect.skipped', { reason: codeText(a.scheduleSkipCode, undefined, a.scheduleSkipCode) }) : '',
+].filter(Boolean).join(' · ') || t('collect.change')
+const statusTip = (a: TrackedAccount) => (a.status === 'error' ? codeText(a.lastErrorCode, undefined, a.lastError ?? '') : t(`tracked.dataModes.${a.dataMode}`))
 const approxPrefix = (a: TrackedAccount) => (a.latest?.approx?.includes('followers') ? `${t('tracked.approx')} ` : '')
 const hasDeviceSource = computed(() => platforms.value.some((p) => p.api?.kind === 'device'))
 const collectable = computed(() => items.value.filter(canCollect))
@@ -207,10 +213,10 @@ async function saveBatchSchedule() {
   finally { batchSaving.value = false }
 }
 
-/** 全部刷新 (every collectable row of the list) or 批量操作 → 刷新数据 (the selected collectable rows). */
-async function refreshBatch(selectedOnly: boolean) {
+/** 批量操作 → 刷新数据 (the selected collectable rows). */
+async function refreshBatch() {
   const ok = new Set(collectable.value.map((a) => a.id))
-  const ids = selectedOnly ? selectedKeys.value.filter((k) => ok.has(k)) : [...ok]
+  const ids = selectedKeys.value.filter((k) => ok.has(k))
   if (!ids.length) return
   try {
     const r = await api<{ queued: { id: string }[]; skipped: { id: string; code: string }[] }>('POST', '/api/tracked-accounts/refresh', { ids })
@@ -224,7 +230,7 @@ const batchItems = computed<BatchItem[]>(() => [
   { key: 'schedule', label: t('collect.batchSet'), disabled: !selectedCollectable.value },
 ])
 function onBatch(key: string) {
-  if (key === 'refresh') void refreshBatch(true)
+  if (key === 'refresh') void refreshBatch()
   else if (key === 'schedule') openBatchSchedule()
 }
 function remove(a: TrackedAccount) {
@@ -348,7 +354,6 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
         <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
         <template #actions>
-          <a-button v-if="collectable.length" @click="refreshBatch(false)">{{ t('tracked.refreshAll') }}</a-button>
           <BatchActions v-if="collectable.length" :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>
       </SearchBar>
@@ -389,9 +394,10 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
             </div>
           </template>
           <template v-else-if="column.key === 'checked'">
-            <span v-if="record.lastCheckedAt">{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
+            <a-tooltip v-if="record.lastCheckedAt" :title="record.lastSource ? t(`tracked.sources.${record.lastSource}`) : undefined">
+              <span>{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
+            </a-tooltip>
             <span v-else class="muted">{{ t('tracked.never') }}</span>
-            <div v-if="record.lastSource" class="muted small">{{ t(`tracked.sources.${record.lastSource}`) }}</div>
           </template>
           <template v-else-if="column.key === 'schedule'">
             <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
@@ -408,20 +414,19 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
                     </div>
                   </div>
                 </template>
-                <a :class="['sched-link', { muted: record.refreshIntervalHours === null }]" :title="t('collect.change')">
-                  {{ intervalText(record.refreshIntervalHours) }} <EditOutlined />
-                </a>
+                <a-tooltip :title="schedTip(record as TrackedAccount)">
+                  <a :class="['sched-link', { muted: record.refreshIntervalHours === null, warn: !!record.scheduleSkipCode }]">
+                    {{ intervalText(record.refreshIntervalHours) }} <EditOutlined />
+                  </a>
+                </a-tooltip>
               </a-popover>
-              <div v-if="record.nextRefreshAt" class="muted small">{{ t('collect.next', { time: new Date(record.nextRefreshAt).toLocaleString(dateLocale()) }) }}</div>
-              <div v-if="record.scheduleSkipCode" class="warn small">{{ t('collect.skipped', { reason: codeText(record.scheduleSkipCode, undefined, record.scheduleSkipCode) }) }}</div>
             </template>
           </template>
           <template v-else-if="column.key === 'status'">
-            <a-tooltip :title="record.status === 'error' ? codeText(record.lastErrorCode, undefined, record.lastError ?? '') : undefined">
+            <a-tooltip :title="statusTip(record as TrackedAccount)">
               <StatusTag kind="tracked" :status="record.status" />
             </a-tooltip>
             <a-tag v-if="busy(record as TrackedAccount)" color="processing">{{ t('tracked.refreshing') }}</a-tag>
-            <div class="muted small">{{ t(`tracked.dataModes.${record.dataMode}`) }}</div>
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'ops'">
@@ -429,7 +434,7 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
               <a-button size="small" type="link" @click="openDetail(record as TrackedAccount)">{{ t('common.view') }}</a-button>
               <a-tooltip v-if="canCollect(record as TrackedAccount)" :title="refreshTip(record as TrackedAccount)">
                 <a-button size="small" type="link" :disabled="record.status === 'paused' || unconfigured(record as TrackedAccount)" :loading="busy(record as TrackedAccount)"
-                  @click="refreshOne(record as TrackedAccount)">{{ t('common.refresh') }}</a-button>
+                  @click="refreshOne(record as TrackedAccount)">{{ t('tracked.sync') }}</a-button>
               </a-tooltip>
               <a-dropdown>
                 <a-button size="small" type="link">{{ t('common.more') }}</a-button>
