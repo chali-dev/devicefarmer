@@ -64,7 +64,7 @@ const kindColumns = [
       <a-alert type="info" show-icon class="channels">
         <template #message>
           {{ t('alerts.settings.channelsHint') }}
-          <router-link to="/alert-channels">{{ t('alerts.settings.channelsLink') }}</router-link>
+          <router-link :to="{ path: '/alert-channels', query: { tab: 'channels' } }">{{ t('alerts.settings.channelsLink') }}</router-link>
         </template>
       </a-alert>
       <template v-if="rules">

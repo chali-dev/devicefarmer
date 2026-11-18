@@ -264,7 +264,7 @@ function onOwner() {
 <template>
   <div>
     <Teleport v-if="auth.isAdmin" defer :to="extraTo || 'body'" :disabled="!extraTo">
-      <a-button @click="$router.push('/risk')">{{ t('comments.rules') }}</a-button>
+      <a-button @click="$router.push({ path: '/risk', query: { tab: 'comments' } })">{{ t('comments.rules') }}</a-button>
     </Teleport>
 
     <div>

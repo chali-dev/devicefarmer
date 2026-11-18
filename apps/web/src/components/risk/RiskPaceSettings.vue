@@ -10,6 +10,10 @@ import type { RiskSettings } from '../../api/types'
  * automatic account checks share it), plus the interval of the automatic account checks. Saved values take
  * effect at once; the TRACKED_DEVICE_* env values are the defaults.
  */
+/** Which half of the shared `risk.device` setting this tab shows; the save always sends the whole (strict) body. */
+const props = withDefaults(defineProps<{ part?: 'collect' | 'check' | 'all' }>(), { part: 'all' })
+const showCollect = computed(() => props.part !== 'check')
+const showCheck = computed(() => props.part !== 'collect')
 const { t } = useI18n()
 const state = ref<RiskSettings | null>(null)
 const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6, feedOn: true, feedCollectHours: 24, feedPosts: 3, feedCommentsPerPost: 30, accountDiscovery: true })
@@ -46,9 +50,10 @@ async function save() {
 <template>
   <div class="settings-pane">
     <a-spin :spinning="!state">
-      <a-typography-title :level="5">{{ t('risk.pace.title') }}</a-typography-title>
-      <a-typography-paragraph type="secondary">{{ t('risk.pace.hint') }}</a-typography-paragraph>
       <a-form layout="vertical">
+       <template v-if="showCollect">
+        <a-typography-title :level="5">{{ t('risk.pace.title') }}</a-typography-title>
+        <a-typography-paragraph type="secondary">{{ t('risk.pace.hint') }}</a-typography-paragraph>
         <a-row :gutter="12">
           <a-col :xs="24" :sm="8">
             <a-form-item :label="t('risk.pace.minInterval')" :extra="state ? t('risk.pace.defaultSec', { n: state.defaults.minIntervalSec }) : undefined">
@@ -67,7 +72,9 @@ async function save() {
           </a-col>
         </a-row>
         <a-alert type="info" show-icon class="block" :message="t('risk.pace.capacity', { n: capacity })" />
+       </template>
 
+       <template v-if="showCheck">
         <a-typography-title :level="5">{{ t('risk.check.title') }}</a-typography-title>
         <a-typography-paragraph type="secondary">{{ t('risk.check.hint') }}</a-typography-paragraph>
         <a-form-item>
@@ -77,7 +84,9 @@ async function save() {
             <a-input-number v-model:value="form.accountCheckHours" :min="1" :max="168" :precision="0" :disabled="!form.checkOn" addon-after="h" style="width: 140px" />
           </a-space>
         </a-form-item>
+       </template>
 
+       <template v-if="showCollect">
         <a-typography-title :level="5">{{ t('risk.feed.title') }}</a-typography-title>
         <a-typography-paragraph type="secondary">{{ t('risk.feed.hint') }}</a-typography-paragraph>
         <a-form-item>
@@ -95,7 +104,9 @@ async function save() {
             <a-form-item :label="t('risk.feed.comments')"><a-input-number v-model:value="form.feedCommentsPerPost" :min="0" :max="100" :precision="0" style="width: 100%" /></a-form-item>
           </a-col>
         </a-row>
+       </template>
 
+       <template v-if="showCheck">
         <a-typography-title :level="5">{{ t('risk.discovery.title') }}</a-typography-title>
         <a-typography-paragraph type="secondary">{{ t('risk.discovery.hint') }}</a-typography-paragraph>
         <a-form-item>
@@ -104,6 +115,7 @@ async function save() {
             <span>{{ form.accountDiscovery ? t('risk.discovery.on') : t('risk.discovery.off') }}</span>
           </a-space>
         </a-form-item>
+       </template>
         <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
       </a-form>
     </a-spin>

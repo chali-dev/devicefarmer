@@ -5,27 +5,38 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import type { SettingsConfig } from '../api/types'
 import AiSettings from '../components/settings/AiSettings.vue'
-import AlertSettings from '../components/settings/AlertSettings.vue'
+import PublishRetrySettings from '../components/settings/PublishRetrySettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
 import TrackedCollectorSettings from '../components/settings/TrackedCollectorSettings.vue'
+import BackupPanel from '../components/system/BackupPanel.vue'
+import LogRetentionSettings from '../components/system/LogRetentionSettings.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import { usePlatformsStore } from '../stores/platforms'
 
 /**
- * Settings (设置, admin): one page whose tabs reuse the existing settings APIs. The active tab is in the
- * URL (?tab=), so other pages link straight to their settings (e.g. /settings?tab=storage).
+ * 系统配置 (admin, owner's menu list of 2026-11-18): 备份与保留 (database backups + log / history / task retention,
+ * formerly /system and the 数据保留 tab), 发布重发, 存储, AI, 追踪采集 and the read-only env values. The active tab is
+ * in the URL (?tab=), so other pages link straight to their settings (e.g. /settings?tab=storage). The alert rules
+ * moved to 告警通道 (?tab=rules), the system logs to 系统日志 (/logs).
  */
 const { t } = useI18n()
 const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['storage', 'tracked', 'publish', 'ai', 'retention', 'alerts'] as const
+const TABS = ['backup', 'publishRetry', 'storage', 'ai', 'tracked', 'env'] as const
 type Tab = (typeof TABS)[number]
+// Old tab names (links from before the regrouping).
+const ALIASES: Record<string, Tab> = { retention: 'backup', backups: 'backup', publish: 'publishRetry' }
+if (route.query.tab === 'alerts') void router.replace({ path: '/alert-channels', query: { tab: 'rules' } })
+else if (route.query.tab === 'logs') void router.replace({ path: '/logs' })
 const tab = computed<Tab>({
-  get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'storage'),
+  get: () => {
+    const q = ALIASES[String(route.query.tab)] ?? (route.query.tab as Tab)
+    return TABS.includes(q) ? q : 'backup'
+  },
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
 
@@ -36,10 +47,10 @@ const secs = (ms: number) => `${Math.round(ms / 1000)} s`
 const envGroups = computed(() => {
   const c = cfg.value
   return [
-    { title: undefined, rows: [
-      { label: t('settings.publish.maxAttempts'), value: c?.publish.maxAttempts ?? '—', env: 'PUBLISH_MAX_ATTEMPTS' },
+    { title: t('settings.publish.publishTitle'), rows: [
+      { label: t('settings.publish.maxAttemptsDefault'), value: c?.publish.maxAttempts ?? '—', env: 'PUBLISH_MAX_ATTEMPTS' },
       { label: t('settings.publish.timeout'), value: c ? secs(c.publish.timeoutMs) : '—', env: 'PUBLISH_TIMEOUT_MS' },
-      { label: t('settings.publish.backoff'), value: c ? secs(c.publish.retryBackoffMs) : '—', env: 'PUBLISH_RETRY_BACKOFF_MS' },
+      { label: t('settings.publish.backoffDefault'), value: c ? secs(c.publish.retryBackoffMs) : '—', env: 'PUBLISH_RETRY_BACKOFF_MS' },
     ] },
     { title: t('settings.publish.mediaTitle'), rows: [
       { label: t('settings.publish.imageMax'), value: c ? `${c.media.imageMaxMb} MB` : '—', env: 'MEDIA_IMAGE_MAX_MB' },
@@ -54,13 +65,22 @@ const envGroups = computed(() => {
   <PageContainer>
     <a-card :bordered="false">
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
+        <a-tab-pane key="backup" :tab="t('settings.tabs.backup')">
+          <BackupPanel />
+          <a-divider />
+          <LogRetentionSettings />
+          <a-divider />
+          <RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" />
+        </a-tab-pane>
+        <a-tab-pane key="publishRetry" :tab="t('settings.tabs.publishRetry')"><PublishRetrySettings /></a-tab-pane>
         <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
+        <a-tab-pane key="ai" :tab="t('settings.tabs.ai')"><AiSettings /></a-tab-pane>
         <a-tab-pane v-if="platforms.scope.features.youtubeKey || platforms.scope.features.trackedCollector" key="tracked" :tab="t('settings.tabs.tracked')">
           <TrackedCollectorSettings v-if="platforms.scope.features.trackedCollector" />
           <a-divider v-if="platforms.scope.features.youtubeKey && platforms.scope.features.trackedCollector" />
           <YoutubeKeySettings v-if="platforms.scope.features.youtubeKey" />
         </a-tab-pane>
-        <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
+        <a-tab-pane key="env" :tab="t('settings.tabs.env')">
           <div class="settings-pane">
             <a-descriptions
               v-for="(group, gi) in envGroups" :key="gi" size="small" :column="1" bordered :title="group.title" :class="{ block: gi > 0 }"
@@ -72,9 +92,6 @@ const envGroups = computed(() => {
             </a-descriptions>
           </div>
         </a-tab-pane>
-        <a-tab-pane key="ai" :tab="t('settings.tabs.ai')"><AiSettings /></a-tab-pane>
-        <a-tab-pane key="retention" :tab="t('settings.tabs.retention')"><RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" /></a-tab-pane>
-        <a-tab-pane key="alerts" :tab="t('alerts.settings.tab')"><AlertSettings /></a-tab-pane>
       </a-tabs>
     </a-card>
   </PageContainer>

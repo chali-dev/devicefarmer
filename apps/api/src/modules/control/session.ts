@@ -6,6 +6,7 @@ import { config } from '../../config.js';
 import { HttpError } from '../../lib/errors.js';
 import { adb, stf } from '../../services.js';
 import { assertInstanceAccess } from '../auth/rbac.js';
+import { menuEnabled } from '../auth/role-menus.js';
 import { getInstance } from '../instances/repo.js';
 import { joinScrcpy, type ScrcpyHandle, type ScrcpyViewer } from './scrcpy-hub.js';
 
@@ -103,6 +104,8 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
         try {
           const user = await app.userFromToken(msg.token);
           await assertInstanceAccess(user, instanceId, 'control');
+          // Remote control belongs to 我的云机 (角色菜单权限, auth/role-menus.ts).
+          if (!(await menuEnabled(user, 'instances'))) throw new HttpError(403, '该菜单未对用户角色开放', 'rbac.menu_disabled', { menu: 'instances' });
           const inst = await getInstance(instanceId);
           if (!inst) return fail('instance not found', 4004);
           if (inst.status !== 'running') return fail('instance is not running', 4009);

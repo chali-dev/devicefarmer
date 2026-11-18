@@ -34,11 +34,11 @@ function toggleTheme() { setThemeMode(isDark.value ? 'light' : 'dark') }
 const collapsed = ref(false)
 /** Groups with only the items this user may open; a group left empty is dropped (no bare header). */
 const visibleGroups = computed(() => MENU_GROUPS
-  .map((g) => ({ ...g, items: g.items.filter((it) => (auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) && (!it.feature || platforms.scope.features[it.feature])) }))
+  .map((g) => ({ ...g, items: g.items.filter((it) => (auth.isAdmin || !router.resolve(`/${it.key}`).meta.admin) && auth.menuAllowed(it.key) && (!it.feature || platforms.scope.features[it.feature])) }))
   .filter((g) => g.items.length > 0))
 const loc = useMenuLocation()
 const selected = computed(() => [loc.itemKey.value])
-/** All remaining groups start open (sub-menu keys are prefixed: 'content' and 'system' are also item keys). */
+/** All remaining groups start open (sub-menu keys are prefixed: 'content' and 'risk' are also item keys). */
 const openKeys = ref<string[]>(MENU_GROUPS.map((g) => `group-${g.key}`))
 
 /** Breadcrumb from the menu: module › page (› device name on a device's own page). */

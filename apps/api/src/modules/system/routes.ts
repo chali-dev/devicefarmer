@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import { assertInstanceAccess } from '../auth/rbac.js';
 import { deleteBackup, listBackups, openBackup, startBackup } from './backup.js';
-import { connectionPanel, deviceHistory } from './connections.js';
+import { connectionPanel, deviceHistory, deviceLogs } from './connections.js';
 import { LEVELS, listLogFiles, readLogs, type LevelName } from './logs.js';
 import { systemHourly } from './maintenance.js';
 import { getSystemSettings, saveSystemSettings, SYSTEM_DEFAULTS, SystemSettings } from './settings.js';
@@ -65,6 +65,21 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => readLogs({ ...req.query, q: req.query.q?.trim() || undefined }));
 
   app.get('/api/system/logs/files', admin, async () => ({ files: await listLogFiles() }));
+
+  // ------------------------------------------------------------ device logs (系统日志 → 设备日志, admin only)
+  app.get('/api/system/device-logs', {
+    ...admin,
+    schema: {
+      querystring: z.object({
+        instanceId: z.string().uuid().optional(),
+        type: z.enum(['status', 'adb', 'offline']).optional(),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+        offset: z.coerce.number().int().min(0).max(100_000).default(0),
+      }),
+    },
+  }, async (req) => deviceLogs(req.query));
 
   // ------------------------------------------------------------ connection monitoring (admin only)
   app.get('/api/system/connections', admin, async (req) => ({ devices: await connectionPanel(req.user) }));

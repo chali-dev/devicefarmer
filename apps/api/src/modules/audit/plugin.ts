@@ -379,6 +379,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
   // settings
   // The key itself is never stored in the log.
+  'PUT /api/settings/role-menus': { action: 'settings.role_menus', detail: ({ body }) => ({ menus: body.menus }) },
+  'PUT /api/settings/publish-retry': { action: 'settings.publish_retry', detail: ({ body }) => ({ maxAttempts: body.maxAttempts, backoffSec: body.backoffSec }) },
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
   'PUT /api/settings/tracked-collectors/:platform': {

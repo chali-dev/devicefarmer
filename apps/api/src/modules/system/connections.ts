@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { adb } from '../../services.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -63,4 +63,30 @@ export async function deviceHistory(instanceId: string, hours: number) {
   return db.select({ id: E.id, field: E.field, from: E.from, to: E.to, status: E.status, at: E.at, offline: sql<boolean>`${offlineEventCond()}` })
     .from(E).where(and(eq(E.instanceId, instanceId), gte(E.at, new Date(Date.now() - hours * 3600_000))))
     .orderBy(desc(E.id)).limit(500);
+}
+
+export interface DeviceLogQuery { instanceId?: string; type?: 'status' | 'adb' | 'offline'; from?: Date; to?: Date; limit: number; offset: number }
+
+/**
+ * 设备日志 (系统日志 → 设备日志, admin): every device's status / adb changes (instance_status_events) in one list,
+ * newest first, with the device name. `type` = status | adb | offline (the offline events of 连线监控). Rows go
+ * with their device (cascade) and with the history retention of 系统配置.
+ */
+export async function deviceLogs(q: DeviceLogQuery) {
+  const E = schema.instanceStatusEvents;
+  const I = schema.instances;
+  const where = and(
+    q.instanceId ? eq(E.instanceId, q.instanceId) : undefined,
+    q.type === 'offline' ? offlineEventCond() : q.type ? eq(E.field, q.type) : undefined,
+    q.from ? gte(E.at, q.from) : undefined,
+    q.to ? lte(E.at, q.to) : undefined,
+  );
+  const [items, [count]] = await Promise.all([
+    db.select({
+      id: E.id, instanceId: E.instanceId, instanceName: I.name, sourceId: I.sourceId, field: E.field, from: E.from, to: E.to, status: E.status, at: E.at,
+      offline: sql<boolean>`${offlineEventCond()}`,
+    }).from(E).innerJoin(I, eq(I.id, E.instanceId)).where(where).orderBy(desc(E.id)).limit(q.limit).offset(q.offset),
+    db.select({ n: sql<number>`count(*)::int` }).from(E).where(where),
+  ]);
+  return { items, total: count?.n ?? 0 };
 }

@@ -54,7 +54,7 @@ async function save(c: Collector, body: { instanceId: string | null }) {
       <a-typography-title :level="5">{{ t('tracked.collector.title') }}</a-typography-title>
       <a-typography-paragraph type="secondary">{{ t('tracked.collector.hint') }}</a-typography-paragraph>
       <a-typography-paragraph type="secondary" class="small">
-        {{ t('tracked.collector.riskHint') }} <router-link to="/risk">{{ t('nav.risk') }}</router-link>
+        {{ t('tracked.collector.riskHint') }} <router-link :to="{ path: '/risk', query: { tab: 'collect' } }">{{ t('nav.risk') }}</router-link>
       </a-typography-paragraph>
       <a-form v-for="c in state?.collectors ?? []" :key="c.platform" layout="vertical" class="block">
         <a-form-item>
