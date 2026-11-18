@@ -12,11 +12,18 @@
  * assigned user → sync task for that user, idempotent per day; several / none → account.discovered notice to admins
  * + the phone's users, once a day; recorded ids → nothing). NOT covered here: reading `dumpsys account` and the own
  * profile on a phone (scripts/account-sync-device-check.ts on bit-ins-02).
+ * Since 2026-11-18 (owner): one user per phone (PUT /api/instances/:id/grants single user, per-user grants refuse a
+ * phone held by someone else, legacy two-user rows written in the DB), the sync owner follows the phone (assigned
+ * user, else the admin; another ownerId → account_sync.owner_mismatch, legacy phone → owner_required), 自动发现 on an
+ * unassigned phone → the builtin admin, the sync writes the check result (recordSyncCheck), and assigning a phone
+ * moves its linked accounts to the user (logs, personal persona cleared, old owner's content targets removed,
+ * comments follow, 409 instances.assign_account_busy with an unfinished reply, unassign keeps the owner, RBAC).
+ * Placeholder devices on ports 5583–5584, 5586–5587, 5590–5591.
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { applySync, discoverOnDevice, discoveryAction } from '../src/modules/social/sync.js';
+import { applySync, discoverOnDevice, discoveryAction, recordSyncCheck } from '../src/modules/social/sync.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -66,6 +73,8 @@ const taskIds = new Set<string>();
 const settingKeys = ['risk.device', 'social.limits', 'risk.halts'];
 const saved = await db.select().from(schema.settings).where(inArray(schema.settings.key, settingKeys));
 const fakeId = () => `9${randomBytes(5).readUIntBE(0, 5)}`;
+const personaIds: string[] = [];
+const contentIds: string[] = [];
 
 try {
   // ---------------------------------------------------------------- setup
@@ -82,10 +91,25 @@ try {
   }))).returning();
   devIds.push(...devs.map((d) => d.id));
   const [D1, D2, D3, D4] = devs as [typeof devs[0], typeof devs[0], typeof devs[0], typeof devs[0]];
-  // D1: A only; D2: A + B; D3: nobody; D4: A, Instagram not allowed
+  // D1: A only; D2: A + B (legacy data: the API refuses a second user now, so B's row is written in the DB); D3: nobody;
+  // D4: A, Instagram not allowed
   await http('PUT', `/api/users/${uA}/grants`, admin, { instanceIds: [D1.id, D2.id, D4.id] });
-  await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id] });
+  await db.insert(schema.instanceGrants).values({ userId: uB, instanceId: D2.id });
   await http('PUT', '/api/social/settings', admin, { limits: { instagram: 1 } });
+  const grantsOf = async (userId: string) => (await db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.userId, userId))).map((g) => g.instanceId).sort();
+
+  // ---------------------------------------------------------------- one user per phone
+  let g = await http('PUT', `/api/instances/${D1.id}/grants`, admin, { userIds: [uA, uB] });
+  check('device grants with two users → 400 grants.single_user', g.status === 400 && g.body.code === 'grants.single_user', g.text);
+  g = await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id, D1.id] });
+  check('per-user grants adding a phone held by another user → 409 grants.device_assigned, nothing changed', g.status === 409 && g.body.code === 'grants.device_assigned'
+    && g.body.params?.user === `sya${tag}` && (await grantsOf(uB)).join() === D2.id, g.text);
+  g = await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id] });
+  check('per-user grants keeping a legacy shared phone → 200', g.status === 200 && (await grantsOf(uB)).join() === D2.id, g.text);
+  g = await http('PUT', `/api/instances/${D3.id}/grants`, admin, { userIds: [adminRow!.id] });
+  check('assigning an admin → 400 grants.admin_not_needed', g.status === 400 && g.body.code === 'grants.admin_not_needed', g.text);
+  g = await http('PUT', `/api/instances/${D3.id}/grants`, A, { userIds: [uA] });
+  check('assigning as a user → 403', g.status === 403, g.text);
 
   // ---------------------------------------------------------------- API: RBAC + codes before queueing
   const sync = (tok: string, body: Record<string, unknown>) => http('POST', '/api/social/sync-from-device', tok, body);
@@ -121,11 +145,26 @@ try {
   const logs = await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, d2Task));
   check('task log has the result line', logs.some((l) => l.message === 'account sync result: offline'));
 
+  // owner follows the phone: assigned user, else the admin running it
   r = await sync(admin, { instanceId: D3.id, ownerId: uC });
+  check('admin, unassigned phone + another owner → 400 account_sync.owner_mismatch', r.status === 400 && r.body.code === 'account_sync.owner_mismatch', r.text);
+  r = await sync(admin, { instanceId: D3.id });
   taskIds.add(r.body?.task?.id);
-  check('admin, any device + chosen owner → 202', r.status === 202, r.text);
+  check('admin, unassigned phone, no owner → 202', r.status === 202, r.text);
   const admTask = await waitTask(r.body.task.id);
-  check('admin task carries the chosen owner', (admTask.payload as any).ownerId === uC && (admTask.result as any)?.result === 'offline');
+  check('unassigned phone: the account owner is the admin', (admTask.payload as any).ownerId === adminRow!.id && (admTask.result as any)?.result === 'offline');
+  r = await sync(admin, { instanceId: D1.id, ownerId: uC });
+  check('admin, phone assigned to A + owner C → 400 account_sync.owner_mismatch', r.status === 400 && r.body.code === 'account_sync.owner_mismatch', r.text);
+  r = await sync(admin, { instanceId: D1.id });
+  taskIds.add(r.body?.task?.id);
+  const d1Adm = r.status === 202 ? await waitTask(r.body.task.id) : null;
+  check('admin, phone assigned to A, no owner → owner A', (d1Adm?.payload as any)?.ownerId === uA, r.text);
+  r = await sync(admin, { instanceId: D2.id });
+  check('admin, legacy phone with two users, no owner → 400 account_sync.owner_required', r.status === 400 && r.body.code === 'account_sync.owner_required', r.text);
+  r = await sync(admin, { instanceId: D2.id, ownerId: uB });
+  taskIds.add(r.body?.task?.id);
+  const d2Adm = r.status === 202 ? await waitTask(r.body.task.id) : null;
+  check('admin, legacy phone, one of its users picked → 202, owner B', (d2Adm?.payload as any)?.ownerId === uB, r.text);
 
   // in progress / halted
   const [held] = await db.insert(T).values({ type: 'account-device-sync', refType: 'instance', refId: D1.id, status: 'scheduled', runAt: new Date(Date.now() + 3600_000), payload: {}, createdBy: uA }).returning();
@@ -143,7 +182,7 @@ try {
   await sleep(500);
   const aud = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'social.sync_from_device'), sql`${schema.auditLogs.at} > now() - interval '10 minutes'`));
   check('audit social.sync_from_device (ok + refused, instanceId/ownerId only)', aud.some((a) => a.ok && (a.detail as any)?.instanceId === D2.id) && aud.some((a) => !a.ok && a.status === 403)
-    && aud.some((a) => (a.detail as any)?.ownerId === uC), `${aud.length} rows`);
+    && aud.some((a) => a.ok && (a.detail as any)?.ownerId === uB), `${aud.length} rows`);
 
   // ---------------------------------------------------------------- applySync (DB part, placeholder ids/handles)
   const userA = { id: uA, username: `sya${tag}`, role: 'user' as const };
@@ -212,10 +251,14 @@ try {
   check('two concurrent syncs of one handle → one created, one updated', both.map((x) => x.result).sort().join() === 'created,updated' && (await db.select().from(SA).where(eq(SA.handle, hc))).length === 1);
 
   // ---------------------------------------------------------------- 自动发现
-  check('rule: nothing unrecorded → nothing', discoveryAction([], [uA]) === null);
-  check('rule: exactly one assigned user → sync for that user', JSON.stringify(discoveryAction(['1'], [uA])) === JSON.stringify({ kind: 'sync', ownerId: uA }));
-  check('rule: several users → notice', JSON.stringify(discoveryAction(['1'], [uA, uB])) === JSON.stringify({ kind: 'notify', reason: 'multiple_users' }));
-  check('rule: nobody → notice', JSON.stringify(discoveryAction(['1'], [])) === JSON.stringify({ kind: 'notify', reason: 'no_user' }));
+  const on = (id: string) => ({ id, disabled: false });
+  const eqJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  check('rule: nothing unrecorded → nothing', discoveryAction([], [on(uA)], adminRow!.id) === null);
+  check('rule: exactly one assigned user → sync for that user', eqJson(discoveryAction(['1'], [on(uA)], adminRow!.id), { kind: 'sync', ownerId: uA, via: 'assigned' }));
+  check('rule: several users (legacy) → notice', eqJson(discoveryAction(['1'], [on(uA), on(uB)], adminRow!.id), { kind: 'notify', reason: 'multiple_users' }));
+  check('rule: nobody → sync for the builtin admin', eqJson(discoveryAction(['1'], [], adminRow!.id), { kind: 'sync', ownerId: adminRow!.id, via: 'builtin_admin' }));
+  check('rule: nobody and no builtin admin → notice no_user', eqJson(discoveryAction(['1'], [], null), { kind: 'notify', reason: 'no_user' }));
+  check('rule: the assigned user is disabled → notice user_disabled', eqJson(discoveryAction(['1'], [{ id: uA, disabled: true }], adminRow!.id), { kind: 'notify', reason: 'user_disabled' }));
 
   const free = fakeId();
   let d = await discoverOnDevice(D1, [id1, free]);
@@ -240,10 +283,25 @@ try {
     && n1[0]!.severity === 'info' && (n1[0]!.params as any).reason === 'multiple_users' && (n1[0]!.params as any).count === 1 && (n1[0]!.params as any).name === D2.name);
   check('the notice adds rows (none before for this phone)', n1.length > 0 && !n0.some((n) => n.refId === D2.id));
   const ids2 = [fakeId()];
-  await discoverOnDevice(D3, ids2);
+  d = await discoverOnDevice(D3, ids2);
+  taskIds.add(d.taskId!);
   const again2 = await discoverOnDevice(D3, ids2);
   const n3 = await db.select().from(schema.notifications).where(and(eq(schema.notifications.kind, 'account.discovered'), eq(schema.notifications.refId, D3.id)));
-  check('nobody assigned (D3) → notice to admins only, once a day for the same ids', n3.length === 1 && n3[0]!.userId === adminRow!.id && (n3[0]!.params as any).reason === 'no_user' && again2.notified === false);
+  check('nobody assigned (D3) → auto sync task for the builtin admin, once a day, no notice', adminRow!.builtin && d.action?.kind === 'sync' && (d.action as any).ownerId === adminRow!.id
+    && (d.action as any).via === 'builtin_admin' && d.created === true && again2.taskId === d.taskId && again2.created === false && n3.length === 0, JSON.stringify(d));
+  const d3Row = (await db.select().from(T).where(eq(T.id, d.taskId!)))[0]!;
+  check('builtin admin task: payload owner = admin, system task', (d3Row.payload as any).ownerId === adminRow!.id && d3Row.createdBy === null);
+  // the phone's only user is disabled → notice user_disabled
+  await http('PUT', `/api/instances/${D3.id}/grants`, admin, { userIds: [uC] });
+  await http('PATCH', `/api/users/${uC}`, admin, { disabled: true });
+  d = await discoverOnDevice(D3, [fakeId()]);
+  const n3b = await db.select().from(schema.notifications).where(and(eq(schema.notifications.kind, 'account.discovered'), eq(schema.notifications.refId, D3.id)));
+  check('assigned user disabled → notice user_disabled, no task', d.action?.kind === 'notify' && (d.action as any).reason === 'user_disabled' && !d.taskId && d.notified === true
+    && n3b.some((n) => n.userId === adminRow!.id && (n.params as any).reason === 'user_disabled'));
+  g = await http('PUT', `/api/instances/${D1.id}/grants`, admin, { userIds: [uC] });
+  check('assigning a phone to a disabled user → 400 grants.user_disabled', g.status === 400 && g.body.code === 'grants.user_disabled', g.text);
+  await http('PATCH', `/api/users/${uC}`, admin, { disabled: false });
+  await http('PUT', `/api/instances/${D3.id}/grants`, admin, { userIds: [] });
   const bell = await http('GET', '/api/notifications', B);
   check('user B sees the D2 notice in the bell', JSON.stringify(bell.body).includes('account.discovered'));
 
@@ -266,6 +324,88 @@ try {
   check('立即发现 as a user → 403', r.status === 403, r.text);
   const audD = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'social.discover'), sql`${schema.auditLogs.at} > now() - interval '10 minutes'`));
   check('audit social.discover', audD.length >= 2);
+
+  // ---------------------------------------------------------------- the sync writes the check result (同步 replaces 立即检测)
+  await db.update(SA).set({ loginStatus: 'logged_out', lastCheckCode: 'logged_out', lastError: 'old error', lastCheckedAt: null }).where(eq(SA.id, acc!.id));
+  const logsBefore = (await db.select().from(schema.socialAccountLogs).where(eq(schema.socialAccountLogs.accountId, acc!.id))).length;
+  let nAcc = await recordSyncCheck(D1, { result: 'ok', accountId: acc!.id }, uA);
+  let [chk] = await db.select().from(SA).where(eq(SA.id, acc!.id));
+  let clog = (await db.select().from(schema.socialAccountLogs).where(eq(schema.socialAccountLogs.accountId, acc!.id))).slice(logsBefore);
+  check('sync ok → logged_in, last_check_code ok, last_checked_at, last_error cleared', nAcc === 1 && chk!.loginStatus === 'logged_in' && chk!.lastCheckCode === 'ok' && chk!.lastError === null
+    && !!chk!.lastCheckedAt && Date.now() - chk!.lastCheckedAt.getTime() < 60_000);
+  check('sync ok → logs (checked "sync on <phone>", status "synced from device")', clog.some((l) => l.action === 'checked' && l.message === `sync on ${D1.name}` && l.toValue === 'ok')
+    && clog.some((l) => l.field === 'loginStatus' && l.message === 'synced from device' && l.toValue === 'logged_in') && clog.some((l) => l.field === 'lastError' && l.toValue === null), JSON.stringify(clog.map((l) => [l.action, l.field, l.message])));
+  nAcc = await recordSyncCheck(D1, { result: 'not_logged_in', detail: 'no Instagram account on the device' }, null);
+  [chk] = await db.select().from(SA).where(eq(SA.id, acc!.id));
+  const prob = await db.select().from(schema.notifications).where(and(eq(schema.notifications.kind, 'account.problem'), eq(schema.notifications.refId, acc!.id)));
+  check('sync not_logged_in → the phone\'s Instagram accounts logged_out (code logged_out)', nAcc === 1 && chk!.loginStatus === 'logged_out' && chk!.lastCheckCode === 'logged_out' && chk!.lastCheckDetail === 'no Instagram account on the device');
+  check('sync not_logged_in → account.problem to the owner', prob.some((n) => n.userId === uA));
+  await recordSyncCheck(D1, { result: 'ok', accountId: acc!.id }, uA);
+  const [st0] = await db.select().from(schema.alertStates).where(and(eq(schema.alertStates.kind, 'account.problem'), eq(schema.alertStates.key, acc!.id)));
+  check('sync ok again → account.problem recovered (alert state inactive)', st0?.active === false, JSON.stringify(st0));
+
+  // ---------------------------------------------------------------- accounts follow the phone's assignment
+  const mv = await db.insert(schema.instances).values([5586, 5587].map((port, n) => ({
+    name: `syfake-${tag}-m${n + 1}`, image: 'none', adbPort: port, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
+  }))).returning();
+  devIds.push(...mv.map((x) => x.id));
+  const [D5, D6] = mv as [typeof mv[0], typeof mv[0]];
+  const adminActor = { id: adminRow!.id, username: adminRow!.username, role: 'admin' as const };
+  const h5a = `syncmv_a_${tag}`; const h5b = `syncmv_b_${tag}`; const h6 = `syncmv_c_${tag}`;
+  const oa = await applySync({ inst: D5, ownerId: adminRow!.id, actor: adminActor, handle: h5a, displayName: null, deviceIds: [fakeId(), fakeId()] });
+  const ob = await applySync({ inst: D5, ownerId: adminRow!.id, actor: adminActor, handle: h5b, displayName: null, deviceIds: [fakeId(), fakeId()] });
+  const oc = await applySync({ inst: D6, ownerId: adminRow!.id, actor: adminActor, handle: h6, displayName: null, deviceIds: [fakeId()] });
+  check('setup: three admin-owned accounts on unassigned phones', [oa, ob, oc].every((o) => o.result === 'created'), JSON.stringify([oa, ob, oc]));
+  const [pPersonal, pPublic] = await db.insert(schema.personas).values([
+    { ownerType: 'user', ownerId: adminRow!.id, name: `sync-personal-${tag}` }, { ownerType: 'public', ownerId: null, name: `sync-public-${tag}` },
+  ]).returning();
+  personaIds.push(pPersonal!.id, pPublic!.id);
+  await db.update(SA).set({ personaId: pPersonal!.id }).where(eq(SA.id, oa.accountId!));
+  await db.update(SA).set({ personaId: pPublic!.id }).where(eq(SA.id, ob.accountId!));
+  const [cAdmin] = await db.insert(schema.contents).values({ userId: adminRow!.id, title: `sync content ${tag}` }).returning();
+  contentIds.push(cAdmin!.id);
+  await db.insert(schema.contentTargets).values({ contentId: cAdmin!.id, accountId: oa.accountId!, position: 0 });
+  const cm = await http('POST', '/api/comments', admin, { accountId: ob.accountId, text: `hello ${tag}`, authorName: 'Viewer', authorHandle: '@viewer', externalPostId: 'p1' });
+  const commentId = cm.body?.comment?.id ?? cm.body?.id;
+  const rp = await http('POST', `/api/comments/${commentId}/replies`, admin, { text: `thanks ${tag}` });
+  const replyId = rp.body?.reply?.id ?? rp.body?.id;
+  check('setup: a manual comment + a reply draft on the second account', cm.status < 300 && rp.status < 300 && !!replyId, `${cm.text} ${rp.text}`);
+
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, A, { userIds: [uA] });
+  check('assign as a user → 403', g.status === 403, g.text);
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uA] });
+  const stillAdmin = await db.select().from(SA).where(inArray(SA.id, [oa.accountId!, ob.accountId!]));
+  check('unfinished reply (draft) on a linked account → 409 instances.assign_account_busy (handle, counts), nothing changed', g.status === 409 && g.body.code === 'instances.assign_account_busy'
+    && g.body.params?.handle === h5b && g.body.params?.replies === 1 && g.body.params?.publish === 0
+    && stillAdmin.every((a) => a.userId === adminRow!.id) && (await db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, D5.id))).length === 0, g.text);
+  await http('DELETE', `/api/comment-replies/${replyId}`, admin);
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uA] });
+  const moved = await db.select().from(SA).where(inArray(SA.id, [oa.accountId!, ob.accountId!]));
+  const ma = moved.find((a) => a.id === oa.accountId)!; const mb = moved.find((a) => a.id === ob.accountId)!;
+  check('assign → 200, both linked accounts moved to A', g.status === 200 && g.body.movedAccounts?.length === 2 && ma.userId === uA && mb.userId === uA, g.text);
+  check('personal persona of the old owner cleared, public persona kept', ma.personaId === null && mb.personaId === pPublic!.id);
+  const mlog = await db.select().from(schema.socialAccountLogs).where(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]));
+  check('logs: owner admin → A ("phone assigned", actor admin), persona cleared on the first', [ma.id, mb.id].every((id) => mlog.some((l) => l.accountId === id && l.field === 'owner'
+    && l.fromValue === adminRow!.username && l.toValue === `sya${tag}` && l.message === 'phone assigned' && l.actorId === adminRow!.id))
+    && mlog.some((l) => l.accountId === ma.id && l.field === 'persona' && l.fromValue === `sync-personal-${tag}` && l.toValue === null)
+    && !mlog.some((l) => l.accountId === mb.id && l.field === 'persona'));
+  check('content target on the old owner\'s content removed', (await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.accountId, ma.id))).length === 0);
+  check('the account\'s comments follow it', (await db.select().from(schema.comments).where(eq(schema.comments.id, commentId)))[0]?.userId === uA);
+  check('user A lists the moved accounts', (await http('GET', '/api/social/accounts', A)).body.items?.filter((x: any) => x.id === ma.id || x.id === mb.id).length === 2);
+  await sleep(500);
+  const audG = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'grants.update'), sql`${schema.auditLogs.at} > now() - interval '10 minutes'`));
+  check('audit grants.update with moved count + ids only', audG.some((a) => a.ok && (a.detail as any)?.movedAccounts === 2 && (a.detail as any)?.accountIds?.length === 2 && !JSON.stringify(a.detail).includes(h5a)));
+  const nLogs = mlog.length;
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uA] });
+  check('same user again → no-op (nothing moved, no logs)', g.status === 200 && g.body.movedAccounts?.length === 0
+    && (await db.select().from(schema.socialAccountLogs).where(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]))).length === nLogs, g.text);
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [] });
+  check('unassign → no grant, accounts keep owner A', g.status === 200 && (await db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, D5.id))).length === 0
+    && (await db.select().from(SA).where(inArray(SA.id, [ma.id, mb.id]))).every((a) => a.userId === uA), g.text);
+  g = await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id, D6.id] });
+  check('per-user grants adding an unassigned phone → its account moves to B', g.status === 200 && g.body.movedAccounts?.length === 1 && (await db.select().from(SA).where(eq(SA.id, oc.accountId!)))[0]?.userId === uB, g.text);
+  const re = await applySync({ inst: D5, ownerId: uA, actor: userA, handle: h5a, displayName: 'Moved', deviceIds: [] });
+  check('re-sync by the new owner → updated (not taken)', re.result === 'updated' && re.accountId === ma.id);
 } catch (err) {
   check('unexpected error', false, String((err as Error).stack ?? err));
 } finally {
@@ -273,6 +413,14 @@ try {
   const devTasks = devIds.length ? await db.select({ id: T.id }).from(T).where(and(eq(T.type, 'account-device-sync'), inArray(T.refId, devIds))) : [];
   const all = [...new Set([...ids, ...devTasks.map((x) => x.id)])];
   if (all.length) await db.delete(T).where(inArray(T.id, all));
+  const left = await db.select({ id: SA.id }).from(SA).where(sql`${SA.handle} like ${`%${tag}%`}`);
+  if (left.length) {
+    await db.delete(schema.alertStates).where(and(eq(schema.alertStates.kind, 'account.problem'), inArray(schema.alertStates.key, left.map((x) => x.id))));
+    await db.delete(schema.notifications).where(inArray(schema.notifications.refId, left.map((x) => x.id)));
+    await db.delete(SA).where(inArray(SA.id, left.map((x) => x.id)));
+  }
+  if (contentIds.length) await db.delete(schema.contents).where(inArray(schema.contents.id, contentIds));
+  if (personaIds.length) await db.delete(schema.personas).where(inArray(schema.personas.id, personaIds));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, admin);
   if (devIds.length) {
     await db.delete(schema.notifications).where(inArray(schema.notifications.refId, devIds));

@@ -6,6 +6,7 @@ import { db, schema } from '../../db/index.js';
 import type { User } from '../../db/schema.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { purgeOwnerMedia } from '../media/media.js';
+import { moveDeviceAccounts, type AccountMove } from '../social/assign.js';
 
 const Role = z.enum(['admin', 'user']);
 const Id = z.object({ id: z.string().uuid() });
@@ -109,40 +110,77 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(204);
   });
 
-  /** Replace the set of devices a user (role `user`) may access. Admins see every device. */
+  /**
+   * Replace the set of devices a user (role `user`) may access. Admins see every device. A cloud phone belongs to one
+   * user (owner decision 2026-11-18): a device newly added here that another user holds → 409 grants.device_assigned
+   * (unassign it first; devices the user already had stay, also on legacy multi-user rows), and its linked social
+   * accounts move to the user (social/assign.ts). Removing a device moves nothing. No page uses this endpoint any more
+   * (我的云机 uses the per-device one below); the scripts set up their placeholder users with it.
+   */
   app.put('/api/users/:id/grants', {
     schema: { params: Id, body: z.object({ instanceIds: z.array(z.string().uuid()).max(500) }) },
   }, async (req) => {
-    const ids = [...new Set(req.body.instanceIds)];
-    await db.transaction(async (tx) => {
+    const ids = [...new Set(req.body.instanceIds)].sort();
+    const moved = await db.transaction(async (tx) => {
       const u = await lockUser(tx, req.params.id);
       if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
-      if (ids.length) {
-        const found = await tx.select({ id: schema.instances.id }).from(schema.instances).where(inArray(schema.instances.id, ids));
-        if (found.length !== ids.length) throw badRequest('设备不存在', 'instances.not_found');
+      const found = ids.length
+        ? await tx.select({ id: schema.instances.id, name: schema.instances.name }).from(schema.instances).where(inArray(schema.instances.id, ids)).orderBy(schema.instances.id).for('update')
+        : [];
+      if (found.length !== ids.length) throw badRequest('设备不存在', 'instances.not_found');
+      const had = new Set((await tx.select({ id: schema.instanceGrants.instanceId }).from(schema.instanceGrants).where(eq(schema.instanceGrants.userId, u.id))).map((g) => g.id));
+      const added = found.filter((i) => !had.has(i.id));
+      if (added.length && u.disabled) throw badRequest('用户已禁用，不能分配云手机', 'grants.user_disabled');
+      if (added.length) {
+        const [other] = await tx.select({ instanceId: schema.instanceGrants.instanceId, username: schema.users.username }).from(schema.instanceGrants)
+          .innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
+          .where(and(inArray(schema.instanceGrants.instanceId, added.map((i) => i.id)), ne(schema.instanceGrants.userId, u.id))).limit(1);
+        if (other) {
+          const device = added.find((i) => i.id === other.instanceId)!.name;
+          throw conflict(`设备 ${device} 已分配给用户 ${other.username}，一台云手机只能分配给一个用户`, 'grants.device_assigned', { device, user: other.username });
+        }
       }
       await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.userId, u.id));
       if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((instanceId) => ({ userId: u.id, instanceId })));
+      const out: AccountMove[] = [];
+      for (const i of added) out.push(...await moveDeviceAccounts(tx, req.user, i.id, u.id));
+      return out;
     });
-    return { instanceIds: ids };
+    if (req.audit && moved.length) req.audit.extra = { movedAccounts: moved.length, accountIds: moved.map((m) => m.id) };
+    return { instanceIds: ids, movedAccounts: moved.map(({ id, handle }) => ({ id, handle })) };
   });
 
-  /** Replace the set of users (role `user`) that may access one device. */
+  /**
+   * Assign one device: `userIds` = [] (unassigned, admins only) or exactly one user (role `user`, enabled); more →
+   * 400 grants.single_user (owner decision 2026-11-18: a cloud phone belongs to one user). Assigning a (new) user
+   * moves the device's linked social accounts to them (social/assign.ts, 409 instances.assign_account_busy while one
+   * has unfinished publish tasks / replies, nothing changed); unassigning moves nothing; the same user again = no-op.
+   */
   app.put('/api/instances/:id/grants', {
     schema: { params: Id, body: z.object({ userIds: z.array(z.string().uuid()).max(500) }) },
   }, async (req) => {
     const ids = [...new Set(req.body.userIds)];
-    await db.transaction(async (tx) => {
+    if (ids.length > 1) throw badRequest('一台云手机只能分配给一个用户', 'grants.single_user');
+    const moved = await db.transaction(async (tx) => {
       const [inst] = await tx.select({ id: schema.instances.id }).from(schema.instances).where(eq(schema.instances.id, req.params.id)).for('update');
       if (!inst) throw notFound('设备不存在', 'instances.not_found');
-      if (ids.length) {
-        const found = await tx.select({ id: schema.users.id, role: schema.users.role }).from(schema.users).where(inArray(schema.users.id, ids));
-        if (found.length !== ids.length) throw badRequest('用户不存在', 'users.not_found');
-        if (found.some((u) => u.role !== 'user')) throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
+      const cur = (await tx.select({ id: schema.instanceGrants.userId }).from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id))).map((g) => g.id);
+      const to = ids[0];
+      if (!to) {
+        if (cur.length) await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
+        return [];
       }
+      const [u] = await tx.select({ id: schema.users.id, role: schema.users.role, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, to)).for('update');
+      if (!u) throw badRequest('用户不存在', 'users.not_found');
+      if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
+      // same user: grants unchanged; still moves linked accounts that don't follow yet (data from before this rule)
+      if (cur.length === 1 && cur[0] === to) return moveDeviceAccounts(tx, req.user, inst.id, to);
+      if (u.disabled && !cur.includes(to)) throw badRequest('用户已禁用，不能分配云手机', 'grants.user_disabled');
       await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
-      if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((userId) => ({ userId, instanceId: inst.id })));
+      await tx.insert(schema.instanceGrants).values({ userId: to, instanceId: inst.id });
+      return moveDeviceAccounts(tx, req.user, inst.id, to);
     });
-    return { userIds: ids };
+    if (req.audit && moved.length) req.audit.extra = { movedAccounts: moved.length, accountIds: moved.map((m) => m.id) };
+    return { userIds: ids, movedAccounts: moved.map(({ id, handle }) => ({ id, handle })) };
   });
 };
