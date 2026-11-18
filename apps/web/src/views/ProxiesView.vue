@@ -342,8 +342,7 @@ async function openUsage(p: PoolProxy) {
       >
         <template #emptyText>
           <a-empty :description="hasFilters ? t('proxies.emptyFiltered') : t('proxies.empty', { kind: t(`proxies.kinds.${kind}`) })">
-            <a-button v-if="!hasFilters" type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('proxies.add') }}</a-button>
-            <a-button v-else @click="reset">{{ t('common.reset') }}</a-button>
+            <a-button v-if="hasFilters" @click="reset">{{ t('common.reset') }}</a-button>
           </a-empty>
         </template>
         <template #bodyCell="{ column, record }">
