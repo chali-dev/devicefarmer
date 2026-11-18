@@ -11,6 +11,9 @@
  *   "running tasks are skipped" path (no worker is involved), then set back and cancelled normally.
  * - List: csv status filter, legacy single status, byStatus counts exact per viewer (A never sees B's), unaffected by
  *   the status filter but following the other filters.
+ * - 批量发布 (action publish): each content to its own default targets (content_targets) at one time; dryRun creates
+ *   nothing; skips with codes (draft unless includeDrafts, archived, no targets, unfinished tasks, all published (DB
+ *   fixture: a task set to published directly), banned word of the account persona); RBAC 404; audit without texts.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/content-batch-check.ts
  */
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -133,7 +136,7 @@ try {
   check('empty ids → 400', r.status === 400);
   r = await batch(A.token, { ids: Array.from({ length: 201 }, () => randomUUID()), action: 'archive' });
   check('201 ids → 400 (limit 200)', r.status === 400);
-  r = await batch(A.token, { ids: [a1], action: 'publish' });
+  r = await batch(A.token, { ids: [a1], action: 'bogus' });
   check('unknown action → 400', r.status === 400);
   r = await batch(A.token, { ids: [a1], action: 'set-category' });
   check('set-category without categoryId → 400 content.batch_category_required', r.status === 400 && r.body.code === 'content.batch_category_required', r.text);
@@ -226,6 +229,77 @@ try {
     && (await db.select().from(C).where(inArray(C.id, [aBusy, aPub, t1]))).length === 0 && (await db.select().from(PT).where(inArray(PT.id, [ptBusy!, ptAPub!]))).length === 0, r.text);
   r = await http('GET', '/api/contents', A.token);
   check('byStatus (A) at the end: ready 2 (a1 unarchived, aMix cancelled), draft 1 (a2)', counts(r) === JSON.stringify({ ...zero, draft: 1, ready: 2 }) && r.body.total === 3, counts(r));
+
+  // ---------------------------------------------------------------- 批量发布 (action publish)
+  {
+    const pubAt = new Date(Date.now() + 86400_000 + 3600_000); pubAt.setUTCSeconds(0, 0);
+    const igA2 = await acc(A.token);
+    const pReady = await newContent(A.token, 'pReady', { mediaIds: [imgA], targetIds: [igA, igA2], stage: 'ready' });
+    const pDraft = await newContent(A.token, 'pDraft', { mediaIds: [imgA], targetIds: [igA] });
+    const pArch = await newContent(A.token, 'pArch', { mediaIds: [imgA], targetIds: [igA], stage: 'ready' });
+    await http('PUT', `/api/contents/${pArch}`, A.token, { stage: 'archived' });
+    const pNoT = await newContent(A.token, 'pNoT', { mediaIds: [imgA], stage: 'ready' });
+    const pDone = await newContent(A.token, 'pDone', { mediaIds: [imgA], targetIds: [igA], stage: 'ready' });
+    const pBan = await newContent(A.token, 'pBan', { mediaIds: [imgA], targetIds: [igA2], stage: 'ready', body: `BANWORD${tag} SECRET-BODY-${tag}` });
+    // pDone: published to igA before (DB fixture: its distributed task is cancelled, then marked published directly)
+    const [ptDone] = await distribute(A.token, pDone, [igA]);
+    await http('POST', `/api/publish/tasks/${ptDone}/cancel`, A.token);
+    console.log('  (fixture: publish task of pDone set to published directly in the DB)');
+    await sqlClient`update publish_tasks set status = 'published', published_at = now() where id = ${ptDone!}`;
+    // banned word: A's personal persona with a banned word, set on igA2 AFTER the content was saved (saving would refuse it)
+    const pers = await http('POST', '/api/personas', A.token, { scope: 'mine', name: `cbper ${tag}`, style: { bannedWords: [`BANWORD${tag}`] } });
+    const persSet = await http('PUT', `/api/social/accounts/${igA2}`, A.token, { personaId: pers.body.persona?.id });
+    check('setup 批量发布: 6 contents, persona with banned word on igA2', pers.status === 201 && persSet.status === 200, `${pers.status} ${persSet.status}`);
+    const ptCount = async () => (await db.select({ id: PT.id }).from(PT).where(inArray(PT.contentId, [pReady, pDraft, pArch, pNoT, pDone, pBan]))).length;
+    const before = await ptCount();
+    const ids6 = [pReady, pDraft, pArch, pNoT, pDone, pBan];
+    const pub = (token: string, extra: Record<string, unknown> = {}) => batch(token, { ids: ids6, action: 'publish', scheduledAt: pubAt.toISOString(), ...extra });
+
+    r = await pub(A.token, { dryRun: true });
+    const item = (x: any, id: string) => (x.body.publish?.items as any[] | undefined)?.find((i) => i.id === id);
+    check('dryRun: pReady (2 accounts) and pBan (1) would publish; draft/archived/no targets/done skipped with codes; tasks=3, changed 0',
+      r.status === 200 && sameSet(r.body.ok, [pReady, pBan]) && item(r, pReady)?.accounts === 2 && r.body.publish.tasks === 3 && r.body.changed === 0
+      && skipOf(r, pDraft)?.code === 'content.batch_publish_draft' && skipOf(r, pArch)?.code === 'content.archived'
+      && skipOf(r, pNoT)?.code === 'content.batch_publish_no_targets' && skipOf(r, pDone)?.code === 'content.batch_publish_done', r.text);
+    check('dryRun created no publish task', (await ptCount()) === before);
+
+    r = await pub(B.token);
+    check("B with A's contents → 404 content.not_found, nothing created", r.status === 404 && r.body.code === 'content.not_found' && (await ptCount()) === before);
+    r = await batch(A.token, { ids: [pReady], action: 'publish', scheduledAt: new Date(Date.now() + 400 * 86400_000).toISOString() });
+    check('scheduledAt > 1 year → 400 publish.too_far', r.status === 400 && r.body.code === 'publish.too_far', r.text);
+    r = await batch(A.token, { ids: [pReady], action: 'publish', scheduledAt: 'tomorrow' });
+    check('bad scheduledAt → 400', r.status === 400);
+
+    r = await pub(A.token);
+    check('publish: pReady ok (2 tasks), pBan skipped persona.banned_word, others skipped as in the preview; changed 1, tasks 2',
+      r.status === 200 && sameSet(r.body.ok, [pReady]) && r.body.changed === 1 && r.body.publish.tasks === 2 && item(r, pReady)?.accounts === 2
+      && skipOf(r, pBan)?.code === 'persona.banned_word' && skipOf(r, pDraft)?.code === 'content.batch_publish_draft', r.text);
+    const created = await db.select().from(PT).where(inArray(PT.contentId, [pReady]));
+    const ctasks = await db.select().from(schema.tasks).where(inArray(schema.tasks.id, created.map((x) => x.taskId!).filter(Boolean)));
+    check('pReady: 2 scheduled publish tasks (igA, igA2) at the chosen time, feed', created.length === 2 && created.every((x) => x.status === 'scheduled' && x.postType === 'feed' && x.scheduledAt.getTime() === pubAt.getTime())
+      && sameSet(created.map((x) => x.accountId), [igA, igA2]), JSON.stringify(created.map((x) => [x.status, x.scheduledAt])));
+    check('task-centre tasks exist, scheduled, runAt = scheduledAt', ctasks.length === 2 && ctasks.every((x) => x.status === 'scheduled' && x.type === 'publish' && x.runAt?.getTime() === pubAt.getTime()),
+      JSON.stringify(ctasks.map((x) => [x.status, x.runAt])));
+    check('pBan: nothing created (banned word refused the whole content)', (await db.select().from(PT).where(inArray(PT.contentId, [pBan]))).length === 0);
+
+    r = await batch(A.token, { ids: [pReady], action: 'publish', scheduledAt: pubAt.toISOString() });
+    check('again: pReady skipped content.batch_publish_unfinished {n: 2}', skipOf(r, pReady)?.code === 'content.batch_publish_unfinished' && skipOf(r, pReady)?.params?.n === 2 && r.body.changed === 0, r.text);
+
+    r = await batch(A.token, { ids: [pDraft], action: 'publish', includeDrafts: true, scheduledAt: pubAt.toISOString() });
+    const dTasks = await db.select().from(PT).where(inArray(PT.contentId, [pDraft]));
+    check('includeDrafts: draft published (1 scheduled task) and stage → ready', r.body.changed === 1 && dTasks.length === 1 && dTasks[0]!.status === 'scheduled'
+      && (await get(A.token, pDraft)).stage === 'ready', `${r.text} ${dTasks[0]?.status}`);
+
+    await sleep(500);
+    const arows = await sqlClient`select action, user_id, status, detail from audit_logs where at >= ${t0.toISOString()}::timestamptz and action = 'content.batch.publish'`;
+    const real = arows.filter((x) => x.user_id === A.id && x.status === 200);
+    check('audit: content.batch.publish rows (no dryRun row: previews are not recorded)', real.length === 3 && !real.some((x) => x.detail?.dryRun) && real.some((x) => x.detail?.tasks === 2 && x.detail?.scheduledAt === pubAt.toISOString()),
+      JSON.stringify(real.map((x) => x.detail)));
+    check('audit 批量发布: no titles, bodies or banned words', !JSON.stringify(arows.map((x) => x.detail)).includes('SECRET-BODY') && !JSON.stringify(arows.map((x) => x.detail)).includes(`cb-${tag}`) && !JSON.stringify(arows.map((x) => x.detail)).includes('BANWORD'));
+    // the created tasks are cancelled by the cleanup below (scheduled/pending ones)
+    for (const x of [...created, ...dTasks]) if (['pending', 'scheduled', 'awaiting_operator'].includes(x.status)) await http('POST', `/api/publish/tasks/${x.id}/cancel`, A.token);
+    await db.delete(schema.personas).where(ilike(schema.personas.name, `%${tag}%`));
+  }
 
   // ---------------------------------------------------------------- audit
   await sleep(500);

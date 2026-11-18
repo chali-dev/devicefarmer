@@ -2,7 +2,7 @@ import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { LibraryApp } from '../../db/schema.js';
 import { adb } from '../../services.js';
-import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import type { AuthUser } from '../auth/rbac.js';
 import { visibleTasks } from '../tasks/routes.js';
 import { LIBRARY_TASK_REF, libraryDir } from './library.js';
 
@@ -23,8 +23,8 @@ const PROBE_CONCURRENCY = 6;
 export type TargetState = 'installable' | 'update' | 'installed' | 'installing' | 'offline' | 'busy';
 export interface InstallTarget {
   id: string; name: string; status: string; engine: string; external: boolean;
-  /** Usernames granted this device (admins only; users only see their own devices). */
-  users?: string[];
+  /** Usernames granted this device. */
+  users: string[];
   installed: { versionCode: string; versionName: string | null } | null;
   state: TargetState;
   /** Why it can't be picked: instance status, `adb` (not attached), `probe` (version read failed/timed out). */
@@ -46,26 +46,22 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R
   return out;
 }
 
-/** Devices the user may install `app` on (admin: all, user: granted), each with its installed version and state. */
-export async function installTargets(user: AuthUser, app: LibraryApp): Promise<{ devices: InstallTarget[] }> {
-  const admin = isAdmin(user);
-  const granted = db.select({ id: schema.instanceGrants.instanceId }).from(schema.instanceGrants).where(eq(schema.instanceGrants.userId, user.id));
+/** Every device `app` may be installed on (the library is admin only), with granted usernames, installed version and state. */
+export async function installTargets(app: LibraryApp): Promise<{ devices: InstallTarget[] }> {
   const [rows, grants, pending] = await Promise.all([
     db.select({ id: I.id, name: I.name, status: I.status, engine: I.engine, adbPort: I.adbPort, adbState: I.adbState, sourceId: I.sourceId })
-      .from(I).where(admin ? undefined : inArray(I.id, granted)).orderBy(I.name),
-    // Granted usernames per device: one grouped query (admins only).
-    admin
-      ? db.select({ instanceId: schema.instanceGrants.instanceId, names: sql<string[]>`array_agg(${schema.users.username} order by ${schema.users.username})` })
-        .from(schema.instanceGrants).innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
-        .groupBy(schema.instanceGrants.instanceId)
-      : Promise.resolve([]),
+      .from(I).orderBy(I.name),
+    // Granted usernames per device: one grouped query.
+    db.select({ instanceId: schema.instanceGrants.instanceId, names: sql<string[]>`array_agg(${schema.users.username} order by ${schema.users.username})` })
+      .from(schema.instanceGrants).innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
+      .groupBy(schema.instanceGrants.instanceId),
     db.select({ instanceId: T.instanceId }).from(T)
       .where(and(eq(T.type, 'install-apk'), eq(T.refType, LIBRARY_TASK_REF), eq(T.refId, app.id), inArray(T.status, [...UNFINISHED]))),
   ]);
   const usersOf = new Map(grants.map((g) => [g.instanceId, g.names]));
   const installing = new Set(pending.map((p) => p.instanceId));
   const devices = await mapLimit(rows, PROBE_CONCURRENCY, async (r): Promise<InstallTarget> => {
-    const base = { id: r.id, name: r.name, status: r.status, engine: r.engine, external: !!r.sourceId, ...(admin ? { users: usersOf.get(r.id) ?? [] } : {}) };
+    const base = { id: r.id, name: r.name, status: r.status, engine: r.engine, external: !!r.sourceId, users: usersOf.get(r.id) ?? [] };
     if (BUSY.includes(r.status)) return { ...base, installed: null, state: 'busy', reason: r.status };
     if (r.status !== 'running') return { ...base, installed: null, state: 'offline', reason: r.status };
     if (r.adbState !== 'device') return { ...base, installed: null, state: 'offline', reason: 'adb' };

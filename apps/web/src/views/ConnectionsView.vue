@@ -15,7 +15,7 @@ import { useInstancesStore } from '../stores/instances'
 
 /**
  * Connection monitoring (连线监控): every device the viewer can see with its live link state
- * (GET /api/system/connections, RBAC-scoped), polled every 10 s. 日志 opens the shared device log drawer
+ * (GET /api/system/connections, admin only since 2026-11-18), polled every 10 s. 日志 opens the shared device log drawer
  * (its 连线 tab has the status/adb change history).
  */
 interface Row {

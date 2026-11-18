@@ -213,8 +213,9 @@ try {
   r = await clean('/api/instances', '/api/instances');
   check('A: device list = D1 only', r.body.instances.length === 1 && r.body.instances[0].id === D1.id);
   await clean('/api/instances/<D1>', `/api/instances/${D1.id}`);
-  await clean('/api/system/connections', '/api/system/connections');
-  await clean('/api/system/connections/<D1>/history', `/api/system/connections/${D1.id}/history`);
+  // 连线监控 is admin only (2026-11-18): A gets 403 even for its granted D1
+  await clean('/api/system/connections', '/api/system/connections', 403);
+  await clean('/api/system/connections/<D1>/history', `/api/system/connections/${D1.id}/history`, 403);
 
   // analytics
   r = await clean('/api/analytics/summary', '/api/analytics/summary?days=7');

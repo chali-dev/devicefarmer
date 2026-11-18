@@ -13,14 +13,16 @@ const router = createRouter({
         { path: 'dashboard', name: 'dashboard', component: () => import('../views/DashboardView.vue') },
         { path: 'instances', name: 'instances', component: () => import('../views/InstancesView.vue') },
         { path: 'instances/:id', name: 'instance', component: () => import('../views/InstanceDetailView.vue'), props: true },
-        { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue') },
+        { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue'), meta: { admin: true } },
         { path: 'media', name: 'media', component: () => import('../views/MediaView.vue') },
         { path: 'social', name: 'social', component: () => import('../views/SocialAccountsView.vue') },
-        { path: 'tracked', name: 'tracked', component: () => import('../views/TrackedAccountsView.vue') },
+        // 媒体管理 (owner's menu list, 2026-11-18): 追踪号 and 回文日志 are tabs of /social; old links keep their filters.
+        { path: 'tracked', redirect: (to) => ({ path: '/social', query: { ...to.query, tab: 'tracked' } }) },
         { path: 'analytics', name: 'analytics', component: () => import('../views/AnalyticsView.vue') },
         { path: 'content', name: 'content', component: () => import('../views/ContentView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
-        { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
+        // /comments?tab=queue|history|comments → /social?tab=replies&view=… (the comments page's own tabs became views).
+        { path: 'comments', redirect: (to) => ({ path: '/social', query: { ...to.query, tab: 'replies', view: typeof to.query.tab === 'string' ? to.query.tab : undefined } }) },
         { path: 'personas', name: 'personas', component: () => import('../views/PersonasView.vue') },
         // 话术库 removed (owner decision 2026-11-18): templates are the 范例 in the persona form.
         { path: 'scripts', redirect: '/personas' },
@@ -34,9 +36,10 @@ const router = createRouter({
         { path: 'risk', name: 'risk', component: () => import('../views/RiskView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
-        { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
+        // 权限管理 only assigned devices; that moved to 我的云机 (分配, owner decision 2026-11-18).
+        { path: 'permissions', redirect: '/instances' },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
-        { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue') },
+        { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue'), meta: { admin: true } },
         { path: 'system', name: 'system', component: () => import('../views/SystemView.vue'), meta: { admin: true } },
       ],
     },

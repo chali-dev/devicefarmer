@@ -1,28 +1,31 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { dateLocale } from '../../i18n'
 import { message } from 'ant-design-vue'
 import { EditOutlined, PlusOutlined, StarFilled, StarOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { queryParam } from '../api/query'
-import { api, codeText, errorText } from '../api/client'
+import { queryParam } from '../../api/query'
+import { api, codeText, errorText } from '../../api/client'
 import {
   compactNumber, TRACKED_SCHEDULE_HOURS, trackedHandle,
   type ManagedUser, type TrackedAccount, type TrackedCapacity, type TrackedPlatform, type TrackedStatus,
-} from '../api/types'
-import { useAuthStore } from '../stores/auth'
-import { usePlatformsStore } from '../stores/platforms'
-import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue'
-import ScheduleCapacityHint from '../components/tracked/ScheduleCapacityHint.vue'
-import PageContainer from '../components/common/PageContainer.vue'
-import SearchBar from '../components/common/SearchBar.vue'
-import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
-import StatusTag from '../components/common/StatusTag.vue'
-import PlatformTag from '../components/social/PlatformTag.vue'
-import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+} from '../../api/types'
+import { useAuthStore } from '../../stores/auth'
+import { usePlatformsStore } from '../../stores/platforms'
+import TrackedAccountDrawer from './TrackedAccountDrawer.vue'
+import ScheduleCapacityHint from './ScheduleCapacityHint.vue'
+import SearchBar from '../common/SearchBar.vue'
+import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
+import StatusTag from '../common/StatusTag.vue'
+import PlatformTag from '../social/PlatformTag.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
 
-/** 追踪账号: external public accounts the user observes (official API, or the collector phone for Instagram). */
+/**
+ * 媒体管理 → 追踪号: external public accounts the user observes (official API, or the collector phone for Instagram),
+ * with 定时采集 (采集频率) per account and in bulk. Header actions are teleported into `extraTo` (the page header).
+ */
+defineProps<{ extraTo?: string }>()
 const { t } = useI18n()
 const URL_HINT = 'https://'
 const ADD_HINT = 'https://www.instagram.com/handle/'
@@ -321,15 +324,15 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
 </script>
 
 <template>
-  <PageContainer :title="t('tracked.title')">
-    <template #extra>
+  <div>
+    <Teleport defer :to="extraTo || 'body'" :disabled="!extraTo">
       <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
       <a-button v-if="auth.isAdmin && hasDeviceSource" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.collector.title') }}</a-button>
       <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('tracked.add') }}</a-button>
-    </template>
+    </Teleport>
 
-    <a-card :bordered="false">
+    <div>
       <SearchBar :loading="loading" @reset="reset" @refresh="load()">
         <a-input-search v-model:value="filters.q" :placeholder="t('tracked.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
@@ -441,8 +444,8 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
           </template>
         </template>
       </a-table>
-    </a-card>
-  </PageContainer>
+    </div>
+  </div>
 
   <TrackedAccountDrawer v-model:open="detailOpen" :account="detail" :platforms="platforms" @changed="replace" @edit="openEdit" @refresh="refreshOne" />
 

@@ -7,14 +7,16 @@ import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../api/query'
-import { BUSY_STATUSES, canPower, egressGeo, profileLabel, proxyLabel, taskText, type DeviceAutomation, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
+import { BUSY_STATUSES, canPower, egressGeo, profileLabel, proxyLabel, taskText, type DeviceAutomation, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type ManagedUser, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
+import DeviceAssignModal from '../components/DeviceAssignModal.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceState from '../components/DeviceState.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
+import SyncFromDeviceModal from '../components/social/SyncFromDeviceModal.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -109,9 +111,10 @@ function readPref(): { view: 'grid' | 'table'; panel: boolean } {
 const pref = reactive(readPref())
 watch(pref, (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify(p)) } catch { /* private mode */ } })
 /**
- * 我的云手机 (non-admins, owner decision 2026-11-18): grid only, no side list, no selection / batch menu / status filter,
- * the name search only with more than 6 devices; per card only 远控, the status, 日志 and 重启 / 启动 (local phones:
- * 启动 while stopped, 重启 while running; external phones: none, admins power them). The API's RBAC is unchanged.
+ * 我的云机 (every role; owner's menu list 2026-11-18). Non-admins: grid only, no side list, no selection / batch menu /
+ * status filter, the name search only with more than 6 devices; per card only 远控, the status, 日志, 同步媒体号 and
+ * 重启 / 启动 (local phones: 启动 while stopped, 重启 while running; external phones: none, admins power them).
+ * Admins additionally create devices, bind proxies, assign users and have the full menu. The API's RBAC is unchanged.
  */
 const view = computed(() => (auth.isAdmin ? pref.view : 'grid'))
 const showSearch = computed(() => auth.isAdmin || store.list.length > 6)
@@ -131,7 +134,7 @@ const ownersShort = (list: InstanceOwner[]) =>
   list.slice(0, 2).map((o) => o.username).join(t('common.listSep')) + (list.length > 2 ? ` +${list.length - 2}` : '')
 
 // ---- actions menu (row and batch)
-type MenuKey = Action | 'install' | 'uninstall'
+type MenuKey = Action | 'install' | 'uninstall' | 'sync' | 'assign' | 'assign-add' | 'assign-remove'
 const isBusy = (i: Instance) => BUSY_STATUSES.includes(i.status)
 /** Whether an action makes sense for this device's current status. */
 function canDo(key: MenuKey, i: Instance) {
@@ -139,7 +142,7 @@ function canDo(key: MenuKey, i: Instance) {
   if ((key === 'start' || key === 'stop' || key === 'restart') && !canPower(i, auth.isAdmin)) return false
   if (key === 'start') return i.status !== 'running'
   if (key === 'stop' || key === 'restart') return i.status !== 'stopped'
-  if (key === 'install' || key === 'uninstall') return i.status === 'running'
+  if (key === 'install' || key === 'uninstall' || key === 'sync') return i.status === 'running'
   return true
 }
 /** 批量操作 menu; confirmations (delete/stop/restart, billed power-on) stay in run(). */
@@ -149,11 +152,42 @@ const batchItems = computed<BatchItem[]>(() => [
   { key: 'restart', label: t('devices.restart') },
   { key: 'install', label: t('devices.installApp') },
   { key: 'uninstall', label: t('devices.uninstallApp') },
-  ...(auth.isAdmin ? [{ key: 'delete', label: t('devices.delete'), danger: true }] : []),
+  ...(auth.isAdmin ? [
+    { key: 'assign-add', label: t('permissions.addToSelected') },
+    { key: 'assign-remove', label: t('permissions.removeFromSelected') },
+    { key: 'delete', label: t('devices.delete'), danger: true },
+  ] : []),
 ])
 function onMenu(key: MenuKey, ids: string[]) {
-  if (key === 'install' || key === 'uninstall') openApp(key, ids)
+  if (key === 'assign' || key === 'assign-add' || key === 'assign-remove') openAssign(key === 'assign' ? 'set' : key === 'assign-add' ? 'add' : 'remove', ids)
+  else if (key === 'sync') void openSync(ids[0]!)
+  else if (key === 'install' || key === 'uninstall') openApp(key, ids)
   else void run(key, ids)
+}
+
+// ---- 分配 (admin; moved from the former 权限管理 page): one device's users, or add / remove users on the selection.
+const assignOpen = ref(false)
+const assignMode = ref<'set' | 'add' | 'remove'>('set')
+const assignIds = ref<string[]>([])
+function openAssign(mode: 'set' | 'add' | 'remove', ids: string[]) {
+  if (!ids.length) return
+  assignMode.value = mode; assignIds.value = [...ids]; assignOpen.value = true
+}
+
+// ---- 同步媒体号: the shared 从云手机同步 dialog (POST /api/social/sync-from-device) with this device preselected;
+// admins also pick the account's owner there.
+const syncOpen = ref(false)
+const syncId = ref<string | undefined>()
+const syncUsers = ref<ManagedUser[]>([])
+async function openSync(id: string) {
+  syncId.value = id
+  syncOpen.value = true
+  if (auth.isAdmin && !syncUsers.value.length) {
+    try { syncUsers.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch { /* owner = the admin */ }
+  }
+}
+function onSynced(accountId: string) {
+  message.success({ content: () => h('span', [t('devices.syncDone'), ' ', h('a', { onClick: () => router.push({ path: '/social', query: { instanceId: syncId.value } }) }, t('devices.syncView'))]), key: accountId })
 }
 
 async function run(action: Action, ids: string[]) {
@@ -556,6 +590,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                     <a-menu-item key="restart" :disabled="!canDo('restart', record as Instance)">{{ t('devices.restart') }}</a-menu-item>
                     <a-menu-item key="install" :disabled="!canDo('install', record as Instance)">{{ t('devices.installApp') }}</a-menu-item>
                     <a-menu-item key="uninstall" :disabled="!canDo('uninstall', record as Instance)">{{ t('devices.uninstallApp') }}</a-menu-item>
+                    <a-menu-item key="sync" :disabled="!canDo('sync', record as Instance)">{{ t('devices.syncAccounts') }}</a-menu-item>
+                    <a-menu-item v-if="auth.isAdmin" key="assign">{{ t('permissions.assign') }}</a-menu-item>
                     <template v-if="auth.isAdmin">
                       <a-menu-divider />
                       <a-menu-item key="delete" danger :disabled="!canDo('delete', record as Instance)">{{ t('devices.delete') }}</a-menu-item>
@@ -598,6 +634,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                     <a-menu-item key="restart" :disabled="!canDo('restart', i)">{{ t('devices.restart') }}</a-menu-item>
                     <a-menu-item key="install" :disabled="!canDo('install', i)">{{ t('devices.installApp') }}</a-menu-item>
                     <a-menu-item key="uninstall" :disabled="!canDo('uninstall', i)">{{ t('devices.uninstallApp') }}</a-menu-item>
+                    <a-menu-item key="sync" :disabled="!canDo('sync', i)">{{ t('devices.syncAccounts') }}</a-menu-item>
+                    <a-menu-item key="assign">{{ t('permissions.assign') }}</a-menu-item>
                     <a-menu-item key="log">{{ t('devices.log') }}</a-menu-item>
                     <template v-if="auth.isAdmin">
                       <a-menu-divider />
@@ -615,6 +653,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                 </template>
                 <span class="ellipsis muted clickable">{{ ownersShort(i.owners) }}</span>
               </a-popover>
+              <a class="assign-link" @click="openAssign('set', [i.id])">{{ t('permissions.assign') }}</a>
             </div>
             <div class="phone-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
               <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :paused="phoneOpen" :slow="!!i.sourceId" :width="i.spec.width" :height="i.spec.height">
@@ -629,6 +668,9 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <div v-if="!auth.isAdmin" class="phone-actions">
               <a-button size="small" type="link" :disabled="i.status !== 'running'" @click="openPhone(i.id)">{{ t('devices.control') }}</a-button>
               <a-button size="small" type="link" @click="openLog(i.id)">{{ t('devices.log') }}</a-button>
+              <a-tooltip :title="t('devices.syncAccountsHint')">
+                <a-button size="small" type="link" :disabled="!canDo('sync', i)" @click="openSync(i.id)">{{ t('devices.syncAccounts') }}</a-button>
+              </a-tooltip>
               <template v-if="canPower(i, false) && !isBusy(i)">
                 <a-button v-if="i.status === 'running'" size="small" type="link" @click="run('restart', [i.id])">{{ t('devices.restart') }}</a-button>
                 <a-button v-else-if="i.status === 'stopped' || i.status === 'error'" size="small" type="link" @click="run('start', [i.id])">{{ t('devices.start') }}</a-button>
@@ -811,6 +853,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
   </a-modal>
 
   <DeviceLogDrawer v-model:open="logOpen" :instance="logInstance" />
+  <DeviceAssignModal v-model:open="assignOpen" :mode="assignMode" :instance-ids="assignIds" />
+  <SyncFromDeviceModal v-model:open="syncOpen" :users="syncUsers" :instance-id="syncId" @synced="onSynced" />
   <CloudPhoneDrawer v-model:open="phoneOpen" :instance-id="phoneId" :profile-name="profileName" @menu="onMenu" @log="openLog" />
 </template>
 
@@ -852,7 +896,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 .phone { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius-lg); background: var(--cp-bg-container); min-width: 0; }
 .phone.selected { border-color: var(--cp-primary); }
 .phone.focus { border-color: var(--cp-primary); box-shadow: 0 0 0 2px var(--cp-primary-bg); }
-.phone-owners { display: flex; min-width: 0; margin-top: -4px; }
+.phone-owners { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: -4px; }
+.assign-link { flex: none; margin-inline-start: auto; }
 :deep(.row-focus > td) { background: var(--cp-primary-bg) !important; }
 .phone-head { display: flex; align-items: center; gap: 8px; }
 .phone-actions { display: flex; flex-wrap: wrap; justify-content: center; }

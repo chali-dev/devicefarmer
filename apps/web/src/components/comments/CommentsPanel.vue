@@ -1,44 +1,48 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { dateLocale } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { api, codeText, errorText } from '../api/client'
+import { api, codeText, errorText } from '../../api/client'
 import {
-  type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentStatus,
-} from '../api/types'
-import CommentDrawer from '../components/comments/CommentDrawer.vue'
-import FoldToggle from '../components/comments/FoldToggle.vue'
-import EvidenceModal from '../components/feed/EvidenceModal.vue'
-import FeedReplyModal from '../components/feed/FeedReplyModal.vue'
-import ReplyScheduleModal from '../components/feed/ReplyScheduleModal.vue'
-import PageContainer from '../components/common/PageContainer.vue'
-import SearchBar from '../components/common/SearchBar.vue'
-import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
-import PlatformTag from '../components/social/PlatformTag.vue'
-import { platformName } from '../components/social/platformMeta'
-import { useAuthStore } from '../stores/auth'
-import { useInstancesStore } from '../stores/instances'
+  type CommentAccount, type CommentItem, type ManagedUser, type CommentReplyItem, type CommentReplyStatus, type CommentStatus,
+} from '../../api/types'
+import CommentDrawer from './CommentDrawer.vue'
+import FoldToggle from './FoldToggle.vue'
+import EvidenceModal from '../feed/EvidenceModal.vue'
+import FeedReplyModal from '../feed/FeedReplyModal.vue'
+import ReplyScheduleModal from '../feed/ReplyScheduleModal.vue'
+import SearchBar from '../common/SearchBar.vue'
+import StatusTag from '../common/StatusTag.vue'
+import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
+import PlatformTag from '../social/PlatformTag.vue'
+import { platformName } from '../social/platformMeta'
+import { useAuthStore } from '../../stores/auth'
+import { useInstancesStore } from '../../stores/instances'
 
 /**
- * Comments & engagement (评论互动): threads, reply composer, sending queue / history (评论范例: persona form). No approval step
- * (removed 2026-11-18); the reply rules are edited on the 风控 page. Draft first (2026-11-18): every reply starts as a
- * draft; the queue's drafts have 编辑 / 排程 (preview + time) / 删除, nothing is sent before 排程.
+ * 媒体管理 → 回文日志 (formerly the 评论互动 page, merged 2026-11-18): every comment and reply of the viewer's accounts
+ * (admins: all, or one user's). Three views (`?view=`): 收到的评论 (threads, manual entry, mark read / hide / ignore,
+ * reply composer in the drawer), 待发送 (drafts with 编辑 / 排程 / 删除, scheduled, sending, waiting for the operator)
+ * and 已处理 (sent / failed / cancelled), each with the account and status filters. No approval step (removed
+ * 2026-11-18); the reply rules are edited on the 风控 page. Draft first: nothing is sent before 排程.
+ * Header actions are teleported into `extraTo` (the page header).
  */
+defineProps<{ extraTo?: string }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const store = useInstancesStore()
 const route = useRoute()
 const router = useRouter()
 
-type Tab = 'comments' | 'queue' | 'history'
-const TABS: Tab[] = ['comments', 'queue', 'history']
-const tab = computed<Tab>({
-  get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'comments'),
-  set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
+type View = 'comments' | 'queue' | 'history'
+const VIEWS: View[] = ['comments', 'queue', 'history']
+/** `?view=` (the page's `?tab=` is the 媒体管理 tab); old /comments?tab=… links are redirected to it by the router. */
+const tab = computed<View>({
+  get: () => (VIEWS.includes(route.query.view as View) ? (route.query.view as View) : 'comments'),
+  set: (v) => { void router.replace({ query: { ...route.query, view: v, status: undefined, replyStatus: undefined } }) },
 })
 /** `approved` / `pending_review` only on rows older than the removal of the approval step. */
 const QUEUE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
@@ -49,11 +53,18 @@ const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) 
 const errText = (code: string | null, raw: string | null, platform?: string) => (code ? codeText(code, { platform: platform ?? '' }, raw ?? code) : raw ?? '')
 
 const accounts = ref<CommentAccount[]>([])
+const users = ref<ManagedUser[]>([])
 const posts = ref<{ postId: string; postUrl: string | null; n: number; title: string | null }[]>([])
 const filters = reactive({
   accountId: (typeof route.query.account === 'string' ? route.query.account : undefined) as string | undefined,
   postId: undefined as string | undefined, status: (typeof route.query.status === 'string' ? route.query.status : undefined) as CommentStatus | undefined, source: undefined as 'api' | 'manual' | 'device' | undefined, q: '',
+  /** 待发送 / 已处理: one reply status of the view (none = all of them). */
+  replyStatus: (typeof route.query.replyStatus === 'string' ? route.query.replyStatus : undefined) as CommentReplyStatus | undefined,
+  /** admins: one user's accounts */
+  ownerId: undefined as string | undefined,
 })
+/** Reply statuses offered in the filter (legacy statuses only when rows have them). */
+const replyStatuses = computed(() => (tab.value === 'queue' ? QUEUE : HISTORY).filter((s) => !['pending_review', 'approved', 'dry_run', 'rejected'].includes(s) || (rByStatus.value[s] ?? 0) > 0))
 const account = computed(() => accounts.value.find((a) => a.id === filters.accountId) ?? null)
 
 async function loadAccounts() {
@@ -76,6 +87,7 @@ async function loadComments() {
   try {
     const p = new URLSearchParams()
     if (filters.accountId) p.set('accountId', filters.accountId)
+    if (filters.ownerId) p.set('ownerId', filters.ownerId)
     if (filters.postId) p.set('postId', filters.postId)
     if (filters.status) p.set('status', filters.status)
     if (filters.source) p.set('source', filters.source)
@@ -158,8 +170,10 @@ async function loadReplies() {
   try {
     const p = new URLSearchParams()
     if (filters.accountId) p.set('accountId', filters.accountId)
+    if (filters.ownerId) p.set('ownerId', filters.ownerId)
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    p.set('status', (tab.value === 'queue' ? QUEUE : HISTORY).join(','))
+    const group = tab.value === 'queue' ? QUEUE : HISTORY
+    p.set('status', (filters.replyStatus && group.includes(filters.replyStatus) ? [filters.replyStatus] : group).join(','))
     p.set('limit', String(rPage.pageSize)); p.set('offset', String((rPage.current - 1) * rPage.pageSize))
     const r = await api<{ items: CommentReplyItem[]; total: number; byStatus: Record<CommentReplyStatus, number> }>('GET', `/api/comment-replies?${p}`)
     replies.value = r.items; rTotal.value = r.total; rByStatus.value = r.byStatus
@@ -203,7 +217,7 @@ function onRepliesChange(p: { current?: number; pageSize?: number }) {
   void loadReplies()
 }
 function reset() {
-  Object.assign(filters, { accountId: undefined, postId: undefined, status: undefined, source: undefined, q: '' })
+  Object.assign(filters, { accountId: undefined, postId: undefined, status: undefined, source: undefined, q: '', replyStatus: undefined, ownerId: undefined })
   search()
 }
 watch(() => filters.accountId, (id) => {
@@ -212,7 +226,7 @@ watch(() => filters.accountId, (id) => {
   void loadPosts()
   search()
 })
-watch(tab, () => { void load() })
+watch(tab, () => { filters.replyStatus = undefined; rPage.current = 1; void load() })
 
 const drawerOpen = ref(false)
 const drawerId = ref<string | null>(null)
@@ -234,27 +248,35 @@ const off = store.onTaskEvent((ev) => {
   }, 400)
 })
 onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer) })
-onMounted(() => {
+onMounted(async () => {
   void load(); void loadAccounts()
   if (filters.accountId) void loadPosts()
+  if (auth.isAdmin) { try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch { /* filter only */ } }
 })
+/** Accounts offered in the filter: those of the picked user (admins). */
+const accountOptions = computed(() => accounts.value.filter((a) => !filters.ownerId || a.userId === filters.ownerId))
+function onOwner() {
+  if (filters.accountId && !accountOptions.value.some((a) => a.id === filters.accountId)) filters.accountId = undefined // the watch reloads
+  else search()
+}
 </script>
 
 <template>
-  <PageContainer :title="t('comments.title')">
-    <template v-if="auth.isAdmin" #extra>
+  <div>
+    <Teleport v-if="auth.isAdmin" defer :to="extraTo || 'body'" :disabled="!extraTo">
       <a-button @click="$router.push('/risk')">{{ t('comments.rules') }}</a-button>
-    </template>
+    </Teleport>
 
-    <a-card :bordered="false" class="tabs-card">
-      <a-tabs v-model:active-key="tab">
-        <a-tab-pane key="comments" :tab="t('comments.tabs.comments')" />
-        <a-tab-pane v-for="k in (['queue', 'history'] as const)" :key="k" :tab="t(`comments.tabs.${k}`)" />
-      </a-tabs>
+    <div>
+      <a-radio-group v-model:value="tab" button-style="solid" class="views">
+        <a-radio-button v-for="k in VIEWS" :key="k" :value="k">{{ t(`comments.tabs.${k}`) }}</a-radio-button>
+      </a-radio-group>
 
       <SearchBar @reset="reset">
+        <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="onOwner" />
         <a-select v-model:value="filters.accountId" :placeholder="t('comments.allAccounts')" allow-clear show-search option-filter-prop="label" style="width: 240px">
-          <a-select-option v-for="a in accounts" :key="a.id" :value="a.id" :label="`${platformName(a.platform)} @${a.handle}`">
+          <a-select-option v-for="a in accountOptions" :key="a.id" :value="a.id" :label="`${platformName(a.platform)} @${a.handle}`">
             <PlatformTag :platform="a.platform" :name="`@${a.handle}${a.newCount ? ` (${a.newCount})` : ''}`" />
           </a-select-option>
         </a-select>
@@ -267,6 +289,9 @@ onMounted(() => {
         <a-select v-if="tab === 'comments'" v-model:value="filters.source" :placeholder="t('comments.source')" allow-clear style="width: 130px" @change="search">
           <a-select-option value="api">{{ t('comments.sourceApi') }}</a-select-option>
           <a-select-option value="manual">{{ t('comments.sourceManual') }}</a-select-option>
+        </a-select>
+        <a-select v-if="tab !== 'comments'" v-model:value="filters.replyStatus" :placeholder="t('comments.colStatus')" allow-clear style="width: 150px" @change="search">
+          <a-select-option v-for="s in replyStatuses" :key="s" :value="s">{{ t(`comments.replyStatus.${s}`) }} ({{ rByStatus[s] ?? 0 }})</a-select-option>
         </a-select>
         <a-input-search v-model:value="filters.q" :placeholder="t('comments.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
       </SearchBar>
@@ -369,9 +394,8 @@ onMounted(() => {
           </template>
         </template>
       </a-table>
-
-    </a-card>
-  </PageContainer>
+    </div>
+  </div>
 
   <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" @changed="changed" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
@@ -413,8 +437,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.tabs-card :deep(.ant-card-body) { padding-top: 4px; }
-.tabs-card :deep(.ant-tabs-nav) { margin-bottom: var(--cp-gap); }
+.views { margin-bottom: var(--cp-gap); }
 .acc-bar {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--cp-gap);
   padding: 8px 12px; background: var(--cp-fill-alter); border-radius: var(--cp-radius);

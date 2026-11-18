@@ -6,9 +6,10 @@
  * Without a device: upload → `GET /api/library/:id/targets` on inert external rows of THIS API's DB (a device source
  * with an invalid config, so this instance's external monitor skips them and never opens a tunnel or powers anything):
  * stopped / restarting / running without adb / running with nothing listening on its adb port (live read fails → offline);
- * granted usernames for admins, user scope = granted devices, no usernames; batch install validation (400/403/404, skipped
- * codes) and RBAC; a failed install on the dead row and an old-style task row (no ref, APK path in the library dir) in the
- * install log with task-centre visibility. `--bit` adds a row for the BitBrowser phone (adb 5700, must be attached by the
+ * granted usernames per device; batch install validation (400/404, skipped codes); the library is admin only (2026-11-18):
+ * a user, even with grants, gets 403 on every /api/library* route (list, targets, logs, install, import, upload, patch,
+ * delete); a failed install on the dead row and an old-style task row (no ref, APK path in the library dir) in the
+ * install log. `--bit` adds a row for the BitBrowser phone (adb 5700, must be attached by the
  * main API) that is ONLY read (`dumpsys package` of the library package): it is never installed on.
  * With a device (default; refused when the VM is full → reported as skipped): creates `libui-*`, installs from the
  * library (one batch request), the second request while queued is skipped (library.install_pending), the target then
@@ -105,20 +106,24 @@ try {
     check('BitBrowser phone (read only): state matches a direct dumpsys read', b?.state === expect && (b?.installed?.versionCode ?? null) === (direct?.versionCode ?? null), `${b?.state}, installed ${direct ? direct.versionCode : 'none'}`);
   }
 
-  // ---- targets: users
-  r = await targets(U.token, libId);
-  const ud = r.body?.devices ?? [];
-  check('user: only granted devices, no usernames', r.status === 200 && ud.length === 2 && ud.every((d: any) => [off.id, dead.id].includes(d.id) && d.users === undefined), ud.map((d: any) => d.name).join(', '));
-  r = await targets(U2.token, libId);
-  check('user without grants: empty list', r.status === 200 && r.body.devices.length === 0);
+  // ---- users: admin only (2026-11-18), also for a user with grants on the devices
+  const userCalls: [string, string, unknown?][] = [
+    ['GET', '/api/library'], ['GET', `/api/library/${libId}/targets`], ['GET', `/api/library/${libId}/logs`],
+    ['POST', `/api/library/${libId}/install`, { instanceIds: [dead.id] }], ['POST', '/api/library/import', { instanceId: dead.id, package: lib.package }],
+    ['PATCH', `/api/library/${libId}`, { preinstall: true }], ['DELETE', `/api/library/${libId}`],
+  ];
+  for (const who of [U, U2]) {
+    const res = await Promise.all(userCalls.map(([m, p, b]) => http(m, p, who.token, b)));
+    const upFd = new FormData(); upFd.append('file', new Blob([fs.readFileSync(apk)]), 'user.apk');
+    const upU = await http('POST', '/api/library/upload', who.token, upFd);
+    const bad = [...userCalls.map(([m, p], i) => [`${m} ${p}`, res[i]!] as const), ['POST /api/library/upload', upU] as const].filter(([, x]) => x.status !== 403 || x.body?.code !== 'auth.admin_only');
+    check(`${who === U ? 'user with grants' : 'user without grants'}: 403 auth.admin_only on all 8 library routes`, !bad.length, bad.map(([k, x]) => `${k}=${x.status}`).join(', '));
+  }
+  check('library entry untouched by the refused user calls', (await http('GET', '/api/library', T)).body.apps.some((x: any) => x.id === libId && x.preinstall === false));
   r = await targets(T, randomUUID());
   check('unknown library id → 404 library.not_found', r.status === 404 && r.body?.code === 'library.not_found');
 
-  // ---- batch install validation + RBAC (never on the BitBrowser row)
-  r = await http('POST', `/api/library/${libId}/install`, U.token, { instanceIds: [busy.id] });
-  check('user: device not granted → 403', r.status === 403 && r.body?.code === 'auth.no_instance_access');
-  r = await http('POST', `/api/library/${libId}/install`, U2.token, { instanceIds: [off.id] });
-  check('user without grant → 403', r.status === 403);
+  // ---- batch install validation (never on the BitBrowser row)
   r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: [] });
   check('empty selection → 400', r.status === 400);
   r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: Array.from({ length: 101 }, () => randomUUID()) });
@@ -129,9 +134,9 @@ try {
   r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: [off.id, busy.id, ghost, off.id] });
   const codes = (r.body?.skipped ?? []).map((s: any) => `${s.code}`).sort();
   check('admin batch: one request, duplicates merged, coded skips', r.status === 202 && r.body.accepted.length === 0 && codes.join() === 'instances.not_found,instances.not_running,instances.not_running', codes.join());
-  r = await http('POST', `/api/library/${libId}/install`, U.token, { instanceIds: [dead.id] });
-  check('user: install on a granted running device accepted', r.status === 202 && r.body.accepted.length === 1);
-  const failedTask = await taskDone(U.token, r.body.accepted[0].taskId);
+  r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: [dead.id] });
+  check('admin: install on a running device accepted', r.status === 202 && r.body.accepted.length === 1);
+  const failedTask = await taskDone(T, r.body.accepted[0].taskId);
   check('install on the dead row fails (adb)', failedTask.status === 'failed', failedTask.error);
   check('new task carries refType library_app + refId + payload.library', failedTask.refType === 'library_app' && failedTask.refId === libId && failedTask.payload?.library?.versionCode === lib.versionCode && failedTask.payload.library.preinstall === false);
 
@@ -148,17 +153,12 @@ try {
 
   // ---- install log
   r = await http('GET', `/api/library/${libId}/logs`, T);
-  let items = r.body?.items ?? [];
+  const items = r.body?.items ?? [];
   const f = items.find((x: any) => x.taskId === failedTask.id);
   const l = items.find((x: any) => x.taskId === legacy!.id);
-  check('admin log: failed install with device, operator, version, error', !!f && f.status === 'failed' && f.instanceName === dead.name && f.operator === U.name && f.versionCode === lib.versionCode && f.versionName === lib.versionName && !!f.error && f.preinstall === false && f.deviceExists === true, f ? `${f.instanceName} · ${f.operator} · ${f.error}` : 'missing');
+  check('admin log: failed install with device, operator, version, error', !!f && f.status === 'failed' && f.instanceName === dead.name && f.operator === process.env.ADMIN_USERNAME && f.versionCode === lib.versionCode && f.versionName === lib.versionName && !!f.error && f.preinstall === false && f.deviceExists === true, f ? `${f.instanceName} · ${f.operator} · ${f.error}` : 'missing');
   check('admin log: old task matched by its library APK path (version from the path, 预装 from the label, system operator)', !!l && l.versionCode === lib.versionCode && l.preinstall === true && l.operator === null && l.instanceName === off.name);
   check('admin log: upload installs outside the library are not listed', !items.some((x: any) => x.taskId === other!.id) && r.body.total === items.length);
-  r = await http('GET', `/api/library/${libId}/logs`, U.token);
-  items = r.body?.items ?? [];
-  check('user log: own task + tasks on granted devices (task-centre rule)', items.some((x: any) => x.taskId === failedTask.id) && items.some((x: any) => x.taskId === legacy!.id), `${items.length} item(s)`);
-  r = await http('GET', `/api/library/${libId}/logs`, U2.token);
-  check('user without grants: empty log', r.status === 200 && r.body.total === 0 && r.body.items.length === 0);
   r = await http('GET', `/api/library/${libId}/logs?limit=1&offset=1`, T);
   check('log paging (limit/offset, total)', r.status === 200 && r.body.items.length === 1 && r.body.total >= 2);
 
