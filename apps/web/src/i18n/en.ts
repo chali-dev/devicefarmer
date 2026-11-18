@@ -2054,9 +2054,6 @@ const en: Messages = {
       opening: 'Fixed opening',
       closing: 'Fixed closing',
       notes: 'Notes',
-      ai: 'AI test',
-      aiHint: 'Generates one preview in the saved post style; nothing is stored unless you save it as a draft. How many drafts a day is set on the social accounts. Persona settings, post examples and recent posts are sent to the Anthropic API.',
-      aiAfterSave: 'Save the persona to run an AI test',
     },
     card: {
       title_post: 'Persona · post style',

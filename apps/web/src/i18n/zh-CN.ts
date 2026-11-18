@@ -2065,9 +2065,6 @@ const zhCN = {
       opening: '固定开头',
       closing: '固定结尾',
       notes: '补充说明',
-      ai: 'AI测试',
-      aiHint: '按已保存的发文风格生成一条预览，不入库；满意可保存为草稿。每天生成几篇在社交号里设置。人设设定、发文范例和最近帖子会发送给 Anthropic API。',
-      aiAfterSave: '保存人设后可做 AI测试',
     },
     card: {
       title_post: '人设 · 发文风格',

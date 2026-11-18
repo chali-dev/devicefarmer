@@ -558,8 +558,8 @@ export async function previewDraft(user: AuthUser, p: Persona, info: Record<stri
 export const MANUAL_WINDOW_SEC = 120;
 /** Optional 主题 of 立即生成 / AI测试 (empty = none: the model picks topics from the persona). */
 export const TopicInput = z.string().trim().max(200).optional().transform((x) => x || undefined);
-export const ManualDraftsInput = z.object({ count: z.number().int().min(1).max(10).optional(), topic: TopicInput }).optional();
-export const PreviewInput = z.object({ topic: TopicInput }).optional();
+export const ManualDraftsInput = z.object({ count: z.number().int().min(1).max(10).optional(), topic: TopicInput }).nullish();
+export const PreviewInput = z.object({ topic: TopicInput }).nullish();
 
 /**
  * 「AI生成草稿」 on a social account: queues one `account-drafts` task NOW (trigger manual, created by the caller, drafts
