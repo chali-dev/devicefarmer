@@ -529,7 +529,7 @@ export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default', dry_run: 'cyan',
 }
 /** 风控 → 云手机发帖 (GET/PUT /api/publish/device-settings). */
-export interface DevicePublishRules { enabled: boolean; postsPerDay: number; minGapMin: number }
+export interface DevicePublishRules { postsPerDay: number; minGapMin: number }
 /** comments.rules (风控 → 评论回复); sendsPerDay / minGapSec = sends from the cloud phones. */
 export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number; sendsPerDay: number; minGapSec: number }
 export interface CommentAccount {
