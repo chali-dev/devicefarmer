@@ -1,7 +1,7 @@
 /**
  * 人设每日草稿 (AI drafts per persona) against the real API, DB, Redis and the real Anthropic API. No mocks.
  * - 内容设定 CRUD + validation + RBAC: personal persona (owner / admin; others 404), public persona (admin only, users
- *   403), drafts per day 1..10, language must be offered, examples must be post templates visible to the persona,
+ *   403), drafts per day 1..10, language must be Chinese or bound to one of the owner's social accounts (public: any), examples must be post templates visible to the persona,
  *   draft owner rules (public: required to switch on, must be an enabled user; personal: not settable), list without brief.
  * - Persona list `lastDraftRun` (人设 page): newest generation task (trigger, status, error code) only on rows the viewer
  *   manages (owner/admin; public personas: admin only, users get null), others' personal personas not listed at all.
@@ -101,8 +101,11 @@ try {
   check('drafts per day outside 1..10 → 400', r.status === 400 && r4.status === 400);
   r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, {});
   check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
+  // Offered languages = Chinese + languages bound to social accounts (personal persona: its owner's accounts).
+  const langAcc = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `pd_lang_${tag}`, lang: 'en' });
+  check('A has an account bound to English (so en is offered)', langAcc.status === 201 && langAcc.body.account.lang === 'en', langAcc.text.slice(0, 120));
   r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { lang: 'fr' } });
-  check('language not in the content language list → 400 persona.draft_lang_not_offered', r.status === 400 && r.body.code === 'persona.draft_lang_not_offered', `${r.status} ${r.body?.code}`);
+  check('language neither Chinese nor bound to an account → 400 persona.draft_lang_not_offered', r.status === 400 && r.body.code === 'persona.draft_lang_not_offered', `${r.status} ${r.body?.code}`);
   r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { lang: 'EN', tone: 'warm', topics: ['home cooking'], bannedWords: ['forbiddenword'] } });
   check('language is canonicalised (EN → en) and the brief stored', r.status === 200 && r.body.drafts.brief.lang === 'en' && r.body.drafts.brief.tone === 'warm');
   r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { surprise: 1 } });

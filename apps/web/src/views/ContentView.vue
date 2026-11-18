@@ -9,7 +9,7 @@ import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import { langName } from '../api/lang'
 import {
   AI_DRAFT_TAG, CONTENT_STATUSES, PUBLISH_UNFINISHED,
-  type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PostType, type PublishTaskItem,
+  type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentLanguages, type ContentTranslation, type ManagedUser, type PostType, type PublishTaskItem,
   type SocialAccount,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -127,9 +127,13 @@ function categoryGroups(pub: ContentCategory[], own: ContentCategory[]) {
 const filterCategoryOptions = computed(() => [{ value: 'none', label: t('content.uncategorized') }, ...categoryGroups(publicCats.value, personalCats.value)])
 const categoryManagerOpen = ref(false)
 function categoriesChanged() { void loadCategories(); void load() }
-/** 多语言内容: languages offered in the editor (admin setting). */
-const langCfg = ref<LanguageSettings>({ languages: [], defaultSource: null })
-async function loadLangs() { try { langCfg.value = await api<LanguageSettings>('GET', '/api/contents/languages') } catch { /* editor still works with the source only */ } }
+/**
+ * 多语言内容: Chinese is the fixed source; 配置语系 = languages bound to the visible social accounts (list filter), or to
+ * the content owner's accounts (editor, `editorLangs`).
+ */
+const SOURCE_LANG = 'zh-CN'
+const langCfg = ref<ContentLanguages>({ source: SOURCE_LANG, configured: [], languages: [SOURCE_LANG] })
+async function loadLangs() { try { langCfg.value = await api<ContentLanguages>('GET', '/api/contents/languages') } catch { /* filter offers Chinese only */ } }
 const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
 onMounted(() => { void load(); void loadFacets(); void loadLangs(); void loadCategories() })
 
@@ -175,6 +179,13 @@ const pickerOpen = ref(false)
 const targetOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth.user?.id)
 const targetAccounts = ref<SocialAccount[]>([])
 const firstTarget = computed(() => targetAccounts.value[0] ?? null)
+/** 配置语系 of the content owner (editor tabs when the content has no targets). */
+const editorLangs = ref<string[]>([])
+watch([targetOwner, editorOpen], async () => {
+  if (!editorOpen.value) return
+  const o = targetOwner.value
+  try { editorLangs.value = (await api<ContentLanguages>('GET', `/api/contents/languages${auth.isAdmin && o ? `?ownerId=${o}` : ''}`)).configured } catch { editorLangs.value = [] }
+})
 const previewType = ref<PostType>('feed')
 /** The editor's categories: public ones + the content owner's personal ones; 新建分类 adds a personal one of that owner. */
 const ownerCats = ref<ContentCategory[]>([])
@@ -248,6 +259,7 @@ const SRC = '_source'
 const langTab = ref(SRC)
 const currentTr = computed(() => trs.value.find((f) => f.lang === langTab.value))
 const trTabs = computed(() => textTabs(form.texts[primary.value]))
+/** Source language: zh-CN for new contents; older contents keep theirs (read-only). */
 const sourceLang = ref<string | undefined>()
 /** Key-order independent JSON, to tell changed versions apart. */
 const stable = (v: unknown): string => (v && typeof v === 'object' && !Array.isArray(v)
@@ -264,9 +276,18 @@ function fillTranslations(list: ContentTranslation[]) {
   trOrig.value = Object.fromEntries(list.map((x) => [x.lang, stable({ title: x.title.trim(), body: x.body, platformHints: cleanHints(copyHints(x.platformHints)) })]))
   if (!trs.value.some((f) => f.lang === langTab.value)) langTab.value = SRC
 }
-const addableLangs = computed(() => langCfg.value.languages.filter((l) => l !== sourceLang.value && !trs.value.some((f) => f.lang === l)))
-const sourceLangOptions = computed(() => [...new Set([...langCfg.value.languages, ...(sourceLang.value ? [sourceLang.value] : [])])]
-  .filter((l) => !trs.value.some((f) => f.lang === l)).map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
+/**
+ * Languages the content needs: those of its target accounts (publishing uses the translation in the account's language,
+ * else the source), or the owner's 配置语系 when it has no targets. Missing ones are flagged in the editor.
+ */
+const wantedLangs = computed(() => {
+  const fromTargets = [...new Set(targetAccounts.value.flatMap((a) => (a.lang ? [a.lang] : [])))]
+  return (form.targets.length ? fromTargets : editorLangs.value).filter((l) => l !== sourceLang.value)
+})
+const missingLangs = computed(() => wantedLangs.value.filter((l) => !trs.value.some((f) => f.lang === l)))
+/** Chinese (for older contents in another source language), the wanted languages and the owner's 配置语系. */
+const addableLangs = computed(() => [...new Set([SOURCE_LANG, ...wantedLangs.value, ...editorLangs.value])]
+  .filter((l) => l !== sourceLang.value && !trs.value.some((f) => f.lang === l)))
 function addLang(lang: string) {
   trs.value.push({ lang, title: '', texts: splitTexts('', {}), hints: { youtube: {} } })
   langTab.value = lang
@@ -283,7 +304,7 @@ function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
 function fillForm(c: Content | null) {
   const hints = copyHints(c?.platformHints)
   hints.youtube ??= {}
-  sourceLang.value = c ? (c.lang ?? undefined) : (langCfg.value.defaultSource ?? undefined)
+  sourceLang.value = c ? (c.lang ?? undefined) : SOURCE_LANG
   Object.assign(form, {
     title: c?.title ?? '', categoryId: c?.category?.id ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
     ownerId: !c && auth.isAdmin ? auth.user?.id : undefined, targets: (c?.targets ?? []).map((x) => x.id),
@@ -343,12 +364,11 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
     const body = {
       title: form.title.trim(), body: text, categoryId: form.categoryId ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
       targetIds: form.targets,
-      lang: sourceLang.value ?? null, ...(editing.value?.stage === 'archived' ? {} : { stage }),
+      ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
     let saved: Content
     const editId = editing.value?.id
     if (editId) {
-      // Removed versions first, so the original language may move to a language whose version was just removed.
       for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${editId}/translations/${lang}`)
       saved = (await api<{ content: Content }>('PUT', `/api/contents/${editId}`, body)).content
     } else saved = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId && form.ownerId !== auth.user?.id ? { ownerId: form.ownerId } : {}) })).content
@@ -560,11 +580,22 @@ function batch(action: BatchAction) {
     </a-alert>
     <a-row :gutter="24">
     <a-col :xs="24" :lg="15">
+    <a-alert v-if="missingLangs.length" type="warning" show-icon class="lang-missing" :message="t('content.lang.missing', { langs: missingLangs.map(langName).join('、') })">
+      <template #description>
+        <span class="muted small">{{ t('content.lang.missingHint') }}</span>
+        <a-space wrap :size="4" class="lang-missing-add">
+          <a-button v-for="l in missingLangs" :key="l" size="small" @click="addLang(l)"><template #icon><PlusOutlined /></template>{{ langName(l) }} ({{ l }})</a-button>
+        </a-space>
+      </template>
+    </a-alert>
+    <a-alert v-if="sourceLang && sourceLang !== SOURCE_LANG" type="info" show-icon class="lang-missing" :message="t('content.lang.legacySource', { lang: langName(sourceLang) })" />
     <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
       <a-tab-pane :key="SRC" :closable="false">
         <template #tab>{{ sourceLang ? langName(sourceLang) : t('content.lang.source') }}<a-tag v-if="sourceLang" class="src-tag">{{ t('content.lang.source') }}</a-tag></template>
       </a-tab-pane>
-      <a-tab-pane v-for="f in trs" :key="f.lang" :tab="langName(f.lang)" />
+      <a-tab-pane v-for="f in trs" :key="f.lang">
+        <template #tab>{{ langName(f.lang) }}<a-tag v-if="wantedLangs.includes(f.lang)" class="src-tag">{{ t('content.lang.target') }}</a-tag></template>
+      </a-tab-pane>
       <template #rightExtra>
         <a-dropdown :disabled="!addableLangs.length" :trigger="['click']">
           <a-button size="small"><template #icon><PlusOutlined /></template>{{ t('content.lang.add') }}</a-button>
@@ -622,12 +653,7 @@ function batch(action: BatchAction) {
         </PlatformTextTabs>
       </a-form-item>
       <a-row :gutter="12">
-        <a-col :xs="24" :sm="8">
-          <a-form-item :label="t('content.lang.sourceLang')">
-            <a-select v-model:value="sourceLang" :options="sourceLangOptions" allow-clear :placeholder="t('content.lang.notSet')" />
-          </a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="8">
+        <a-col :xs="24" :sm="12">
           <a-form-item :label="t('content.fieldCategory')">
             <a-select v-model:value="form.categoryId" :options="formCategoryOptions" :dropdown-style="{ minWidth: '240px' }" allow-clear show-search option-filter-prop="label" :placeholder="t('content.uncategorized')">
               <template #dropdownRender="{ menuNode }">
@@ -641,7 +667,7 @@ function batch(action: BatchAction) {
             </a-select>
           </a-form-item>
         </a-col>
-        <a-col :xs="24" :sm="8">
+        <a-col :xs="24" :sm="12">
           <a-form-item :label="t('content.fieldTags')">
             <a-select v-model:value="form.tags" mode="tags" :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
           </a-form-item>
@@ -715,6 +741,8 @@ function batch(action: BatchAction) {
 .author .avatar { background: var(--cp-primary); flex: none; font-size: 11px; }
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
 .lang-tabs { margin-bottom: 12px; }
+.lang-missing { margin-bottom: 8px; }
+.lang-missing-add { display: flex; margin-top: 6px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 .new-category { display: flex; gap: 4px; padding: 4px 8px; }

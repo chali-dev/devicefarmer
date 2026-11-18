@@ -157,6 +157,15 @@ export const TARGETS: Record<string, string[]> = {
 /** 账号人设 from this script's personas (the 媒体矩阵 seed sets its own on other accounts). */
 export const ACCOUNT_PERSONAS: Record<string, string> = { 'demo.wanderlust.lena': '品牌官方', 'demo.tokyo.bites': 'Barista Lily', 'demo.cozy.home': '旅行博主' };
 
+/**
+ * 账号语言 of 媒体矩阵 demo accounts (set before the demo publish tasks, so their snapshots use the translations):
+ * 'demo 新品咖啡上市' has en + hi versions → lena publishes English, closet Hindi, brand.backup (no language) the source;
+ * yoga.daily is English but the fitness content has only Hindi → the editor/modal warn and it publishes the source.
+ */
+export const ACCOUNT_LANGS: Record<string, string> = {
+  'demo.wanderlust.lena': 'en', 'demo.minimal.closet': 'hi', 'demo.island.hopper': 'en', 'demo.fit.with.mia': 'hi', 'demo.yoga.daily': 'en', 'demo.tokyo.bites': 'zh-CN',
+};
+
 export const PUBLISHES: PublishSpec[] = [
   { content: 'demo 新品咖啡上市', account: 'demo.wanderlust.lena', postType: 'feed', day: 1, at: '10:00' },
   { content: 'demo 双十一预热', account: 'demo.wanderlust.lena', postType: 'story', day: 1, at: '20:30' },
@@ -431,6 +440,15 @@ async function seed() {
 
   // publish tasks (定时发布 demo)
   const accs = { admin: await listAll(T, '/api/social/accounts?q=demo.'), user: await listAll(U.token, '/api/social/accounts?q=demo.') };
+  for (const [handle, lang] of Object.entries(ACCOUNT_LANGS)) {
+    for (const [owner, list] of Object.entries(accs) as ['admin' | 'user', any[]][]) {
+      const acc = list.find((a) => a.handle === handle && a.platform === 'instagram' && (owner === 'user' || a.userId !== U.id));
+      if (!acc || acc.lang === lang) continue;
+      note(true);
+      must(await http('PUT', `/api/social/accounts/${acc.id}`, tok(owner), { lang }), `language ${handle}`);
+      acc.lang = lang;
+    }
+  }
   let published = 0;
   let skipped = 0;
   for (const p of PUBLISHES) {

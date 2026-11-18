@@ -255,6 +255,8 @@ export interface SocialAccount {
   /** 账号人设 */
   personaId: string | null
   personaName: string | null
+  /** 账号语言 (BCP-47): publishing uses the content's translation in it, else the Chinese source. */
+  lang: string | null
   tags: string[]
   instanceId: string | null
   instance: { id: string; name: string; status: string; accessible: boolean } | null
@@ -380,6 +382,7 @@ export interface ContentPublishAccount {
 }
 export interface ContentTarget {
   id: string; platform: string; handle: string; displayName: string | null; personaId: string | null
+  lang: string | null
   instance: { id: string; name: string } | null
 }
 /** 多语言内容: a human-written version of a content in another language (text fields only). */
@@ -387,13 +390,16 @@ export interface ContentTranslation {
   lang: string; title: string; body: string; platformHints: Omit<ContentHints, 'youtube'> & { youtube?: { title?: string; description?: string } }
   createdAt: string; updatedAt: string
 }
-export interface LanguageSettings { languages: string[]; defaultSource: string | null }
+/** GET /api/contents/languages: zh-CN source (fixed) + 配置语系 (languages bound to the visible social accounts). */
+export interface ContentLanguages { source: string; configured: string[]; languages: string[] }
 export interface PublishTaskItem {
   id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
   title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
   scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | null; attemptNo: number; maxAttempts: number; taskId: string | null
   republish: boolean; externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
   postType: PostType
+  /** Language of the snapshot texts (account language when translated, else the source); null = unknown (older rows). */
+  lang: string | null
   createdAt: string; updatedAt: string
   content: { id: string; title: string; userId: string } | null
   account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null

@@ -10,7 +10,7 @@ import { badRequest, HttpError } from '../../lib/errors.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { setContentMedia, setContentTags, setContentTargets } from '../content/content.js';
-import { getLanguageSettings } from '../content/languages.js';
+import { offeredLanguages, SOURCE_LANG } from '../content/languages.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
@@ -80,8 +80,9 @@ export async function normaliseBrief(p: Persona, brief: z.infer<typeof PersonaBr
   if (brief.lang) {
     let lang: string;
     try { lang = Intl.getCanonicalLocales(brief.lang)[0]!; } catch { throw badRequest('语言代码无效', 'persona.draft_lang_not_offered', { lang: brief.lang }); }
-    const { languages } = await getLanguageSettings();
-    if (!languages.includes(lang)) throw badRequest(`语言 ${lang} 不在内容语言列表中`, 'persona.draft_lang_not_offered', { lang });
+    // Chinese or a 配置语系 (languages bound to the accounts that can use the persona: all for a public persona).
+    const languages = await offeredLanguages(p.ownerType === 'public' ? null : p.ownerId);
+    if (!languages.includes(lang)) throw badRequest(`语言 ${lang} 不是中文或社交号已绑定的语言`, 'persona.draft_lang_not_offered', { lang });
     out.lang = lang;
   }
   const ids = [...new Set(brief.exampleTemplateIds ?? [])];
@@ -350,7 +351,7 @@ async function runDrafts(ctx: TaskContext<DraftPayload>) {
   if (!creds.apiKey) throw new AiFinalError('ai.not_configured', 'no Anthropic API key is configured');
   const owner = await draftOwner(p);
   if ('code' in owner) throw new AiFinalError(owner.code, 'the persona has no valid draft owner');
-  const lang = p.brief.lang || (await getLanguageSettings()).defaultSource || 'en';
+  const lang = p.brief.lang || SOURCE_LANG;
   const now = new Date();
   const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, owner.id, now)]);
   const user = buildUserMessage({ persona: p, brief: p.brief, lang, count, day, examples, recent });

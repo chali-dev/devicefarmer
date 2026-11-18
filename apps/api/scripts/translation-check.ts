@@ -1,10 +1,13 @@
 /**
  * 多语言内容 (content translations) test against the real API and DB. No mocks, no external services
  * (translations are written by people; there is no translation provider).
- * - Language settings: admin-only GET/PUT /api/settings/languages, validation + canonical codes, read by everyone via
- *   GET /api/contents/languages; new contents get the default source language.
+ * - Language model (2026-11-18): Chinese (zh-CN) is the fixed source; 配置语系 = languages bound to social accounts.
+ *   GET /api/contents/languages per viewer (users: own accounts; admins: all or ?ownerId=), the old admin setting
+ *   /api/settings/languages is gone (404) while its LEGACY row stays untouched; new contents are zh-CN, another source
+ *   language is refused (content.source_lang_fixed); older contents keep theirs read-only (a missing one may become
+ *   zh-CN); the persona AI language must be Chinese or a 配置语系 of the accounts that can use the persona.
  * - Translations CRUD: PUT creates (201) / replaces (200), list + detail include them, DELETE (204, then 404),
- *   same-as-source refused, changing the source language to a translated language refused, text-only hints.
+ *   same-as-source refused, text-only hints.
  * - RBAC/isolation: another user gets 404 on every translation route; admin can manage a user's content.
  * - List: language chips (`translations`) and the `?lang=` filter (source or translation).
  * - Cascade: deleting the content removes its translations.
@@ -39,6 +42,8 @@ const pw = randomBytes(12).toString('hex');
 const userIds: string[] = [];
 const contentIds: string[] = [];
 const [langRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'content.languages'));
+const LEGACY_LANGS = { languages: ['zh-CN', 'en', 'fr'], defaultSource: 'fr' };
+const personaIds: string[] = [];
 const startedAt = new Date();
 const SECRET_TEXT = `译文机密-${tag}-नमस्ते`;
 
@@ -51,28 +56,64 @@ try {
   const A = await mk(`trchk-a-${tag}`);
   const B = await mk(`trchk-b-${tag}`);
 
-  // ---------------------------------------------------------------- language settings
-  check('settings/languages: user 403', (await http('GET', '/api/settings/languages', A.token)).status === 403);
-  check('settings/languages: user PUT 403', (await http('PUT', '/api/settings/languages', A.token, { languages: ['en'], defaultSource: 'en' })).status === 403);
-  const bad = await http('PUT', '/api/settings/languages', T, { languages: ['en', 'not a lang!'], defaultSource: 'en' });
-  check('settings/languages: invalid code 400', bad.status === 400, bad.text.slice(0, 120));
-  const put = await http('PUT', '/api/settings/languages', T, { languages: ['EN', 'hi', 'pt-br', 'en'], defaultSource: 'zh-cn' });
-  check('settings/languages: canonical, deduped, default source included',
-    put.status === 200 && JSON.stringify(put.body.languages.languages) === JSON.stringify(['zh-CN', 'en', 'hi', 'pt-BR']) && put.body.languages.defaultSource === 'zh-CN',
-    JSON.stringify(put.body?.languages));
-  const pub = await http('GET', '/api/contents/languages', A.token);
-  check('contents/languages readable by users', pub.status === 200 && pub.body.languages.includes('hi') && pub.body.defaultSource === 'zh-CN' && !('updatedAt' in pub.body));
+  // ---------------------------------------------------------------- language model (zh-CN source + account languages)
+  // LEGACY admin setting: present but never read again (it must not change anything below) and kept as is.
+  await db.insert(schema.settings).values({ key: 'content.languages', value: LEGACY_LANGS })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: LEGACY_LANGS } });
+  check('settings/languages removed (admin GET/PUT 404)', (await http('GET', '/api/settings/languages', T)).status === 404
+    && (await http('PUT', '/api/settings/languages', T, { languages: ['en'], defaultSource: 'en' })).status === 404);
+  const accA = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `trchk_a_${tag}`, lang: 'EN' });
+  const accA2 = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `trchk_a2_${tag}`, lang: 'zh-cn' });
+  const accB = await http('POST', '/api/social/accounts', B.token, { platform: 'instagram', handle: `trchk_b_${tag}`, lang: 'pt-br' });
+  check('account languages canonicalised (EN → en, zh-cn → zh-CN, pt-br → pt-BR)', accA.body.account?.lang === 'en' && accA2.body.account?.lang === 'zh-CN' && accB.body.account?.lang === 'pt-BR',
+    `${accA.status} ${accA.body.account?.lang} ${accA2.body.account?.lang} ${accB.body.account?.lang}`);
+  const lA = (await http('GET', '/api/contents/languages', A.token)).body;
+  check('contents/languages (user): zh-CN source + own accounts\' languages only (not B\'s, not the legacy list)',
+    lA.source === 'zh-CN' && JSON.stringify(lA.configured) === JSON.stringify(['en']) && JSON.stringify(lA.languages) === JSON.stringify(['zh-CN', 'en']), JSON.stringify(lA));
+  const lAx = (await http('GET', `/api/contents/languages?ownerId=${B.id}`, A.token)).body;
+  check('contents/languages: a user cannot ask for another owner (ownerId ignored)', JSON.stringify(lAx.configured) === JSON.stringify(['en']), JSON.stringify(lAx));
+  const lT = (await http('GET', '/api/contents/languages', T)).body;
+  const lTB = (await http('GET', `/api/contents/languages?ownerId=${B.id}`, T)).body;
+  check('contents/languages (admin): all accounts\' languages; ?ownerId → that owner\'s', ['en', 'pt-BR'].every((l) => lT.configured.includes(l)) && !lT.configured.includes('zh-CN')
+    && JSON.stringify(lTB.configured) === JSON.stringify(['pt-BR']), `${JSON.stringify(lT.configured)} ${JSON.stringify(lTB.configured)}`);
 
-  // ---------------------------------------------------------------- contents with a source language
+  // ---------------------------------------------------------------- contents: Chinese source, older ones read-only
   const c1 = (await http('POST', '/api/contents', A.token, { title: `trchk ${tag} one`, body: '原文正文' })).body.content;
   contentIds.push(c1.id);
-  check('new content gets the default source language', c1.lang === 'zh-CN' && Array.isArray(c1.translations) && c1.translations.length === 0, c1.lang);
-  const c2 = (await http('POST', '/api/contents', A.token, { title: `trchk ${tag} two`, lang: 'en' })).body.content;
-  contentIds.push(c2.id);
-  check('explicit source language kept', c2.lang === 'en');
-  const c3 = (await http('POST', '/api/contents', A.token, { title: `trchk ${tag} three`, lang: null })).body.content;
-  contentIds.push(c3.id);
-  check('source language may be unset (null)', c3.lang === null);
+  check('new content: source zh-CN (not the legacy defaultSource fr)', c1.lang === 'zh-CN' && Array.isArray(c1.translations) && c1.translations.length === 0, c1.lang);
+  const cEn = await http('POST', '/api/contents', A.token, { title: `trchk ${tag} en`, lang: 'en' });
+  check('another source language on create → 400 content.source_lang_fixed', cEn.status === 400 && cEn.body?.code === 'content.source_lang_fixed', `${cEn.status} ${cEn.body?.code}`);
+  const cZh = await http('POST', '/api/contents', A.token, { title: `trchk ${tag} zh`, lang: 'zh-cn' });
+  if (cZh.body?.content) contentIds.push(cZh.body.content.id);
+  check('explicit zh-CN on create is fine', cZh.status === 201 && cZh.body.content.lang === 'zh-CN');
+  // older contents (before 2026-11-18): another source language, or none
+  const [c2] = await db.insert(schema.contents).values({ userId: A.id, title: `trchk ${tag} two`, body: 'English source', lang: 'en', stage: 'draft', status: 'draft', platformHints: {} }).returning();
+  const [c3] = await db.insert(schema.contents).values({ userId: A.id, title: `trchk ${tag} three`, body: '旧内容', lang: null, stage: 'draft', status: 'draft', platformHints: {} }).returning();
+  contentIds.push(c2!.id, c3!.id);
+  const keep2 = await http('PUT', `/api/contents/${c2!.id}`, A.token, { title: `trchk ${tag} two`, lang: 'en' });
+  const move2 = await http('PUT', `/api/contents/${c2!.id}`, A.token, { lang: 'zh-CN' });
+  check('older content keeps its source language: saving it unchanged ok, changing it → 400 content.source_lang_fixed',
+    keep2.status === 200 && keep2.body.content.lang === 'en' && move2.status === 400 && move2.body?.code === 'content.source_lang_fixed', `${keep2.status} ${move2.status} ${move2.body?.code}`);
+  const zhTr = await http('PUT', `/api/contents/${c2!.id}/translations/zh-CN`, A.token, { title: '中文版', body: '中文正文' });
+  check('older English content can get a Chinese translation', zhTr.status === 201);
+  const set3 = await http('PUT', `/api/contents/${c3!.id}`, A.token, { lang: 'zh-CN' });
+  const bad3 = await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: null });
+  check('a content without source language may be declared zh-CN; clearing a source → 400', set3.status === 200 && set3.body.content.lang === 'zh-CN' && bad3.status === 400, `${set3.status} ${bad3.status}`);
+
+  // ---------------------------------------------------------------- persona AI language: Chinese or a 配置语系
+  const pA = await http('POST', '/api/personas', A.token, { name: `trchk persona ${tag}`, scope: 'mine' });
+  const pP = await http('POST', '/api/personas', T, { name: `trchk public ${tag}`, scope: 'public' });
+  if (pA.body?.persona) personaIds.push(pA.body.persona.id);
+  if (pP.body?.persona) personaIds.push(pP.body.persona.id);
+  const brief = (id: string, tok: string, lang: string) => http('PUT', `/api/personas/${id}/drafts`, tok, { brief: { lang } });
+  const okEn = await brief(pA.body.persona.id, A.token, 'en');
+  const okZh = await brief(pA.body.persona.id, A.token, 'zh-CN');
+  const noPt = await brief(pA.body.persona.id, A.token, 'pt-BR');
+  const noFr = await brief(pA.body.persona.id, A.token, 'fr');
+  const pubPt = await brief(pP.body.persona.id, T, 'pt-BR');
+  check('persona AI language: personal → zh-CN or the owner\'s account languages (en ok, B\'s pt-BR and legacy fr → 400); public → any account language',
+    okEn.status === 200 && okZh.status === 200 && noPt.status === 400 && noPt.body?.code === 'persona.draft_lang_not_offered' && noFr.status === 400 && pubPt.status === 200,
+    `${pA.status}/${pP.status} ${okEn.status} ${okZh.status} ${noPt.status} ${noFr.status} ${pubPt.status} ${okEn.text.slice(0, 100)}`);
 
   // ---------------------------------------------------------------- CRUD
   const p1 = await http('PUT', `/api/contents/${c1.id}/translations/EN`, A.token, {
@@ -94,8 +135,6 @@ try {
   check('invalid language code 400', badLang.status === 400);
   const same = await http('PUT', `/api/contents/${c1.id}/translations/zh-cn`, A.token, { title: 'x' });
   check('same as source language refused', same.status === 400 && same.body?.code === 'content.translation_same_lang', same.body?.code);
-  const moveSrc = await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: 'hi' });
-  check('source language cannot move onto a translated language', moveSrc.status === 409 && moveSrc.body?.code === 'content.lang_has_translation', moveSrc.body?.code);
   const unchanged = await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: 'zh-CN', title: `trchk ${tag} one` });
   check('saving with the same source language is fine', unchanged.status === 200 && unchanged.body.content.lang === 'zh-CN');
 
@@ -111,7 +150,7 @@ try {
   const fHi = await lst('&lang=hi');
   check('?lang=hi → content with a Hindi version only', fHi.body.items.map((x: any) => x.id).join() === c1.id, fHi.body.items.map((x: any) => x.title).join());
   const fEn = await lst('&lang=EN');
-  check('?lang=en → source en + translated en', new Set(fEn.body.items.map((x: any) => x.id)).size === 2 && fEn.body.items.every((x: any) => [c1.id, c2.id].includes(x.id)));
+  check('?lang=en → source en (older content) + translated en', new Set(fEn.body.items.map((x: any) => x.id)).size === 2 && fEn.body.items.every((x: any) => [c1.id, c2!.id].includes(x.id)));
   check('?lang invalid 400', (await lst('&lang=__')).status === 400);
 
   // delete
@@ -119,9 +158,6 @@ try {
   check('DELETE translation 204', d1.status === 204);
   const d2 = await http('DELETE', `/api/contents/${c1.id}/translations/hi`, A.token);
   check('DELETE again 404 coded', d2.status === 404 && d2.body?.code === 'content.translation_not_found');
-  const moved = await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: 'hi' });
-  check('source language may move once the version is removed', moved.status === 200 && moved.body.content.lang === 'hi');
-  await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: 'zh-CN' });
 
   // ---------------------------------------------------------------- RBAC / isolation
   const routes: [string, string, unknown?][] = [
@@ -144,7 +180,8 @@ try {
   const allAudit = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, startedAt));
   check('audit: translated text never stored', !JSON.stringify(allAudit).includes(SECRET_TEXT) && !JSON.stringify(allAudit).includes('हिंदी'));
   check('audit: translation detail is the language only', audit.every((a) => Object.keys(a.detail as object).every((k) => k === 'lang' || k === 'error')), JSON.stringify(audit[0]?.detail));
-  check('audit: language settings recorded', allAudit.some((a) => a.action === 'settings.languages' && a.status === 200));
+  const [legacy] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'content.languages'));
+  check('LEGACY content.languages row kept unchanged (expand/contract)', JSON.stringify(legacy?.value) === JSON.stringify(LEGACY_LANGS));
 
   // ---------------------------------------------------------------- cascade
   const before = (await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, c1.id))).length;
@@ -155,6 +192,7 @@ try {
   check('unexpected error', false, (err as Error).stack ?? String(err));
 } finally {
   if (contentIds.length) await db.delete(schema.contents).where(inArray(schema.contents.id, contentIds));
+  if (personaIds.length) await db.delete(schema.personas).where(inArray(schema.personas.id, personaIds));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (langRow) await db.update(schema.settings).set({ value: langRow.value }).where(eq(schema.settings.key, 'content.languages'));
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'content.languages'));

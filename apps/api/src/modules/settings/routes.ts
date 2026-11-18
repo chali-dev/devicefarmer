@@ -7,7 +7,6 @@ import { checkHealth, hostCapacity, systemInfo } from '../../health.js';
 import { HttpError } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
-import { getLanguageSettings, LanguageSettingsInput, saveLanguageSettings } from '../content/languages.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
@@ -54,9 +53,8 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return saveCollector(req.params.platform, req.body);
   });
 
-  /** 多语言内容: languages offered in the content editor + default source language. */
-  app.get('/api/settings/languages', async () => ({ languages: await getLanguageSettings() }));
-  app.put('/api/settings/languages', { schema: { body: LanguageSettingsInput } }, async (req) => ({ languages: await saveLanguageSettings(req.body) }));
+  // 多语言内容: the admin language list (/api/settings/languages, key content.languages) was removed on 2026-11-18:
+  // the source is fixed to zh-CN and 配置语系 = the languages bound to social accounts (content/languages.ts).
 
   /** Task centre retention + the last cleanup run. */
   const lastCleanup = async () => {
