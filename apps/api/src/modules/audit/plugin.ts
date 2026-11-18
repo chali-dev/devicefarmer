@@ -216,6 +216,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
     detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined && k !== 'password' && k !== 'username'), authChanged: body.password !== undefined || body.username !== undefined || undefined }),
   },
   'DELETE /api/proxies/:id': { action: 'proxy.delete' },
+  // 批量操作: counts only (the route adds ok/skipped/changed); never hosts or credentials.
+  'POST /api/proxies/batch': {
+    action: ({ body }) => (body.action === 'delete' ? 'proxy.batch_delete' : body.action === 'set-kind' ? 'proxy.batch_set_kind' : 'proxy.batch_unknown'),
+    detail: ({ body }) => ({ action: body.action, count: ids(body.ids).length, kind: body.kind }),
+  },
   'POST /api/proxies/import': {
     action: 'proxy.import',
     detail: ({ body }) => ({ defaultType: body.defaultType, kind: body.kind, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),

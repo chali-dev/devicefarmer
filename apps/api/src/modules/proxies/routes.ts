@@ -15,6 +15,7 @@ import {
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 const MAX_IMPORT_LINES = 1000;
 const CHECK_CONCURRENCY = 8;
+const BATCH_MAX = 500;
 
 const opt = (max: number) => z.string().trim().max(max).nullable().optional();
 const Fields = {
@@ -168,6 +169,50 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
       throw err;
     });
     reply.code(204);
+  });
+
+  /**
+   * Batch actions (批量操作). An unknown id fails the whole batch with 404 and changes nothing.
+   * - delete: same rule as the single delete: a proxy bound to a device is skipped (`proxy.bound`), the others are deleted.
+   *   Rows are locked FOR UPDATE, so a concurrent bind (which locks the same rows) waits for the batch.
+   * - set-kind: moves every row to `kind` (static/mobile); `changed` counts rows that had another kind.
+   */
+  app.post('/api/proxies/batch', {
+    schema: {
+      body: z.object({
+        ids: z.array(z.string().uuid()).min(1).max(BATCH_MAX),
+        action: z.enum(['delete', 'set-kind']),
+        kind: Kind.optional(),
+      }),
+    },
+  }, async (req) => {
+    const { action, kind } = req.body;
+    if (action === 'set-kind' && !kind) throw badRequest('kind is required', 'proxy.batch_kind_required');
+    const ids = [...new Set(req.body.ids)];
+    const res = await db.transaction(async (tx) => {
+      const rows = await tx.select().from(schema.proxies).where(inArray(schema.proxies.id, ids)).for('update');
+      if (rows.length !== ids.length) throw notFound('代理不存在', 'proxy.not_found');
+      const ok: string[] = [];
+      const skipped: { id: string; code: string; params?: Record<string, string> }[] = [];
+      if (action === 'set-kind') {
+        const changed = await tx.update(schema.proxies).set({ kind: kind! })
+          .where(and(inArray(schema.proxies.id, ids), sql`${schema.proxies.kind} <> ${kind!}`)).returning({ id: schema.proxies.id });
+        return { ok: ids, skipped, changed: changed.length };
+      }
+      const holders = await tx.select({ name: schema.instances.name, proxyId: schema.instances.proxyId })
+        .from(schema.instances).where(inArray(schema.instances.proxyId, ids));
+      const byProxy = new Map(holders.map((h) => [h.proxyId!, h.name]));
+      for (const p of rows) {
+        const name = byProxy.get(p.id);
+        if (name) skipped.push({ id: p.id, code: 'proxy.bound', params: { proxy: endpointText(p), name } });
+        else ok.push(p.id);
+      }
+      if (ok.length) await tx.delete(schema.proxies).where(inArray(schema.proxies.id, ok));
+      return { ok, skipped, changed: ok.length };
+    });
+    // (The device view of a proxy has no kind, so a kind change needs no device broadcast.)
+    if (req.audit) req.audit.extra = { ok: res.ok.length, skipped: res.skipped.length, changed: res.changed };
+    return { ok: res.ok, skipped: res.skipped, changed: res.changed };
   });
 
   /** Bulk import, one proxy per line. `dryRun` returns the per-line preview without inserting. */
