@@ -51,19 +51,47 @@ export const socialFeedUnsupported = (acc: Pick<SocialAccount, 'platform' | 'ins
 /** Tracked accounts: Instagram (the collector phone) only. */
 export const trackedFeedUnsupported = (acc: Pick<TrackedAccount, 'platform'>) => (acc.platform === 'instagram' && isPlatformEnabled('instagram') ? null : 'feed.unsupported_platform');
 
-/** 立即采集: queues a collection now (coded refusals). */
-export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: SocialAccount | TrackedAccount) {
+/** Why a collection of this account can't be queued now (an HttpError), else null. */
+async function feedRefusal(kind: FeedKind, acc: SocialAccount | TrackedAccount): Promise<HttpError | null> {
   const why = kind === 'social' ? socialFeedUnsupported(acc as SocialAccount) : trackedFeedUnsupported(acc);
-  if (why) throw new HttpError(400, why === 'feed.no_device' ? '账号未绑定云手机，不能采集' : '该平台不支持云手机采集', why, { platform: acc.platform });
+  if (why) return new HttpError(400, why === 'feed.no_device' ? '账号未绑定云手机，不能采集' : '该平台不支持云手机采集', why, { platform: acc.platform });
   const instanceId = kind === 'social' ? (acc as SocialAccount).instanceId! : (await collectorEntry('instagram'))?.instanceId;
-  if (!instanceId) throw new HttpError(400, '未设置采集设备（管理员可在设置 → 追踪账号中选择）', 'tracked.collector_unset');
-  if (await deviceHalt(instanceId)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'feed.device_halted');
-  if (await unfinished(kind, acc.id)) throw conflict('该账号已有采集在排队或进行中', 'feed.in_progress');
-  const { task } = await createTask({
-    type: FEED_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: feedRef(kind), refId: acc.id,
-    payload: { kind, accountId: acc.id } satisfies Payload,
-  });
-  return task;
+  if (!instanceId) return new HttpError(400, '未设置采集设备（管理员可在设置 → 追踪账号中选择）', 'tracked.collector_unset');
+  if (await deviceHalt(instanceId)) return conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'feed.device_halted');
+  if (await unfinished(kind, acc.id)) return conflict('该账号已有采集在排队或进行中', 'feed.in_progress');
+  return null;
+}
+
+const feedTask = (kind: FeedKind, acc: SocialAccount | TrackedAccount, userId: string | null, idempotencyKey?: string) => createTask({
+  type: FEED_TYPE, userId, label: `${acc.platform} @${acc.handle}`, refType: feedRef(kind), refId: acc.id,
+  payload: { kind, accountId: acc.id } satisfies Payload, ...(idempotencyKey ? { idempotencyKey } : {}),
+});
+
+/** 立即采集 (API only since the merged 同步 button): queues a collection now (coded refusals). */
+export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: SocialAccount | TrackedAccount) {
+  const no = await feedRefusal(kind, acc);
+  if (no) throw no;
+  return (await feedTask(kind, acc, user.id)).task;
+}
+
+/**
+ * 同步 = step 1 (social: 从云手机同步 sync.ts, tracked: the profile refresh) then step 2 (this collection). Called by
+ * the step-1 task once it succeeded: queues the collection now (key `after:<step-1 task>`, so a redelivery never
+ * queues it twice) or, when it can't run (no phone, collector unset, halted, already queued…), logs why. Step 2
+ * runs as its own task: its failure never undoes step 1.
+ */
+export async function queueFeedAfter(kind: FeedKind, accountId: string, userId: string | null, parentTaskId: string, log: TaskContext['log']): Promise<{ taskId: string } | { code: string }> {
+  const [acc]: (SocialAccount | TrackedAccount)[] = kind === 'social'
+    ? await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId))
+    : await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, accountId));
+  const code = !acc ? 'feed.account_gone' : (await feedRefusal(kind, acc))?.code;
+  if (code || !acc) {
+    await log('info', `feed collection not queued: ${code}`, { code });
+    return { code: code ?? 'feed.account_gone' };
+  }
+  const { task } = await feedTask(kind, acc, userId, `after:${parentTaskId}`);
+  await log('info', 'feed collection queued', { taskId: task.id });
+  return { taskId: task.id };
 }
 
 // ---------------------------------------------------------------- writes

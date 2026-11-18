@@ -12,6 +12,7 @@ import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platfor
 import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts } from './tracked.js';
 import { SCHEDULE_INTERVALS, scheduleCapacity } from './schedule.js';
 import { firstSlot, IG_DEFAULT_INTERVAL_HOURS } from './slots.js';
+import { trackedFeedUnsupported } from '../feed/collect.js';
 import { normTags, TAG_LIMIT, TAG_MAX } from './tags.js';
 
 const ta = schema.trackedAccounts;
@@ -267,6 +268,24 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const taskId = await enqueueRefresh(acc, req.user.id);
     reply.code(202);
     return { taskId, manualOnly: !platformDef(acc.platform).source };
+  });
+
+  /**
+   * 同步 (the single button of 追踪号, owner 2026-11-18): step 1 = this refresh, step 2 = the feed collection
+   * (帖子与评论, Instagram on the collector phone), queued by step 1 once it succeeded. Platforms without a feed
+   * source just refresh (`feed: false`).
+   */
+  app.post('/api/tracked-accounts/:id/sync', { schema: { params: Id } }, async (req, reply) => {
+    const acc = await getVisibleAccount(req.user, req.params.id);
+    const no = await refreshRefusal(acc, await pendingRefreshes([acc.id]));
+    if (no) throw new HttpError(no.status, no.message, no.code, no.params);
+    const feed = !trackedFeedUnsupported(acc) && !!platformDef(acc.platform).source;
+    const taskId = await enqueueTask('tracked-refresh', { trackedAccountId: acc.id, ...(feed ? { feed: true } : {}) }, req.user.id, {
+      refType: REF_TYPE, refId: acc.id, label: display(acc),
+    });
+    if (req.audit) req.audit.extra = { taskId, feed };
+    reply.code(202);
+    return { taskId, feed, manualOnly: !platformDef(acc.platform).source };
   });
 
   /** Batch refresh; accounts that can't be refreshed now are skipped with a code. */

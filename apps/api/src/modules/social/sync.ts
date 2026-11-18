@@ -14,6 +14,7 @@ import { getRiskSettings } from '../risk/settings.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
+import { queueFeedAfter } from '../feed/collect.js';
 import { recordCheckResult } from './check.js';
 import { platformById } from './platforms.js';
 import { assertDeviceRoom, linkLogs, platformAllowed, writeLogs, type LogEntry } from './social.js';
@@ -40,6 +41,8 @@ import { assertDeviceRoom, linkLogs, platformAllowed, writeLogs, type LogEntry }
  * visit a day for the same ids); legacy several users / a disabled assigned user / no builtin admin → in-app notice
  * `account.discovered` (admins + the phone's users), once a day.
  * Account owner of a manual sync: the phone's assigned user, else the admin who runs it (syncOwner).
+ * The 同步 button of an account (`POST /api/social/accounts/:id/sync`, payload.feed) adds step 2: the feed
+ * collection of the synced account, queued by this task once step 1 succeeded (syncFeedStep).
  */
 export const ACCOUNT_SYNC_TYPE = 'account-device-sync';
 export const ACCOUNT_SYNC_REF = 'instance';
@@ -92,7 +95,7 @@ async function syncOwner(user: AuthUser, inst: Pick<Instance, 'id' | 'name'>, ow
 }
 
 /** 从云手机同步: queues a sync of the phone's logged-in Instagram account (refused with a code when it can't run). */
-export async function requestAccountSync(user: AuthUser, instanceId: string, ownerId?: string) {
+export async function requestAccountSync(user: AuthUser, instanceId: string, ownerId?: string, opts: { feed?: boolean } = {}) {
   assertPlatformEnabled(PLATFORM);
   const inst = await getInstance(instanceId);
   if (!inst) throw notFound('设备不存在', 'instances.not_found');
@@ -105,7 +108,7 @@ export async function requestAccountSync(user: AuthUser, instanceId: string, own
   if (await unfinishedSync(inst.id)) throw conflict('该云手机已有同步在排队或进行中', 'account_sync.in_progress');
   const { task } = await createTask({
     type: ACCOUNT_SYNC_TYPE, userId: user.id, label: inst.name, refType: ACCOUNT_SYNC_REF, refId: inst.id,
-    payload: { instanceId: inst.id, ownerId: owner },
+    payload: { instanceId: inst.id, ownerId: owner, ...(opts.feed ? { feed: true } : {}) },
   });
   return task;
 }
@@ -256,7 +259,8 @@ async function readOnDevice(dev: CollectorDevice, ctx: Pick<TaskContext, 'log' |
   }
 }
 
-type Payload = { instanceId: string; ownerId: string; auto?: boolean; deferrals?: number };
+/** `feed`: the 同步 button (step 2 = feed collection of the synced account after a created / updated result). */
+type Payload = { instanceId: string; ownerId: string; auto?: boolean; feed?: boolean; deferrals?: number };
 
 async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> {
   const p = ctx.payload;
@@ -300,11 +304,27 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const ok = o.result === 'created' || o.result === 'updated';
   await ctx.log(ok ? 'info' : 'warn', `account sync result: ${o.result}`, { result: o.result, handle: read.handle, ...(o.changed ? { changed: o.changed } : {}) });
   if (o.result === 'updated' && o.accountId) await recordSyncCheck(inst, { result: 'ok', accountId: o.accountId }, ctx.task.createdBy);
+  const feed = p.feed ? await syncFeedStep(o, { id: ctx.task.id, createdBy: ctx.task.createdBy }, ctx.log) : undefined;
   // `taken`: the handle only (the caller saw it on their own phone), never whose account it is.
   return {
     outcome: 'synced', result: o.result, handle: read.handle, ...(ok ? { accountId: o.accountId, displayName: read.displayName, externalId: o.externalId ?? null, counts: read.counts } : {}),
     ...(o.changed ? { changed: o.changed } : {}), ...(o.linkedElsewhere ? { linkedElsewhere: true } : {}),
+    ...(feed ? { feed } : {}),
   };
+}
+
+/**
+ * Step 2 of the 同步 button (payload.feed): only after step 1 created / updated the account and the account is linked
+ * to this phone, the feed collection of it is queued as its own task (feed/collect.ts queueFeedAfter); anything else
+ * (taken, limit, not logged in, offline, challenge…) runs no step 2. Exported for the no-phone check script.
+ */
+export async function syncFeedStep(o: Pick<SyncOutcome, 'result' | 'accountId' | 'linkedElsewhere'>, task: { id: string; createdBy: string | null }, log: TaskContext['log']): Promise<{ taskId: string } | { code: string } | undefined> {
+  if ((o.result !== 'created' && o.result !== 'updated') || !o.accountId) return undefined;
+  if (o.linkedElsewhere) {
+    await log('info', 'feed collection not queued: feed.linked_elsewhere', { code: 'feed.linked_elsewhere' });
+    return { code: 'feed.linked_elsewhere' };
+  }
+  return queueFeedAfter('social', o.accountId, task.createdBy, task.id, log);
 }
 
 /**
