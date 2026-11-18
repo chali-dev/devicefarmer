@@ -5,6 +5,7 @@ import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
 import { badRequest } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
+import { lastDraftRuns } from '../ai/runs.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
 
@@ -60,7 +61,8 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   /**
    * public = public personas; mine = the caller's; all-users = every user's personal personas (admin, optional ownerId).
    * `count` = templates using the persona that the caller can see, `accounts` = social accounts with it as 账号人设 that the
-   * caller can see (admin: all; else own), one grouped query each.
+   * caller can see (admin: all; else own), one grouped query each. `lastDraftRun` = the newest 人设每日草稿 generation task
+   * (time, trigger, status, error code, drafts created), only on rows the caller manages (same rule as the 内容设定), else null.
    */
   app.get('/api/personas', { schema: { querystring: ScopedListQuery } }, async (req) => {
     const { scope } = req.query;
@@ -74,9 +76,12 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     }).from(P)
       .leftJoin(counts, eq(counts.personaId, P.id)).leftJoin(accounts, eq(accounts.personaId, P.id)).leftJoin(schema.users, eq(schema.users.id, P.ownerId))
       .where(where).orderBy(...(scope === 'all-users' ? [asc(schema.users.username)] : []), asc(P.sort), asc(P.name));
+    const writable = (p: Persona) => p.ownerType === 'user' || isAdmin(req.user);
+    const runs = await lastDraftRuns(rows.filter((r) => writable(r.p)).map((r) => r.p.id));
     return {
       personas: rows.map((r) => ({
-        ...publicPersona(r.p), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: r.p.ownerType === 'user' || isAdmin(req.user),
+        ...publicPersona(r.p), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: writable(r.p),
+        lastDraftRun: runs.get(r.p.id) ?? null,
       })),
     };
   });

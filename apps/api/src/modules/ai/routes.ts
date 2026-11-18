@@ -1,11 +1,12 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
 import { badRequest } from '../../lib/errors.js';
 import { manageablePersona } from '../comments/personas.js';
-import { assertDraftOwnerCandidate, DRAFT_TASK, DraftSettingsInput, normaliseBrief, requestDraftNow } from './drafts.js';
+import { assertDraftOwnerCandidate, DraftSettingsInput, normaliseBrief, requestDraftNow } from './drafts.js';
+import { personaDraftRuns } from './runs.js';
 import { AI_MODELS, AiSettingsInput, getAiSettings, saveAiSettings } from './settings.js';
 
 const Id = z.object({ id: z.string().uuid() });
@@ -15,17 +16,11 @@ const P = schema.personas;
 async function draftSettings(p: Persona) {
   const ownerId = p.ownerType === 'user' ? p.ownerId : p.draftOwnerId;
   const [owner] = ownerId ? await db.select({ username: schema.users.username, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, ownerId)) : [];
-  const T = schema.tasks;
-  const runs = await db.select({ id: T.id, status: T.status, errorCode: T.errorCode, createdAt: T.createdAt, finishedAt: T.finishedAt, payload: T.payload, result: T.result })
-    .from(T).where(and(eq(T.type, DRAFT_TASK), eq(T.refType, 'persona'), eq(T.refId, p.id))).orderBy(desc(T.createdAt)).limit(5);
   return {
     id: p.id, name: p.name, ownerType: p.ownerType, ownerId: p.ownerId,
     draftEnabled: p.draftEnabled, draftsPerDay: p.draftsPerDay, brief: p.brief,
     draftOwnerId: ownerId, draftOwnerName: owner?.username ?? null, draftOwnerDisabled: owner?.disabled ?? null,
-    runs: runs.map(({ payload, result, ...r }) => ({
-      ...r, trigger: (payload as { trigger?: string } | null)?.trigger ?? null,
-      created: Array.isArray((result as { contentIds?: unknown } | null)?.contentIds) ? (result as { contentIds: string[] }).contentIds.length : null,
-    })),
+    runs: await personaDraftRuns(p.id),
   };
 }
 

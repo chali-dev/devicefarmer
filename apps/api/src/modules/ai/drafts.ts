@@ -12,6 +12,7 @@ import type { AuthUser } from '../auth/rbac.js';
 import { setContentMedia, setContentTags, setContentTargets } from '../content/content.js';
 import { getLanguageSettings } from '../content/languages.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
+import { DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
 
 /**
@@ -29,7 +30,7 @@ import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
  *   lang = the persona's language, tag `ai-draft`, `ai_generated` = origin, targets = the owner's accounts using the
  *   persona (enabled platforms), up to 3 suggested ready images from the media library matching the model's media tags.
  */
-export const DRAFT_TASK = 'persona-drafts';
+export { DRAFT_TASK };
 export const DRAFT_TAG = 'ai-draft';
 const MANUAL_WINDOW_SEC = 600;
 const RECENT_DAYS = 30;
