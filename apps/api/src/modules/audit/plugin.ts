@@ -308,6 +308,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: ({ body }) => (body.result === 'published' ? 'publish.outcome_published' : 'publish.outcome_failed'),
     detail: ({ body }) => ({ result: body.result, url: body.url, externalId: body.externalId }),
   },
+  'PUT /api/publish/device-settings': {
+    action: 'publish.device_settings',
+    detail: ({ body }) => ({ enabled: body.enabled, postsPerDay: body.postsPerDay, minGapMin: body.minGapMin, testMode: body.testMode }),
+  },
   // comments & engagement (评论互动). Comment and reply texts are not copied into the audit log.
   'PUT /api/comments/settings': {
     action: 'comment.rules_update',

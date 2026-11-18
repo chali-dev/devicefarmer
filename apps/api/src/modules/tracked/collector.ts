@@ -93,7 +93,7 @@ const HALTS_KEY = 'risk.halts';
 export interface DeviceHalt {
   at: string;
   code: string;
-  source: 'collector' | 'account_check' | 'feed' | 'reply';
+  source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish';
   platform: string;
   socialAccountId?: string | null;
   trackedAccountId?: string | null;

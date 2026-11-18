@@ -37,7 +37,7 @@ const tab = computed<Tab>({
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
 const QUEUE: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
-const HISTORY: PublishStatus[] = ['published', 'failed', 'cancelled']
+const HISTORY: PublishStatus[] = ['published', 'failed', 'cancelled', 'dry_run']
 const ALL: PublishStatus[] = [...QUEUE, ...HISTORY]
 /** Today = every task of the day except cancelled ones (same as the dashboard card). */
 const statusesOf = (k: Tab) => (k === 'queue' ? QUEUE : k === 'history' ? HISTORY : k === 'today' ? ALL.filter((s) => s !== 'cancelled') : ALL)

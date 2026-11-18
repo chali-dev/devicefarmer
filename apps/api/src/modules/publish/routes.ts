@@ -8,6 +8,8 @@ import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { mediaItem } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
 import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
+import { storageFor } from '../settings/storage.js';
+import { DevicePublishInput, getDevicePublishRules, saveDevicePublishRules } from './device-rules.js';
 import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish, retryPublish } from './publish.js';
 
 const pt = schema.publishTasks;
@@ -70,6 +72,9 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
     const inst = insts.find((i) => i.id === acc?.instanceId);
     return {
       ...r,
+      // evidence: the storage key stays server-side; the screenshot is served by GET …/evidence
+      evidence: r.evidence ? { at: r.evidence.at, inputText: r.evidence.inputText ?? null, excerpt: r.evidence.excerpt ?? null } : null,
+      hasEvidence: !!r.evidence?.key,
       text: composeText(r.caption, r.hashtags),
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       content: contents.find((x) => x.id === r.contentId) ?? null,
@@ -177,6 +182,26 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     const row = await visiblePublishTask(req.user, req.params.id);
     return { task: (await toPublishItems([await editPublish(req.user, row, req.body)], req.user))[0] };
+  });
+
+  /** 云手机发帖: the screenshot of the last screen before 分享 (test mode / live run). */
+  app.get('/api/publish/tasks/:id/evidence', { schema: { params: Id } }, async (req, reply) => {
+    const row = await visiblePublishTask(req.user, req.params.id);
+    const ev = row.evidence;
+    if (!ev?.key || (ev.storage !== 'local' && ev.storage !== 's3')) throw notFound('没有截图', 'publish.no_evidence');
+    const stream = await (await storageFor(ev.storage)).getStream(ev.key).catch(() => { throw notFound('截图已不存在', 'publish.no_evidence'); });
+    reply.header('content-type', 'image/png').header('cache-control', 'private, no-store');
+    return reply.send(stream);
+  });
+
+  /** 风控 → 云手机发帖: per-account daily cap, minimum gap, test mode (admin). */
+  app.get('/api/publish/device-settings', async (req) => {
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以查看云手机发帖设置', 'publish.admin_only');
+    return { rules: await getDevicePublishRules() };
+  });
+  app.put('/api/publish/device-settings', { schema: { body: DevicePublishInput.partial().strict() } }, async (req) => {
+    if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改云手机发帖设置', 'publish.admin_only');
+    return { rules: await saveDevicePublishRules(req.body) };
   });
 
   /** Manual method: the operator's outcome (published with a link/ID, or failed with a reason). */

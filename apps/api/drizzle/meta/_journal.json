@@ -267,6 +267,13 @@
       "when": 1794989006568,
       "tag": "0037_persona_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794991875711,
+      "tag": "0038_device_publish",
+      "breakpoints": true
     }
   ]
 }

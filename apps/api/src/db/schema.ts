@@ -717,12 +717,13 @@ export const contentTagLinks = pgTable('content_tag_links', {
  * ref_id = this id, idempotency key publish:<id>:<attempt_no>). `task_id` is the current scheduler task;
  * every reschedule/retry bumps `attempt_no` and creates a new tasks row (older ones stay as history).
  * Status: pending | scheduled → running → published | awaiting_operator (manual method: handed to an
- * operator, who records the outcome) | failed | cancelled. `user_id` = the account's owner.
+ * operator, who records the outcome) | failed | cancelled | dry_run (云手机发帖 test mode: rehearsed on the phone up to
+ * the step before 分享, nothing posted; finished, may be retried / rescheduled). `user_id` = the account's owner.
  * Media and texts are snapshots taken at distribution (what was scheduled is what gets published).
  * At most one unfinished row per (content, account) (partial unique index); a second publish of an
  * already published pair needs `republish`.
  */
-export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled'] as const;
+export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled', 'dry_run'] as const;
 export type PublishStatus = (typeof PUBLISH_STATUSES)[number];
 export const PUBLISH_UNFINISHED: readonly PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator'];
 /** Post type (帖子 / Reels / 限动). Which types a platform accepts: modules/publish/platforms.ts. */
@@ -764,6 +765,10 @@ export const publishTasks = pgTable('publish_tasks', {
   error: text('error'),
   errorCode: text('error_code'),
   publishedAt: timestamp('published_at', { withTimezone: true }),
+  /** 云手机发帖 (method device): when the phone last reached the 分享 step (live or test mode); daily cap + min gap per account. */
+  deviceRunAt: timestamp('device_run_at', { withTimezone: true }),
+  /** 云手机发帖: screenshot of the last screen before 分享 (storage key server-side only) + the caption read back. */
+  evidence: jsonb('evidence').$type<ReplyEvidence>(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -776,6 +781,7 @@ export const publishTasks = pgTable('publish_tasks', {
   index('publish_tasks_content_idx').on(t.contentId),
   index('publish_tasks_account_idx').on(t.accountId, t.scheduledAt),
   index('publish_tasks_media_idx').using('gin', t.mediaIds),
+  index('publish_tasks_account_device_idx').on(t.accountId, t.deviceRunAt),
 ]);
 
 /**
