@@ -11,6 +11,7 @@ import type { AppNotification } from '../api/types'
 import { dateLocale } from '../i18n'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import { confirmDanger, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useNotificationsStore } from '../stores/notifications'
 
@@ -132,6 +133,9 @@ function deleteRead() {
   })
 }
 
+const batchItems = computed<BatchItem[]>(() => [{ key: 'delete', label: t('common.delete'), danger: true }])
+function onBatch(key: string) { if (key === 'delete') deleteSelected() }
+
 const readOptions = computed(() => [
   { value: 'all', label: t('common.all') }, { value: 'unread', label: t('notifications.unread') }, { value: 'read', label: t('notifications.read') },
 ])
@@ -160,8 +164,7 @@ const rowSelection = computed(() => ({ selectedRowKeys: selectedKeys.value, onCh
         />
         <a-range-picker v-model:value="filters.range" value-format="YYYY-MM-DD" @change="search" />
         <template #actions>
-          <span v-if="selectedKeys.length" class="sel">{{ t('notifications.selected', { n: selectedKeys.length }) }}</span>
-          <a-button danger :disabled="!selectedKeys.length" @click="deleteSelected">{{ t('notifications.deleteSelected') }}</a-button>
+          <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>
       </SearchBar>
 
@@ -208,5 +211,4 @@ const rowSelection = computed(() => ({ selectedRowKeys: selectedKeys.value, onCh
 .sev.err { color: var(--cp-error); }
 .sev.warn { color: var(--cp-warning); }
 .detail { color: var(--cp-text-secondary); font-size: 12px; }
-.sel { color: var(--cp-text-secondary); }
 </style>

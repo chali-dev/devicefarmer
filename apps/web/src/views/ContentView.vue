@@ -13,10 +13,11 @@ import {
   type SocialAccount,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
+import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import VNodes from '../components/common/VNodes'
 import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
@@ -436,7 +437,34 @@ function batch(action: BatchAction) {
   if (action === 'delete') confirmDanger({ title: t('content.batch.confirmDelete', { n }), content: t('content.batch.deleteHint'), onOk: run })
   else if (action === 'cancel-publish') confirmDanger({ title: t('content.batch.confirmCancel', { n }), content: t('content.batch.cancelHint'), okText: t('content.batch.cancelPublish'), onOk: run })
   else if (action === 'archive') confirmAction({ title: t('content.batch.confirmArchive', { n }), content: t('content.batch.archiveHint'), onOk: run })
-  else void run()
+  else return run()
+}
+/** 批量操作 menu; category and tag actions first ask for the value in a small dialog. */
+type BatchFormAction = 'set-category' | 'add-tags' | 'remove-tags'
+const batchForm = ref<BatchFormAction | null>(null)
+const batchFormBusy = ref(false)
+const batchFormLabel = (a: BatchFormAction) => t(`content.batch.${a === 'set-category' ? 'setCategory' : a === 'add-tags' ? 'addTags' : 'removeTags'}`)
+const batchFormReady = computed(() => (batchForm.value === 'set-category' ? !!batchCategory.value : batchTags.value.length > 0))
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'set-category', label: t('content.batch.setCategory') },
+  { key: 'add-tags', label: t('content.batch.addTags') },
+  { key: 'remove-tags', label: t('content.batch.removeTags') },
+  ...(batchShows.value.archive ? [{ key: 'archive', label: t('content.batch.archive') }] : []),
+  ...(batchShows.value.unarchive ? [{ key: 'unarchive', label: t('content.batch.unarchive') }] : []),
+  ...(batchShows.value.cancel ? [{ key: 'cancel-publish', label: t('content.batch.cancelPublish'), danger: true }] : []),
+  { key: 'delete', label: t('common.delete'), danger: true },
+])
+function onBatch(key: string) {
+  if (key === 'set-category' || key === 'add-tags' || key === 'remove-tags') {
+    batchCategory.value = undefined; batchTags.value = []
+    batchForm.value = key
+  } else void batch(key as BatchAction)
+}
+async function submitBatchForm() {
+  if (!batchForm.value || !batchFormReady.value) return
+  batchFormBusy.value = true
+  try { await batch(batchForm.value); batchForm.value = null }
+  finally { batchFormBusy.value = false }
 }
 </script>
 
@@ -457,7 +485,19 @@ function batch(action: BatchAction) {
         <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: tagLabel(x) }))" @change="search" />
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
+        <template #actions>
+          <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
+        </template>
       </SearchBar>
+
+      <a-modal :open="!!batchForm" :title="batchForm ? batchFormLabel(batchForm) : ''" :width="MODAL_WIDTH.sm" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')"
+        :confirm-loading="batchFormBusy" :ok-button-props="{ disabled: !batchFormReady }" @ok="submitBatchForm" @cancel="batchForm = null">
+        <p class="muted">{{ t('content.selected', { n: selectedKeys.length }) }}</p>
+        <a-select v-if="batchForm === 'set-category'" v-model:value="batchCategory" :placeholder="t('content.batch.category')" show-search option-filter-prop="label"
+          style="width: 100%" :options="batchCategoryOptions" />
+        <a-select v-else v-model:value="batchTags" mode="tags" :placeholder="t('content.batch.tags')" style="width: 100%"
+          :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
+      </a-modal>
 
       <a-tabs :active-key="tab" size="small" class="status-tabs" @change="(k: string | number) => setTab(k as Tab)">
         <a-tab-pane v-for="k in TAB_KEYS" :key="k">
@@ -465,21 +505,6 @@ function batch(action: BatchAction) {
         </a-tab-pane>
       </a-tabs>
       <a-tag v-if="onlyStatus.length" closable class="only-tag" @close="setTab(tab)">{{ t('content.onlyStatus', { status: onlyStatus.map(statusText).join(' / ') }) }}</a-tag>
-
-      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
-        <span>{{ t('content.selected', { n: selectedKeys.length }) }}</span>
-        <a-select v-model:value="batchCategory" :placeholder="t('content.batch.category')" size="small" show-search option-filter-prop="label" style="width: 160px"
-          :dropdown-style="{ minWidth: '220px' }" :options="batchCategoryOptions" />
-        <a-button size="small" :disabled="!batchCategory" @click="batch('set-category')">{{ t('content.batch.setCategory') }}</a-button>
-        <a-select v-model:value="batchTags" mode="tags" size="small" :placeholder="t('content.batch.tags')" style="min-width: 160px"
-          :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
-        <a-button size="small" :disabled="!batchTags.length" @click="batch('add-tags')">{{ t('content.batch.addTags') }}</a-button>
-        <a-button size="small" :disabled="!batchTags.length" @click="batch('remove-tags')">{{ t('content.batch.removeTags') }}</a-button>
-        <a-button v-if="batchShows.archive" size="small" @click="batch('archive')">{{ t('content.batch.archive') }}</a-button>
-        <a-button v-if="batchShows.unarchive" size="small" @click="batch('unarchive')">{{ t('content.batch.unarchive') }}</a-button>
-        <a-button v-if="batchShows.cancel" size="small" danger @click="batch('cancel-publish')">{{ t('content.batch.cancelPublish') }}</a-button>
-        <a-button size="small" danger @click="batch('delete')">{{ t('common.delete') }}</a-button>
-      </a-space>
 
       <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
@@ -721,5 +746,4 @@ function batch(action: BatchAction) {
 .status-tabs { margin-bottom: 4px; }
 .tab-count { color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
 .only-tag { margin-bottom: var(--cp-gap); }
-.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
 </style>
