@@ -298,6 +298,9 @@ export interface SocialAccount {
   /** Why 自动检测 can't run (account_check.unsupported_platform | account_check.no_device), null = it can. */
   autoCheckUnsupported: string | null
   exception: boolean
+  /** 每日 AI 草稿 (set in the account form, AccountAiDrafts). */
+  aiDraftsEnabled: boolean
+  aiDraftsPerDay: number
   createdAt: string
   updatedAt: string
 }
@@ -395,6 +398,8 @@ export interface Content {
   createdAt: string; updatedAt: string
 }
 export interface ContentAiInfo {
+  /** account = daily run of one social account, preview = AI测试 saved by a person. */
+  via?: 'account' | 'preview'; accountId?: string
   model: string; requestedModel: string; personaId: string; personaName: string; taskId: string | null; generatedAt: string; mediaTags: string[]
   /** Languages of the target accounts other than Chinese: the draft needs a human translation. */
   needsTranslation?: string[]
@@ -615,13 +620,27 @@ export interface ScopedItem extends PersonaRef {
   count: number; writable: boolean; ownerName: string | null
   /** 人设 only: social accounts with this 账号人设 that the viewer can see. */
   accounts?: number
-  /** 人设 only: AI 草稿 on and drafts per day. */
-  draftEnabled?: boolean; draftsPerDay?: number
-  /** 人设 only: style (with defaults); the draft owner only on rows the viewer manages. */
-  style?: PersonaStyle; draftOwnerId?: string | null
+  /** 人设 only: style (with defaults). */
+  style?: PersonaStyle
 }
-/** A 人设每日草稿 generation task (trigger schedule|manual; `created` = drafts written, null until it succeeded). */
-export interface PersonaDraftRun { id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null; created: number | null }
+/** A daily AI draft task of a social account (`created` = drafts written, null until it succeeded; `skipped` = skip code). */
+export interface PersonaDraftRun {
+  id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null
+  created: number | null; skipped?: string | null
+}
+/** POST /api/personas/:id/drafts/preview (AI测试): one draft, nothing stored; `token` saves it within 10 minutes. */
+export interface DraftPreview {
+  preview: {
+    title: string; text: string; body: string; hashtags: string[]; mediaTags: string[]; opening: string | null; closing: string | null
+    banned: string[]; model: string; requestedModel: string; fallback: boolean; usage: { input: number; output: number; cacheRead: number }
+  }
+  token: string; expiresAt: string; limit: number
+}
+/** GET /api/social/accounts/:id/ai-drafts (社交号 → AI 草稿). */
+export interface AccountAiDrafts {
+  enabled: boolean; perDay: number; personaId: string | null; runs: PersonaDraftRun[]
+  ai: { enabled: boolean; keySet: boolean; hour: number }
+}
 export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
 export type PersonaTone = (typeof PERSONA_TONES)[number]
 export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const
@@ -640,12 +659,9 @@ export interface PersonaStyle {
 /** Character ranges per length level: posts and comments (GET /api/personas[/:id] `lengths`). */
 export type PersonaLengths = Record<'post' | 'comment', Record<PersonaLevel, [number, number]>>
 export interface PersonaExample { id: string; kind: TemplateKind; name: string; text: string }
-/** GET /api/personas/:id: the persona (draft owner + runs only for managers), its 范例 per kind and the length table. */
+/** GET /api/personas/:id: the persona, its 范例 per kind and the length table. */
 export interface PersonaDetail {
-  persona: PersonaRef & {
-    sort: number; style: PersonaStyle; writable: boolean; draftEnabled: boolean; draftsPerDay: number
-    draftOwnerId?: string | null; draftOwnerName?: string | null; draftOwnerDisabled?: boolean | null; runs?: PersonaDraftRun[]
-  }
+  persona: PersonaRef & { sort: number; style: PersonaStyle; writable: boolean }
   examples: { post: PersonaExample[]; comment: PersonaExample[] }
   lengths: PersonaLengths
   /** 范例 per kind (20). */

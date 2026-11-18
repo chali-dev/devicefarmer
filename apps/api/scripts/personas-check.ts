@@ -14,12 +14,15 @@
  *   发文风格 `post` (tone + note, emoji, length, hashtags, audience, fixed opening/closing, notes) and 评论风格 `comment`
  *   (tone + note, emoji, length); strict validation (the old flat shape is refused), normalisation, defaults, no language;
  *   an old flat style stored in the DB is read as both kinds and only rewritten on save, GET /api/personas/:id (style for everyone who may see it, 范例 per kind in the persona's own scope,
- *   length ranges, draft owner/runs only for managers), admin-created examples for a user's personal persona (ownerId),
+ *   length ranges, no AI fields: daily drafts are per social account since 2026-11-18), admin-created examples for a user's personal persona (ownerId),
  *   banned words inside the fixed opening/closing refused.
+ * - Creating a persona WITH 范例 (POST /api/personas `examples` {post, comment}): one transaction, form order kept, public →
+ *   shared templates, admin for a user (ownerId) → that user's; more than 20 per kind → 400 and nothing created; a banned
+ *   word of the new persona in an example → 400 persona.banned_word and nothing created; audit counts only.
  * - Migration 0037 (persona reset) executed inside a transaction on seeded rows and rolled back: personas, their
  *   templates, 账号人设 and legacy texts/groups cleared; contents.ai_generated untouched.
  * - 复制到我的人设 (POST /api/personas/:id/copy): name 「(副本)」 + numbering (case-insensitive, parallel, 50 chars), 定位 + style +
- *   范例 equal and private to the new owner, AI off; 404 for invisible personas, 403 for a user's other ownerId, admin
+ *   范例 equal and private to the new owner, no AI fields; 404 for invisible personas, 403 for a user's other ownerId, admin
  *   ownerId; one transaction (a seeded 21-example source fails with nothing left behind); audit persona.copy.
  * - Audit entries (names only).
  * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
@@ -28,7 +31,7 @@
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/personas-check.ts
  */
 import { randomBytes } from 'node:crypto';
-import { eq, ilike, inArray } from 'drizzle-orm';
+import { and, eq, ilike, inArray } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { migratePersonaTexts } from '../src/db/persona-data-migration.js';
 import { withCaptcha } from './lib/login.js';
@@ -200,10 +203,10 @@ try {
       ex1.status === 201 && ex2.status === 201 && ex3.status === 201 && ex3.body.template.userId === A.id && ex3.body.template.shared === false && ex4.status === 403,
       `${ex1.status} ${ex2.status} ${ex3.status} ${ex4.status}`);
     x = await http('GET', `/api/personas/${sp.id}`, A.token);
-    check('GET /api/personas/:id: style, examples per kind (oldest first), lengths, maxExamples 20, draft owner + runs for the owner',
+    check('GET /api/personas/:id: style, examples per kind (oldest first), lengths, maxExamples 20, no legacy AI fields (draft owner/runs/draftEnabled)',
       x.status === 200 && x.body.examples.post.map((e: any) => e.text).join() === `发文范例 ${tag}` && x.body.examples.comment.map((e: any) => e.text).join() === `回复范例 ${tag},管理员替 A 写的回复范例 ${tag}`
         && x.body.lengths.comment.low.join() === '4,30' && x.body.lengths.post.medium.join() === '150,500' && x.body.maxExamples === 20
-        && x.body.persona.draftOwnerName === `pea${tag}` && Array.isArray(x.body.persona.runs)
+        && !('draftOwnerName' in x.body.persona) && !('runs' in x.body.persona) && !('draftEnabled' in x.body.persona) && !('draftsPerDay' in x.body.persona)
         && x.body.persona.style.bannedWords.join() === 'Spam,违禁', JSON.stringify(x.body).slice(0, 400));
 
     // 范例 limit: 20 per persona and kind (post / comment counted separately), under a lock on the persona row
@@ -350,6 +353,43 @@ try {
   const [b2row] = await db.select().from(TPL).where(eq(TPL.id, B2.id));
   check('owner deletes own persona → its template is deleted too', r.status === 204 && b2row === undefined);
 
+  // ================================================================ creating a persona with 范例 (one transaction)
+  {
+    const nm = `WithEx ${tag}`;
+    const c = await persona(A.token, { scope: 'mine', name: nm, style: { bannedWords: ['禁词'] }, examples: { post: [`发文甲 ${tag}`, `发文乙 ${tag}`], comment: [`评论甲 ${tag}`] } });
+    const pid = c.body?.persona?.id;
+    const d = (await http('GET', `/api/personas/${pid}`, A.token)).body;
+    const rows = pid ? await db.select().from(TPL).where(eq(TPL.personaId, pid)) : [];
+    check('create with examples → 201: 2 post + 1 comment 范例 in form order, private templates of A, names = text start',
+      c.status === 201 && d.examples.post.map((e: any) => e.text).join() === `发文甲 ${tag},发文乙 ${tag}` && d.examples.comment.map((e: any) => e.text).join() === `评论甲 ${tag}`
+        && rows.length === 3 && rows.every((t) => t.userId === A.id && t.createdBy === A.id) && rows.some((t) => t.name === `发文甲 ${tag}`), `${c.status} ${c.text.slice(0, 200)}`);
+    const pub = await persona(T, { scope: 'public', name: `WithExPub ${tag}`, examples: { post: [`公共甲 ${tag}`] } });
+    const forA = await persona(T, { scope: 'mine', ownerId: A.id, name: `WithExForA ${tag}`, examples: { comment: [`替A ${tag}`] } });
+    const pubRows = pub.body?.persona ? await db.select().from(TPL).where(eq(TPL.personaId, pub.body.persona.id)) : [];
+    const forARows = forA.body?.persona ? await db.select().from(TPL).where(eq(TPL.personaId, forA.body.persona.id)) : [];
+    check('public persona with examples → shared templates; admin for A (ownerId) → A\'s templates',
+      pub.status === 201 && pubRows.length === 1 && pubRows[0]!.userId === null && forA.status === 201 && forARows.length === 1 && forARows[0]!.userId === A.id && forARows[0]!.kind === 'comment',
+      `${pub.status} ${forA.status}`);
+    const many = Array.from({ length: 21 }, (_, i) => `多 ${i}`);
+    const big = await persona(A.token, { scope: 'mine', name: `TooMany ${tag}`, examples: { post: many } });
+    const bigC = await persona(A.token, { scope: 'mine', name: `TooManyC ${tag}`, examples: { comment: many } });
+    const longC = await persona(A.token, { scope: 'mine', name: `TooLong ${tag}`, examples: { comment: ['x'.repeat(501)] } });
+    const ban = await persona(A.token, { scope: 'mine', name: `Banned ${tag}`, style: { bannedWords: ['最便宜'] }, examples: { post: ['普通一条'], comment: ['这是全网最便宜的'] } });
+    const left = await db.select({ id: schema.personas.id }).from(schema.personas)
+      .where(inArray(schema.personas.name, [`TooMany ${tag}`, `TooManyC ${tag}`, `TooLong ${tag}`, `Banned ${tag}`]));
+    const leftTpl = await db.select({ id: TPL.id }).from(TPL).where(inArray(TPL.text, ['普通一条', '这是全网最便宜的', '多 0']));
+    check('21 post / 21 comment examples or a 501-char comment → 400; a banned word in an example → 400 persona.banned_word; nothing created',
+      big.status === 400 && bigC.status === 400 && longC.status === 400 && ban.status === 400 && ban.body.code === 'persona.banned_word' && ban.body.params?.words === '最便宜'
+        && left.length === 0 && leftTpl.length === 0, `${big.status} ${bigC.status} ${longC.status} ${ban.status} ${ban.body?.code} left=${left.length}/${leftTpl.length}`);
+    const dup = await persona(A.token, { scope: 'mine', name: nm.toUpperCase(), examples: { post: [`重名 ${tag}`] } });
+    const dupTpl = await db.select({ id: TPL.id }).from(TPL).where(eq(TPL.text, `重名 ${tag}`));
+    check('duplicate name with examples → 409 persona.exists, no template left behind', dup.status === 409 && dup.body.code === 'persona.exists' && dupTpl.length === 0, `${dup.status} ${dup.body?.code}`);
+    await sleep(400);
+    const au = (await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'persona.create'), eq(schema.auditLogs.target, nm))))[0];
+    check('audit persona.create: example counts only, no texts', (au?.detail as any)?.examples?.post === 2 && (au?.detail as any)?.examples?.comment === 1 && !JSON.stringify(au?.detail).includes('发文甲'),
+      JSON.stringify(au?.detail));
+  }
+
   // ================================================================ 复制到我的人设 (POST /api/personas/:id/copy)
   const copyIds: { src: string; id: string }[] = [];
   {
@@ -360,7 +400,7 @@ try {
       post: { tone: 'pro', toneNote: '干货', emoji: 'low', length: 'high', hashtags: ['run', 'morning'], audience: '上班族', opening: '早安', closing: '明天见', notes: '少用感叹号' },
       comment: { tone: 'warm', toneNote: '温柔', emoji: 'high', length: 'low' },
     };
-    const src = (await persona(T, { scope: 'public', name: `Copy ${tag}`, description: '复制定位', style, draftEnabled: true, draftsPerDay: 7, draftOwnerId: B.id })).body.persona;
+    const src = (await persona(T, { scope: 'public', name: `Copy ${tag}`, description: '复制定位', style })).body.persona;
     const ex = async (token: string, body: Record<string, unknown>) => {
       const x = await http('POST', '/api/comment-templates', token, body);
       if (x.body?.template?.id) templateIds.push(x.body.template.id);
@@ -373,7 +413,7 @@ try {
       await ex(T, { shared: true, kind: 'comment', name: 'c2', text: `评论二 ${tag}`, personaId: src.id }),
       await ex(A.token, { kind: 'post', name: 'own', text: `A 自己的 ${tag}`, personaId: src.id }), // A's private template on the public persona: not one of its 范例
     ];
-    check('copy setup: public persona with style, AI on, 2 post + 2 comment examples', !!src?.id && exs.every((x) => x.status === 201), exs.map((x) => x.status).join());
+    check('copy setup: public persona with style, 2 post + 2 comment examples', !!src?.id && exs.every((x) => x.status === 201), exs.map((x) => x.status).join());
     const srcDetail = (await http('GET', `/api/personas/${src.id}`, T)).body;
 
     let c = await http('POST', `/api/personas/${src.id}/copy`, A.token);
@@ -386,8 +426,8 @@ try {
     check('copy: 定位 and the whole style (shared + 发文 + 评论) equal the source',
       d.persona.description === '复制定位' && JSON.stringify(d.persona.style) === JSON.stringify(srcDetail.persona.style) && d.persona.style.post.closing === '明天见' && d.persona.style.comment.tone === 'warm',
       JSON.stringify(d.persona.style));
-    check('copy: AI drafts off, default per day 4, no draft owner (drafts go to the owner)',
-      cp.draftEnabled === false && cp.draftsPerDay === 4 && cp.draftOwnerId === null && d.persona.draftOwnerName === `pea${tag}`);
+    check('copy: no legacy AI fields in the response (daily drafts are per social account)',
+      !('draftEnabled' in cp) && !('draftOwnerId' in cp) && !('draftOwnerName' in d.persona));
     check('copy: examples per kind equal the source in the same order (A\'s own template on the source not copied)',
       d.examples.post.map((e: any) => `${e.name}:${e.text}`).join() === srcDetail.examples.post.map((e: any) => `${e.name}:${e.text}`).join()
         && d.examples.comment.map((e: any) => e.text).join() === `评论一 ${tag},评论二 ${tag}` && d.examples.post.length === 2,

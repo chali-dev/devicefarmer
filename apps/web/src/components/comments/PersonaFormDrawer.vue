@@ -7,7 +7,7 @@ import { api, errorText } from '../../api/client'
 import type { PersonaDetail, PersonaExample, PersonaLengths, PersonaVoice, TemplateKind } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
-import DraftRunInfo from './DraftRunInfo.vue'
+import DraftPreviewModal from './DraftPreviewModal.vue'
 import PersonaVoiceFields from './PersonaVoiceFields.vue'
 import { forgetPersona, type VoiceForm } from './persona'
 
@@ -16,16 +16,17 @@ import { forgetPersona, type VoiceForm } from './persona'
  * 基本 = name, 一句话定位, 常聊话题, 禁用词 (checked on posts and comments);
  * 发文风格 = tone preset + note, emoji, length (post range), hashtags, fixed opening/closing, 更多 (audience, notes) and
  * the 发文范例; 评论风格 = tone + note, emoji, length (comment range) and the 评论范例 (范例 = templates of the persona,
- * ≤ 20 per kind, edited in place one by one); AI 草稿 in one row (on/off, per day, public: who gets the drafts, generate
- * one now; written with the 发文风格). No language: it belongs to the social account.
- * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one); after creating, the
- * drawer stays open on the new persona so examples can be added. 复制到我的人设 (saved state) is emitted as `copy` to the page.
+ * ≤ 20 per kind, edited in place one by one); AI测试 = a preview of one draft in the saved 发文风格 (DraftPreviewModal,
+ * nothing stored unless 保存为草稿). How many drafts a day is set per social account (社交号 → AI 草稿), not here.
+ * No language: it belongs to the social account.
+ * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one): 范例 can be written right
+ * away and are created with the persona in one request (POST /api/personas `examples`, one transaction); after creating,
+ * the drawer stays open on the new persona. 复制到我的人设 is a row action of the page only.
  */
 const props = defineProps<{
   open: boolean; personaId: string | null; scope: 'public' | 'mine'; ownerId?: string
-  users: { id: string; username: string; disabled: boolean }[]
 }>()
-const emit = defineEmits<{ 'update:open': [boolean]; saved: [id: string]; copy: [persona: { id: string; name: string }] }>()
+const emit = defineEmits<{ 'update:open': [boolean]; saved: [id: string] }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const KINDS = ['post', 'comment'] as const
@@ -34,7 +35,7 @@ const id = ref<string | null>(null)
 const detail = ref<PersonaDetail | null>(null)
 const loading = ref(false)
 const saving = ref(false)
-const generating = ref(false)
+const previewOpen = ref(false)
 const noteOf = (tone: PersonaVoice['tone']) => t(`personas.toneNotes.${tone}`)
 const voiceOf = (v?: PersonaVoice): VoiceForm => ({
   tone: v?.tone ?? 'casual', toneNote: v ? v.toneNote ?? noteOf(v.tone) : noteOf('casual'), emoji: v?.emoji ?? 'medium', length: v?.length ?? 'medium',
@@ -43,13 +44,11 @@ const empty = () => ({
   name: '', description: '', topics: [] as string[], bannedWords: [] as string[],
   post: voiceOf(), hashtags: [] as string[], audience: '', opening: '', closing: '', notes: '',
   comment: voiceOf(),
-  draftEnabled: false, draftsPerDay: 4, draftOwnerId: undefined as string | undefined,
 })
 const form = reactive(empty())
 type Row = { id: string | null; text: string; saved: string }
 const examples = reactive<Record<TemplateKind, Row[]>>({ post: [], comment: [] })
 
-const isPublic = computed(() => (detail.value ? detail.value.persona.ownerType === 'public' : props.scope === 'public'))
 /** Length table (detail, or the list endpoint for a new persona) and the 范例 limit per kind. */
 const lengthTable = ref<PersonaLengths | null>(null)
 const table = computed(() => detail.value?.lengths ?? lengthTable.value)
@@ -65,7 +64,6 @@ async function load(pid: string) {
       name: d.persona.name, description: d.persona.description ?? '', topics: [...s.topics], bannedWords: [...s.bannedWords],
       post: voiceOf(s.post), hashtags: [...s.post.hashtags], audience: s.post.audience ?? '', opening: s.post.opening ?? '', closing: s.post.closing ?? '', notes: s.post.notes ?? '',
       comment: voiceOf(s.comment),
-      draftEnabled: d.persona.draftEnabled, draftsPerDay: d.persona.draftsPerDay, draftOwnerId: d.persona.draftOwnerId ?? undefined,
     })
     const rows = (xs: PersonaExample[]) => xs.map((e) => ({ id: e.id, text: e.text, saved: e.text }))
     examples.post = rows(d.examples.post)
@@ -85,7 +83,6 @@ watch(() => [props.open, props.personaId] as const, ([open, pid]) => {
   }
 }, { immediate: true })
 
-const userOptions = computed(() => props.users.filter((u) => !u.disabled).map((u) => ({ value: u.id, label: u.username })))
 const voiceBody = (v: VoiceForm) => ({ tone: v.tone, toneNote: v.toneNote.trim(), emoji: v.emoji, length: v.length })
 
 async function save() {
@@ -101,8 +98,6 @@ async function save() {
       },
       comment: voiceBody(form.comment),
     },
-    draftEnabled: form.draftEnabled, draftsPerDay: form.draftsPerDay,
-    ...(isPublic.value ? { draftOwnerId: form.draftOwnerId ?? null } : {}),
   }
   saving.value = true
   try {
@@ -111,7 +106,11 @@ async function save() {
       forgetPersona(id.value)
       message.success(t('common.saved'))
     } else {
-      const r = await api<{ persona: { id: string } }>('POST', '/api/personas', { ...body, scope: props.scope, ...(props.ownerId ? { ownerId: props.ownerId } : {}) })
+      // 范例 written before the first save are created with the persona in the same transaction
+      const texts = (kind: TemplateKind) => examples[kind].map((r) => r.text.trim()).filter(Boolean)
+      const r = await api<{ persona: { id: string } }>('POST', '/api/personas', {
+        ...body, scope: props.scope, ...(props.ownerId ? { ownerId: props.ownerId } : {}), examples: { post: texts('post'), comment: texts('comment') },
+      })
       id.value = r.persona.id
       message.success(t('scripts.personas.created'))
       await load(r.persona.id)
@@ -156,17 +155,6 @@ function removeExample(kind: TemplateKind, i: number) {
   })
 }
 
-async function generate() {
-  if (!id.value) return
-  generating.value = true
-  try {
-    await api('POST', `/api/personas/${id.value}/drafts/generate`)
-    message.success(t('scripts.drafts.generated'))
-    await load(id.value)
-    emit('saved', id.value)
-  } catch (e) { message.error(errorText(e)) } finally { generating.value = false }
-}
-const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
 </script>
 
 <template>
@@ -207,54 +195,44 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
               </a-form-item>
             </a-collapse-panel>
             <a-collapse-panel key="examples" :header="t(`personas.form.examples_${kind}`, { n: examples[kind].length, max: maxExamples })">
-              <div v-if="!id" class="muted small">{{ t('personas.form.examplesAfterSave') }}</div>
-              <template v-else>
-                <div v-if="!examples[kind].length" class="muted small">{{ t('personas.form.examplesEmpty') }}</div>
-                <div v-for="(row, i) in examples[kind]" :key="row.id ?? `new-${i}`" class="ex-row">
-                  <a-textarea v-model:value="row.text" :auto-size="{ minRows: 2, maxRows: 6 }" :maxlength="kind === 'post' ? 2200 : 500" />
-                  <a-space direction="vertical" :size="2">
-                    <a-button size="small" type="link" :disabled="!row.text.trim() || row.text.trim() === row.saved" @click="saveExample(kind, row)">{{ t('common.save') }}</a-button>
-                    <a-button size="small" type="link" danger @click="removeExample(kind, i)">{{ t('common.delete') }}</a-button>
-                  </a-space>
-                </div>
-                <a-button size="small" type="link" :disabled="examples[kind].length >= maxExamples" @click="addExample(kind)">
-                  <template #icon><PlusOutlined /></template>{{ t('personas.form.addExample') }}
-                </a-button>
-                <div class="muted small">{{ t(`personas.form.examplesHint_${kind}`, { max: maxExamples }) }}</div>
-              </template>
+              <div v-if="!examples[kind].length" class="muted small">{{ t('personas.form.examplesEmpty') }}</div>
+              <div v-for="(row, i) in examples[kind]" :key="row.id ?? `new-${i}`" class="ex-row">
+                <a-textarea v-model:value="row.text" :auto-size="{ minRows: 2, maxRows: 6 }" :maxlength="kind === 'post' ? 2200 : 500"
+                  :placeholder="t(`personas.form.examplePlaceholder_${kind}`)" />
+                <a-space direction="vertical" :size="2">
+                  <!-- new persona: 范例 are saved with the persona (footer 保存) -->
+                  <a-button v-if="id" size="small" type="link" :disabled="!row.text.trim() || row.text.trim() === row.saved" @click="saveExample(kind, row)">{{ t('common.save') }}</a-button>
+                  <a-button size="small" type="link" danger @click="removeExample(kind, i)">{{ t('common.delete') }}</a-button>
+                </a-space>
+              </div>
+              <a-button size="small" type="link" :disabled="examples[kind].length >= maxExamples" @click="addExample(kind)">
+                <template #icon><PlusOutlined /></template>{{ t('personas.form.addExample') }}
+              </a-button>
+              <div class="muted small">{{ t(id ? `personas.form.examplesHint_${kind}` : 'personas.form.examplesWithPersona', { max: maxExamples }) }}</div>
             </a-collapse-panel>
           </a-collapse>
         </template>
 
-        <!-- AI 草稿: one row -->
+        <!-- AI测试: preview only (per-day drafts are set on the social accounts) -->
         <a-divider orientation="left" plain>{{ t('personas.form.ai') }}</a-divider>
         <div class="ai-row">
-          <a-switch v-model:checked="form.draftEnabled" />
-          <span>{{ t('personas.form.aiPerDay') }}</span>
-          <a-input-number v-model:value="form.draftsPerDay" :min="1" :max="10" :precision="0" size="small" style="width: 70px" />
-          <template v-if="isPublic">
-            <span>{{ t('personas.form.aiOwner') }}</span>
-            <a-select v-model:value="form.draftOwnerId" allow-clear show-search option-filter-prop="label" size="small" style="width: 160px" :options="userOptions" />
-          </template>
-          <a-button size="small" :disabled="!id" :loading="generating" @click="generate">{{ t('scripts.drafts.generate') }}</a-button>
+          <a-button size="small" :disabled="!id" @click="previewOpen = true">{{ t('personas.aiTest') }}</a-button>
+          <span class="muted small">{{ id ? t('personas.form.aiHint') : t('personas.form.aiAfterSave') }}</span>
         </div>
-        <div class="muted small ai-hint">{{ t('personas.form.aiHint') }}</div>
-        <DraftRunInfo v-if="lastRun" :run="lastRun" />
       </a-form>
     </a-spin>
     <template #footer>
       <a-space>
-        <a-button v-if="detail" @click="emit('copy', { id: detail.persona.id, name: detail.persona.name })">{{ t('personas.copy') }}</a-button>
         <a-button @click="emit('update:open', false)">{{ t('common.cancel') }}</a-button>
         <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
       </a-space>
     </template>
   </a-drawer>
+  <DraftPreviewModal v-model:open="previewOpen" :persona-id="id" :persona-name="form.name" />
 </template>
 
 <style scoped>
 .sections :deep(.ant-collapse-header) { padding-inline-start: 0 !important; }
 .ex-row { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; }
 .ai-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.ai-hint { margin: 6px 0; }
 </style>

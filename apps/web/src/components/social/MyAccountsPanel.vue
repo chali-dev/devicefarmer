@@ -22,6 +22,7 @@ import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, T
 import LangSelect from '../common/LangSelect.vue'
 import { langName } from '../../api/lang'
 import PlatformTag from './PlatformTag.vue'
+import AccountAiDrafts from './AccountAiDrafts.vue'
 import SocialAccountFeedDrawer from '../feed/SocialAccountFeedDrawer.vue'
 import SyncFromDeviceModal from './SyncFromDeviceModal.vue'
 import { useAuthStore } from '../../stores/auth'
@@ -560,6 +561,7 @@ async function submitBatchForm() {
         <a-select v-model:value="form.personaId" allow-clear show-search option-filter-prop="label" :placeholder="t('social.noPersona')"
           :options="formPersonas.map((p) => ({ value: p.id, label: personaLabel(p) }))" />
       </a-form-item>
+      <a-form-item v-if="editing" :label="t('social.aiDrafts.title')"><AccountAiDrafts :account-id="editing.id" @changed="load" /></a-form-item>
       <a-form-item :label="t('social.colLang')" name="lang" :extra="t('social.langHint')">
         <LangSelect v-model="form.lang" :extra="accountLangs" :placeholder="t('social.noLang')" />
       </a-form-item>

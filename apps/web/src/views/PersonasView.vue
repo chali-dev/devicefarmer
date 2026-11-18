@@ -11,17 +11,18 @@ import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import { useScopedList } from '../components/common/scopedList'
 import { actionColumn, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import DraftPreviewModal from '../components/comments/DraftPreviewModal.vue'
 import PersonaFormDrawer from '../components/comments/PersonaFormDrawer.vue'
 import { useAuthStore } from '../stores/auth'
 
 /**
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
  * (账号人设 accounts → /social; 范例 count → opens the form, the 话术库 page /scripts was removed 2026-11-18) and its
- * 发文/评论 tone; row actions 编辑 / AI测试 (one AI draft now) / 更多. `?edit=<id>` opens the form of that persona
- * (插入话术 links here). 复制到我的人设 on every row and in the form (any visible persona → a personal copy with all 范例, AI off;
- * admins pick the owner in the 全部用户 tab), then the copy's form opens.
- * AI 草稿 on/off and per day live only in the form (no AI column since 2026-11-18). Public personas are managed by admins; personal ones by their owner (admins: all).
- * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 发文风格 + 发文范例, 评论风格 + 评论范例, AI 草稿). No merge for personas
+ * 发文/评论 tone; row actions 编辑 / AI测试 (preview of one draft, nothing stored unless 保存为草稿: DraftPreviewModal) / 更多.
+ * `?edit=<id>` opens the form of that persona (插入话术 links here). 复制到我的人设 on every row (any visible persona → a
+ * personal copy with all 范例; admins pick the owner in the 全部用户 tab), then the copy's form opens.
+ * Daily AI drafts are set per social account (社交号 → AI 草稿), not on personas. Public personas are managed by admins; personal ones by their owner (admins: all).
+ * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 发文风格 + 发文范例, 评论风格 + 评论范例, AI测试). No merge for personas
  * (owner decision 2026-11-18; the shared `useScopedList` merge stays for 内容分类/素材分类).
  * Tabs: 公共 / 我的 (+ admin 全部用户 with an owner filter); `?tab=` keeps the tab in the URL.
  */
@@ -38,7 +39,7 @@ const pageTab = computed<PageTab>({
 })
 
 const {
-  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, run, move, remove,
+  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, move, remove,
 } = useScopedList({ path: '/api/personas', listKey: 'personas', texts: 'scripts.personas' })
 const isAllUsers = computed(() => pageTab.value === 'all-users')
 function applyTab() {
@@ -81,14 +82,10 @@ const columns = computed(() => [
 const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
 
 
-// ---- AI测试: one AI draft now (same as 立即生成一条 in the form; errors such as ai.not_configured / ai.rate_limited shown by run())
-const generating = ref<string | null>(null)
-async function generate(p: ScopedItem) {
-  generating.value = p.id
-  try {
-    await run(async () => { await api('POST', `/api/personas/${p.id}/drafts/generate`); message.success(t('scripts.drafts.generated')) })
-  } finally { generating.value = null }
-}
+// ---- AI测试: preview of one draft (same modal as in the form)
+const previewFor = ref<ScopedItem | null>(null)
+const previewOpen = ref(false)
+function preview(p: ScopedItem) { previewFor.value = p; previewOpen.value = true }
 
 // ---- create / edit: the persona form drawer
 const formOpen = ref(false)
@@ -189,7 +186,7 @@ async function doCopy() {
           <template v-else-if="column.key === 'ops'">
             <a-space v-if="record.writable" :size="0">
               <a-button type="link" size="small" @click="openForm(record as ScopedItem)">{{ t('common.edit') }}</a-button>
-              <a-button type="link" size="small" :loading="generating === record.id" @click="generate(record as ScopedItem)">{{ t('personas.aiTest') }}</a-button>
+              <a-button type="link" size="small" @click="preview(record as ScopedItem)">{{ t('personas.aiTest') }}</a-button>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
@@ -229,7 +226,8 @@ async function doCopy() {
       <div class="muted small">{{ t('personas.copyHint') }}</div>
     </a-modal>
 
-    <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" :users="users" @saved="load" @copy="startCopy" />
+    <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" @saved="load" />
+    <DraftPreviewModal v-model:open="previewOpen" :persona-id="previewFor?.id ?? null" :persona-name="previewFor?.name" />
   </PageContainer>
 </template>
 

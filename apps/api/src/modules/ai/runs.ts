@@ -1,26 +1,30 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 
-/** Task type of 人设每日草稿 (kept here, without the task handler, so the persona list can read runs without importing it). */
+/** LEGACY task type of the former per-persona daily drafts (handler only finishes old queued tasks as skipped). */
 export const DRAFT_TASK = 'persona-drafts';
+/** Task type of the daily AI drafts of one social account (kept here, without the handler, so routes can read runs). */
+export const ACCOUNT_DRAFT_TASK = 'account-drafts';
 
 const T = schema.tasks;
-const cols = { id: T.id, refId: T.refId, status: T.status, errorCode: T.errorCode, createdAt: T.createdAt, finishedAt: T.finishedAt, payload: T.payload, result: T.result };
-type RunRow = { id: string; refId: string | null; status: string; errorCode: string | null; createdAt: Date; finishedAt: Date | null; payload: unknown; result: unknown };
+const cols = { id: T.id, status: T.status, errorCode: T.errorCode, createdAt: T.createdAt, finishedAt: T.finishedAt, result: T.result };
+type RunRow = { id: string; status: string; errorCode: string | null; createdAt: Date; finishedAt: Date | null; result: unknown };
 
-/** A generation task as shown to people: trigger (schedule|manual) and the number of drafts created (null until it succeeded). */
-function runItem({ payload, result, refId: _r, ...r }: RunRow) {
+/** A generation task as shown to people: drafts created (null until it succeeded) or the skip code. */
+function runItem({ result, ...r }: RunRow) {
+  const res = result as { contentIds?: unknown; skipped?: unknown } | null;
   return {
-    ...r, trigger: (payload as { trigger?: string } | null)?.trigger ?? null,
-    created: Array.isArray((result as { contentIds?: unknown } | null)?.contentIds) ? (result as { contentIds: string[] }).contentIds.length : null,
+    ...r, trigger: 'schedule' as const,
+    created: Array.isArray(res?.contentIds) ? res.contentIds.length : null,
+    skipped: typeof res?.skipped === 'string' ? res.skipped : null,
   };
 }
 export type DraftRun = ReturnType<typeof runItem>;
 
-const ofPersonas = (ids: string[]) => and(eq(T.type, DRAFT_TASK), eq(T.refType, 'persona'), inArray(T.refId, ids));
-
-/** The last `limit` generation tasks of one persona, newest first (persona form). */
-export async function personaDraftRuns(personaId: string, limit = 5): Promise<DraftRun[]> {
-  const rows = await db.select(cols).from(T).where(ofPersonas([personaId])).orderBy(desc(T.createdAt)).limit(limit);
+/** The last `limit` daily generation tasks of one social account, newest first (社交号 → AI 草稿). */
+export async function accountDraftRuns(accountId: string, limit = 5): Promise<DraftRun[]> {
+  const rows = await db.select(cols).from(T)
+    .where(and(eq(T.type, ACCOUNT_DRAFT_TASK), eq(T.refType, 'social_account'), eq(T.refId, accountId)))
+    .orderBy(desc(T.createdAt)).limit(limit);
   return rows.map(runItem);
 }

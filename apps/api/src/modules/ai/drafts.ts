@@ -1,11 +1,12 @@
+import { createHash, randomBytes } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { UnrecoverableError } from 'bullmq';
-import { and, asc, desc, eq, gt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, or, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
-import type { ContentAiInfo, Persona } from '../../db/schema.js';
+import type { ContentAiInfo, Persona, SocialAccount } from '../../db/schema.js';
 import { badRequest, HttpError } from '../../lib/errors.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
@@ -13,29 +14,41 @@ import { setContentMedia, setContentTags, setContentTargets } from '../content/c
 import { SOURCE_LANG } from '../content/languages.js';
 import { bannedHits, EMOJI_PROMPT, exampleWhere, PERSONA_LENGTHS, PROMPT_EXAMPLES, styleOf, TONE_PROMPT } from '../comments/persona-style.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
-import { DRAFT_TASK } from './runs.js';
+import { ACCOUNT_DRAFT_TASK, DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
 
 /**
- * 人设每日草稿 (AI drafts per persona). Decided by the product owner (2026-11-18): AI may write DRAFTS only; a person
- * reviews and edits every draft and publishes it themselves. Nothing here schedules or publishes anything.
+ * AI 草稿. Decided by the product owner (2026-11-18): AI may write DRAFTS only; a person reviews and edits every draft and
+ * publishes it themselves. Nothing here schedules or publishes anything.
  *
- * - Per persona with `draft_enabled`, once a day at the configured hour (API host local time, settings key `ai`), one
- *   device-less `persona-drafts` task (queue `ai-ops`, key `persona-drafts:<personaId>:<local date>`) asks the Anthropic
- *   API for `drafts_per_day` drafts in one structured-output request. "Generate one now" = the same task with count 1,
- *   rate-limited to once per persona per 10 minutes.
+ * - 每日草稿 per SOCIAL ACCOUNT (owner decision 2026-11-18: the persona only defines the style; the account that uses it
+ *   says how many drafts a day): accounts with `ai_drafts_enabled` and a persona get, once a day at the configured hour
+ *   (API host local time, settings key `ai`), one device-less `account-drafts` task (queue `ai-account-ops`, key
+ *   `account-drafts:<accountId>:<local date>`) asking the Anthropic API for `ai_drafts_per_day` drafts in one
+ *   structured-output request. Drafts belong to the account's owner and target exactly that account.
+ *   The persona columns draft_enabled/drafts_per_day/draft_owner_id are LEGACY (not read); `persona-drafts` tasks
+ *   still queued by an older release complete as a skipped no-op.
+ * - AI测试 = preview (`previewDraft`): the same prompt/output/error handling (`generateDrafts`) for ONE draft, run
+ *   synchronously in the request, nothing written. The draft is kept 10 minutes in Redis under a single-use token;
+ *   「保存为草稿」(`savePreview`) writes exactly that stored draft for the current user, so a client can't save made-up
+ *   "model output". At most PREVIEW_LIMIT previews per persona per 10 minutes.
  * - Sent to Anthropic (approved by the owner): the persona's 定位 + 发文风格 (tone, emoji, length, hashtags, audience,
  *   fixed opening/closing, notes) + shared topics and banned words, the oldest 5 of its post examples (范例) and title + a body snippet of the
  *   persona's contents of the last 30 days. Never the API key in payloads/logs, never the prompt in logs.
  * - Drafts are always written in Chinese (the fixed source language); accounts in other languages need a human
  *   translation, recorded as `ai_generated.needsTranslation` (no machine translation).
- * - Each draft becomes one `contents` row: stage draft, owner = the persona's owner (public persona: `draft_owner_id`),
- *   lang zh-CN, tag `ai-draft`, `ai_generated` = origin, targets = the owner's accounts using the persona (enabled
- *   platforms), the fixed opening/closing added verbatim, up to 3 suggested ready images matching the model's media tags.
+ * - Each draft becomes one `contents` row: stage draft, lang zh-CN, tag `ai-draft`, `ai_generated` = origin, the fixed
+ *   opening/closing added verbatim, up to 3 suggested ready images matching the model's media tags.
  */
-export { DRAFT_TASK };
+export { ACCOUNT_DRAFT_TASK, DRAFT_TASK };
 export const DRAFT_TAG = 'ai-draft';
-const MANUAL_WINDOW_SEC = 600;
+/** AI测试 previews per persona per window (fixed window from the first preview). */
+export const PREVIEW_LIMIT = 5;
+const PREVIEW_WINDOW_SEC = 600;
+/** How long a preview can be saved (Redis TTL of its token). */
+export const PREVIEW_TTL_SEC = 600;
+/** The preview runs inside the HTTP request: one short draft takes seconds; the browser shows a spinner meanwhile. */
+const PREVIEW_TIMEOUT_MS = 90_000;
 const RECENT_DAYS = 30;
 const MAX_TOKENS = 8000;
 /**
@@ -47,20 +60,6 @@ const REQUEST_TIMEOUT_MS = 180_000;
 /** Server-side refusal fallback: documented for Opus 5.5 and Sonnet 5.5; Haiku 5.5 has none (a fallbacks list is a 400). */
 const FALLBACK_MODELS: readonly AiModel[] = ['claude-opus-5-5', 'claude-sonnet-5-5'];
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
-
-/** The draft owner: personal persona → its owner; public → `draft_owner_id`. Must be an existing, enabled user. */
-export async function draftOwner(p: Pick<Persona, 'ownerType' | 'ownerId' | 'draftOwnerId'>): Promise<{ id: string; username: string } | { code: string }> {
-  const id = p.ownerType === 'user' ? p.ownerId : p.draftOwnerId;
-  if (!id) return { code: 'persona.draft_owner_required' };
-  const [u] = await db.select({ id: schema.users.id, username: schema.users.username, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, id));
-  if (!u || u.disabled) return { code: 'persona.draft_owner_invalid' };
-  return { id: u.id, username: u.username };
-}
-
-export async function assertDraftOwnerCandidate(userId: string): Promise<void> {
-  const [u] = await db.select({ disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, userId));
-  if (!u || u.disabled) throw badRequest('草稿归属用户不存在或已停用', 'persona.draft_owner_invalid');
-}
 
 // ---------------------------------------------------------------- prompt
 
@@ -172,6 +171,22 @@ export function withFixedLines(body: string, opening?: string, closing?: string)
   return b;
 }
 
+/**
+ * One model draft as it will be stored (shared by saveDrafts and the preview): fixed lines added, hashtags normalised
+ * (≤ 15, unique), `text` = the content body (caption + hashtag line), `banned` = every banned word it contains.
+ */
+export function composeDraft(raw: DraftOut, p: Pick<Persona, 'style'>) {
+  const st = styleOf(p);
+  const body = withFixedLines(raw.body, st.post.opening, st.post.closing);
+  const hashtags = [...new Set(raw.hashtags.map(normHashtag).filter(Boolean))].slice(0, 15);
+  const text = [body.trim(), hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n').slice(0, 5000);
+  return {
+    title: raw.title.trim().slice(0, 200), body, hashtags, text,
+    mediaTags: raw.mediaTags.map((t) => t.trim()).filter(Boolean).slice(0, 5),
+    banned: bannedHits(st.bannedWords, [raw.title, body, ...raw.hashtags]),
+  };
+}
+
 async function suggestMedia(ownerId: string, tags: string[]): Promise<string[]> {
   const names = [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 10);
   if (!names.length) return [];
@@ -186,13 +201,26 @@ async function suggestMedia(ownerId: string, tags: string[]): Promise<string[]> 
   return rows.map((r) => r.id);
 }
 
+export type TargetAccount = Pick<SocialAccount, 'id' | 'platform' | 'lang'>;
+
+/** The owner's accounts using the persona (oldest first): the targets of a saved preview. */
+export async function personaAccounts(ownerId: string, personaId: string): Promise<TargetAccount[]> {
+  const SA = schema.socialAccounts;
+  return db.select({ id: SA.id, platform: SA.platform, lang: SA.lang }).from(SA)
+    .where(and(eq(SA.userId, ownerId), eq(SA.personaId, personaId))).orderBy(SA.createdAt);
+}
+
 export interface SaveDraftsInput {
   persona: Persona;
   ownerId: string;
+  /** Target candidates (accounts on disabled platforms are skipped). */
+  accounts: TargetAccount[];
   drafts: DraftOut[];
   model: string;
   requestedModel: string;
   taskId: string | null;
+  via?: ContentAiInfo['via'];
+  accountId?: string;
   now?: Date;
 }
 export interface SaveDraftsResult {
@@ -200,7 +228,7 @@ export interface SaveDraftsResult {
   /** Drafts dropped because they contained a banned word (the word). */
   dropped: string[];
   targets: number;
-  /** Accounts using the persona on a disabled platform (not set as targets). */
+  /** Target candidates on a disabled platform (not set as targets). */
   skippedAccounts: number;
   /** Languages of the target accounts other than Chinese (the drafts need a human translation). */
   needsTranslation: string[];
@@ -208,34 +236,28 @@ export interface SaveDraftsResult {
 
 /** Writes structured drafts as contents (one transaction). Exported for the check script (no model needed). */
 export async function saveDrafts(i: SaveDraftsInput): Promise<SaveDraftsResult> {
-  const SA = schema.socialAccounts;
-  const accounts = await db.select({ id: SA.id, platform: SA.platform, lang: SA.lang }).from(SA)
-    .where(and(eq(SA.userId, i.ownerId), eq(SA.personaId, i.persona.id))).orderBy(SA.createdAt);
-  const enabled = accounts.filter((a) => isPlatformEnabled(a.platform));
+  const enabled = i.accounts.filter((a) => isPlatformEnabled(a.platform));
   const targets = enabled.map((a) => a.id);
   const needsTranslation = [...new Set(enabled.flatMap((a) => (a.lang && a.lang !== SOURCE_LANG ? [a.lang] : [])))].sort();
-  const st = styleOf(i.persona);
   const dropped: string[] = [];
-  const keep: (DraftOut & { media: string[] })[] = [];
+  const keep: (ReturnType<typeof composeDraft> & { media: string[] })[] = [];
   for (const raw of i.drafts) {
-    const d = { ...raw, body: withFixedLines(raw.body, st.post.opening, st.post.closing) };
-    const hit = bannedHit(d, st.bannedWords);
-    if (hit) { dropped.push(hit); continue; }
+    const d = composeDraft(raw, i.persona);
+    if (d.banned.length) { dropped.push(d.banned[0]!); continue; }
     keep.push({ ...d, media: await suggestMedia(i.ownerId, d.mediaTags) });
   }
   const generatedAt = (i.now ?? new Date()).toISOString();
   const contentIds = await db.transaction(async (tx) => {
     const ids: string[] = [];
     for (const d of keep) {
-      const hashtags = [...new Set(d.hashtags.map(normHashtag).filter(Boolean))].slice(0, 15);
-      const body = [d.body.trim(), hashtags.map((h) => `#${h}`).join(' ')].filter(Boolean).join('\n\n').slice(0, 5000);
       const ai: ContentAiInfo = {
+        ...(i.via ? { via: i.via } : {}), ...(i.accountId ? { accountId: i.accountId } : {}),
         model: i.model, requestedModel: i.requestedModel, personaId: i.persona.id, personaName: i.persona.name,
-        taskId: i.taskId, generatedAt, mediaTags: d.mediaTags.map((t) => t.trim()).filter(Boolean).slice(0, 5),
+        taskId: i.taskId, generatedAt, mediaTags: d.mediaTags,
         ...(needsTranslation.length ? { needsTranslation } : {}),
       };
       const [row] = await tx.insert(schema.contents).values({
-        userId: i.ownerId, title: (d.title.trim() || i.persona.name).slice(0, 200), body, lang: SOURCE_LANG,
+        userId: i.ownerId, title: d.title || i.persona.name.slice(0, 200), body: d.text, lang: SOURCE_LANG,
         stage: 'draft', status: 'draft', platformHints: {}, aiGenerated: ai, createdBy: null,
       }).returning({ id: schema.contents.id });
       await setContentTags(tx, row!.id, [DRAFT_TAG]);
@@ -245,17 +267,15 @@ export async function saveDrafts(i: SaveDraftsInput): Promise<SaveDraftsResult> 
     }
     return ids;
   });
-  return { contentIds, dropped, targets: targets.length, skippedAccounts: accounts.length - targets.length, needsTranslation };
+  return { contentIds, dropped, targets: targets.length, skippedAccounts: i.accounts.length - targets.length, needsTranslation };
 }
 
-// ---------------------------------------------------------------- generation task
+// ---------------------------------------------------------------- the model call (daily task and preview)
 
 /** Never retried (bad key, refusal, truncated output, other 4xx). */
 class AiFinalError extends UnrecoverableError {
   constructor(readonly code: string, message: string) { super(message); }
 }
-
-interface DraftPayload { personaId: string; count: number; day: string; trigger: 'schedule' | 'manual' }
 
 /** The persona's post examples (范例: its post templates in its own scope), the oldest 5 (of up to 20), oldest first like the form. */
 export async function loadExamples(p: Persona): Promise<{ name: string; text: string }[]> {
@@ -282,14 +302,15 @@ function apiMessage(err: InstanceType<typeof Anthropic.APIError>): string {
 }
 
 /**
- * Maps SDK errors (typed classes) to task errors: 401 final ai.key_invalid, 429/5xx/network retried, other 4xx final.
- * The workspace cases have no error code of their own (400 invalid_request_error / 404 not_found_error), so they are
- * told apart by the documented message (docs: Authentication → Select a workspace).
+ * Maps SDK errors (typed classes) to task errors: 401 final ai.key_invalid, 429/5xx/network/timeout retried, other 4xx
+ * final. The workspace cases have no error code of their own (400 invalid_request_error / 404 not_found_error), so they
+ * are told apart by the documented message (docs: Authentication → Select a workspace).
  */
 export function mapApiError(err: unknown): Error {
   if (err instanceof Anthropic.AuthenticationError) return new AiFinalError('ai.key_invalid', 'the Anthropic API rejected the API key (401)');
   if (err instanceof Anthropic.RateLimitError) return new TaskError('ai.api_rate_limited', 'the Anthropic API is rate limiting (429)');
   if (err instanceof Anthropic.InternalServerError) return new TaskError('ai.unavailable', `the Anthropic API is unavailable (${err.status})`);
+  if (err instanceof Anthropic.APIConnectionTimeoutError) return new TaskError('ai.timeout', 'the Anthropic API did not answer in time');
   if (err instanceof Anthropic.APIConnectionError) return new TaskError('ai.unavailable', `the Anthropic API could not be reached (${err.name})`);
   if (err instanceof Anthropic.APIError) {
     const msg = apiMessage(err);
@@ -307,29 +328,48 @@ export function mapApiError(err: unknown): Error {
 /** A 400 that names the fallback parameters (e.g. fallbacks not offered to this account/model): retry once without. */
 const isFallbackRejection = (err: unknown) => err instanceof Anthropic.BadRequestError && /fallback/i.test(apiMessage(err));
 
-async function runDrafts(ctx: TaskContext<DraftPayload>) {
-  const { personaId, count, day, trigger } = ctx.payload;
-  const [p] = await db.select().from(schema.personas).where(eq(schema.personas.id, personaId));
-  if (!p) throw new AiFinalError('persona.not_found', 'the persona no longer exists');
-  const creds = await aiCredentials();
-  if (trigger === 'schedule' && (!creds.enabled || !p.draftEnabled)) {
-    await ctx.log('info', 'drafts: skipped (switched off)');
-    return { skipped: !creds.enabled ? 'ai.disabled' : 'persona.drafts_off' };
-  }
-  if (!creds.apiKey) throw new AiFinalError('ai.not_configured', 'no Anthropic API key is configured');
-  const owner = await draftOwner(p);
-  if ('code' in owner) throw new AiFinalError(owner.code, 'the persona has no valid draft owner');
-  const lang = SOURCE_LANG;
-  const now = new Date();
-  const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, owner.id, now)]);
-  const user = buildUserMessage({ persona: p, count, day, examples, recent });
-  const model = creds.model;
+type Log = (level: 'info' | 'warn', message: string, data?: Record<string, unknown>) => Promise<void>;
+const noLog: Log = async () => undefined;
+
+export interface GenerateInput {
+  persona: Persona;
+  /** Whose recent contents are the "recent posts" (the drafts' owner). */
+  ownerId: string;
+  count: number;
+  day: string;
+  creds: { apiKey: string; workspaceId: string | null; model: AiModel };
+  timeoutMs: number;
+  signal?: AbortSignal;
+  log?: Log;
+  now?: Date;
+}
+export interface GenerateResult {
+  drafts: DraftOut[];
+  /** Drafts in the response (before trimming to `count`). */
+  received: number;
+  requestedModel: AiModel;
+  servedModel: string;
+  /** The server-side refusal fallback answered (another model). */
+  fallback: boolean;
+  usage: { input: number; output: number; cacheRead: number };
+}
+
+/**
+ * The one model call (daily task and AI测试 preview): prompt, structured output, refusal fallback, error mapping
+ * (AiFinalError / TaskError with `code`). Writes nothing.
+ */
+export async function generateDrafts(i: GenerateInput): Promise<GenerateResult> {
+  const log = i.log ?? noLog;
+  const p = i.persona;
+  const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, i.ownerId, i.now ?? new Date())]);
+  const user = buildUserMessage({ persona: p, count: i.count, day: i.day, examples, recent });
+  const { model, workspaceId } = i.creds;
   const fallback = FALLBACK_MODELS.includes(model);
-  await ctx.log('info', `drafts: requesting ${count} from ${model}`, { examples: examples.length, recent: recent.length, lang, fallback, workspace: creds.workspaceId ?? null });
+  await log('info', `drafts: requesting ${i.count} from ${model}`, { examples: examples.length, recent: recent.length, lang: SOURCE_LANG, fallback, workspace: workspaceId ?? null });
 
   const client = new Anthropic({
-    apiKey: creds.apiKey, maxRetries: 0, timeout: REQUEST_TIMEOUT_MS,
-    ...(creds.workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': creds.workspaceId } } : {}),
+    apiKey: i.creds.apiKey, maxRetries: 0, timeout: i.timeoutMs,
+    ...(workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': workspaceId } } : {}),
   });
   const create = (withFallback: boolean) => client.beta.messages.create({
     model,
@@ -338,14 +378,14 @@ async function runDrafts(ctx: TaskContext<DraftPayload>) {
     messages: [{ role: 'user', content: user }],
     output_config: { effort: EFFORT, format: { type: 'json_schema', schema: DRAFTS_SCHEMA as unknown as Record<string, unknown> } },
     ...(withFallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
-  }, { signal: ctx.signal });
+  }, { signal: i.signal });
   let res: Anthropic.Beta.BetaMessage;
   try {
     try {
       res = await create(fallback);
     } catch (err) {
       if (!fallback || !isFallbackRejection(err)) throw err;
-      await ctx.log('warn', 'drafts: the API refused the refusal fallback parameters, retrying once without them');
+      await log('warn', 'drafts: the API refused the refusal fallback parameters, retrying once without them');
       res = await create(false);
     }
   } catch (err) {
@@ -355,7 +395,7 @@ async function runDrafts(ctx: TaskContext<DraftPayload>) {
   const usage = { input: res.usage.input_tokens, output: res.usage.output_tokens, cacheRead: res.usage.cache_read_input_tokens ?? 0 };
   if (res.stop_reason === 'refusal') {
     const category = res.stop_details?.category ?? null;
-    await ctx.log('warn', `drafts: the model declined (category ${category ?? 'none'})`, { requestedModel: model, servedModel: res.model, fallback: fellBack, category });
+    await log('warn', `drafts: the model declined (category ${category ?? 'none'})`, { requestedModel: model, servedModel: res.model, fallback: fellBack, category });
     throw new AiFinalError('ai.refused', `the model declined the request (category ${category ?? 'none'})`);
   }
   if (res.stop_reason === 'max_tokens') throw new AiFinalError('ai.truncated', `the response hit max_tokens (${MAX_TOKENS})`);
@@ -366,23 +406,66 @@ async function runDrafts(ctx: TaskContext<DraftPayload>) {
   try { parsed = DraftsOut.parse(JSON.parse(text)); } catch {
     throw new AiFinalError('ai.bad_output', 'the response was not the requested JSON shape');
   }
-  const drafts = parsed.drafts.slice(0, count);
-  const saved = await saveDrafts({ persona: p, ownerId: owner.id, drafts, model: res.model, requestedModel: model, taskId: ctx.task.id, now });
-  await ctx.log('info', `drafts: ${saved.contentIds.length} drafts written for ${owner.username} (served by ${res.model})`, {
-    requestedModel: model, servedModel: res.model, fallback: fellBack, usage, received: parsed.drafts.length,
-    dropped: saved.dropped.length, targets: saved.targets, skippedAccounts: saved.skippedAccounts, needsTranslation: saved.needsTranslation,
-  });
-  if (saved.dropped.length) await ctx.log('warn', `drafts: ${saved.dropped.length} dropped for a banned word`);
-  return { contentIds: saved.contentIds, servedModel: res.model, requestedModel: model, fallback: fellBack, dropped: saved.dropped.length, targets: saved.targets, usage };
+  if (!parsed.drafts.length) throw new AiFinalError('ai.bad_output', 'the response contained no draft');
+  return { drafts: parsed.drafts.slice(0, i.count), received: parsed.drafts.length, requestedModel: model, servedModel: res.model, fallback: fellBack, usage };
 }
 
-registerTaskHandler<DraftPayload>(DRAFT_TASK, {
-  queue: 'ai-ops',
+// ---------------------------------------------------------------- daily task per social account
+
+interface AccountDraftPayload { accountId: string; count: number; day: string }
+
+async function runAccountDrafts(ctx: TaskContext<AccountDraftPayload>) {
+  const { accountId, count, day } = ctx.payload;
+  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
+  if (!acc) throw new AiFinalError('social.not_found', 'the social account no longer exists');
+  const creds = await aiCredentials();
+  const skip = !creds.enabled ? 'ai.disabled' : !acc.aiDraftsEnabled ? 'ai.account_drafts_off' : !acc.personaId ? 'ai.account_no_persona'
+    : !isPlatformEnabled(acc.platform) ? 'platform.disabled' : null;
+  if (skip) {
+    await ctx.log('info', 'drafts: skipped (switched off)', { code: skip });
+    return { skipped: skip };
+  }
+  if (!creds.apiKey) throw new AiFinalError('ai.not_configured', 'no Anthropic API key is configured');
+  const [p] = await db.select().from(schema.personas).where(eq(schema.personas.id, acc.personaId!));
+  if (!p) throw new AiFinalError('persona.not_found', 'the persona no longer exists');
+  const [owner] = await db.select({ username: schema.users.username, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, acc.userId));
+  if (!owner || owner.disabled) throw new AiFinalError('ai.owner_disabled', 'the account owner is disabled');
+  const now = new Date();
+  const gen = await generateDrafts({
+    persona: p, ownerId: acc.userId, count, day, creds: { ...creds, apiKey: creds.apiKey }, timeoutMs: REQUEST_TIMEOUT_MS, signal: ctx.signal,
+    log: (level, message, data) => ctx.log(level, message, data), now,
+  });
+  const saved = await saveDrafts({
+    persona: p, ownerId: acc.userId, accounts: [acc], drafts: gen.drafts, model: gen.servedModel, requestedModel: gen.requestedModel,
+    taskId: ctx.task.id, via: 'account', accountId: acc.id, now,
+  });
+  await ctx.log('info', `drafts: ${saved.contentIds.length} drafts written for ${owner.username} (served by ${gen.servedModel})`, {
+    requestedModel: gen.requestedModel, servedModel: gen.servedModel, fallback: gen.fallback, usage: gen.usage, received: gen.received,
+    dropped: saved.dropped.length, targets: saved.targets, needsTranslation: saved.needsTranslation,
+  });
+  if (saved.dropped.length) await ctx.log('warn', `drafts: ${saved.dropped.length} dropped for a banned word`);
+  return { contentIds: saved.contentIds, servedModel: gen.servedModel, requestedModel: gen.requestedModel, fallback: gen.fallback, dropped: saved.dropped.length, targets: saved.targets, usage: gen.usage };
+}
+
+/** New type on its own queue: an older leader has no worker there, so nothing fails as task.unknown_type while draining. */
+registerTaskHandler<AccountDraftPayload>(ACCOUNT_DRAFT_TASK, {
+  queue: 'ai-account-ops',
   concurrency: 2,
   timeoutMs: 5 * 60_000,
   maxAttempts: 3,
   backoffMs: 30_000,
-  run: runDrafts,
+  run: runAccountDrafts,
+});
+
+/** LEGACY: `persona-drafts` tasks created by an older release finish as a skipped no-op (daily drafts are per account now). */
+registerTaskHandler(DRAFT_TASK, {
+  queue: 'ai-ops',
+  concurrency: 1,
+  maxAttempts: 1,
+  run: async (ctx) => {
+    await ctx.log('info', 'drafts: skipped (switched off)', { code: 'ai.moved_to_accounts' });
+    return { skipped: 'ai.moved_to_accounts' };
+  },
 });
 
 // ---------------------------------------------------------------- scheduling
@@ -390,50 +473,137 @@ registerTaskHandler<DraftPayload>(DRAFT_TASK, {
 const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 /**
- * Hourly (main.ts): from the configured local hour on, one task per draft-enabled persona per local day (idempotency
- * key per day, so later ticks and other API processes create nothing new). Without a key, or switched off, nothing
- * happens and nothing is logged as an error.
+ * Hourly (main.ts): from the configured local hour on, one task per switched-on social account with a persona per
+ * local day (idempotency key per day, so later ticks and other API processes create nothing new). Accounts of disabled
+ * users or on disabled platforms are skipped. Without a key, or switched off, nothing happens.
  */
-export async function schedulePersonaDrafts(now = new Date()): Promise<{ created: number; existing: number; skipped: { personaId: string; code: string }[]; reason?: string }> {
+export async function scheduleAccountDrafts(now = new Date()): Promise<{ created: number; existing: number; skipped: { accountId: string; code: string }[]; reason?: string }> {
   const s = await getAiSettings();
-  const empty = { created: 0, existing: 0, skipped: [] as { personaId: string; code: string }[] };
+  const empty = { created: 0, existing: 0, skipped: [] as { accountId: string; code: string }[] };
   if (!s.enabled) return { ...empty, reason: 'ai.disabled' };
   if (!s.keySet) return { ...empty, reason: 'ai.not_configured' };
   if (now.getHours() < s.hour) return { ...empty, reason: 'ai.not_due' };
   const day = localDay(now);
-  const personas = await db.select().from(schema.personas).where(eq(schema.personas.draftEnabled, true));
+  const SA = schema.socialAccounts;
+  const rows = await db.select({ a: SA, persona: schema.personas.name, disabled: schema.users.disabled }).from(SA)
+    .innerJoin(schema.users, eq(schema.users.id, SA.userId)).innerJoin(schema.personas, eq(schema.personas.id, SA.personaId))
+    .where(and(eq(SA.aiDraftsEnabled, true), isNotNull(SA.personaId)));
   const out = { ...empty };
-  for (const p of personas) {
-    const owner = await draftOwner(p);
-    if ('code' in owner) { out.skipped.push({ personaId: p.id, code: owner.code }); continue; }
+  for (const { a, persona, disabled } of rows) {
+    if (disabled) { out.skipped.push({ accountId: a.id, code: 'ai.owner_disabled' }); continue; }
+    if (!isPlatformEnabled(a.platform)) { out.skipped.push({ accountId: a.id, code: 'platform.disabled' }); continue; }
     const r = await createTask({
-      type: DRAFT_TASK, userId: owner.id, label: p.name, refType: 'persona', refId: p.id,
-      payload: { personaId: p.id, count: p.draftsPerDay, day, trigger: 'schedule' }, idempotencyKey: `${DRAFT_TASK}:${p.id}:${day}`,
+      type: ACCOUNT_DRAFT_TASK, userId: a.userId, label: `@${a.handle} · ${persona}`, refType: 'social_account', refId: a.id,
+      payload: { accountId: a.id, count: a.aiDraftsPerDay, day }, idempotencyKey: `${ACCOUNT_DRAFT_TASK}:${a.id}:${day}`,
     });
     if (r.created) out.created++; else out.existing++;
   }
   return out;
 }
 
-const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
+// ---------------------------------------------------------------- AI测试 preview (nothing stored but a 10-minute token)
 
-/** "Generate one now": count 1, once per persona per 10 minutes (429 ai.rate_limited). */
-export async function requestDraftNow(user: AuthUser, p: Persona) {
-  const s = await getAiSettings();
-  if (!s.keySet) throw badRequest('未配置 Anthropic API 密钥（管理员可在设置 → AI 中填写）', 'ai.not_configured');
-  if (!s.enabled) throw badRequest('AI 草稿已在设置中关闭', 'ai.disabled');
-  const owner = await draftOwner(p);
-  if ('code' in owner) throw badRequest('人设没有有效的草稿归属用户', owner.code);
-  const key = `ai:drafts:manual:${p.id}`;
-  const ok = await redis.set(key, '1', 'EX', MANUAL_WINDOW_SEC, 'NX');
-  if (!ok) {
-    const ttl = Math.max(1, await redis.ttl(key));
-    throw new HttpError(429, `请 ${ttl} 秒后再生成`, 'ai.rate_limited', { seconds: ttl });
+const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
+const previewKey = (token: string) => `ai:preview:${createHash('sha256').update(token).digest('hex')}`;
+
+/** What a preview token stands for (Redis only, never in the DB or a task). */
+export interface StoredPreview {
+  userId: string;
+  personaId: string;
+  draft: DraftOut;
+  model: string;
+  requestedModel: string;
+  fallback: boolean;
+  generatedAt: string;
+}
+
+/** Stores a preview under a new random token (only its hash is the Redis key), TTL 10 minutes. */
+export async function storePreview(p: StoredPreview, ttlSec = PREVIEW_TTL_SEC): Promise<{ token: string; expiresAt: string }> {
+  const token = randomBytes(24).toString('base64url');
+  await redis.set(previewKey(token), JSON.stringify(p), 'EX', ttlSec);
+  return { token, expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString() };
+}
+
+/** For the check script (closes the lazy connection). */
+export const closePreviewStore = () => redis.quit().catch(() => undefined);
+
+const HTTP_STATUS: Record<string, number> = { 'ai.unavailable': 503, 'ai.api_rate_limited': 503, 'ai.timeout': 504 };
+
+/**
+ * AI测试: one draft from the persona's current 发文风格, generated in the request and returned with a save token.
+ * `info` receives the requested/served model (for the audit entry, also when the call fails). Errors: 400
+ * ai.not_configured / ai.disabled, 429 ai.rate_limited (PREVIEW_LIMIT per persona per 10 min), model errors with their
+ * ai.* code (502; 503 unavailable / API rate limit, 504 timeout).
+ */
+export async function previewDraft(user: AuthUser, p: Persona, info: Record<string, unknown>, signal?: AbortSignal) {
+  const creds = await aiCredentials();
+  if (!creds.apiKey) throw badRequest('未配置 Anthropic API 密钥（管理员可在设置 → AI 中填写）', 'ai.not_configured');
+  if (!creds.enabled) throw badRequest('AI 草稿已在设置中关闭', 'ai.disabled');
+  info.requestedModel = creds.model;
+  const key = `ai:preview:count:${p.id}`;
+  const res = await redis.multi().incr(key).expire(key, PREVIEW_WINDOW_SEC, 'NX').ttl(key).exec();
+  const n = Number(res?.[0]?.[1] ?? 0);
+  if (n > PREVIEW_LIMIT) {
+    const seconds = Math.max(1, Number(res?.[2]?.[1] ?? PREVIEW_WINDOW_SEC));
+    throw new HttpError(429, `请 ${seconds} 秒后再试`, 'ai.rate_limited', { seconds, limit: PREVIEW_LIMIT });
   }
   const now = new Date();
-  const { task } = await createTask({
-    type: DRAFT_TASK, userId: user.id, label: p.name, refType: 'persona', refId: p.id,
-    payload: { personaId: p.id, count: 1, day: localDay(now), trigger: 'manual' }, idempotencyKey: `${DRAFT_TASK}:${p.id}:manual:${now.getTime()}`,
+  let gen: GenerateResult;
+  try {
+    gen = await generateDrafts({ persona: p, ownerId: user.id, count: 1, day: localDay(now), creds: { ...creds, apiKey: creds.apiKey }, timeoutMs: PREVIEW_TIMEOUT_MS, signal, now });
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'string' && code.startsWith('ai.')) throw new HttpError(HTTP_STATUS[code] ?? 502, (err as Error).message, code);
+    throw err;
+  }
+  const raw = gen.drafts[0]!;
+  const d = composeDraft(raw, p);
+  const st = styleOf(p);
+  const saved = await storePreview({ userId: user.id, personaId: p.id, draft: raw, model: gen.servedModel, requestedModel: gen.requestedModel, fallback: gen.fallback, generatedAt: now.toISOString() });
+  Object.assign(info, { model: gen.servedModel, fallback: gen.fallback, banned: d.banned.length });
+  return {
+    preview: {
+      title: d.title || p.name, text: d.text, body: d.body, hashtags: d.hashtags, mediaTags: d.mediaTags,
+      opening: st.post.opening || null, closing: st.post.closing || null,
+      banned: d.banned, model: gen.servedModel, requestedModel: gen.requestedModel, fallback: gen.fallback, usage: gen.usage,
+    },
+    ...saved,
+  };
+}
+
+/**
+ * 「保存为草稿」: writes the stored preview (single use) as one AI draft of the CURRENT user (saveDrafts rules: fixed
+ * lines, hashtags, banned-word check, suggested media; targets = the user's accounts using the persona). A token of
+ * another user or persona is refused without using it up.
+ */
+export async function savePreview(user: AuthUser, p: Persona, token: string) {
+  const k = previewKey(token);
+  const raw = await redis.get(k);
+  if (!raw) throw badRequest('预览已过期或已保存，请重新生成', 'ai.preview_expired');
+  const rec = JSON.parse(raw) as StoredPreview;
+  if (rec.userId !== user.id || rec.personaId !== p.id) throw badRequest('这个预览不属于你或不属于这个人设', 'ai.preview_invalid');
+  if ((await redis.del(k)) !== 1) throw badRequest('预览已过期或已保存，请重新生成', 'ai.preview_expired');
+  const draft = DraftOut.parse(rec.draft);
+  const saved = await saveDrafts({
+    persona: p, ownerId: user.id, accounts: await personaAccounts(user.id, p.id), drafts: [draft],
+    model: rec.model, requestedModel: rec.requestedModel, taskId: null, via: 'preview',
   });
-  return task;
+  if (!saved.contentIds.length) throw badRequest('预览含禁用词，未保存', 'ai.preview_banned', { words: saved.dropped.join('、') });
+  return { contentId: saved.contentIds[0]!, model: rec.model, targets: saved.targets, needsTranslation: saved.needsTranslation };
+}
+
+// ---------------------------------------------------------------- per-account settings (社交号 → AI 草稿)
+
+export const AccountDraftsInput = z.object({
+  enabled: z.boolean().optional(),
+  perDay: z.number().int().min(1).max(10).optional(),
+});
+
+/** Turning it on needs a persona on the account and an enabled platform. */
+export async function setAccountDrafts(acc: SocialAccount, b: z.infer<typeof AccountDraftsInput>): Promise<SocialAccount> {
+  if (b.enabled === true && !acc.personaId) throw badRequest('账号未绑定人设，不能开启 AI 草稿', 'ai.account_no_persona');
+  if (b.enabled === true && !isPlatformEnabled(acc.platform)) throw badRequest('该平台未启用', 'platform.disabled', { platform: acc.platform });
+  const [row] = await db.update(schema.socialAccounts).set({ aiDraftsEnabled: b.enabled ?? acc.aiDraftsEnabled, aiDraftsPerDay: b.perDay ?? acc.aiDraftsPerDay })
+    .where(eq(schema.socialAccounts.id, acc.id)).returning();
+  return row!;
 }

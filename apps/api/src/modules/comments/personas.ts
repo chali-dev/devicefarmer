@@ -5,11 +5,9 @@ import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
-import { assertDraftOwnerCandidate } from '../ai/drafts.js';
-import { personaDraftRuns } from '../ai/runs.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
-import { assertStyleOk, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
+import { assertStyleOk, bannedHits, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
@@ -20,7 +18,9 @@ import { assertStyleOk, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENG
  *
  * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`:
  * shared topics/banned words + 发文风格 + 评论风格, see persona-style.ts), 范例 (≤ 20 post + ≤ 20 comment = templates of
- * the persona in its own scope, edited through the template API), and AI 草稿 (on/off, per day, draft owner of a public persona). POST/PATCH take all of it.
+ * the persona in its own scope, edited through the template API; POST may create the first ones in the same transaction).
+ * POST/PATCH take all of it. AI 草稿 per day live on the social accounts since 2026-11-18 (the persona's draft_* columns
+ * are LEGACY, not read or written); the persona form only has AI测试 (modules/ai, preview).
  */
 const P = schema.personas;
 const TPL = schema.commentTemplates;
@@ -44,40 +44,29 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 
 type Exec = Pick<typeof db, 'select'>;
 
-/**
- * A persona row for lists/responses: style with defaults; the draft owner only for managers (`withOwner`).
- */
-export const publicPersona = ({ draftOwnerId, style: _s, ...p }: Persona, withOwner = false) => ({
-  ...p, style: styleOf({ style: _s }), ...(withOwner ? { draftOwnerId } : {}),
+/** A persona row for lists/responses: style with defaults, without the LEGACY draft_* columns. */
+export const publicPersona = ({ draftOwnerId: _o, draftEnabled: _e, draftsPerDay: _d, style: _s, ...p }: Persona) => ({
+  ...p, style: styleOf({ style: _s }),
 });
 
 /** Persona-only fields of the create/patch bodies (style replaces the whole stored style). */
-const PersonaFields = {
-  style: PersonaStyleInput.optional(),
-  draftEnabled: z.boolean().optional(),
-  draftsPerDay: z.number().int().min(1).max(10).optional(),
-  /** Public personas only: the enabled user who owns the AI drafts (null clears). */
-  draftOwnerId: z.string().uuid().nullable().optional(),
-};
-const CreateBody = ScopedCreateBody.extend(PersonaFields);
+const PersonaFields = { style: PersonaStyleInput.optional() };
+/** 范例 created with a new persona (same limits as the form: ≤ MAX_EXAMPLES per kind, post ≤ 2200, comment ≤ 500 chars). */
+const NewExamples = z.object({
+  post: z.array(z.string().trim().min(1).max(2200)).max(MAX_EXAMPLES).optional(),
+  comment: z.array(z.string().trim().min(1).max(500)).max(MAX_EXAMPLES).optional(),
+});
+const CreateBody = ScopedCreateBody.extend({ ...PersonaFields, examples: NewExamples.optional() });
 const PatchBody = ScopedPatchBody.extend(PersonaFields);
 
-/** Validated persona-only set: draft owner rules (personal → its owner, not settable; public on → owner required). */
-async function personaSet(ownerType: 'public' | 'user', cur: Pick<Persona, 'draftEnabled' | 'draftOwnerId'> | null, b: z.infer<typeof PatchBody>) {
+function personaSet(b: z.infer<typeof PatchBody>) {
   const set: Partial<typeof P.$inferInsert> = {};
   if (b.style !== undefined) { set.style = normaliseStyle(b.style); assertStyleOk(set.style); }
-  if (b.draftsPerDay !== undefined) set.draftsPerDay = b.draftsPerDay;
-  if (b.draftEnabled !== undefined) set.draftEnabled = b.draftEnabled;
-  if (b.draftOwnerId !== undefined) {
-    if (ownerType === 'user' && b.draftOwnerId !== null) throw badRequest('个人人设的草稿归属其所有者', 'persona.draft_owner_personal');
-    if (b.draftOwnerId) await assertDraftOwnerCandidate(b.draftOwnerId);
-    set.draftOwnerId = b.draftOwnerId;
-  }
-  const enabled = set.draftEnabled ?? cur?.draftEnabled ?? false;
-  const owner = set.draftOwnerId !== undefined ? set.draftOwnerId : cur?.draftOwnerId ?? null;
-  if (enabled && ownerType === 'public' && !owner) throw badRequest('公共人设开启 AI 草稿前须指定草稿给谁', 'persona.draft_owner_required');
   return set;
 }
+
+/** Template name of an example: its first 30 characters (as the form does). */
+const exampleName = (text: string) => text.replace(/\s+/g, ' ').slice(0, 30);
 
 /** A public persona fits everything; a personal one only things owned by its owner (`ownerUserId`, null = shared). */
 export const personaFits = (p: Persona, ownerUserId: string | null) => scoped.fits(p, ownerUserId);
@@ -129,7 +118,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     const writable = (p: Persona) => p.ownerType === 'user' || isAdmin(req.user);
     return {
       personas: rows.map((r) => ({
-        ...publicPersona(r.p, writable(r.p)), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: writable(r.p),
+        ...publicPersona(r.p), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: writable(r.p),
       })),
       lengths: PERSONA_LENGTHS,
     };
@@ -137,22 +126,15 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /**
    * One persona (anyone who may see it): style, 范例 per kind (templates in the persona's own scope, oldest first) and the
-   * length ranges; managers also get the draft owner's name and the last generation runs. Used by the form and by the
-   * persona card of the post editor / reply composers.
+   * length ranges. Used by the form and by the persona card of the post editor / reply composers.
    */
   app.get('/api/personas/:id', { schema: { params: Id } }, async (req) => {
     const p = await visiblePersona(req.user, req.params.id);
     const manages = p.ownerType === 'user' || isAdmin(req.user);
-    const ownerId = p.ownerType === 'user' ? p.ownerId : p.draftOwnerId;
-    const [owner] = manages && ownerId
-      ? await db.select({ username: schema.users.username, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, ownerId)) : [];
     const examples = await db.select({ id: TPL.id, kind: TPL.kind, name: TPL.name, text: TPL.text, userId: TPL.userId }).from(TPL)
       .where(exampleWhere(p)).orderBy(asc(TPL.createdAt), asc(TPL.id));
     return {
-      persona: {
-        ...publicPersona(p, manages), writable: manages,
-        ...(manages ? { draftOwnerName: owner?.username ?? null, draftOwnerDisabled: owner?.disabled ?? null, runs: await personaDraftRuns(p.id) } : {}),
-      },
+      persona: { ...publicPersona(p), writable: manages },
       examples: {
         post: examples.filter((e) => e.kind === 'post').map(({ userId: _u, ...e }) => e),
         comment: examples.filter((e) => e.kind === 'comment').map(({ userId: _u, ...e }) => e),
@@ -161,30 +143,44 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   });
 
-  /** scope public (admin) or mine; admins may create a personal persona for another user with ownerId. */
+  /**
+   * scope public (admin) or mine; admins may create a personal persona for another user with ownerId. Optional
+   * `examples` (post/comment texts) become its first 范例 in the same transaction (public: shared templates; personal:
+   * the owner's); a text with one of the new persona's banned words → 400 persona.banned_word, nothing created.
+   */
   app.post('/api/personas', { schema: { body: CreateBody } }, async (req, reply) => {
-    const b = req.body;
+    const { examples, ...b } = req.body;
     const { ownerId, sort } = await scoped.createTarget(req.user, b);
-    const extra = await personaSet(ownerId ? 'user' : 'public', null, b);
-    const [row] = await scoped.uniqueName(b.name, () => db.insert(P).values({
-      ownerType: ownerId ? 'user' : 'public', ownerId, name: b.name, description: b.description ?? null, sort, createdBy: req.user.id, ...extra,
-    }).returning());
-    if (req.audit) req.audit.extra = { id: row!.id, draftEnabled: row!.draftEnabled };
+    const extra = personaSet(b);
+    const ex = { post: examples?.post ?? [], comment: examples?.comment ?? [] };
+    const hits = bannedHits(extra.style?.bannedWords, [...ex.post, ...ex.comment]);
+    if (hits.length) throw badRequest(`范例包含禁用词：${hits.join('、')}`, 'persona.banned_word', { persona: b.name, words: hits.join('、') });
+    const [row] = await scoped.uniqueName(b.name, () => db.transaction(async (tx) => {
+      const rows = await tx.insert(P).values({
+        ownerType: ownerId ? 'user' : 'public', ownerId, name: b.name, description: b.description ?? null, sort, createdBy: req.user.id, ...extra,
+      }).returning();
+      // created_at 1 ms apart so the 范例 keep the form's order (listed and sent to the model oldest first).
+      const t0 = Date.now();
+      const tpl = (['post', 'comment'] as const).flatMap((kind) => ex[kind].map((text) => ({ kind, text })))
+        .map((x, i) => ({ ...x, name: exampleName(x.text), personaId: rows[0]!.id, userId: ownerId, createdBy: req.user.id, createdAt: new Date(t0 + i) }));
+      if (tpl.length) await tx.insert(TPL).values(tpl);
+      return rows;
+    }));
+    if (req.audit) req.audit.extra = { id: row!.id, examples: { post: ex.post.length, comment: ex.comment.length } };
     reply.code(201);
-    return { persona: publicPersona(row!, true) };
+    return { persona: publicPersona(row!) };
   });
 
   app.patch('/api/personas/:id', {
     schema: { params: Id, body: PatchBody },
   }, async (req) => {
     const p = await manageablePersona(req.user, req.params.id);
-    const { style: _s, draftEnabled: _e, draftsPerDay: _d, draftOwnerId: _o, ...scopedBody } = req.body;
-    const extra = await personaSet(p.ownerType, p, req.body);
+    const { style: _s, ...scopedBody } = req.body;
+    const extra = personaSet(req.body);
     const set = { ...Object.fromEntries(Object.entries(scopedBody).filter(([, v]) => v !== undefined)), ...extra };
     if (!Object.keys(set).length) scoped.patchSet({});
     const [row] = await scoped.uniqueName(req.body.name ?? p.name, () => db.update(P).set(set).where(eq(P.id, p.id)).returning());
-    if (req.audit && extra.draftEnabled !== undefined) req.audit.extra = { draftEnabled: row!.draftEnabled, draftsPerDay: row!.draftsPerDay };
-    return { persona: publicPersona(row!, true) };
+    return { persona: publicPersona(row!) };
   });
 
   /**
@@ -207,8 +203,8 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
    * 复制到我的人设: a new personal persona of the caller (admins: of `ownerId`, any existing user; users: only themselves,
    * another ownerId → 403 `persona.admin_only`) from any persona the caller may see (else 404): name 「原名 (副本)」 (taken
    * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the whole stored style and every 范例 (post +
-   * comment) copied as private templates of the new owner on the new persona. AI drafts off (`draft_enabled` false,
-   * default per day, no draft owner: a personal persona's drafts go to its owner). One transaction: the 20-per-kind limit is
+   * comment) copied as private templates of the new owner on the new persona (daily AI drafts are set per social account,
+   * nothing to copy). One transaction: the 20-per-kind limit is
    * checked after the copy and a violation (`persona.examples_full`) leaves nothing behind.
    */
   app.post('/api/personas/:id/copy', {
@@ -228,7 +224,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       const [last] = await tx.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(eq(P.ownerId, ownerId));
       const [row] = await tx.insert(P).values({
         ownerType: 'user', ownerId, name: copyName(src.name, taken), description: src.description, sort: (last?.max ?? -1) + 1,
-        style: src.style, draftEnabled: false, draftOwnerId: null, createdBy: req.user.id,
+        style: src.style, createdBy: req.user.id,
       }).returning();
       const tpls = await tx.select().from(TPL).where(exampleWhere(src)).orderBy(asc(TPL.createdAt), asc(TPL.id));
       if (tpls.length) {
@@ -246,7 +242,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     }));
     if (req.audit) req.audit.extra = { sourceId: src.id, id: row.id, name: row.name, ownerId, examples };
     reply.code(201);
-    return { persona: publicPersona(row, true), examples };
+    return { persona: publicPersona(row), examples };
   });
 
   // No merge for personas (owner decision 2026-11-18): POST /api/personas/:id/merge does not exist (404).
