@@ -38,17 +38,7 @@ async function http<T = any>(method: string, p: string, token?: string, body?: u
   });
   const text = await res.text();
   let json: any = null;
-  try {
-  // ---------------------------------------------------------------- 发布重发 setting (admin, strict)
-  {
-    const bad = await Promise.all([{ maxAttempts: 0, backoffSec: 2 }, { maxAttempts: 11, backoffSec: 2 }, { maxAttempts: 3, backoffSec: 0 }, { maxAttempts: 3, backoffSec: 3601 }, { ...RETRY, extra: 1 }, { maxAttempts: 3 }]
-      .map((b) => http('PUT', '/api/settings/publish-retry', T, b)));
-    check('publish retry setting: out-of-range / unknown / missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
-    const ok = await http('PUT', '/api/settings/publish-retry', T, RETRY);
-    check('publish retry setting saved (4 attempts, 2 s)', ok.status === 200 && ok.body.retry.maxAttempts === 4 && ok.body.retry.backoffSec === 2 && ok.body.retry.backoffMs === 2000
-      && typeof ok.body.defaults.maxAttempts === 'number', ok.text.slice(0, 200));
-  }
- json = JSON.parse(text); } catch { /* 204 */ }
+  try { json = JSON.parse(text); } catch { /* 204 */ }
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
@@ -96,6 +86,15 @@ async function waitStatus(token: string, id: string, statuses: string[], ms = 60
 const contentStatus = async (token: string, id: string) => (await http('GET', `/api/contents/${id}`, token)).body.content.status as string;
 
 try {
+  // ---------------------------------------------------------------- 发布重发 setting (admin, strict)
+  {
+    const bad = await Promise.all([{ maxAttempts: 0, backoffSec: 2 }, { maxAttempts: 11, backoffSec: 2 }, { maxAttempts: 3, backoffSec: 0 }, { maxAttempts: 3, backoffSec: 3601 }, { ...RETRY, extra: 1 }, { maxAttempts: 3 }]
+      .map((b) => http('PUT', '/api/settings/publish-retry', T, b)));
+    check('publish retry setting: out-of-range / unknown / missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+    const ok = await http('PUT', '/api/settings/publish-retry', T, RETRY);
+    check('publish retry setting saved (4 attempts, 2 s)', ok.status === 200 && ok.body.retry.maxAttempts === 4 && ok.body.retry.backoffSec === 2 && ok.body.retry.backoffMs === 2000
+      && typeof ok.body.defaults.maxAttempts === 'number', ok.text.slice(0, 200));
+  }
   // ---------------------------------------------------------------- setup: users, placeholder devices, accounts, media
   const pw = randomBytes(12).toString('base64url');
   for (const n of ['a', 'b']) {
