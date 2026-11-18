@@ -15,9 +15,9 @@ import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan,
  * client-side preview of the result, plus the 编辑素材 fields (name, category, tags) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
  * 取消 drops the current file; closing the dialog drops all files still in it.
  * `categories` are the upload owner's (public ones for a public upload, the uploader's own otherwise);
- * 新建分类 adds one in the same scope.
+ * 新建分类 adds one in the same scope (with ownerId: a personal category of that user, admin).
  */
-const props = defineProps<{ items: PendingFile[]; scope: 'public' | 'mine'; categories: MediaCategory[]; tagOptions: string[] }>()
+const props = defineProps<{ items: PendingFile[]; scope: 'public' | 'mine'; ownerId?: string; categories: MediaCategory[]; tagOptions: string[] }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ save: [uids: number[]]; discard: [uids: number[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
@@ -67,7 +67,7 @@ async function addCategory() {
   const c = cur.value
   if (!name || !c) return
   try {
-    const r = await api<{ category: MediaCategory }>('POST', '/api/media/categories', { scope: props.scope, name })
+    const r = await api<{ category: MediaCategory }>('POST', '/api/media/categories', { scope: props.scope, name, ...(props.ownerId ? { ownerId: props.ownerId } : {}) })
     createdCats.value.push(r.category)
     newCategory.value = ''
     c.meta.categoryId = r.category.id

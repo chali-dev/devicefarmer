@@ -1280,8 +1280,8 @@ const en: Messages = {
     fieldMedia: 'Media ({n})',
     addMedia: 'Choose from media library',
     uploadMedia: 'Upload',
-    uploadPublic: 'Upload as public media',
-    uploadPublicHint: "This is another user's content: media you upload is stored as public media (visible to every user); a content can only use its owner's own media or public media.",
+    uploadOwnerHint: "Uploads go to {user}'s personal media",
+    uploadOwnerLabel: "{user}'s personal media",
     uploadOtherOwner: "A content can only use its owner's own media or public media: ask the owner to upload, or upload it as public media in the media library first",
     uploadOverLimit: 'A content holds at most {max} media; {n} more were uploaded to My media but not added',
     uploadFailed: 'Processing of "{name}" failed: {error}',
@@ -2698,6 +2698,7 @@ const en: Messages = {
     media: {
       not_found: 'Media item not found',
       public_admin_only: 'Only administrators can manage public media',
+      owner_admin_only: "Only administrators can upload into another user's personal media",
       admin_only: "Only administrators can view other users' media",
       unsupported_type: 'Unsupported file type (supported: {exts})',
       mime_mismatch: 'The file type ({mime}) does not match the extension',

@@ -49,7 +49,7 @@ const AUDIT_EXCLUDED_IF: Record<string, (body: Record<string, unknown>) => boole
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-interface Upload { filename: string; size: number; instanceIds?: string[]; scope?: string; categoryId?: string; status?: string }
+interface Upload { filename: string; size: number; instanceIds?: string[]; scope?: string; categoryId?: string; ownerId?: string; status?: string }
 interface AuditCtx {
   target?: string | null;
   /** Server-side facts merged into `detail` by the route itself (e.g. auto-assigned proxy ids). Never secrets. */
@@ -193,7 +193,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // media library (素材库)
   'POST /api/media/upload': {
     action: 'media.upload', target: ({ upload }) => upload?.filename,
-    detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size, scope: upload.scope, categoryId: upload.categoryId, status: upload.status } : undefined),
+    detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size, scope: upload.scope, ownerId: upload.ownerId, categoryId: upload.categoryId, status: upload.status } : undefined),
   },
   'PUT /api/media/:id': {
     action: 'media.update', // media.enable / media.disable: older rows only (visibility removed 2026-11-18)
@@ -599,7 +599,7 @@ async function buildEntry(req: FastifyRequest, key: string, status: number) {
   const params = (req.params ?? {}) as Body;
   const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Body;
   const upload: Upload | undefined = ctx.upload
-    ? { filename: ctx.upload.filename, size: ctx.upload.stream.bytesRead ?? 0, instanceIds: parseIds(ctx.upload.fields.instanceIds), scope: fieldText(ctx.upload.fields.scope), categoryId: fieldText(ctx.upload.fields.categoryId, 36), status: fieldText(ctx.upload.fields.status) }
+    ? { filename: ctx.upload.filename, size: ctx.upload.stream.bytesRead ?? 0, instanceIds: parseIds(ctx.upload.fields.instanceIds), scope: fieldText(ctx.upload.fields.scope), categoryId: fieldText(ctx.upload.fields.categoryId, 36), ownerId: fieldText(ctx.upload.fields.ownerId, 36), status: fieldText(ctx.upload.fields.status) }
     : undefined;
   const c: Ctx = { req, body, params, upload };
   const spec = ACTIONS[key];

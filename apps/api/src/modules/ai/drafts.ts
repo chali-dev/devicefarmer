@@ -612,9 +612,10 @@ export async function previewAccountDraft(user: AuthUser, acc: SocialAccount, in
     title: preview.title, text: d.text, mediaTags: d.mediaTags, topic: topic ?? null, generatedAt: now.toISOString(),
   };
   await redis.set(previewKey(token), JSON.stringify(stored), 'EX', ACCOUNT_PREVIEW_TTL_SEC);
+  const [owner] = await db.select({ username: schema.users.username }).from(schema.users).where(eq(schema.users.id, acc.userId));
   return {
     preview: { ...preview, token, media: mediaIds.flatMap((id) => { const m = media.find((x) => x.id === id); return m ? [mediaItem(m)] : []; }) },
-    account: { id: acc.id, userId: acc.userId, handle: acc.handle, lang: acc.lang, persona: p.name, personaId: p.id },
+    account: { id: acc.id, userId: acc.userId, ownerName: owner?.username ?? null, handle: acc.handle, lang: acc.lang, persona: p.name, personaId: p.id },
   };
 }
 

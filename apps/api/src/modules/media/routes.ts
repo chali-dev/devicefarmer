@@ -15,6 +15,16 @@ import {
 } from './media.js';
 import { normalizeOptions, ProcessOptionsSchema } from './transform.js';
 
+/** Owner of an upload into another user's personal media (multipart field ownerId). */
+async function uploadOwnerFor(user: AuthUser, scope: string, ownerId: string): Promise<Owner> {
+  if (!isAdmin(user)) throw forbidden('仅管理员可以上传到其他用户的个人素材', 'media.owner_admin_only');
+  if (scope !== 'mine') throw badRequest('ownerId only works with scope mine', 'media.bad_scope');
+  if (!z.string().uuid().safeParse(ownerId).success) throw notFound('用户不存在', 'users.not_found');
+  const [u] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, ownerId));
+  if (!u) throw notFound('用户不存在', 'users.not_found');
+  return { ownerType: 'user', ownerId: u.id };
+}
+
 const Id = z.object({ id: z.string().uuid() });
 const ma = schema.mediaAssets;
 const mc = schema.mediaCategories;
@@ -151,6 +161,9 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   // ------------------------------------------------------------ upload
   /**
    * multipart, one file per request. Text fields BEFORE the file: scope=public|mine (public: admin),
+   * optional ownerId (admin only, with scope mine: the asset goes into that user's personal media,
+   * e.g. an upload in the editor of another user's content; user → 403 media.owner_admin_only,
+   * unknown user → 404 users.not_found, with scope public → 400 media.bad_scope),
    * optional process (JSON, ProcessOptionsSchema: crop/compress in the job), and the same metadata as
    * PUT /api/media/:id (MediaMetaSchema + assertMetaFor): name (default: file name without extension),
    * categoryId, tags (JSON array of strings). A legacy status=ready is ignored, status=disabled is refused
@@ -169,7 +182,11 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     const scope = field('scope') ?? 'mine';
     if (scope !== 'public' && scope !== 'mine') { file.file.resume(); throw badRequest('scope must be public or mine', 'media.bad_scope'); }
     let owner: Owner;
-    try { owner = ownerForScope(req.user, scope); } catch (e) { file.file.resume(); throw e; }
+    try {
+      owner = ownerForScope(req.user, scope);
+      const ownerId = field('ownerId');
+      if (ownerId) owner = await uploadOwnerFor(req.user, scope, ownerId);
+    } catch (e) { file.file.resume(); throw e; }
     const categoryId = field('categoryId') || null;
     if (categoryId && !z.string().uuid().safeParse(categoryId).success) { file.file.resume(); throw badRequest('invalid categoryId', 'media.category_mismatch'); }
     const tagsRaw = field('tags');

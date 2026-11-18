@@ -3,6 +3,8 @@
  * Requires: API running (base URL from API_PORT, or E2E_API), ffmpeg on PATH (FFMPEG_PATH) to make a test clip.
  * Reads ADMIN_USERNAME / ADMIN_PASSWORD from the env (never printed). Creates two throwaway users and
  * test media, verifies storage on disk (ASSET_DIR) and rows in the DB, and deletes everything it created.
+ * Upload into another user's personal media (multipart ownerId, admin only: the content editor's 上传 on someone else's
+ * content): owner/visibility, 403 / 404 / bad scope / category of another owner, the content accepting it, audit.
  * Optional S3 part (same env as assets-check used): S3_TEST_ENDPOINT, S3_TEST_BUCKET, S3_TEST_ACCESS_KEY,
  * S3_TEST_SECRET_KEY [, S3_TEST_REGION]; it switches storage to S3 and back to local.
  * 素材上传限制 (系统配置 → 素材上传, settings key `media.limits`): a stored row is set aside for the run (the env values
@@ -99,6 +101,7 @@ const users: { id: string; name: string; token: string }[] = [];
 const admin = await login(process.env.ADMIN_USERNAME ?? 'admin', process.env.ADMIN_PASSWORD ?? '');
 check('admin login', Boolean(admin));
 if (!admin) process.exit(1);
+const adminId = (await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.username, process.env.ADMIN_USERNAME ?? 'admin')))[0]!.id;
 // 素材上传限制: run on the env defaults; a stored row is put back in `finally`. The API caches the setting for 5 s,
 // so wait that long after removing a row it may have cached.
 const prevLimits = await db.select().from(schema.settings).where(eq(schema.settings.key, 'media.limits'));
@@ -421,6 +424,58 @@ try {
     for (const id of mine) await http('DELETE', `/api/media/${id}`, admin);
     check('cleanup of metadata uploads', (await metaRows()) === 0);
     await db.delete(schema.mediaTags).where(inArray(sql`lower(${schema.mediaTags.name})`, [`promo${tag}`, `summer${tag}`, `mine${tag}`, ...Array.from({ length: 20 }, (_, i) => `t${i}${tag}`)]));
+  }
+
+  // ---------- upload into another user's personal media (ownerId, admin only; content editor 上传 on A's content)
+  {
+    const own = await upload(admin, 'mine', `upown-${tag}.png`, png, 'image/png', aCatId, { ownerId: A.id, name: `给A ${tag}`, tags: JSON.stringify([`Own${tag}`]) });
+    if (own.status === 201) created.push(own.body.item.id);
+    const ownRow = own.status === 201 ? await row(own.body.item.id) : undefined;
+    check('admin upload with ownerId=A (+ A\'s category) → 201, A\'s private asset, created by the admin, key under users/<A>/',
+      own.status === 201 && own.body.item.ownerType === 'user' && own.body.item.ownerId === A.id && own.body.item.categoryId === aCatId
+        && ownRow?.createdBy === adminId && ownRow!.fileKey.startsWith(`users/${A.id}/images/`),
+      `${own.status} ${own.text.slice(0, 200)} ${ownRow?.createdBy} ${ownRow?.fileKey}`);
+    const noScope = await upload(admin, null, `upown-${tag}-noscope.png`, png, 'image/png', undefined, { ownerId: A.id });
+    if (noScope.status === 201) created.push(noScope.body.item.id);
+    check('ownerId without scope (= mine) → A\'s asset', noScope.status === 201 && noScope.body.item.ownerId === A.id, `${noScope.status}`);
+    const ownDone = await waitDone(own.body.item.id, admin);
+    check('it is processed (ready)', ownDone.status === 'ready', ownDone.status);
+    check('A sees it (GET + scope=mine), B does not (404, not listed)', (await http('GET', `/api/media/${own.body.item.id}`, A.token)).status === 200
+      && ids(await list(A.token, 'scope=mine')).includes(own.body.item.id)
+      && (await http('GET', `/api/media/${own.body.item.id}`, B.token)).status === 404 && !ids(await list(B.token, 'scope=mine')).includes(own.body.item.id)
+      && !ids(await list(B.token, 'scope=public')).includes(own.body.item.id));
+    check('A\'s tags facet lists the new tag (owner scope)', ((await http('GET', `/api/media/tags?scope=all-users&ownerId=${A.id}`, admin)).body.tags as string[]).includes(`Own${tag}`));
+    const userOwner = await upload(A.token, 'mine', `upown-${tag}-x1.png`, png, 'image/png', undefined, { ownerId: B.id });
+    const userSelf = await upload(A.token, 'mine', `upown-${tag}-x2.png`, png, 'image/png', undefined, { ownerId: A.id });
+    check('user sending ownerId (another user or even itself) → 403 media.owner_admin_only', userOwner.status === 403 && userOwner.body.code === 'media.owner_admin_only'
+      && userSelf.status === 403 && userSelf.body.code === 'media.owner_admin_only', `${userOwner.status} ${userOwner.body?.code} ${userSelf.status}`);
+    const unknown = await upload(admin, 'mine', `upown-${tag}-x3.png`, png, 'image/png', undefined, { ownerId: NIL });
+    const notUuid = await upload(admin, 'mine', `upown-${tag}-x4.png`, png, 'image/png', undefined, { ownerId: 'nope' });
+    check('unknown / malformed ownerId → 404 users.not_found', unknown.status === 404 && unknown.body.code === 'users.not_found' && notUuid.status === 404 && notUuid.body.code === 'users.not_found',
+      `${unknown.status} ${unknown.body?.code} ${notUuid.status}`);
+    const pubOwner = await upload(admin, 'public', `upown-${tag}-x5.png`, png, 'image/png', undefined, { ownerId: A.id });
+    check('ownerId with scope=public → 400 media.bad_scope', pubOwner.status === 400 && pubOwner.body.code === 'media.bad_scope', `${pubOwner.status} ${pubOwner.body?.code}`);
+    const wrongB = await upload(admin, 'mine', `upown-${tag}-x6.png`, png, 'image/png', bCatId, { ownerId: A.id });
+    const wrongPub = await upload(admin, 'mine', `upown-${tag}-x7.png`, png, 'image/png', pubCatId, { ownerId: A.id });
+    check('ownerId=A with B\'s / a public category → 400 media.category_mismatch', wrongB.status === 400 && wrongB.body.code === 'media.category_mismatch'
+      && wrongPub.status === 400 && wrongPub.body.code === 'media.category_mismatch', `${wrongB.status} ${wrongB.body?.code} ${wrongPub.status}`);
+    const leftovers = await db.select({ id: schema.mediaAssets.id }).from(schema.mediaAssets).where(dlike(schema.mediaAssets.fileName, `upown-${tag}-x%`));
+    check('refused ownerId uploads left no rows', leftovers.length === 0, `${leftovers.length}`);
+    // the content editor: admin on A's content attaches it; A's own content too; B's content refuses it
+    const cAdmin = await http('POST', '/api/contents', admin, { title: `upown ${tag}`, ownerId: A.id, mediaIds: [own.body.item.id] });
+    const cOwn = await http('POST', '/api/contents', A.token, { title: `upown A ${tag}`, mediaIds: [own.body.item.id] });
+    const cB = await http('POST', '/api/contents', B.token, { title: `upown B ${tag}`, mediaIds: [own.body.item.id] });
+    const cAdminForB = await http('POST', '/api/contents', admin, { title: `upown B2 ${tag}`, ownerId: B.id, mediaIds: [own.body.item.id] });
+    check('A\'s content (by the admin or A) accepts the asset; B\'s refuses it (B 404 media.not_found, admin for B 400 content.media_not_usable)',
+      cAdmin.status === 201 && cAdmin.body.content.media?.[0]?.id === own.body.item.id && cOwn.status === 201
+        && cB.status === 404 && cB.body.code === 'media.not_found' && cAdminForB.status === 400 && cAdminForB.body.code === 'content.media_not_usable',
+      `${cAdmin.status} ${cAdmin.text.slice(0, 160)} ${cOwn.status} ${cB.status} ${cB.body?.code} ${cAdminForB.status} ${cAdminForB.body?.code}`);
+    for (const c of [cAdmin, cOwn, cB, cAdminForB]) if (c.status === 201) await http('DELETE', `/api/contents/${c.body.content.id}`, admin);
+    await new Promise((r) => setTimeout(r, 500));
+    const [ownAudit] = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'media.upload'), eq(schema.auditLogs.target, `upown-${tag}.png`)));
+    check('upload audit records ownerId + categoryId', (ownAudit?.detail as any)?.ownerId === A.id && (ownAudit?.detail as any)?.categoryId === aCatId && ownAudit?.userId === adminId, JSON.stringify(ownAudit?.detail));
+    for (const id of [own.body.item.id, noScope.body.item?.id].filter(Boolean)) { await http('DELETE', `/api/media/${id}`, admin); created.splice(created.indexOf(id), 1); }
+    await db.delete(schema.mediaTags).where(eq(sql`lower(${schema.mediaTags.name})`, `own${tag}`));
   }
 
   // merge: within one owner only (a category holds assets of its own owner)

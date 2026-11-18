@@ -33,7 +33,7 @@ const auth = useAuthStore()
 interface Preview {
   title: string; text: string; topic: string | null; banned: string[]; model: string; token: string; media: ContentMedia[]
 }
-interface PreviewRes { preview: Preview; account: { id: string; userId: string; handle: string; lang: string | null; persona: string } }
+interface PreviewRes { preview: Preview; account: { id: string; userId: string; ownerName?: string | null; handle: string; lang: string | null; persona: string } }
 type Mode = 'draft' | 'now' | 'at'
 
 const SRC = 'zh-CN'
@@ -71,8 +71,9 @@ const trLang = computed(() => (draft.value?.account.lang && draft.value.account.
 const trMissing = computed(() => Boolean(trLang.value) && !form.value.trBody.trim() && !form.value.trTitle.trim())
 const edited = computed(() => Boolean(draft.value) && (form.value.title !== draft.value!.preview.title || form.value.body !== draft.value!.preview.text))
 const otherOwner = computed(() => Boolean(draft.value && draft.value.account.userId !== auth.user?.id))
-/** Admin on another user's account: uploads go to public media; others are blocked (as in the content editor). */
-const uploadScope = computed<'mine' | 'public'>(() => (otherOwner.value && auth.isAdmin ? 'public' : 'mine'))
+/** Admin on another user's account: uploads go to that owner's personal media; others are blocked (as in the content editor). */
+const uploadOwner = computed(() => (otherOwner.value && auth.isAdmin ? draft.value!.account.userId : undefined))
+const uploadOwnerName = computed(() => draft.value?.account.ownerName ?? null)
 const uploadBlocked = computed(() => (otherOwner.value && !auth.isAdmin ? t('content.uploadOtherOwner') : ''))
 const previewText = computed(() => (langTab.value === 'tr' && form.value.trBody.trim() ? form.value.trBody : form.value.body))
 const busy = computed(() => generating.value || saving.value)
@@ -212,10 +213,10 @@ const close = () => emit('update:open', false)
               <MediaStrip :media="media" :size="72" editable @move="moveMedia" @remove="(i: number) => media.splice(i, 1)" />
               <a-space style="margin-top: 8px" wrap>
                 <a-button :disabled="media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-                <ContentMediaUpload :disabled="media.length >= MAX_MEDIA" :blocked="uploadBlocked" :scope="uploadScope" @uploaded="onUploaded" />
+                <ContentMediaUpload :disabled="media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
               </a-space>
               <div v-if="draft.preview.media.length" class="muted small media-hint">{{ t('social.aiDrafts.suggestedMedia') }}</div>
-              <div v-if="uploadBlocked || uploadScope === 'public'" class="muted small media-hint">{{ uploadBlocked || t('content.uploadPublicHint') }}</div>
+              <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
               <div v-if="processing.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processing.length }) }}</div>
             </a-form-item>
           </a-form>
