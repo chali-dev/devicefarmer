@@ -10,9 +10,11 @@ import type { CommentItem, CommentLog, CommentReplyItem, CommentTemplate } from 
 import PlatformTag from '../social/PlatformTag.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
+import PersonaCard from './PersonaCard.vue'
 
 /**
- * One comment: its thread, the reply composer (always written by a person, optionally from a template),
+ * One comment: its thread, the reply composer (always written by a person, optionally from a template or one of the
+ * account persona's 范例; the persona card shows 定位/语气/禁用词 and flags banned words and an off-range length),
  * the current reply's workflow actions (submit, cancel, manual outcome; no approval step since 2026-11-18) and the history + log.
  */
 const props = defineProps<{ open: boolean; commentId: string | null; templates: CommentTemplate[] }>()
@@ -133,6 +135,8 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 
         <!-- composer / draft -->
         <template v-if="editing">
+          <PersonaCard :persona-id="comment.account?.personaId" kind="comment" :text="form.text" insertable
+            @insert="(x: string) => (form.text = x.replace(/\{name\}/g, comment?.authorName ?? ''))" />
           <a-form layout="vertical">
             <a-form-item :label="t('comments.template')">
               <div class="tpl-row">

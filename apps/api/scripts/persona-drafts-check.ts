@@ -1,19 +1,24 @@
 /**
  * 人设每日草稿 (AI drafts per persona) against the real API, DB, Redis and the real Anthropic API. No mocks.
- * - 内容设定 CRUD + validation + RBAC: personal persona (owner / admin; others 404), public persona (admin only, users
- *   403), drafts per day 1..10, language must be Chinese or bound to one of the owner's social accounts (public: any), examples must be post templates visible to the persona,
- *   draft owner rules (public: required to switch on, must be an enabled user; personal: not settable), list without brief.
- * - Persona list `lastDraftRun` (人设 page): newest generation task (trigger, status, error code) only on rows the viewer
- *   manages (owner/admin; public personas: admin only, users get null), others' personal personas not listed at all.
+ * - AI 草稿 settings in the persona form (POST/PATCH /api/personas): RBAC (personal: owner / admin, others 404; public:
+ *   admin only, users 403), drafts per day 1..10, draft owner rules (public: required to switch on, must be an enabled
+ *   user; personal: not settable), the old 内容设定 endpoints are gone (404), list shows draftEnabled/draftsPerDay and the
+ *   draft owner only to managers.
+ * - The prompt (buildUserMessage + loadExamples, no model call): 定位, tone preset + note, emoji, length range, topics,
+ *   banned words, hashtags, audience, fixed opening/closing, notes, Language zh-CN, the persona's post examples (≤ 5,
+ *   in its own scope, oldest first; not reply examples, not other users' templates).
+ * - Last generation runs in GET /api/personas/:id (persona form; the list has no runs since 2026-11-18): newest first
+ *   (trigger, status, error code), only for managers (owner/admin; public personas: admin), users get none.
  * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/hour validation.
  * - Without a key: the schedule creates nothing (reason ai.not_configured), "generate now" → 400 ai.not_configured.
  * - With an obviously invalid key: a real call to the Anthropic API fails the task as ai.key_invalid after ONE attempt,
  *   creates no content, and neither the task payload nor its logs contain the key. Rate limit 1 per persona per 10 min.
  * - Schedule: not before the configured hour, once per persona per local day (idempotent), skips personas whose draft
  *   owner is disabled, nothing when switched off.
- * - Writing drafts (saveDrafts) from a HAND-MADE structured result (no model involved): owner, language, ai-draft tag,
- *   ai_generated origin, targets = owner's accounts with the persona on enabled platforms only, banned-word drafts
- *   dropped, hashtags appended, suggested media by tag, visibility to other users.
+ * - Writing drafts (saveDrafts) from a HAND-MADE structured result (no model involved): owner, zh-CN, ai-draft tag,
+ *   ai_generated origin + needsTranslation (target accounts in other languages), targets = owner's accounts with the
+ *   persona on enabled platforms only, fixed opening/closing added once, banned-word drafts dropped (also via the
+ *   opening), hashtags appended, suggested media by tag, visibility to other users.
  * - Workspace ID setting (for keys not scoped to a workspace): format validated, set/cleared, shown (not secret), in
  *   the audit; mapApiError turns the API's documented workspace errors into ai.workspace_required/_invalid/_not_found.
  * - With ANTHROPIC_TEST_API_KEY set: one real generation (count 1) end to end. With a key that isn't scoped to a
@@ -28,7 +33,7 @@ import { db, schema, sqlClient } from '../src/db/index.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
-import { DRAFT_TAG, DRAFT_TASK, mapApiError, saveDrafts, schedulePersonaDrafts } from '../src/modules/ai/drafts.js';
+import { buildUserMessage, DRAFT_TAG, DRAFT_TASK, loadExamples, mapApiError, saveDrafts, schedulePersonaDrafts, SYSTEM_PROMPT } from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -80,75 +85,95 @@ try {
   const B = await mk(`pdb${tag}`);
   const C = await mk(`pdc${tag}`);
 
-  // ================================================================ 内容设定: CRUD, validation, RBAC
-  const pA = (await http('POST', '/api/personas', A.token, { scope: 'mine', name: `Chef ${tag}` })).body.persona;
+  // ================================================================ AI 草稿 in the persona form: validation, RBAC
+  const STYLE = {
+    tone: 'warm', toneNote: '像邻家厨师一样温柔', emoji: 'low', length: 'high', topics: ['家常菜', 'weeknight dinners'],
+    bannedWords: ['forbiddenword', '最便宜'], hashtags: ['#homecooking', 'dinner'], audience: '上班族', opening: '今晚吃什么？', closing: '你们最爱哪道？', notes: '不要推荐品牌',
+  };
+  const pA = (await http('POST', '/api/personas', A.token, { scope: 'mine', name: `Chef ${tag}`, description: '下班后 20 分钟的家常菜', style: STYLE })).body.persona;
   const pP = (await http('POST', '/api/personas', T, { scope: 'public', name: `Brand ${tag}` })).body.persona;
   const pQ = (await http('POST', '/api/personas', T, { scope: 'public', name: `Quiet ${tag}` })).body.persona;
   publicPersonaIds.push(pP.id, pQ.id);
-  let r = await http('GET', `/api/personas/${pA.id}/drafts`, A.token);
-  check('owner reads 内容设定 of a personal persona (defaults off, 4/day, owner = themselves)',
-    r.status === 200 && r.body.drafts.draftEnabled === false && r.body.drafts.draftsPerDay === 4 && r.body.drafts.draftOwnerName === `pda${tag}`, JSON.stringify(r.body?.drafts ?? r.body).slice(0, 200));
-  r = await http('GET', `/api/personas/${pA.id}/drafts`, B.token);
-  const r2 = await http('PUT', `/api/personas/${pA.id}/drafts`, B.token, { draftsPerDay: 2 });
+  let r = await http('GET', `/api/personas/${pA.id}`, A.token);
+  check('owner reads a personal persona (AI off, 4/day, draft owner = themselves, style stored)',
+    r.status === 200 && r.body.persona.draftEnabled === false && r.body.persona.draftsPerDay === 4 && r.body.persona.draftOwnerName === `pda${tag}`
+      && r.body.persona.style.tone === 'warm' && r.body.persona.style.hashtags.join() === 'homecooking,dinner', JSON.stringify(r.body?.persona ?? r.body).slice(0, 300));
+  r = await http('GET', `/api/personas/${pA.id}/drafts`, A.token);
+  const rOld = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftsPerDay: 2 });
+  check('old 内容设定 endpoints are gone (GET/PUT /api/personas/:id/drafts → 404)', r.status === 404 && rOld.status === 404, `${r.status} ${rOld.status}`);
+  r = await http('GET', `/api/personas/${pA.id}`, B.token);
+  const r2 = await http('PATCH', `/api/personas/${pA.id}`, B.token, { draftsPerDay: 2 });
   check('another user: 404 persona.not_found (read and write)', r.status === 404 && r.body.code === 'persona.not_found' && r2.status === 404);
-  r = await http('GET', `/api/personas/${pP.id}/drafts`, A.token);
-  const r3 = await http('PUT', `/api/personas/${pP.id}/drafts`, A.token, { draftsPerDay: 2 });
-  check('public persona: users get 403 persona.admin_only', r.status === 403 && r.body.code === 'persona.admin_only' && r3.status === 403);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, T, { draftsPerDay: 3 });
-  check('admin edits a user\'s personal persona settings', r.status === 200 && r.body.drafts.draftsPerDay === 3);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftsPerDay: 0 });
-  const r4 = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftsPerDay: 11 });
+  const r3 = await http('PATCH', `/api/personas/${pP.id}`, A.token, { draftsPerDay: 2 });
+  r = await http('GET', `/api/personas/${pP.id}`, A.token);
+  check('public persona: users may read it (no draft owner, no runs) but not change it (403)',
+    r.status === 200 && !('draftOwnerId' in r.body.persona) && !('runs' in r.body.persona) && r.body.persona.writable === false && r3.status === 403 && r3.body.code === 'persona.admin_only');
+  r = await http('PATCH', `/api/personas/${pA.id}`, T, { draftsPerDay: 3 });
+  check('admin edits a user\'s personal persona', r.status === 200 && r.body.persona.draftsPerDay === 3);
+  r = await http('PATCH', `/api/personas/${pA.id}`, A.token, { draftsPerDay: 0 });
+  const r4 = await http('PATCH', `/api/personas/${pA.id}`, A.token, { draftsPerDay: 11 });
   check('drafts per day outside 1..10 → 400', r.status === 400 && r4.status === 400);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, {});
-  check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
-  // Offered languages = Chinese + languages bound to social accounts (personal persona: its owner's accounts).
-  const langAcc = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `pd_lang_${tag}`, lang: 'en' });
-  check('A has an account bound to English (so en is offered)', langAcc.status === 201 && langAcc.body.account.lang === 'en', langAcc.text.slice(0, 120));
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { lang: 'fr' } });
-  check('language neither Chinese nor bound to an account → 400 persona.draft_lang_not_offered', r.status === 400 && r.body.code === 'persona.draft_lang_not_offered', `${r.status} ${r.body?.code}`);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { lang: 'EN', tone: 'warm', topics: ['home cooking'], bannedWords: ['forbiddenword'] } });
-  check('language is canonicalised (EN → en) and the brief stored', r.status === 200 && r.body.drafts.brief.lang === 'en' && r.body.drafts.brief.tone === 'warm');
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { surprise: 1 } });
-  check('unknown brief field → 400', r.status === 400);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftOwnerId: B.id });
+  r = await http('PATCH', `/api/personas/${pA.id}`, A.token, { style: { lang: 'en' } });
+  check('the persona has no language any more (style.lang → 400, language belongs to the account)', r.status === 400, `${r.status}`);
+  r = await http('PATCH', `/api/personas/${pA.id}`, A.token, { draftOwnerId: B.id });
   check('personal persona: draft owner not settable → 400 persona.draft_owner_personal', r.status === 400 && r.body.code === 'persona.draft_owner_personal');
 
-  // examples: post templates visible to the persona
+  // examples (范例) = templates of the persona in its own scope
   const tpl = async (token: string, body: Record<string, unknown>) => (await http('POST', '/api/comment-templates', token, { text: 'Example caption text', ...body })).body.template;
-  const sharedPost = await tpl(T, { kind: 'post', name: `shared ${tag}`, shared: true }); sharedTemplateIds.push(sharedPost.id);
-  const aPost = await tpl(A.token, { kind: 'post', name: `a-post ${tag}` });
-  const bPost = await tpl(B.token, { kind: 'post', name: `b-post ${tag}` });
-  const aReply = await tpl(A.token, { kind: 'comment', name: `a-reply ${tag}` });
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { lang: 'en', bannedWords: ['forbiddenword'], exampleTemplateIds: [sharedPost.id, aPost.id] } });
-  check('personal persona: shared + own post templates as examples', r.status === 200 && r.body.drafts.brief.exampleTemplateIds.length === 2);
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { exampleTemplateIds: [bPost.id] } });
-  const r5 = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { exampleTemplateIds: [aReply.id] } });
-  check('another user\'s template / a reply template as example → 400 persona.draft_example_not_allowed',
-    r.status === 400 && r.body.code === 'persona.draft_example_not_allowed' && r5.status === 400 && r5.body.code === 'persona.draft_example_not_allowed');
-  r = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { brief: { exampleTemplateIds: [aPost.id] } });
-  check('public persona: a personal template as example → 400', r.status === 400 && r.body.code === 'persona.draft_example_not_allowed');
-  r = await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { brief: { exampleTemplateIds: Array.from({ length: 6 }, () => randomUUID()) } });
-  check('more than 5 examples → 400', r.status === 400);
+  const sharedPost = await tpl(T, { kind: 'post', name: `shared ${tag}`, shared: true, personaId: pP.id, text: 'Shared brand example' }); sharedTemplateIds.push(sharedPost.id);
+  const aPosts = [];
+  for (let k = 1; k <= 6; k++) aPosts.push(await tpl(A.token, { kind: 'post', name: `a-post${k} ${tag}`, personaId: pA.id, text: `示例发文 ${k} ${tag}` }));
+  const aReply = await tpl(A.token, { kind: 'comment', name: `a-reply ${tag}`, personaId: pA.id, text: `回复范例 ${tag}` });
+  const aLoose = await tpl(A.token, { kind: 'post', name: `a-loose ${tag}`, text: `没有人设的发文 ${tag}` });
+  const aOnPublic = await tpl(A.token, { kind: 'post', name: `a-pub ${tag}`, personaId: pP.id, text: `A 的私有发文用公共人设 ${tag}` });
+  check('templates created (6 post + 1 reply example of pA, 1 without persona, 1 private on the public persona)', aPosts.every((x) => !!x?.id) && !!aReply?.id && !!aLoose?.id && !!aOnPublic?.id);
 
   // public persona: draft owner
-  r = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { draftEnabled: true });
+  r = await http('PATCH', `/api/personas/${pP.id}`, T, { draftEnabled: true });
   check('public persona switched on without a draft owner → 400 persona.draft_owner_required', r.status === 400 && r.body.code === 'persona.draft_owner_required');
+  r = await http('POST', '/api/personas', T, { scope: 'public', name: `On ${tag}`, draftEnabled: true });
+  check('creating a public persona switched on without a draft owner → 400 persona.draft_owner_required', r.status === 400 && r.body.code === 'persona.draft_owner_required');
   await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, C.id));
-  r = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { draftOwnerId: C.id });
-  const r6 = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { draftOwnerId: randomUUID() });
+  r = await http('PATCH', `/api/personas/${pP.id}`, T, { draftOwnerId: C.id });
+  const r6 = await http('PATCH', `/api/personas/${pP.id}`, T, { draftOwnerId: randomUUID() });
   check('disabled / unknown user as draft owner → 400 persona.draft_owner_invalid', r.status === 400 && r.body.code === 'persona.draft_owner_invalid' && r6.status === 400 && r6.body.code === 'persona.draft_owner_invalid');
-  r = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { draftEnabled: true, draftsPerDay: 2, draftOwnerId: B.id, brief: { exampleTemplateIds: [sharedPost.id], lang: 'zh-CN' } });
-  check('admin switches a public persona on with an enabled draft owner', r.status === 200 && r.body.drafts.draftEnabled && r.body.drafts.draftOwnerName === `pdb${tag}`);
-  r = await http('PUT', `/api/personas/${pP.id}/drafts`, T, { draftOwnerId: null });
+  r = await http('PATCH', `/api/personas/${pP.id}`, T, { draftEnabled: true, draftsPerDay: 2, draftOwnerId: B.id });
+  const g1 = await http('GET', `/api/personas/${pP.id}`, T);
+  check('admin switches a public persona on with an enabled draft owner', r.status === 200 && r.body.persona.draftEnabled && g1.body.persona.draftOwnerName === `pdb${tag}`);
+  r = await http('PATCH', `/api/personas/${pP.id}`, T, { draftOwnerId: null });
   check('clearing the owner of a switched-on public persona → 400 persona.draft_owner_required', r.status === 400 && r.body.code === 'persona.draft_owner_required');
   // pQ: switched on with C as owner while C was enabled, then C disabled → the schedule skips it
   await db.update(schema.users).set({ disabled: false }).where(eq(schema.users.id, C.id));
-  r = await http('PUT', `/api/personas/${pQ.id}/drafts`, T, { draftEnabled: true, draftOwnerId: C.id });
+  r = await http('PATCH', `/api/personas/${pQ.id}`, T, { draftEnabled: true, draftOwnerId: C.id });
   await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, C.id));
   check('public persona pQ switched on (owner C, disabled afterwards)', r.status === 200);
   r = await http('GET', '/api/personas?scope=public', A.token);
   const listed = (r.body.personas as any[]).find((p) => p.id === pP.id);
-  check('persona list: draftEnabled/draftsPerDay shown, brief and draft owner not', listed && listed.draftEnabled === true && listed.draftsPerDay === 2 && !('brief' in listed) && !('draftOwnerId' in listed));
+  const listedT = ((await http('GET', '/api/personas?scope=public', T)).body.personas as any[]).find((p) => p.id === pP.id);
+  check('persona list: draftEnabled/draftsPerDay + style shown; draft owner only to managers (admin)',
+    listed && listed.draftEnabled === true && listed.draftsPerDay === 2 && !!listed.style && !('draftOwnerId' in listed) && listedT?.draftOwnerId === B.id);
+
+  // ================================================================ prompt construction (no model call)
+  {
+    const [row] = await db.select().from(schema.personas).where(eq(schema.personas.id, pA.id));
+    const ex = await loadExamples(row!);
+    const msg = buildUserMessage({ persona: row!, count: 3, day: '2026-11-18', examples: ex, recent: [{ title: '上周的汤', body: '番茄蛋汤做法' }] });
+    const has = (x: string) => msg.includes(x);
+    check('prompt: examples = the first 5 post examples of the persona (no reply example, no template without persona)',
+      ex.length === 5 && ex.every((e, k) => e.text === `示例发文 ${k + 1} ${tag}`) && !has(`回复范例 ${tag}`) && !has(`没有人设的发文 ${tag}`) && !has(`示例发文 6 ${tag}`), ex.map((e) => e.text).join(' | '));
+    check('prompt: 定位, tone preset + note, emoji, length range (high = 500–1500), Language zh-CN',
+      has('Positioning: 下班后 20 分钟的家常菜') && has('Tone: warm — 像邻家厨师一样温柔') && has('Emoji: at most 1 emoji') && has('Length: 500 to 1500 characters') && has('Language: zh-CN'), msg.slice(0, 600));
+    check('prompt: topics, banned words, hashtags (# stripped), audience, fixed opening/closing, notes, recent posts',
+      has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('Audience: 上班族')
+        && has('Fixed opening line (added by the system): 今晚吃什么？') && has('Fixed closing line (added by the system): 你们最爱哪道？') && has('Notes: 不要推荐品牌') && has('上周的汤'));
+    check('system prompt: Chinese only, draft-only role', SYSTEM_PROMPT.includes('Write in Simplified Chinese (zh-CN)') && SYSTEM_PROMPT.includes('DRAFT') && !SYSTEM_PROMPT.includes('BCP-47'));
+    const [pubRow] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
+    const exP = await loadExamples(pubRow!);
+    const msgP = buildUserMessage({ persona: pubRow!, count: 1, day: '2026-11-18', examples: exP, recent: [] });
+    check('prompt (public persona, empty style): only shared examples (not A\'s private one), defaults casual / 2–4 emoji / 150–500',
+      exP.length === 1 && exP[0]!.text === 'Shared brand example' && msgP.includes('Tone: casual — friendly and everyday') && msgP.includes('Emoji: 2 to 4 emoji') && msgP.includes('Length: 150 to 500 characters')
+        && msgP.includes('Positioning: (none)') && !msgP.includes(`A 的私有发文用公共人设 ${tag}`));
+  }
 
   // ================================================================ AI settings (admin, key write-only)
   r = await http('GET', '/api/settings/ai', A.token);
@@ -159,7 +184,7 @@ try {
     && r.body.models.join() === 'claude-opus-5-5,claude-sonnet-5-5,claude-haiku-5-5');
   r = await http('POST', `/api/personas/${pA.id}/drafts/generate`, A.token);
   check('generate now without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
-  await http('PUT', `/api/personas/${pA.id}/drafts`, A.token, { draftEnabled: true, draftsPerDay: 2 });
+  await http('PATCH', `/api/personas/${pA.id}`, A.token, { draftEnabled: true, draftsPerDay: 2 });
   let sch = await schedulePersonaDrafts(localAt(23));
   const noKeyTasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, DRAFT_TASK), gte(schema.tasks.createdAt, t0)));
   check('schedule without a key: nothing created, reason ai.not_configured', sch.reason === 'ai.not_configured' && sch.created === 0 && noKeyTasks.length === 0, JSON.stringify(sch));
@@ -215,25 +240,24 @@ try {
   let aDrafts = await db.select().from(schema.contents).where(and(eq(schema.contents.userId, A.id)));
   check('no content created by the failed run', aDrafts.length === 0);
 
-  // ---- persona list: lastDraftRun (RBAC = managing the persona)
-  const lastRun = async (token: string, q: string, id: string) => {
-    const res = await http('GET', `/api/personas?${q}`, token);
-    return { status: res.status, row: (res.body?.personas as any[] | undefined)?.find((x) => x.id === id) };
+  // ---- persona form: last runs (RBAC = managing the persona); the list carries none
+  const runsOf = async (token: string, id: string) => {
+    const res = await http('GET', `/api/personas/${id}`, token);
+    return { status: res.status, runs: res.body?.persona?.runs as any[] | undefined, writable: res.body?.persona?.writable };
   };
-  let lr = await lastRun(A.token, 'scope=mine', pA.id);
-  check('list: owner sees lastDraftRun of a personal persona (manual, failed ai.key_invalid, created null)',
-    lr.row?.lastDraftRun?.id === manualId && lr.row.lastDraftRun.trigger === 'manual' && lr.row.lastDraftRun.status === 'failed'
-    && lr.row.lastDraftRun.errorCode === 'ai.key_invalid' && lr.row.lastDraftRun.created === null && !!lr.row.lastDraftRun.createdAt && !('payload' in lr.row.lastDraftRun),
-    JSON.stringify(lr.row?.lastDraftRun));
-  lr = await lastRun(T, `scope=all-users&ownerId=${A.id}`, pA.id);
-  const lrB = await lastRun(B.token, 'scope=mine', pA.id);
-  const lrBall = await lastRun(B.token, 'scope=all-users', pA.id);
-  check('list: admin (all-users, ownerId) sees the same run; another user never gets the persona (mine: absent, all-users: 403)',
-    lr.row?.lastDraftRun?.id === manualId && lrB.status === 200 && !lrB.row && lrBall.status === 403);
-  lr = await lastRun(T, 'scope=public', pP.id);
-  const lrUserPub = await lastRun(A.token, 'scope=public', pP.id);
-  check('list: public persona without runs → null for admin; users never get lastDraftRun of a public persona (null)',
-    lr.row && lr.row.lastDraftRun === null && lrUserPub.row && lrUserPub.row.lastDraftRun === null && lrUserPub.row.writable === false);
+  let lr = await runsOf(A.token, pA.id);
+  const lrRun = lr.runs?.[0];
+  check('form: owner sees the newest run of a personal persona (manual, failed ai.key_invalid, created null)',
+    lrRun?.id === manualId && lrRun.trigger === 'manual' && lrRun.status === 'failed' && lrRun.errorCode === 'ai.key_invalid' && lrRun.created === null && !!lrRun.createdAt && !('payload' in lrRun),
+    JSON.stringify(lrRun));
+  const lrT = await runsOf(T, pA.id);
+  const lrB = await runsOf(B.token, pA.id);
+  check('form: admin sees the same run; another user gets 404', lrT.runs?.[0]?.id === manualId && lrB.status === 404);
+  const lrPub = await runsOf(T, pP.id);
+  const lrUserPub = await runsOf(A.token, pP.id);
+  const listRow = ((await http('GET', '/api/personas?scope=mine', A.token)).body.personas as any[]).find((x) => x.id === pA.id);
+  check('form: public persona without runs → [] for admin, no runs for users; the list has no lastDraftRun',
+    Array.isArray(lrPub.runs) && lrPub.runs.length === 0 && lrUserPub.status === 200 && lrUserPub.runs === undefined && lrUserPub.writable === false && listRow && !('lastDraftRun' in listRow));
 
   // ================================================================ schedule (idempotent per local day)
   sch = await schedulePersonaDrafts(localAt(3));
@@ -259,25 +283,23 @@ try {
   {
     const sA = sTasks.find((x) => x.refId === pA.id)!;
     const sP = sTasks.find((x) => x.refId === pP.id)!;
-    const listA = (await http('GET', '/api/personas?scope=mine', A.token)).body.personas as any[];
-    const listT = (await http('GET', '/api/personas?scope=public', T)).body.personas as any[];
-    const listU = (await http('GET', '/api/personas?scope=public', A.token)).body.personas as any[];
-    const ra = listA.find((x) => x.id === pA.id)?.lastDraftRun;
-    const rp = listT.find((x) => x.id === pP.id)?.lastDraftRun;
-    const rq = listT.find((x) => x.id === pQ.id)?.lastDraftRun;
-    check('list after the schedule: newest run wins (pA scheduled, not the older manual one), public pP for admin, pQ (skipped) null, users still null',
-      ra?.id === sA.id && ra.trigger === 'schedule' && ra.status === 'failed' && rp?.id === sP.id && rp.trigger === 'schedule' && rq === null
-      && listU.find((x) => x.id === pP.id)?.lastDraftRun === null, JSON.stringify({ ra, rp, rq }));
+    const ra = (await runsOf(A.token, pA.id)).runs?.[0];
+    const rp = (await runsOf(T, pP.id)).runs?.[0];
+    const rq = (await runsOf(T, pQ.id)).runs ?? [];
+    check('form after the schedule: newest run first (pA scheduled, not the older manual one), public pP for admin, pQ (skipped) none, users still none',
+      ra?.id === sA.id && ra.trigger === 'schedule' && ra.status === 'failed' && rp?.id === sP.id && rp.trigger === 'schedule' && rq.length === 0
+      && (await runsOf(A.token, pP.id)).runs === undefined, JSON.stringify({ ra, rp, rq }));
   }
 
   // ================================================================ writing drafts from a hand-made structured result (no model)
   const acc = async (token: string, handle: string, personaId: string | null) =>
     (await http('POST', '/api/social/accounts', token, { platform: 'instagram', handle: `${handle}_${tag}`, personaId })).body.account;
   const igA = await acc(A.token, 'pd_ig_a', pA.id);
+  const igAen = (await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `pd_ig_en_${tag}`, personaId: pA.id, lang: 'en' })).body.account;
   const igA2 = await acc(A.token, 'pd_ig_other', null);
   const igB = await acc(B.token, 'pd_ig_b', pP.id);
   const [ytA] = await db.insert(schema.socialAccounts).values({ userId: A.id, platform: 'youtube', handle: `pd_yt_${tag}`, personaId: pA.id }).returning();
-  check('accounts: A instagram (persona), A instagram (none), A youtube (persona, platform disabled), B instagram (public persona)', !!igA?.id && !!igA2?.id && !!igB?.id && !!ytA);
+  check('accounts: A instagram (persona), A instagram (persona, English), A instagram (none), A youtube (persona, platform disabled), B instagram (public persona)', !!igA?.id && !!igAen?.id && !!igA2?.id && !!igB?.id && !!ytA);
   // A public ready image tagged "Beach" (seeded directly: the upload pipeline is covered by media-check)
   const [img] = await db.insert(schema.mediaAssets).values({
     ownerType: 'public', ownerId: null, name: `beach ${tag}`, fileName: 'beach.jpg', storage: 'local', fileKey: `public/images/${randomUUID()}.jpg`,
@@ -289,40 +311,45 @@ try {
   await db.insert(schema.mediaAssetTags).values({ assetId: img!.id, tagId: mt2!.id });
   const [personaA] = await db.select().from(schema.personas).where(eq(schema.personas.id, pA.id));
   const saved = await saveDrafts({
-    persona: personaA!, ownerId: A.id, lang: 'en', model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
+    persona: personaA!, ownerId: A.id, model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
     drafts: [
       { title: 'Weeknight pasta', body: 'Five ingredients, one pan.', hashtags: ['#pasta', 'pasta', 'home cooking', 'dinner'], mediaTags: [`beach${tag}`, 'food'] },
       { title: 'Bad one', body: 'This has a ForbiddenWord inside.', hashtags: ['x'], mediaTags: [] },
-      { title: 'Soup season', body: 'Which soup do you make first when it gets cold?', hashtags: [], mediaTags: ['soup'] },
+      { title: 'Soup season', body: '今晚吃什么？\nWhich soup do you make first when it gets cold?', hashtags: [], mediaTags: ['soup'] },
     ],
   });
-  check('saveDrafts: 2 written, the banned-word draft dropped, 1 target, youtube account skipped (platform disabled)',
-    saved.contentIds.length === 2 && saved.dropped.length === 1 && saved.targets === 1 && saved.skippedAccounts === 1, JSON.stringify(saved));
+  check('saveDrafts: 2 written, the banned-word draft dropped, 2 targets, youtube account skipped (platform disabled), needs en',
+    saved.contentIds.length === 2 && saved.dropped.length === 1 && saved.targets === 2 && saved.skippedAccounts === 1 && saved.needsTranslation.join() === 'en', JSON.stringify(saved));
   r = await http('GET', `/api/contents?tag=${DRAFT_TAG}`, A.token);
   const items = (r.body.items as any[]).filter((x) => saved.contentIds.includes(x.id));
   const pasta = items.find((x) => x.title === 'Weeknight pasta');
-  check('drafts listed for the owner via the ai-draft tag filter: stage draft, lang en, tag, origin',
-    items.length === 2 && items.every((x) => x.stage === 'draft' && x.status === 'draft' && x.lang === 'en' && x.tags.includes(DRAFT_TAG) && x.aiGenerated?.personaId === pA.id && x.aiGenerated?.model === 'handmade-test-result'));
-  check('targets = only the owner\'s instagram account with the persona', items.every((x) => x.targets.length === 1 && x.targets[0].id === igA.id));
-  check('hashtags appended once each (# stripped, spaces removed)', pasta?.body === 'Five ingredients, one pan.\n\n#pasta #homecooking #dinner', JSON.stringify(pasta?.body));
+  check('drafts listed for the owner via the ai-draft tag filter: stage draft, lang zh-CN, tag, origin, needsTranslation [en]',
+    items.length === 2 && items.every((x) => x.stage === 'draft' && x.status === 'draft' && x.lang === 'zh-CN' && x.tags.includes(DRAFT_TAG) && x.aiGenerated?.personaId === pA.id
+      && x.aiGenerated?.model === 'handmade-test-result' && x.aiGenerated?.needsTranslation?.join() === 'en'));
+  check('targets = only the owner\'s instagram accounts with the persona', items.every((x) => x.targets.map((t: any) => t.id).sort().join() === [igA.id, igAen.id].sort().join()));
+  check('fixed opening/closing added once (not repeated when already there), hashtags appended once each (# stripped, spaces removed)',
+    pasta?.body === '今晚吃什么？\nFive ingredients, one pan.\n你们最爱哪道？\n\n#pasta #homecooking #dinner'
+      && items.find((x) => x.title === 'Soup season')?.body === '今晚吃什么？\nWhich soup do you make first when it gets cold?\n你们最爱哪道？', JSON.stringify(items.map((x) => x.body)));
   check('suggested media: the tagged ready image, only on the matching draft', pasta?.media.length === 1 && pasta.media[0].id === img!.id && items.find((x) => x.title === 'Soup season')?.media.length === 0);
   r = await http('GET', `/api/contents/${pasta.id}`, B.token);
   check('another user cannot see the drafts (404)', r.status === 404);
   const [personaP] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
-  const savedB = await saveDrafts({ persona: personaP!, ownerId: B.id, lang: 'zh-CN', model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
+  const savedB = await saveDrafts({ persona: personaP!, ownerId: B.id, model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
     drafts: [{ title: '标题', body: '正文', hashtags: ['标签'], mediaTags: [] }] });
   const [bRow] = await db.select().from(schema.contents).where(eq(schema.contents.id, savedB.contentIds[0]!));
   const bTargets = await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.contentId, bRow!.id));
-  check('public persona: draft owned by the draft owner, zh-CN, targets the owner\'s account', bRow?.userId === B.id && bRow.lang === 'zh-CN' && bTargets.length === 1 && bTargets[0]!.accountId === igB.id);
+  check('public persona: draft owned by the draft owner, zh-CN, targets the owner\'s account, no translation needed', bRow?.userId === B.id && bRow.lang === 'zh-CN' && bTargets.length === 1 && bTargets[0]!.accountId === igB.id
+    && savedB.needsTranslation.length === 0 && !bRow.aiGenerated?.needsTranslation);
 
   // ================================================================ audit
   await sleep(500);
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const ai = audits.filter((a) => a.action === 'settings.ai');
-  const ps = audits.filter((a) => a.action === 'persona.draft_settings');
+  const ps = audits.filter((a) => a.action === 'persona.update' || a.action === 'persona.create');
   check('audit: settings.ai records the workspace ID (not secret)', ai.some((a) => (a.detail as any)?.workspaceId === 'wrkspc_01TestWorkspace0001'));
   check('audit: settings.ai entries without the key (set flag only)', ai.length >= 3 && !JSON.stringify(audits).includes(INVALID_KEY) && ai.some((a) => (a.detail as any)?.set === true));
-  check('audit: persona.draft_settings with field names only (no brief texts)', ps.length >= 5 && ps.every((a) => !JSON.stringify(a.detail).includes('forbiddenword')) && ps.some((a) => ((a.detail as any)?.fields ?? []).includes('brief')));
+  check('audit: persona create/update with field names only (no style texts)', ps.length >= 5 && ps.every((a) => !JSON.stringify(a.detail).includes('forbiddenword') && !JSON.stringify(a.detail).includes('上班族'))
+    && ps.some((a) => ((a.detail as any)?.fields ?? []).includes('style')) && ps.some((a) => (a.detail as any)?.draftEnabled === true));
   check('audit: persona.draft_generate recorded', audits.some((a) => a.action === 'persona.draft_generate'));
 
   // ================================================================ optional: one real generation
@@ -331,7 +358,7 @@ try {
     const realWs = process.env.ANTHROPIC_TEST_WORKSPACE_ID || null;
     const redis = new Redis(config.REDIS_URL);
     await http('PUT', '/api/settings/ai', T, { apiKey: realKey, workspaceId: null });
-    await db.update(schema.personas).set({ brief: { ...personaA!.brief, exampleTemplateIds: [] } }).where(eq(schema.personas.id, pP.id));
+    await db.update(schema.personas).set({ style: personaA!.style }).where(eq(schema.personas.id, pP.id));
     const generate = async () => {
       await redis.del(`ai:drafts:manual:${pP.id}`);
       const g = await http('POST', `/api/personas/${pP.id}/drafts/generate`, T);

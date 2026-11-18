@@ -365,10 +365,11 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     personaId: z.string().uuid().nullable().optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(20).transform(normTags).optional(),
   });
-  app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional() }) } }, async (req, reply) => {
-    const { shared, ...b } = req.body;
-    if (shared && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
-    const userId = shared ? null : req.user.id;
+  /** `ownerId` (admin): a private template of another user, e.g. an example (范例) of that user's personal persona. */
+  app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional(), ownerId: z.string().uuid().optional() }) } }, async (req, reply) => {
+    const { shared, ownerId, ...b } = req.body;
+    if ((shared || (ownerId && ownerId !== req.user.id)) && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
+    const userId = shared ? null : ownerId ?? req.user.id;
     const p = b.personaId ? await assertPersonaFor(userId, b.personaId) : null;
     const [row] = await db.insert(TPL).values({ ...b, userId, createdBy: req.user.id }).returning();
     if (req.audit) req.audit.extra = { id: row!.id, kind: row!.kind, persona: p?.name ?? null };

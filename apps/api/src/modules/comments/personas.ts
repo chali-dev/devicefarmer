@@ -5,15 +5,22 @@ import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
 import { badRequest } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
-import { lastDraftRuns } from '../ai/runs.js';
+import { assertDraftOwnerCandidate } from '../ai/drafts.js';
+import { personaDraftRuns } from '../ai/runs.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
+import { assertStyleOk, exampleWhere, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
  * by everyone; personal ones belong to one user (others get 404; admins see and manage all). Templates reference one
  * via `comment_templates.persona_id`: a shared template only a public persona, a private one a public persona or one of
- * its owner's (`assertPersonaFor`). Deleting or merging a persona moves/clears the reference, never the templates.
+ * its owner's (`assertPersonaFor`). Deleting a persona clears the reference, never the templates. Personas cannot be
+ * merged (owner decision 2026-11-18; 内容分类/素材分类 keep their merge).
+ *
+ * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`,
+ * shared by posts and replies, see persona-style.ts), 范例 (= templates of the persona in its own scope, edited through the
+ * template API), and AI 草稿 (on/off, per day, draft owner of a public persona). POST/PATCH take all of it.
  */
 const P = schema.personas;
 const TPL = schema.commentTemplates;
@@ -26,8 +33,40 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 
 type Exec = Pick<typeof db, 'select'>;
 
-/** A persona row for lists/responses: the 内容设定 (brief, draft owner) is only returned by GET /api/personas/:id/drafts. */
-export const publicPersona = ({ brief: _b, draftOwnerId: _o, ...p }: Persona) => p;
+/**
+ * A persona row for lists/responses: style with defaults; the draft owner only for managers (`withOwner`).
+ */
+export const publicPersona = ({ draftOwnerId, style: _s, ...p }: Persona, withOwner = false) => ({
+  ...p, style: styleOf({ style: _s }), ...(withOwner ? { draftOwnerId } : {}),
+});
+
+/** Persona-only fields of the create/patch bodies (style replaces the whole stored style). */
+const PersonaFields = {
+  style: PersonaStyleInput.optional(),
+  draftEnabled: z.boolean().optional(),
+  draftsPerDay: z.number().int().min(1).max(10).optional(),
+  /** Public personas only: the enabled user who owns the AI drafts (null clears). */
+  draftOwnerId: z.string().uuid().nullable().optional(),
+};
+const CreateBody = ScopedCreateBody.extend(PersonaFields);
+const PatchBody = ScopedPatchBody.extend(PersonaFields);
+
+/** Validated persona-only set: draft owner rules (personal → its owner, not settable; public on → owner required). */
+async function personaSet(ownerType: 'public' | 'user', cur: Pick<Persona, 'draftEnabled' | 'draftOwnerId'> | null, b: z.infer<typeof PatchBody>) {
+  const set: Partial<typeof P.$inferInsert> = {};
+  if (b.style !== undefined) { set.style = normaliseStyle(b.style); assertStyleOk(set.style); }
+  if (b.draftsPerDay !== undefined) set.draftsPerDay = b.draftsPerDay;
+  if (b.draftEnabled !== undefined) set.draftEnabled = b.draftEnabled;
+  if (b.draftOwnerId !== undefined) {
+    if (ownerType === 'user' && b.draftOwnerId !== null) throw badRequest('个人人设的草稿归属其所有者', 'persona.draft_owner_personal');
+    if (b.draftOwnerId) await assertDraftOwnerCandidate(b.draftOwnerId);
+    set.draftOwnerId = b.draftOwnerId;
+  }
+  const enabled = set.draftEnabled ?? cur?.draftEnabled ?? false;
+  const owner = set.draftOwnerId !== undefined ? set.draftOwnerId : cur?.draftOwnerId ?? null;
+  if (enabled && ownerType === 'public' && !owner) throw badRequest('公共人设开启 AI 草稿前须指定草稿给谁', 'persona.draft_owner_required');
+  return set;
+}
 
 /** A public persona fits everything; a personal one only things owned by its owner (`ownerUserId`, null = shared). */
 export const personaFits = (p: Persona, ownerUserId: string | null) => scoped.fits(p, ownerUserId);
@@ -61,8 +100,8 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   /**
    * public = public personas; mine = the caller's; all-users = every user's personal personas (admin, optional ownerId).
    * `count` = templates using the persona that the caller can see, `accounts` = social accounts with it as 账号人设 that the
-   * caller can see (admin: all; else own), one grouped query each. `lastDraftRun` = the newest 人设每日草稿 generation task
-   * (time, trigger, status, error code, drafts created), only on rows the caller manages (same rule as the 内容设定), else null.
+   * caller can see (admin: all; else own), one grouped query each. No generation runs here (the 人设 page has no AI column
+   * since 2026-11-18): the last runs are in GET /api/personas/:id for managers.
    */
   app.get('/api/personas', { schema: { querystring: ScopedListQuery } }, async (req) => {
     const { scope } = req.query;
@@ -77,34 +116,64 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       .leftJoin(counts, eq(counts.personaId, P.id)).leftJoin(accounts, eq(accounts.personaId, P.id)).leftJoin(schema.users, eq(schema.users.id, P.ownerId))
       .where(where).orderBy(...(scope === 'all-users' ? [asc(schema.users.username)] : []), asc(P.sort), asc(P.name));
     const writable = (p: Persona) => p.ownerType === 'user' || isAdmin(req.user);
-    const runs = await lastDraftRuns(rows.filter((r) => writable(r.p)).map((r) => r.p.id));
     return {
       personas: rows.map((r) => ({
-        ...publicPersona(r.p), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: writable(r.p),
-        lastDraftRun: runs.get(r.p.id) ?? null,
+        ...publicPersona(r.p, writable(r.p)), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: writable(r.p),
       })),
+      lengths: PERSONA_LENGTHS,
+    };
+  });
+
+  /**
+   * One persona (anyone who may see it): style, 范例 per kind (templates in the persona's own scope, oldest first) and the
+   * length ranges; managers also get the draft owner's name and the last generation runs. Used by the form and by the
+   * persona card of the post editor / reply composers.
+   */
+  app.get('/api/personas/:id', { schema: { params: Id } }, async (req) => {
+    const p = await visiblePersona(req.user, req.params.id);
+    const manages = p.ownerType === 'user' || isAdmin(req.user);
+    const ownerId = p.ownerType === 'user' ? p.ownerId : p.draftOwnerId;
+    const [owner] = manages && ownerId
+      ? await db.select({ username: schema.users.username, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, ownerId)) : [];
+    const examples = await db.select({ id: TPL.id, kind: TPL.kind, name: TPL.name, text: TPL.text, userId: TPL.userId }).from(TPL)
+      .where(exampleWhere(p)).orderBy(asc(TPL.createdAt), asc(TPL.id));
+    return {
+      persona: {
+        ...publicPersona(p, manages), writable: manages,
+        ...(manages ? { draftOwnerName: owner?.username ?? null, draftOwnerDisabled: owner?.disabled ?? null, runs: await personaDraftRuns(p.id) } : {}),
+      },
+      examples: {
+        post: examples.filter((e) => e.kind === 'post').map(({ userId: _u, ...e }) => e),
+        comment: examples.filter((e) => e.kind === 'comment').map(({ userId: _u, ...e }) => e),
+      },
+      lengths: PERSONA_LENGTHS,
     };
   });
 
   /** scope public (admin) or mine; admins may create a personal persona for another user with ownerId. */
-  app.post('/api/personas', { schema: { body: ScopedCreateBody } }, async (req, reply) => {
+  app.post('/api/personas', { schema: { body: CreateBody } }, async (req, reply) => {
     const b = req.body;
     const { ownerId, sort } = await scoped.createTarget(req.user, b);
+    const extra = await personaSet(ownerId ? 'user' : 'public', null, b);
     const [row] = await scoped.uniqueName(b.name, () => db.insert(P).values({
-      ownerType: ownerId ? 'user' : 'public', ownerId, name: b.name, description: b.description ?? null, sort, createdBy: req.user.id,
+      ownerType: ownerId ? 'user' : 'public', ownerId, name: b.name, description: b.description ?? null, sort, createdBy: req.user.id, ...extra,
     }).returning());
-    if (req.audit) req.audit.extra = { id: row!.id };
+    if (req.audit) req.audit.extra = { id: row!.id, draftEnabled: row!.draftEnabled };
     reply.code(201);
-    return { persona: publicPersona(row!) };
+    return { persona: publicPersona(row!, true) };
   });
 
   app.patch('/api/personas/:id', {
-    schema: { params: Id, body: ScopedPatchBody },
+    schema: { params: Id, body: PatchBody },
   }, async (req) => {
     const p = await manageablePersona(req.user, req.params.id);
-    const set = scoped.patchSet(req.body);
+    const { style: _s, draftEnabled: _e, draftsPerDay: _d, draftOwnerId: _o, ...scopedBody } = req.body;
+    const extra = await personaSet(p.ownerType, p, req.body);
+    const set = { ...Object.fromEntries(Object.entries(scopedBody).filter(([, v]) => v !== undefined)), ...extra };
+    if (!Object.keys(set).length) scoped.patchSet({});
     const [row] = await scoped.uniqueName(req.body.name ?? p.name, () => db.update(P).set(set).where(eq(P.id, p.id)).returning());
-    return { persona: publicPersona(row!) };
+    if (req.audit && extra.draftEnabled !== undefined) req.audit.extra = { draftEnabled: row!.draftEnabled, draftsPerDay: row!.draftsPerDay };
+    return { persona: publicPersona(row!, true) };
   });
 
   /** Templates and accounts using it become 未设人设 (templates' legacy text is cleared too, see persona-data-migration.ts). */
@@ -120,23 +189,5 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(204);
   });
 
-  /**
-   * Moves the templates and accounts to `into`, then deletes the source. Allowed: public → public (admin), personal → the same
-   * owner's personal persona or a public one (every template/account using a personal persona belongs to its owner).
-   */
-  app.post('/api/personas/:id/merge', { schema: { params: Id, body: z.object({ into: z.string().uuid() }) } }, async (req) => {
-    const src = await manageablePersona(req.user, req.params.id);
-    const dst = await visiblePersona(req.user, req.body.into);
-    if (req.audit) req.audit.target = src.name;
-    scoped.assertMerge(src, dst);
-    const moved = await db.transaction(async (tx) => {
-      const rows = await tx.update(TPL).set({ personaId: dst.id, persona: null }).where(eq(TPL.personaId, src.id)).returning({ id: TPL.id });
-      const accounts = await tx.update(SA).set({ personaId: dst.id }).where(eq(SA.personaId, src.id)).returning({ id: SA.id });
-      await logAccountPersona(tx, req.user, accounts.map((a) => a.id), src.name, dst.name, 'persona merged');
-      await tx.delete(P).where(eq(P.id, src.id));
-      return { templates: rows.length, accounts: accounts.length };
-    });
-    if (req.audit) req.audit.extra = { into: dst.name, ...moved };
-    return { persona: publicPersona(dst), moved: moved.templates, movedAccounts: moved.accounts };
-  });
+  // No merge for personas (owner decision 2026-11-18): POST /api/personas/:id/merge does not exist (404).
 };

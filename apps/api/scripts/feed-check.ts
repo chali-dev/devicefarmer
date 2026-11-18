@@ -13,7 +13,8 @@
  * - 风控: device halted → the reply stays scheduled without a task (comment.device_halted), the feed says
  *   halted; 恢复 re-queues it; device rate rules (minimum gap, per day) defer to a new round (never dropped);
  *   settings validation + RBAC; test mode on by default; a dry_run reply does not block a real one;
- * - evidence screenshot endpoint (owner 200 PNG, others 404); migration 0035 shape + db:migrate twice; audit.
+ * - evidence screenshot endpoint (owner 200 PNG, others 404); migration 0035 shape + db:migrate twice; audit;
+ * - 人设禁用词: a post comment containing a word banned by the account's persona → 400 persona.banned_word.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/feed-check.ts
  */
@@ -207,6 +208,17 @@ try {
   // direct comment under a post
   r = await http('POST', `/api/social/accounts/${accA.id}/posts/${p0.id}/comments`, A, { text: '   ' });
   check('post comment: empty text → 400', r.status === 400 && r.body.code === 'comment.text_empty', r.text);
+  {
+    // 人设禁用词: a comment under a post on an account whose persona bans a word is refused, nothing stored
+    const pid = (await http('POST', '/api/personas', A, { scope: 'mine', name: `fd persona ${tag}`, style: { bannedWords: ['私信'] } })).body.persona?.id;
+    await http('PUT', `/api/social/accounts/${accA.id}`, A, { personaId: pid });
+    const before = (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.accountId, accA.id))).length;
+    r = await http('POST', `/api/social/accounts/${accA.id}/posts/${p0.id}/comments`, A, { text: '详情请私信' });
+    const after = (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.accountId, accA.id))).length;
+    check('post comment with a word banned by the account\'s persona → 400 persona.banned_word (words), nothing stored',
+      r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '私信' && before === after, `${r.status} ${r.text.slice(0, 200)}`);
+    await http('DELETE', `/api/personas/${pid}`, A);
+  }
   r = await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[2]!.id}/comments`, A, { text: `Post note ${tag}` });
   const pc = r.body.reply;
   const pcRow = await reply(pc.id);

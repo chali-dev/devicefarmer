@@ -27,6 +27,7 @@ import MediaStrip from '../components/content/MediaStrip.vue'
 import PhonePreview from '../components/content/PhonePreview.vue'
 import PlatformTextTabs, { type TextTab } from '../components/content/PlatformTextTabs.vue'
 import TemplateInsert from '../components/content/TemplateInsert.vue'
+import PersonaCard from '../components/comments/PersonaCard.vue'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { platformName, textField, textMax } from '../components/social/platformMeta'
@@ -352,6 +353,15 @@ const previewText = computed(() => {
   const texts = currentTr.value?.texts ?? form.texts
   return texts[textTab.value]?.trim() ? texts[textTab.value]! : texts[primary.value] ?? ''
 })
+/**
+ * Persona cards beside the editor: the target accounts' 账号人设 (+ an AI draft's own persona). Their banned words are
+ * refused by the API on save / publish (persona.banned_word); the cards flag them while typing (source texts + title).
+ */
+const editorPersonas = computed(() => [...new Set([
+  ...targetAccounts.value.filter((a) => form.targets.includes(a.id)).flatMap((a) => (a.personaId ? [a.personaId] : [])),
+  ...(editing.value?.aiGenerated?.personaId ? [editing.value.aiGenerated.personaId] : []),
+])])
+const personaText = computed(() => [form.title, ...Object.values(form.texts), ...(currentTr.value ? [currentTr.value.title, ...Object.values(currentTr.value.texts)] : [])].join('\n'))
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
 /** Saves the editor; resolves to the saved content, or null when validation or a request failed (already shown). */
@@ -601,6 +611,10 @@ async function submitBatchForm() {
     <a-alert v-if="editing?.aiGenerated" type="warning" show-icon class="ai-notice" :message="t('content.aiDraftNotice')">
       <template #description>
         {{ aiInfo(editing) }}<template v-if="editing.aiGenerated.mediaTags.length"> · {{ t('content.aiDraftMediaTags', { tags: editing.aiGenerated.mediaTags.join(', ') }) }}</template>
+        <div v-if="editing.aiGenerated.needsTranslation?.length">
+          <a-tag color="orange">{{ t('content.aiNeedsTranslation') }}</a-tag>
+          <span class="small">{{ t('content.aiNeedsTranslationHint', { langs: editing.aiGenerated.needsTranslation.map(langName).join('、') }) }}</span>
+        </div>
       </template>
     </a-alert>
     <a-row :gutter="24">
@@ -725,6 +739,7 @@ async function submitBatchForm() {
     </template>
     </a-col>
     <a-col :xs="24" :lg="9">
+      <PersonaCard v-for="pid in editorPersonas" :key="pid" :persona-id="pid" kind="post" :text="personaText" />
       <div class="preview-col"><PhonePreview v-model:mode="previewType" :media="form.media" :text="previewText" :handle="firstTarget?.handle ?? null" /></div>
     </a-col>
     </a-row>

@@ -15,6 +15,7 @@ import { activeStorage } from '../settings/storage.js';
 import { platformById } from '../social/platforms.js';
 import { visibleAccount, type Tx } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
+import { accountPersonaIds, assertNoBannedWords } from './persona-style.js';
 import { CollectorDefer, deviceHalt, haltDevice, onDeviceResumed, withDevice } from '../tracked/collector.js';
 
 /**
@@ -239,6 +240,7 @@ export async function createReply(user: AuthUser, comment: Comment, b: ReplyInpu
   const text = b.text.trim();
   if (!text) throw badRequest('回复内容不能为空', 'comment.text_empty');
   if (b.templateId) await visibleTemplate(user, b.templateId);
+  await assertNoBannedWords(await accountPersonaIds([comment.accountId]), [text]);
   let row: CommentTask;
   try {
     row = await db.transaction(async (tx) => {
@@ -271,6 +273,7 @@ export async function editReply(user: AuthUser, r: CommentTask, b: { text?: stri
   const text = b.text !== undefined ? b.text.trim() : r.text;
   if (!text) throw badRequest('回复内容不能为空', 'comment.text_empty');
   if (b.templateId) await visibleTemplate(user, b.templateId);
+  await assertNoBannedWords(await accountPersonaIds([r.accountId]), [text]);
   return db.transaction(async (tx) => {
     const set = { text, textHash: textHash(text), ...(b.scheduledAt !== undefined ? { scheduledAt: b.scheduledAt } : {}), ...(b.templateId !== undefined ? { templateId: b.templateId } : {}) };
     const [done] = await tx.update(R).set(set).where(and(eq(R.id, r.id), eq(R.status, 'draft'))).returning();
@@ -283,6 +286,8 @@ export async function editReply(user: AuthUser, r: CommentTask, b: { text?: stri
 /** draft → scheduled: the send task of round 1 is created at once (runAt = scheduledAt). No approval step. */
 export async function submitReply(user: AuthUser, r: CommentTask, scheduledAt?: Date | null): Promise<CommentTask> {
   if (r.status !== 'draft') throw conflict(`当前状态（${r.status}）不能提交`, 'comment.bad_status', { status: r.status });
+  // The persona may have changed since the draft was written: checked again when it is scheduled.
+  await assertNoBannedWords(await accountPersonaIds([r.accountId]), [r.text]);
   const rules = await getRules();
   const row = await db.transaction(async (tx) => {
     await assertNotDuplicate(tx, user, r, rules);
@@ -627,6 +632,7 @@ registerTaskHandler<ReplyPayload>(REPLY_TYPE, {
 export async function createPostComment(user: AuthUser, acc: SocialAccount, postId: string, b: { text: string; scheduledAt?: Date | null }): Promise<CommentTask> {
   const text = b.text.trim();
   if (!text) throw badRequest('评论内容不能为空', 'comment.text_empty');
+  await assertNoBannedWords([acc.personaId], [text]);
   const [post] = await db.select().from(schema.socialAccountPosts).where(and(eq(schema.socialAccountPosts.id, postId), eq(schema.socialAccountPosts.socialAccountId, acc.id)));
   if (!post) throw notFound('帖子不存在', 'feed.post_not_found');
   const [row] = await db.insert(R).values({
