@@ -369,6 +369,9 @@ const distributing = ref<Content | null>(null)
 const distributeMode = ref<'now' | 'at'>('now')
 function openDistribute(c: Content, mode: 'now' | 'at') { distributing.value = c; distributeMode.value = mode; distributeOpen.value = true }
 
+/** Already published or scheduled: no 发布 button in the row; publishing to more accounts stays under 更多. */
+const PUBLISHED_OR_SCHEDULED: string[] = ['published', 'partially_published', 'scheduled']
+
 async function setArchived(c: Content, archived: boolean) {
   try {
     await api('PUT', `/api/contents/${c.id}`, { stage: archived ? 'archived' : 'ready' })
@@ -523,13 +526,14 @@ function batch(action: BatchAction) {
             <a-space :size="0">
               <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
               <template v-if="record.stage !== 'archived'">
-                <a-button type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publish') }}</a-button>
+                <a-button v-if="!PUBLISHED_OR_SCHEDULED.includes(record.status)" type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publish') }}</a-button>
               </template>
               <a-button v-else type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
                   <a-menu>
+                    <a-menu-item v-if="record.stage !== 'archived' && PUBLISHED_OR_SCHEDULED.includes(record.status)" key="publish" @click="openDistribute(record, 'now')">{{ t('content.publishMore') }}</a-menu-item>
                     <a-menu-item v-if="record.stage !== 'archived'" key="archive" :disabled="hasUnfinished(record)" @click="setArchived(record, true)">{{ t('content.archive') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record)">{{ t('common.delete') }}</a-menu-item>
                   </a-menu>

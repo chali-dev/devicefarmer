@@ -1117,6 +1117,7 @@ const en: Messages = {
     publishNow: 'Publish now',
     publishLater: 'Schedule',
     publish: 'Publish',
+    publishMore: 'Publish to more accounts',
     archive: 'Archive',
     unarchive: 'Unarchive',
     archived: 'Archived',
