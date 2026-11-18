@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { UnrecoverableError } from 'bullmq';
-import { and, asc, desc, eq, gt, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { z } from 'zod';
 import { config } from '../../config.js';
@@ -10,7 +10,7 @@ import type { ContentAiInfo, Persona, SocialAccount } from '../../db/schema.js';
 import { badRequest, HttpError } from '../../lib/errors.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
-import { setContentMedia, setContentTags, setContentTargets } from '../content/content.js';
+import { assertUsableMedia, mediaItem, ownerOf, setContentMedia, setContentTags, setContentTargets, type Tx } from '../content/content.js';
 import { SOURCE_LANG } from '../content/languages.js';
 import { assertNoBannedWords, bannedHits, EMOJI_PROMPT, exampleWhere, PERSONA_LENGTHS, PROMPT_EXAMPLES, styleOf, TONE_PROMPT } from '../comments/persona-style.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
@@ -31,6 +31,11 @@ import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
  * - 立即生成 (`requestAccountDrafts`, owner request 2026-11-18): the same `account-drafts` task for one account NOW
  *   (payload trigger `manual`, key `account-drafts-manual:<accountId>:<uuid>`), whether or not the daily switch is on;
  *   at most once per account per MANUAL_WINDOW_SEC (Redis).
+ * - 「AI生成草稿」 in the UI since 2026-11-18 (owner request: preview, edit, then 存草稿 / 立即发布 / 排程发布):
+ *   `previewAccountDraft` = ONE draft for the account, synchronous, nothing written (PREVIEW_LIMIT per account per
+ *   10 min), origin kept in Redis under a token; `saveAccountDraft` writes the person's edited version as one content
+ *   (+ optional translation in the account's 账号语言); the route then distributes it when asked (a person reviewed it
+ *   and clicked publish). The task-based 立即生成 above stays for older pages / scripts.
  * - AI测试 = preview (`previewDraft`): the same prompt/output/error handling (`generateDrafts`) for ONE draft, run
  *   synchronously in the request, a pure style test: nothing is written and it cannot be saved (owner decision
  *   2026-11-18). At most PREVIEW_LIMIT previews per persona per 10 minutes.
@@ -254,18 +259,26 @@ export async function saveDrafts(i: SaveDraftsInput): Promise<SaveDraftsResult> 
         taskId: i.taskId, generatedAt, mediaTags: d.mediaTags,
         ...(needsTranslation.length ? { needsTranslation } : {}),
       };
-      const [row] = await tx.insert(schema.contents).values({
-        userId: i.ownerId, title: d.title || i.persona.name.slice(0, 200), body: d.text, lang: SOURCE_LANG,
-        stage: 'draft', status: 'draft', platformHints: {}, aiGenerated: ai, createdBy: null,
-      }).returning({ id: schema.contents.id });
-      await setContentTags(tx, row!.id, [DRAFT_TAG]);
-      await setContentTargets(tx, row!.id, targets);
-      await setContentMedia(tx, row!.id, d.media);
-      ids.push(row!.id);
+      ids.push(await insertDraftContent(tx, { ownerId: i.ownerId, title: d.title || i.persona.name.slice(0, 200), body: d.text, ai, targets, media: d.media, createdBy: null }));
     }
     return ids;
   });
   return { contentIds, dropped, targets: targets.length, skippedAccounts: i.accounts.length - targets.length, needsTranslation };
+}
+
+/**
+ * One AI draft as a content row (saveDrafts and the account preview's save): stage draft, Chinese source, tag
+ * ai-draft, `ai_generated`, the given targets and media in order. Returns the content id.
+ */
+async function insertDraftContent(tx: Tx, d: { ownerId: string; title: string; body: string; ai: ContentAiInfo; targets: string[]; media: string[]; createdBy: string | null }): Promise<string> {
+  const [row] = await tx.insert(schema.contents).values({
+    userId: d.ownerId, title: d.title, body: d.body, lang: SOURCE_LANG,
+    stage: 'draft', status: 'draft', platformHints: {}, aiGenerated: d.ai, createdBy: d.createdBy,
+  }).returning({ id: schema.contents.id });
+  await setContentTags(tx, row!.id, [DRAFT_TAG]);
+  await setContentTargets(tx, row!.id, d.targets);
+  await setContentMedia(tx, row!.id, d.media);
+  return row!.id;
 }
 
 // ---------------------------------------------------------------- the model call (daily task and preview)
@@ -507,6 +520,9 @@ const redis = new Redis(config.REDIS_URL, { lazyConnect: true, maxRetriesPerRequ
 /** For the check script (closes the lazy connection). */
 export const closeAiRedis = () => redis.quit().catch(() => undefined);
 
+/** Optional 主题 of 立即生成 / AI测试 / the account preview (empty = none: the model picks topics from the persona). */
+export const TopicInput = z.string().trim().max(200).optional().transform((x) => x || undefined);
+
 const HTTP_STATUS: Record<string, number> = { 'ai.unavailable': 503, 'ai.api_rate_limited': 503, 'ai.timeout': 504 };
 
 /**
@@ -517,12 +533,20 @@ const HTTP_STATUS: Record<string, number> = { 'ai.unavailable': 503, 'ai.api_rat
  * ai.* code (502; 503 unavailable / API rate limit, 504 timeout).
  */
 export async function previewDraft(user: AuthUser, p: Persona, info: Record<string, unknown>, signal?: AbortSignal, topic?: string) {
+  return { preview: (await generatePreview(p, user.id, `ai:preview:count:${p.id}`, info, signal, topic)).preview };
+}
+
+/**
+ * The synchronous one-draft generation shared by AI测试 and the account preview: key check, topic banned words, the
+ * fixed-window rate limit on `rateKey` (PREVIEW_LIMIT per 10 min), generateDrafts with its errors as HTTP errors, and
+ * the composed draft (fixed lines + hashtag line, as saveDrafts would store it). Writes nothing.
+ */
+async function generatePreview(p: Persona, ownerId: string, rateKey: string, info: Record<string, unknown>, signal?: AbortSignal, topic?: string) {
   const creds = await aiCredentials();
   if (!creds.apiKey) throw badRequest('未配置 Anthropic API 密钥（管理员可在设置 → AI 中填写）', 'ai.not_configured');
   if (topic) await assertNoBannedWords([p.id], [topic]);
   info.requestedModel = creds.model;
-  const key = `ai:preview:count:${p.id}`;
-  const res = await redis.multi().incr(key).expire(key, PREVIEW_WINDOW_SEC, 'NX').ttl(key).exec();
+  const res = await redis.multi().incr(rateKey).expire(rateKey, PREVIEW_WINDOW_SEC, 'NX').ttl(rateKey).exec();
   const n = Number(res?.[0]?.[1] ?? 0);
   if (n > PREVIEW_LIMIT) {
     const seconds = Math.max(1, Number(res?.[2]?.[1] ?? PREVIEW_WINDOW_SEC));
@@ -531,7 +555,7 @@ export async function previewDraft(user: AuthUser, p: Persona, info: Record<stri
   const now = new Date();
   let gen: GenerateResult;
   try {
-    gen = await generateDrafts({ persona: p, ownerId: user.id, count: 1, day: localDay(now), topic: topic ?? null, creds: { ...creds, apiKey: creds.apiKey }, timeoutMs: PREVIEW_TIMEOUT_MS, signal, now });
+    gen = await generateDrafts({ persona: p, ownerId, count: 1, day: localDay(now), topic: topic ?? null, creds: { ...creds, apiKey: creds.apiKey }, timeoutMs: PREVIEW_TIMEOUT_MS, signal, now });
   } catch (err) {
     const code = (err as { code?: unknown }).code;
     if (typeof code === 'string' && code.startsWith('ai.')) throw new HttpError(HTTP_STATUS[code] ?? 502, (err as Error).message, code);
@@ -542,6 +566,7 @@ export async function previewDraft(user: AuthUser, p: Persona, info: Record<stri
   const st = styleOf(p);
   Object.assign(info, { model: gen.servedModel, fallback: gen.fallback, banned: d.banned.length });
   return {
+    d, gen, now,
     preview: {
       title: d.title || p.name, text: d.text, body: d.body, hashtags: d.hashtags, mediaTags: d.mediaTags,
       opening: st.post.opening || null, closing: st.post.closing || null, topic: topic ?? null,
@@ -550,12 +575,107 @@ export async function previewDraft(user: AuthUser, p: Persona, info: Record<stri
   };
 }
 
+// ---------------------------------------------------------------- 「AI生成草稿」 = preview → edit → save (→ publish)
+
+/** How long a generated preview's origin (model, topic, original text) is kept for its save. */
+const ACCOUNT_PREVIEW_TTL_SEC = 3600;
+const previewKey = (token: string) => `ai:account-preview:${createHash('sha256').update(token).digest('hex')}`;
+interface StoredPreview {
+  accountId: string; userId: string; personaId: string; model: string; requestedModel: string;
+  title: string; text: string; mediaTags: string[]; topic: string | null; generatedAt: string;
+}
+
+async function accountPersona(acc: SocialAccount): Promise<Persona> {
+  if (!acc.personaId) throw badRequest('账号未绑定人设，不能生成 AI 草稿', 'ai.account_no_persona');
+  if (!isPlatformEnabled(acc.platform)) throw badRequest('该平台未启用', 'platform.disabled', { platform: acc.platform });
+  const [p] = await db.select().from(schema.personas).where(eq(schema.personas.id, acc.personaId));
+  if (!p) throw badRequest('账号未绑定人设，不能生成 AI 草稿', 'ai.account_no_persona');
+  return p;
+}
+
+/**
+ * 「AI生成草稿」 preview on a social account: ONE draft in the account persona's 发文风格 (recent posts = the account
+ * owner's), generated in the request, nothing written. Refused: no persona (ai.account_no_persona), platform disabled,
+ * no key (ai.not_configured), topic with a banned word (persona.banned_word), more than PREVIEW_LIMIT per account per
+ * 10 min (429 ai.rate_limited). Returns the composed draft, suggested ready images (as content media) and a `token`
+ * (kept ACCOUNT_PREVIEW_TTL_SEC) by which the save records the real origin (model, topic, edited). The caller passed
+ * visibleAccount (RBAC).
+ */
+export async function previewAccountDraft(user: AuthUser, acc: SocialAccount, info: Record<string, unknown>, signal?: AbortSignal, topic?: string) {
+  const p = await accountPersona(acc);
+  const { d, gen, now, preview } = await generatePreview(p, acc.userId, `ai:account-preview:count:${acc.id}`, info, signal, topic);
+  const mediaIds = await suggestMedia(acc.userId, d.mediaTags);
+  const media = mediaIds.length ? await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, mediaIds)) : [];
+  const token = randomBytes(24).toString('base64url');
+  const stored: StoredPreview = {
+    accountId: acc.id, userId: user.id, personaId: p.id, model: gen.servedModel, requestedModel: gen.requestedModel,
+    title: preview.title, text: d.text, mediaTags: d.mediaTags, topic: topic ?? null, generatedAt: now.toISOString(),
+  };
+  await redis.set(previewKey(token), JSON.stringify(stored), 'EX', ACCOUNT_PREVIEW_TTL_SEC);
+  return {
+    preview: { ...preview, token, media: mediaIds.flatMap((id) => { const m = media.find((x) => x.id === id); return m ? [mediaItem(m)] : []; }) },
+    account: { id: acc.id, userId: acc.userId, handle: acc.handle, lang: acc.lang, persona: p.name, personaId: p.id },
+  };
+}
+
+export const AccountDraftSaveInput = z.object({
+  title: z.string().trim().min(1).max(200),
+  body: z.string().max(5000),
+  mediaIds: z.array(z.string().uuid()).max(20).default([]),
+  /** From the preview: records the served model, topic and whether the text was edited. Missing/expired = settings model. */
+  token: z.string().max(100).optional(),
+  /** Without a (valid) token: the topic the person asked for. */
+  topic: TopicInput,
+  /** The account's 账号语言 version (written by a person; empty title = the Chinese title). */
+  translation: z.object({ lang: z.string().max(35), title: z.string().trim().max(200).optional(), body: z.string().max(5000).default('') }).optional(),
+});
+export type AccountDraftSaveInput = z.infer<typeof AccountDraftSaveInput>;
+
+/**
+ * Saves a reviewed preview as ONE content of the account owner (like saveDrafts: stage draft, zh-CN, tag ai-draft,
+ * target = exactly this account, `ai_generated` via account + accountId + topic + `edited`), with its media (the
+ * content's normal rules: owner's private or public media) and an optional translation in the account's 账号语言
+ * (lang must be that language, not Chinese: 400 ai.translation_lang_mismatch). Banned words of the account persona in
+ * any text → 400 persona.banned_word. The token's origin is used only when it belongs to this account and caller.
+ */
+export async function saveAccountDraft(user: AuthUser, acc: SocialAccount, b: AccountDraftSaveInput): Promise<{ contentId: string; edited: boolean; translation: string | null }> {
+  const p = await accountPersona(acc);
+  const owner = await ownerOf(acc.userId);
+  const media = await assertUsableMedia(user, owner, b.mediaIds);
+  const tr = b.translation && (b.translation.title || b.translation.body.trim()) ? b.translation : null;
+  if (tr && (tr.lang !== acc.lang || tr.lang === SOURCE_LANG)) {
+    throw badRequest('译文语言必须是账号语言', 'ai.translation_lang_mismatch', { lang: tr.lang, accountLang: acc.lang ?? '' });
+  }
+  const trTitle = tr ? tr.title || b.title : null;
+  await assertNoBannedWords([p.id], [b.title, b.body, ...(tr ? [trTitle, tr.body] : [])]);
+  let stored: StoredPreview | null = null;
+  if (b.token) {
+    const raw = await redis.get(previewKey(b.token));
+    const s = raw ? JSON.parse(raw) as StoredPreview : null;
+    if (s && s.accountId === acc.id && s.userId === user.id) stored = s;
+  }
+  const creds = stored ? null : await getAiSettings();
+  const edited = stored ? stored.title !== b.title || stored.text !== b.body : true;
+  const needsTranslation = acc.lang && acc.lang !== SOURCE_LANG && !tr ? [acc.lang] : [];
+  const ai: ContentAiInfo = {
+    via: 'account', accountId: acc.id, ...((stored ? stored.topic : b.topic) ? { topic: (stored ? stored.topic : b.topic)! } : {}),
+    model: stored?.model ?? creds!.model, requestedModel: stored?.requestedModel ?? creds!.model, personaId: p.id, personaName: p.name,
+    taskId: null, generatedAt: stored?.generatedAt ?? new Date().toISOString(), mediaTags: stored?.mediaTags ?? [], edited,
+    ...(needsTranslation.length ? { needsTranslation } : {}),
+  };
+  const contentId = await db.transaction(async (tx) => {
+    const id = await insertDraftContent(tx, { ownerId: acc.userId, title: b.title, body: b.body, ai, targets: [acc.id], media: media.map((m) => m.id), createdBy: user.id });
+    if (tr) await tx.insert(schema.contentTranslations).values({ contentId: id, lang: tr.lang, title: trTitle!, body: tr.body, platformHints: {} });
+    return id;
+  });
+  if (b.token) await redis.del(previewKey(b.token));
+  return { contentId, edited, translation: tr?.lang ?? null };
+}
+
 // ---------------------------------------------------------------- 立即生成 for one social account
 
 /** 立即生成: at most once per account per this window (fixed, from the request). */
 export const MANUAL_WINDOW_SEC = 120;
-/** Optional 主题 of 立即生成 / AI测试 (empty = none: the model picks topics from the persona). */
-export const TopicInput = z.string().trim().max(200).optional().transform((x) => x || undefined);
 export const ManualDraftsInput = z.object({ count: z.number().int().min(1).max(10).optional(), topic: TopicInput }).nullish();
 export const PreviewInput = z.object({ topic: TopicInput }).nullish();
 

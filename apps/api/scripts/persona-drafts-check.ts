@@ -26,6 +26,15 @@
  *   key account-drafts-manual:<id>:<uuid>, created by the caller) also when the daily switch is off, a second request
  *   within MANUAL_WINDOW_SEC → 429 ai.rate_limited {seconds}; the run reaches the REAL API with the invalid key → failed
  *   ai.key_invalid after 1 attempt; GET …/ai-drafts shows it as the last run (trigger manual); audit count + topic flag.
+ * - 「AI生成草稿」 preview → edit → save (→ publish): POST …/ai-drafts/preview {topic?} (RBAC 404, ai.not_configured,
+ *   ai.account_no_persona, platform.disabled, topic ≤ 200 + banned word, REAL invalid-key call → 502 ai.key_invalid and
+ *   nothing written, PREVIEW_LIMIT per account → 429); POST …/ai-drafts/save (refusals: RBAC, persona, platform, banned
+ *   word in body / translation, another user's media, translation not in the account language; content of the account
+ *   owner, draft, zh-CN, tag ai-draft, target = the account, ai_generated via/accountId/topic/edited/model; a preview
+ *   token (written into Redis like the preview does) gives served model/topic/edited false and is used up, another
+ *   caller's is ignored; en account: translation row / needsTranslation; publish now on a PLACEHOLDER phone (adb port
+ *   5588, inert) → publish_tasks.lang en + caption from the translation → device tried → operator publish.device_offline;
+ *   no media → publish.error, draft kept; scheduled; admin on B's account); audit without texts.
  * - Daily schedule per social account (`account-drafts`): not before the hour, nothing without a
  *   key; one task per switched-on account with a persona per local day (count = its per day, owner = account owner),
  *   idempotent; skips disabled owners (ai.owner_disabled) and disabled platforms; switched-off accounts get none; the
@@ -38,7 +47,7 @@
  * Usage (from apps/api, API running with default ENABLED_PLATFORMS=instagram; never against an API you don't own):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/persona-drafts-check.ts
  */
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { and, eq, gte, inArray } from 'drizzle-orm';
 import Anthropic from '@anthropic-ai/sdk';
 import { Redis } from 'ioredis';
@@ -50,6 +59,7 @@ import {
 } from '../src/modules/ai/drafts.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const results: [string, boolean][] = [];
@@ -84,6 +94,7 @@ const userIds: string[] = [];
 const publicPersonaIds: string[] = [];
 const sharedTemplateIds: string[] = [];
 const mediaIds: string[] = [];
+const fakeIds: string[] = [];
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const settingsBefore = (await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value ?? null;
 const INVALID_KEY = `sk-ant-api03-invalid-${'x'.repeat(40)}-${tag}`;
@@ -223,6 +234,8 @@ try {
   check('preview without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
   r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/generate`, A.token, {});
   check('AI生成草稿 without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
+  r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/preview`, A.token, {});
+  check('account preview without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
   let sch = await scheduleAccountDrafts(localAt(23));
   check('schedule without a key: nothing, reason ai.not_configured', sch.reason === 'ai.not_configured' && sch.created === 0, JSON.stringify(sch));
 
@@ -398,6 +411,145 @@ try {
     && bRow?.aiGenerated?.via === 'account' && bRow?.aiGenerated?.accountId === igB.id && bRow?.aiGenerated?.topic === '咖啡豆保存' && savedB.needsTranslation.length === 0);
   check('saveDrafts without a topic records none', !('topic' in ((await db.select().from(schema.contents).where(eq(schema.contents.id, saved.contentIds[0]!)))[0]!.aiGenerated ?? {})));
 
+  // ================================================================ 「AI生成草稿」 = account preview → edit → save (→ publish)
+  {
+    const prev = (id: string, token: string, body: unknown = {}) => http('POST', `/api/social/accounts/${id}/ai-drafts/preview`, token, body);
+    const save = (id: string, token: string, body: Record<string, unknown>) => http('POST', `/api/social/accounts/${id}/ai-drafts/save`, token, body);
+    const asB = await prev(igA.id, B.token);
+    const noP = await prev(igA2.id, A.token);
+    const yt = await prev(ytA!.id, A.token);
+    const tLong = await prev(igA.id, A.token, { topic: 'x'.repeat(201) });
+    const tBan = await prev(igA.id, A.token, { topic: '最便宜的咖啡' });
+    check('account preview: other user 404 social.not_found; no persona ai.account_no_persona; youtube platform.disabled; topic > 200 → 400; banned topic → persona.banned_word',
+      asB.status === 404 && asB.body.code === 'social.not_found' && noP.status === 400 && noP.body.code === 'ai.account_no_persona' && yt.status === 400 && yt.body.code === 'platform.disabled'
+        && tLong.status === 400 && tBan.status === 400 && tBan.body.code === 'persona.banned_word', `${asB.status} ${noP.body?.code} ${yt.body?.code} ${tLong.status} ${tBan.body?.code}`);
+    const n0 = await contentCount();
+    const pv = await prev(igA.id, A.token, { topic: '咖啡豆保存' });
+    check('account preview: REAL Anthropic call with the invalid key → 502 ai.key_invalid, synchronous, key not echoed', pv.status === 502 && pv.body.code === 'ai.key_invalid' && !pv.text.includes(INVALID_KEY),
+      `${pv.status} ${pv.body?.code}`);
+    const sts: number[] = [];
+    for (let k = 2; k <= PREVIEW_LIMIT; k++) sts.push((await prev(igA.id, A.token)).status);
+    const lim = await prev(igA.id, A.token);
+    const other = await prev(igAen.id, A.token);
+    const adm = await prev(igB.id, T);
+    check(`account preview rate limit: 2..${PREVIEW_LIMIT} reach the API (502), #${PREVIEW_LIMIT + 1} → 429 ai.rate_limited {seconds, limit}; per account (another → 502); admin on B's account → 502`,
+      sts.every((s) => s === 502) && lim.status === 429 && lim.body.code === 'ai.rate_limited' && lim.body.params?.limit === PREVIEW_LIMIT && Number(lim.body.params?.seconds) > 500
+        && other.status === 502 && adm.status === 502, `${sts.join()} ${lim.status} ${other.status} ${adm.status}`);
+    check('account previews wrote nothing (no content, no stored preview)', await contentCount() === n0 && (await redis.keys('ai:account-preview:*')).every((k) => k.includes(':count:')));
+
+    // save (no model needed: the person's edited text; a stored preview origin is written into Redis like the preview does)
+    const [privB] = await db.insert(schema.mediaAssets).values({
+      ownerType: 'user', ownerId: B.id, name: `b-private ${tag}`, fileName: 'b.jpg', storage: 'local', fileKey: `users/${B.id}/images/${randomUUID()}.jpg`,
+      fileType: 'image', mimeType: 'image/jpeg', fileSize: 1000, width: 100, height: 100, checksum: `b${tag}`, status: 'ready',
+    }).returning();
+    mediaIds.push(privB!.id);
+    const sB = await save(igA.id, B.token, { title: 't', body: 'b' });
+    const sNoP = await save(igA2.id, A.token, { title: 't', body: 'b' });
+    const sYt = await save(ytA!.id, A.token, { title: 't', body: 'b' });
+    const sBan = await save(igA.id, A.token, { title: '标题', body: '这是最便宜的' });
+    const sMedia = await save(igA.id, A.token, { title: '标题', body: '正文', mediaIds: [privB!.id] });
+    const sLang = await save(igA.id, A.token, { title: '标题', body: '正文', translation: { lang: 'en', body: 'English' } });
+    const sTrBan = await save(igAen.id, A.token, { title: '标题', body: '正文', translation: { lang: 'en', body: 'The cheapest ForbiddenWord' } });
+    const sEmpty = await save(igA.id, A.token, { title: ' ', body: '正文' });
+    check('save refusals: other user 404; no persona ai.account_no_persona; youtube platform.disabled; banned word in body / translation → persona.banned_word; another user\'s private media 404 media.not_found; translation not in the account language → ai.translation_lang_mismatch; empty title 400',
+      sB.status === 404 && sNoP.body?.code === 'ai.account_no_persona' && sYt.body?.code === 'platform.disabled' && sBan.status === 400 && sBan.body.code === 'persona.banned_word'
+        && sTrBan.body?.code === 'persona.banned_word' && sMedia.status === 404 && sMedia.body.code === 'media.not_found' && sLang.status === 400 && sLang.body.code === 'ai.translation_lang_mismatch' && sEmpty.status === 400,
+      [sB, sNoP, sYt, sBan, sTrBan, sMedia, sLang, sEmpty].map((x) => `${x.status}/${x.body?.code}`).join(' '));
+    check('refused saves wrote nothing', await contentCount() === n0);
+
+    const draftBody = '今晚吃什么？\n改过的正文\n你们最爱哪道？\n\n#pasta';
+    const s1 = await save(igA.id, A.token, { title: '我改的标题', body: draftBody, mediaIds: [img!.id], topic: '  咖啡豆保存 ', token: randomBytes(24).toString('base64url') });
+    const c1 = s1.body?.content;
+    const [row1] = c1 ? await db.select().from(schema.contents).where(eq(schema.contents.id, c1.id)) : [];
+    const tg1 = c1 ? await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.contentId, c1.id)) : [];
+    const ai1 = row1?.aiGenerated as any;
+    check('存草稿 (unknown token): 201 content of the account owner, stage draft, zh-CN, tag ai-draft, target = exactly the account, media kept, created by the caller, no publish',
+      s1.status === 201 && s1.body.publish === null && row1?.userId === A.id && row1.stage === 'draft' && row1.status === 'draft' && row1.lang === 'zh-CN' && row1.body === draftBody
+        && row1.title === '我改的标题' && row1.createdBy === A.id && c1.tags.includes(DRAFT_TAG) && c1.media.map((m: any) => m.id).join() === img!.id && tg1.length === 1 && tg1[0]!.accountId === igA.id,
+      `${s1.status} ${s1.text.slice(0, 300)}`);
+    check('ai_generated: via account, accountId, topic (trimmed), edited true, model = the settings model, persona, no task, no needsTranslation',
+      ai1?.via === 'account' && ai1.accountId === igA.id && ai1.topic === '咖啡豆保存' && ai1.edited === true && ai1.model === 'claude-opus-5-5' && ai1.requestedModel === 'claude-opus-5-5'
+        && ai1.personaId === pA.id && ai1.taskId === null && !('needsTranslation' in ai1), JSON.stringify(ai1));
+    check('no publish task for 存草稿', (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c1.id))).length === 0);
+
+    // a preview origin as stored by the preview (Redis key = sha256 of the token): used only for this account + caller
+    const putPreview = async (accountId: string, userId: string) => {
+      const token = randomBytes(24).toString('base64url');
+      const value = { accountId, userId, personaId: pA.id, model: 'served-model-x', requestedModel: 'claude-opus-5-5', title: '原标题', text: '原正文', mediaTags: ['beach'], topic: '原主题', generatedAt: '2026-11-18T01:02:03.000Z' };
+      await redis.set(`ai:account-preview:${createHash('sha256').update(token).digest('hex')}`, JSON.stringify(value), 'EX', 300);
+      return token;
+    };
+    const tok = await putPreview(igA.id, A.id);
+    const s2 = await save(igA.id, A.token, { title: '原标题', body: '原正文', token: tok, topic: '伪造主题' });
+    const ai2 = (await db.select().from(schema.contents).where(eq(schema.contents.id, s2.body.content.id)))[0]?.aiGenerated as any;
+    const left = await redis.exists(`ai:account-preview:${createHash('sha256').update(tok).digest('hex')}`);
+    check('save with the preview\'s token, unchanged text: edited false, served model / topic / mediaTags / time from the preview (the body\'s topic ignored), token used up',
+      s2.status === 201 && ai2?.edited === false && ai2.model === 'served-model-x' && ai2.topic === '原主题' && ai2.mediaTags.join() === 'beach' && ai2.generatedAt === '2026-11-18T01:02:03.000Z' && left === 0,
+      `${s2.status} ${JSON.stringify(ai2)}`);
+    const tokB = await putPreview(igA.id, B.id);
+    const s3 = await save(igA.id, A.token, { title: '原标题', body: '原正文', token: tokB });
+    const ai3 = (await db.select().from(schema.contents).where(eq(schema.contents.id, s3.body.content.id)))[0]?.aiGenerated as any;
+    check('a token of another caller is ignored (settings model, edited true)', s3.status === 201 && ai3?.model === 'claude-opus-5-5' && ai3.edited === true && !('topic' in ai3), JSON.stringify(ai3));
+
+    // the account language (en): the translation block
+    const s4 = await save(igAen.id, A.token, { title: '中文标题', body: '中文正文' });
+    const ai4 = (await db.select().from(schema.contents).where(eq(schema.contents.id, s4.body.content.id)))[0]?.aiGenerated as any;
+    check('account in en without a translation: saved, needsTranslation [en], no translation row',
+      s4.status === 201 && ai4?.needsTranslation?.join() === 'en' && (await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, s4.body.content.id))).length === 0);
+
+    // publish through distribute(): a PLACEHOLDER phone (inert row, adb port 5588, pinned online by a trigger like
+    // device-publish-check) → the device method is tried, adb doesn't see the phone → operator.
+    const PINNED = 'pdc-ai-pinned-online';
+    await sqlClient.unsafe(`create or replace function pdc_ai_pin_online() returns trigger language plpgsql as $$
+      begin if new.image = '${PINNED}' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
+    await sqlClient.unsafe('drop trigger if exists pdc_ai_pin_online on instances');
+    await sqlClient.unsafe('create trigger pdc_ai_pin_online before update on instances for each row execute function pdc_ai_pin_online()');
+    const [fake] = await db.insert(schema.instances).values({ name: `pdcfake-${tag}`, status: 'running', adbState: 'device', image: PINNED, adbPort: 5588, spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+    fakeIds.push(fake!.id);
+    await http('PUT', `/api/instances/${fake!.id}/grants`, T, { userIds: [A.id] });
+    await linkAccount(igAen.id, fake!.id);
+    const s5 = await save(igAen.id, A.token, {
+      title: '中文标题', body: '中文正文 #coffee', mediaIds: [img!.id], translation: { lang: 'en', title: '', body: 'English caption #coffee' }, publish: { scheduledAt: null },
+    });
+    const c5 = s5.body?.content;
+    const trs5 = c5 ? await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, c5.id)) : [];
+    const ai5 = c5 ? (await db.select().from(schema.contents).where(eq(schema.contents.id, c5.id)))[0]?.aiGenerated as any : null;
+    check('立即发布 with an en translation: 201, translation row lang en (empty title = the Chinese title), no needsTranslation, one publish task',
+      s5.status === 201 && trs5.length === 1 && trs5[0]!.lang === 'en' && trs5[0]!.title === '中文标题' && trs5[0]!.body === 'English caption #coffee' && !('needsTranslation' in (ai5 ?? {}))
+        && s5.body.publish?.error === null && s5.body.publish?.tasks?.length === 1, `${s5.status} ${s5.text.slice(0, 400)}`);
+    const pid = s5.body.publish?.tasks?.[0]?.id as string;
+    const [pt5] = pid ? await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.id, pid)) : [];
+    check('the publish task uses the account language: lang en, caption from the translation, feed, account igAen, owner A',
+      pt5?.lang === 'en' && (pt5.caption ?? '').includes('English caption') && pt5.postType === 'feed' && pt5.accountId === igAen.id && pt5.userId === A.id, JSON.stringify(pt5).slice(0, 300));
+    let d5: any = null;
+    const end = Date.now() + 60_000;
+    while (Date.now() < end) {
+      d5 = (await http('GET', `/api/publish/tasks/${pid}`, A.token)).body;
+      if (['awaiting_operator', 'failed'].includes(d5?.task?.status) && d5.runs.every((x: any) => ['success', 'failed', 'cancelled'].includes(x.status))) break;
+      await sleep(1000);
+    }
+    const res5 = d5?.runs?.[d5.runs.length - 1]?.result;
+    check('the run: device method tried on the placeholder phone, adb doesn\'t see it → operator (publish.device_offline); the content is no longer a draft',
+      d5?.task?.status === 'awaiting_operator' && res5?.reasons?.device === 'publish.device_offline' && (await db.select().from(schema.contents).where(eq(schema.contents.id, c5.id)))[0]?.stage === 'ready',
+      `${d5?.task?.status} ${JSON.stringify(res5)}`);
+
+    const s6 = await save(igA.id, A.token, { title: '没有素材', body: '正文', publish: { scheduledAt: null } });
+    const c6 = s6.body?.content;
+    check('立即发布 refused by distribute (Instagram feed without media): 201, the draft is kept, publish.error with its code, no publish task',
+      s6.status === 201 && typeof s6.body.publish?.error?.code === 'string' && s6.body.publish.error.code.startsWith('publish.') && s6.body.publish.tasks.length === 0
+        && (await db.select().from(schema.contents).where(eq(schema.contents.id, c6.id)))[0]?.stage === 'draft'
+        && (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c6.id))).length === 0, `${s6.status} ${JSON.stringify(s6.body?.publish)}`);
+    const at = new Date(Date.now() + 86_400_000).toISOString();
+    const s7 = await save(igA.id, A.token, { title: '排程', body: '正文', mediaIds: [img!.id], publish: { scheduledAt: at } });
+    const [pt7] = s7.body?.publish?.tasks?.[0] ? await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.id, s7.body.publish.tasks[0].id)) : [];
+    check('排程发布: a publish task scheduled at the chosen time (account without a language: the Chinese source, lang zh-CN)',
+      s7.status === 201 && pt7?.status === 'scheduled' && Math.abs(pt7.scheduledAt.getTime() - Date.parse(at)) < 1000 && pt7.lang === 'zh-CN', `${s7.status} ${pt7?.status} ${pt7?.scheduledAt?.toISOString()}`);
+    if (pt7) await http('POST', `/api/publish/tasks/${pt7.id}/cancel`, A.token);
+    const sAdm = await save(igB.id, T, { title: '管理员替 B 存', body: '正文' });
+    const [rowAdm] = sAdm.body?.content ? await db.select().from(schema.contents).where(eq(schema.contents.id, sAdm.body.content.id)) : [];
+    check('admin saves on B\'s account: content owned by B, created by the admin', sAdm.status === 201 && rowAdm?.userId === B.id && rowAdm.createdBy !== B.id, `${sAdm.status}`);
+  }
+
   // ================================================================ audit
   await sleep(600);
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
@@ -414,6 +566,21 @@ try {
     gens.some((a) => a.ok && (a.detail as any)?.count === 2 && (a.detail as any)?.topic === true && (a.target ?? '').includes(`pd_ig_en_${tag}`))
       && gens.some((a) => a.ok && (a.detail as any)?.count === 1 && (a.detail as any)?.topic === false) && gens.some((a) => !a.ok)
       && !JSON.stringify(gens).includes('咖啡豆') && !JSON.stringify(gens).includes('ForbiddenWord'), JSON.stringify(gens.map((a) => [a.target, a.ok, a.detail])).slice(0, 400));
+  {
+    const ap = audits.filter((a) => a.action === 'social.ai_drafts_preview');
+    const as = audits.filter((a) => a.action === 'social.ai_drafts_save');
+    const txt = JSON.stringify([ap, as]);
+    check('audit social.ai_drafts_preview: account name, topic flag, requested model, ok false + error code (key_invalid / rate_limited / not_configured), never texts',
+      ap.some((a) => (a.detail as any)?.topic === true && (a.detail as any)?.errorCode === 'ai.key_invalid' && (a.detail as any)?.requestedModel === 'claude-opus-5-5' && (a.target ?? '').includes(`pd_ig_a_${tag}`))
+        && ap.some((a) => (a.detail as any)?.errorCode === 'ai.rate_limited') && ap.some((a) => (a.detail as any)?.errorCode === 'ai.not_configured') && !txt.includes('咖啡豆') && !txt.includes('最便宜的咖啡'),
+      JSON.stringify(ap.map((a) => a.detail)).slice(0, 300));
+    check('audit social.ai_drafts_save: mode draft / now / scheduled, media count, content id, edited, translation, publish tasks / error code; never texts',
+      as.some((a) => a.ok && (a.detail as any)?.mode === 'draft' && (a.detail as any)?.media === 1 && (a.detail as any)?.edited === true && typeof (a.detail as any)?.contentId === 'string')
+        && as.some((a) => a.ok && (a.detail as any)?.mode === 'now' && (a.detail as any)?.translation === 'en' && (a.detail as any)?.publishTasks?.length === 1 && (a.detail as any)?.publishError === null)
+        && as.some((a) => a.ok && (a.detail as any)?.mode === 'now' && String((a.detail as any)?.publishError).startsWith('publish.'))
+        && as.some((a) => a.ok && (a.detail as any)?.mode === 'scheduled') && as.some((a) => !a.ok)
+        && !txt.includes('改过的正文') && !txt.includes('English caption') && !txt.includes('我改的标题'), JSON.stringify(as.map((a) => [a.ok, a.detail])).slice(0, 500));
+  }
   check('audit: no persona.draft_preview_save any more', !audits.some((a) => a.action === 'persona.draft_preview_save'));
   check('audit social.ai_drafts: enabled/perDay with the account name', accA.some((a) => (a.detail as any)?.enabled === true && (a.detail as any)?.perDay === 2 && (a.target ?? '').includes(`pd_ig_a_${tag}`)),
     JSON.stringify(accA.map((a) => [a.target, a.detail])).slice(0, 300));
@@ -439,7 +606,10 @@ try {
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T).catch(() => undefined);
   if (publicPersonaIds.length) await db.delete(schema.personas).where(inArray(schema.personas.id, publicPersonaIds));
   if (sharedTemplateIds.length) await db.delete(schema.commentTemplates).where(inArray(schema.commentTemplates.id, sharedTemplateIds));
-  if (mediaIds.length) await db.delete(schema.mediaAssets).where(inArray(schema.mediaAssets.id, mediaIds));
+  if (mediaIds.length) await db.delete(schema.mediaAssets).where(inArray(schema.mediaAssets.id, mediaIds)).catch((e) => console.log(`cleanup media: ${e}`));
+  if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds)).catch((e) => console.log(`cleanup devices: ${e}`));
+  await sqlClient.unsafe('drop trigger if exists pdc_ai_pin_online on instances').catch(() => undefined);
+  await sqlClient.unsafe('drop function if exists pdc_ai_pin_online()').catch(() => undefined);
   if (settingsBefore) await db.update(schema.settings).set({ value: settingsBefore }).where(eq(schema.settings.key, 'ai'));
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'ai'));
   redis.disconnect();

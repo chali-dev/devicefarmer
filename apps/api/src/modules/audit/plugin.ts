@@ -367,6 +367,19 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'social.ai_drafts_generate', target: ({ params }) => socialAccountName(params.id),
     detail: ({ body }) => ({ count: (body?.count as number | undefined) ?? 1, topic: !!(body?.topic as string | undefined)?.trim() }),
   },
+  // 「AI生成草稿」 preview (never texts: whether a topic was given; the route adds model / ok / error code) and its save
+  // (media count, translation given, 存草稿 / 立即 / 排程; the route adds the content id, edited, publish tasks / error code).
+  'POST /api/social/accounts/:id/ai-drafts/preview': {
+    action: 'social.ai_drafts_preview', target: ({ params }) => socialAccountName(params.id),
+    detail: ({ body }) => ({ topic: !!(body?.topic as string | undefined)?.trim() }),
+  },
+  'POST /api/social/accounts/:id/ai-drafts/save': {
+    action: 'social.ai_drafts_save', target: ({ params }) => socialAccountName(params.id),
+    detail: ({ body }) => {
+      const pub = body.publish as { scheduledAt?: string | null } | undefined;
+      return { media: ((body.mediaIds as string[] | undefined) ?? []).length, mode: !pub ? 'draft' : pub.scheduledAt ? 'scheduled' : 'now', ...(pub?.scheduledAt ? { scheduledAt: pub.scheduledAt } : {}) };
+    },
+  },
   // target = the source persona's name, targetId = its id; the route adds sourceId, the new id/name, ownerId and example counts.
   'POST /api/personas/:id/copy': { action: 'persona.copy', detail: ({ body }) => ({ ownerId: body.ownerId }) },
   // 内容分类: names only (no descriptions); the merge route adds the target name.
