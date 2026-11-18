@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { commentActionText, logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
-import type { CommentItem, CommentLog, CommentReplyItem, CommentTemplate } from '../../api/types'
+import type { CommentItem, CommentLog, CommentReplyItem } from '../../api/types'
 import PlatformTag from '../social/PlatformTag.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
@@ -13,12 +13,12 @@ import PersonaCard from './PersonaCard.vue'
 import ReplyScheduleModal from '../feed/ReplyScheduleModal.vue'
 
 /**
- * One comment: its thread, the reply composer (always written by a person, optionally from a template or one of the
- * account persona's 范例; the persona card shows 定位/语气/禁用词 and flags banned words and an off-range length),
+ * One comment: its thread, the reply composer (always written by a person, optionally started from one of the account
+ * persona's 评论范例; the persona card shows 定位, the 评论风格 and 禁用词 and flags banned words and an off-range length),
  * the current reply's workflow actions and the history + log. Draft first (owner decision 2026-11-18): the composer only
  * saves a draft; 排程 (preview: account, phone, comment, text + time) queues it, 删除 drops the draft. No approval step.
  */
-const props = defineProps<{ open: boolean; commentId: string | null; templates: CommentTemplate[] }>()
+const props = defineProps<{ open: boolean; commentId: string | null }>()
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>()
 const { t } = useI18n()
 
@@ -32,11 +32,6 @@ const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) 
 const DONE = ['failed', 'rejected', 'cancelled']
 
 const form = reactive({ text: '', templateId: undefined as string | undefined })
-/** Template persona filter; defaults to the comment account's persona (账号人设) when templates use it. */
-const persona = ref<string | undefined>()
-const personas = computed(() => [...new Map(props.templates.flatMap((x) => (x.persona ? [[x.persona.id, x.persona] as const] : []))).values()]
-  .sort((a, b) => a.name.localeCompare(b.name)))
-const shownTemplates = computed(() => props.templates.filter((x) => !persona.value || x.personaId === persona.value || x.id === form.templateId))
 const outcome = reactive({ result: 'sent' as 'sent' | 'failed', reason: '', externalReplyId: '' })
 
 async function load() {
@@ -49,8 +44,6 @@ async function load() {
     const a = active.value
     form.text = a?.status === 'draft' ? a.text : ''
     form.templateId = a?.templateId ?? undefined
-    const pid = r.comment.account?.personaId
-    persona.value = pid && personas.value.some((p) => p.id === pid) ? pid : undefined
     Object.assign(outcome, { result: 'sent', reason: '', externalReplyId: '' })
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
@@ -62,9 +55,10 @@ const history = computed(() => replies.value.filter((r) => r.id !== active.value
 const editing = computed(() => !active.value || active.value.status === 'draft')
 const errText = (code: string | null, raw: string | null) => (code ? codeText(code, undefined, raw ?? code) : raw ?? '')
 
-function pickTemplate(id: string | undefined) {
-  const tpl = props.templates.find((x) => x.id === id)
-  if (tpl) form.text = tpl.text.replace(/\{name\}/g, comment.value?.authorName ?? '')
+/** A 评论范例 inserted from the persona card ({name} = the comment's author); remembered as the reply's template. */
+function insertExample(text: string, id: string) {
+  form.text = text.replace(/\{name\}/g, comment.value?.authorName ?? '')
+  form.templateId = id
 }
 
 async function act(fn: () => Promise<unknown>, ok: string) {
@@ -143,17 +137,8 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
         <!-- composer / draft -->
         <template v-if="editing">
           <PersonaCard :persona-id="comment.account?.personaId" kind="comment" :text="form.text" insertable
-            @insert="(x: string) => (form.text = x.replace(/\{name\}/g, comment?.authorName ?? ''))" />
+            @insert="insertExample" />
           <a-form layout="vertical">
-            <a-form-item :label="t('comments.template')">
-              <div class="tpl-row">
-                <a-select v-if="personas.length" v-model:value="persona" allow-clear :placeholder="t('scripts.persona')" class="tpl-persona"
-                  :options="personas.map((p) => ({ value: p.id, label: p.name }))" />
-                <a-select v-model:value="form.templateId" allow-clear :placeholder="t('comments.noTemplate')" class="tpl-pick" @change="(v: any) => pickTemplate(v as string | undefined)">
-                  <a-select-option v-for="x in shownTemplates" :key="x.id" :value="x.id">{{ x.name }}<span v-if="x.persona" class="muted small"> · {{ x.persona.name }}</span><span v-if="x.shared" class="muted small"> · {{ t('scripts.public') }}</span></a-select-option>
-                </a-select>
-              </div>
-            </a-form-item>
             <a-form-item :label="t('comments.replyText')" required>
               <a-textarea v-model:value="form.text" :auto-size="{ minRows: 3, maxRows: 10 }" :maxlength="5000" show-count />
             </a-form-item>
@@ -251,9 +236,6 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 .err { color: var(--cp-error); font-size: 12px; }
 .box { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius); background: var(--cp-fill-alter); padding: 12px; margin-top: 12px; }
 .gap { margin-bottom: 12px; }
-.tpl-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.tpl-persona { width: 160px; }
-.tpl-pick { flex: 1; min-width: 200px; }
 .hist { border-bottom: 1px solid var(--cp-border-secondary); padding: 6px 0; }
 .hint { margin-top: 6px; }
 </style>

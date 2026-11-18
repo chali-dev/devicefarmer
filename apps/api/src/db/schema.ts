@@ -1012,10 +1012,10 @@ export const personas = pgTable('personas', {
   draftEnabled: boolean('draft_enabled').notNull().default(false),
   draftsPerDay: integer('drafts_per_day').notNull().default(4),
   /**
-   * 风格 (shared by posts and replies, `PersonaStyle`), stored in the column `brief` (the former 内容设定; its old shape was
-   * wiped with every persona by migration 0037, owner decision 2026-11-18). Defaults are applied on read (`styleOf`).
+   * 风格 (`PersonaStyle`: shared topics/banned words + 发文风格 `post` + 评论风格 `comment`), stored in the column `brief`
+   * (the former 内容设定). The flat pre-split shape is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
    */
-  style: jsonb('brief').$type<PersonaStyle>().notNull().default({}),
+  style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
   /** Public personas: the (enabled) user who owns the generated drafts. Personal personas: unused (their owner). */
   draftOwnerId: uuid('draft_owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -1032,23 +1032,38 @@ export type PersonaTone = (typeof PERSONA_TONES)[number];
 export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const;
 export type PersonaLevel = (typeof PERSONA_LEVELS)[number];
 /**
- * 人设风格 (personas.brief), one set for posts and replies. tone = preset (亲切日常/专业干货/幽默俏皮/高冷简洁/温暖治愈) with
- * an editable note; emoji/length low|medium|high (length maps to a character range per kind, `PERSONA_LENGTHS`).
+ * 人设风格 (personas.brief; split into 发文风格 / 评论风格, owner decision 2026-11-18). Shared: topics and banned words
+ * (banned words are checked on posts AND comments). `post`: tone preset (亲切日常/专业干货/幽默俏皮/高冷简洁/温暖治愈) with
+ * an editable note, emoji/length low|medium|high (length → post character range, `PERSONA_LENGTHS.post`), hashtags, fixed
+ * opening/closing, audience, notes. `comment`: tone + note, emoji, length (→ `PERSONA_LENGTHS.comment`).
  * No language: the language belongs to the social account (账号语言).
  */
-export interface PersonaStyle {
+export interface PersonaVoice {
   tone?: PersonaTone;
   toneNote?: string;
   emoji?: PersonaLevel;
   length?: PersonaLevel;
-  topics?: string[];
-  bannedWords?: string[];
+}
+export interface PersonaPostStyle extends PersonaVoice {
   hashtags?: string[];
   audience?: string;
   opening?: string;
   closing?: string;
   notes?: string;
 }
+export type PersonaCommentStyle = PersonaVoice;
+export interface PersonaStyle {
+  topics?: string[];
+  bannedWords?: string[];
+  post?: PersonaPostStyle;
+  comment?: PersonaCommentStyle;
+}
+/**
+ * What `personas.brief` may hold: the split shape, or the flat shape written before the split (one tone/emoji/length
+ * for posts and replies + hashtags/audience/opening/closing/notes at the top level). `styleOf` reads both: a missing
+ * `post`/`comment` takes the flat values. New writes store the split shape only (no data migration needed).
+ */
+export type StoredPersonaStyle = PersonaStyle & PersonaPostStyle;
 
 /**
  * Saved templates (话术库): reply templates (`kind` comment) and post/caption templates (`kind` post), with an optional

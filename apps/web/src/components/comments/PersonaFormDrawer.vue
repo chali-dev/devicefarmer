@@ -4,17 +4,20 @@ import { message } from 'ant-design-vue'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { PERSONA_LEVELS, PERSONA_TONES, type PersonaDetail, type PersonaExample, type PersonaLevel, type PersonaTone, type TemplateKind } from '../../api/types'
+import type { PersonaDetail, PersonaExample, PersonaLengths, PersonaVoice, TemplateKind } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
 import DraftRunInfo from './DraftRunInfo.vue'
-import { forgetPersona } from './persona'
+import PersonaVoiceFields from './PersonaVoiceFields.vue'
+import { forgetPersona, type VoiceForm } from './persona'
 
 /**
- * The one persona form (人设页, owner decision 2026-11-18): 基本 (name, 一句话定位), 风格 for posts AND replies (tone preset
- * with an editable note, emoji, length, topics, banned words), 范例 (≤ 5 post + ≤ 5 reply examples = 话术库 templates of
- * the persona, edited in place), 更多 (hashtags, audience, fixed opening/closing, notes) and AI 草稿 in one row (on/off,
- * per day, public: who gets the drafts, generate one now). No language: it belongs to the social account.
+ * The one persona form (人设页, owner decision 2026-11-18; split into 发文风格 / 评论风格 the same day):
+ * 基本 = name, 一句话定位, 常聊话题, 禁用词 (checked on posts and comments);
+ * 发文风格 = tone preset + note, emoji, length (post range), hashtags, fixed opening/closing, 更多 (audience, notes) and
+ * the 发文范例; 评论风格 = tone + note, emoji, length (comment range) and the 评论范例 (范例 = templates of the persona,
+ * ≤ 20 per kind, edited in place one by one); AI 草稿 in one row (on/off, per day, public: who gets the drafts, generate
+ * one now; written with the 发文风格). No language: it belongs to the social account.
  * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one); after creating, the
  * drawer stays open on the new persona so examples can be added.
  */
@@ -25,17 +28,21 @@ const props = defineProps<{
 const emit = defineEmits<{ 'update:open': [boolean]; saved: [id: string] }>()
 const { t } = useI18n()
 const auth = useAuthStore()
-const MAX_EXAMPLES = 5
+const KINDS = ['post', 'comment'] as const
 
 const id = ref<string | null>(null)
 const detail = ref<PersonaDetail | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const generating = ref(false)
+const noteOf = (tone: PersonaVoice['tone']) => t(`personas.toneNotes.${tone}`)
+const voiceOf = (v?: PersonaVoice): VoiceForm => ({
+  tone: v?.tone ?? 'casual', toneNote: v ? v.toneNote ?? noteOf(v.tone) : noteOf('casual'), emoji: v?.emoji ?? 'medium', length: v?.length ?? 'medium',
+})
 const empty = () => ({
-  name: '', description: '',
-  tone: 'casual' as PersonaTone, toneNote: '', emoji: 'medium' as PersonaLevel, length: 'medium' as PersonaLevel,
-  topics: [] as string[], bannedWords: [] as string[], hashtags: [] as string[], audience: '', opening: '', closing: '', notes: '',
+  name: '', description: '', topics: [] as string[], bannedWords: [] as string[],
+  post: voiceOf(), hashtags: [] as string[], audience: '', opening: '', closing: '', notes: '',
+  comment: voiceOf(),
   draftEnabled: false, draftsPerDay: 4, draftOwnerId: undefined as string | undefined,
 })
 const form = reactive(empty())
@@ -43,11 +50,10 @@ type Row = { id: string | null; text: string; saved: string }
 const examples = reactive<Record<TemplateKind, Row[]>>({ post: [], comment: [] })
 
 const isPublic = computed(() => (detail.value ? detail.value.persona.ownerType === 'public' : props.scope === 'public'))
-const lengths = computed(() => detail.value?.lengths)
-const toneNoteDefault = (tone: PersonaTone) => t(`personas.toneNotes.${tone}`)
-/** Length table for a new persona (no detail yet). */
-const lengthTable = ref<PersonaDetail['lengths'] | null>(null)
-const table = computed(() => lengths.value ?? lengthTable.value)
+/** Length table (detail, or the list endpoint for a new persona) and the 范例 limit per kind. */
+const lengthTable = ref<PersonaLengths | null>(null)
+const table = computed(() => detail.value?.lengths ?? lengthTable.value)
+const maxExamples = computed(() => detail.value?.maxExamples ?? 20)
 
 async function load(pid: string) {
   loading.value = true
@@ -56,10 +62,9 @@ async function load(pid: string) {
     detail.value = d
     const s = d.persona.style
     Object.assign(form, empty(), {
-      name: d.persona.name, description: d.persona.description ?? '',
-      tone: s.tone, toneNote: s.toneNote ?? toneNoteDefault(s.tone), emoji: s.emoji, length: s.length,
-      topics: [...s.topics], bannedWords: [...s.bannedWords], hashtags: [...s.hashtags],
-      audience: s.audience ?? '', opening: s.opening ?? '', closing: s.closing ?? '', notes: s.notes ?? '',
+      name: d.persona.name, description: d.persona.description ?? '', topics: [...s.topics], bannedWords: [...s.bannedWords],
+      post: voiceOf(s.post), hashtags: [...s.post.hashtags], audience: s.post.audience ?? '', opening: s.post.opening ?? '', closing: s.post.closing ?? '', notes: s.post.notes ?? '',
+      comment: voiceOf(s.comment),
       draftEnabled: d.persona.draftEnabled, draftsPerDay: d.persona.draftsPerDay, draftOwnerId: d.persona.draftOwnerId ?? undefined,
     })
     const rows = (xs: PersonaExample[]) => xs.map((e) => ({ id: e.id, text: e.text, saved: e.text }))
@@ -75,22 +80,13 @@ watch(() => [props.open, props.personaId] as const, ([open, pid]) => {
   examples.post = []; examples.comment = []
   if (pid) void load(pid)
   else {
-    Object.assign(form, empty(), { toneNote: toneNoteDefault('casual') })
-    if (!lengths.value) void api<{ lengths: PersonaDetail['lengths'] }>('GET', '/api/personas?scope=public').then((r) => { lengthTable.value = r.lengths }).catch(() => undefined)
+    Object.assign(form, empty())
+    if (!lengthTable.value) void api<{ lengths: PersonaLengths }>('GET', '/api/personas?scope=public').then((r) => { lengthTable.value = r.lengths }).catch(() => undefined)
   }
 }, { immediate: true })
 
-/** A preset brings its own note; a note the person changed stays. */
-function pickTone(tone: PersonaTone) {
-  if (!form.toneNote.trim() || PERSONA_TONES.some((x) => form.toneNote === toneNoteDefault(x))) form.toneNote = toneNoteDefault(tone)
-  form.tone = tone
-}
-
 const userOptions = computed(() => props.users.filter((u) => !u.disabled).map((u) => ({ value: u.id, label: u.username })))
-const lengthLabel = (l: PersonaLevel) => {
-  const tb = table.value
-  return tb ? t('personas.form.lengthOpt', { level: t(`personas.levels.length.${l}`), post: tb.post[l].join('–'), reply: tb.comment[l].join('–') }) : t(`personas.levels.length.${l}`)
-}
+const voiceBody = (v: VoiceForm) => ({ tone: v.tone, toneNote: v.toneNote.trim(), emoji: v.emoji, length: v.length })
 
 async function save() {
   const name = form.name.trim()
@@ -98,9 +94,12 @@ async function save() {
   const body: Record<string, unknown> = {
     name, description: form.description.trim() || null,
     style: {
-      tone: form.tone, toneNote: form.toneNote.trim(), emoji: form.emoji, length: form.length,
-      topics: form.topics, bannedWords: form.bannedWords, hashtags: form.hashtags,
-      audience: form.audience.trim(), opening: form.opening.trim(), closing: form.closing.trim(), notes: form.notes.trim(),
+      topics: form.topics, bannedWords: form.bannedWords,
+      post: {
+        ...voiceBody(form.post), hashtags: form.hashtags,
+        audience: form.audience.trim(), opening: form.opening.trim(), closing: form.closing.trim(), notes: form.notes.trim(),
+      },
+      comment: voiceBody(form.comment),
     },
     draftEnabled: form.draftEnabled, draftsPerDay: form.draftsPerDay,
     ...(isPublic.value ? { draftOwnerId: form.draftOwnerId ?? null } : {}),
@@ -121,7 +120,7 @@ async function save() {
   } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
 }
 
-// ---- 范例: 话术库 templates of the persona (public: shared; personal: its owner's), saved one by one
+// ---- 范例: templates of the persona (public: shared; personal: its owner's), saved one by one
 function addExample(kind: TemplateKind) { examples[kind].push({ id: null, text: '', saved: '' }) }
 async function saveExample(kind: TemplateKind, row: Row) {
   const text = row.text.trim()
@@ -174,32 +173,13 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
   <a-drawer :open="open" :title="id ? t('personas.edit') : t('scripts.personas.add')" :width="DRAWER_WIDTH.md" destroy-on-close @close="emit('update:open', false)">
     <a-spin :spinning="loading">
       <a-form layout="vertical">
-        <!-- 基本 -->
+        <!-- 基本 (shared by posts and comments) -->
         <a-form-item :label="t('personas.colName')" required>
           <a-input v-model:value="form.name" :maxlength="50" :placeholder="t('scripts.personas.namePlaceholder')" />
         </a-form-item>
         <a-form-item :label="t('personas.form.positioning')">
           <a-input v-model:value="form.description" :maxlength="100" show-count :placeholder="t('personas.form.positioningPlaceholder')" />
         </a-form-item>
-
-        <!-- 风格 (posts and replies) -->
-        <a-divider orientation="left" plain>{{ t('personas.form.style') }}</a-divider>
-        <a-form-item :label="t('personas.form.tone')">
-          <a-radio-group :value="form.tone" button-style="solid" size="small" @update:value="(v: PersonaTone) => pickTone(v)">
-            <a-radio-button v-for="x in PERSONA_TONES" :key="x" :value="x">{{ t(`personas.tones.${x}`) }}</a-radio-button>
-          </a-radio-group>
-          <a-textarea v-model:value="form.toneNote" class="below" :maxlength="200" :auto-size="{ minRows: 1, maxRows: 3 }" />
-        </a-form-item>
-        <a-space :size="24" wrap>
-          <a-form-item :label="t('personas.form.emoji')">
-            <a-radio-group v-model:value="form.emoji" size="small">
-              <a-radio-button v-for="x in PERSONA_LEVELS" :key="x" :value="x">{{ t(`personas.levels.emoji.${x}`) }}</a-radio-button>
-            </a-radio-group>
-          </a-form-item>
-          <a-form-item :label="t('personas.form.length')">
-            <a-select v-model:value="form.length" style="width: 260px" :options="PERSONA_LEVELS.map((x) => ({ value: x, label: lengthLabel(x) }))" />
-          </a-form-item>
-        </a-space>
         <a-form-item :label="t('personas.form.topics')" :extra="t('scripts.drafts.listHint')">
           <a-select v-model:value="form.topics" mode="tags" :open="false" :token-separators="[',', '，']" />
         </a-form-item>
@@ -207,18 +187,28 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
           <a-select v-model:value="form.bannedWords" mode="tags" :open="false" :token-separators="[',', '，']" />
         </a-form-item>
 
-        <a-collapse ghost class="sections">
-          <!-- 范例 -->
-          <a-collapse-panel key="examples" :header="t('personas.form.examples', { post: examples.post.length, reply: examples.comment.length })">
-            <div v-if="!id" class="muted small">{{ t('personas.form.examplesAfterSave') }}</div>
-            <template v-else>
-              <div v-for="kind in (['post', 'comment'] as const)" :key="kind" class="ex-block">
-                <div class="ex-head">
-                  <b>{{ t(`personas.form.examples_${kind}`) }}</b>
-                  <a-button size="small" type="link" :disabled="examples[kind].length >= MAX_EXAMPLES" @click="addExample(kind)">
-                    <template #icon><PlusOutlined /></template>{{ t('personas.form.addExample') }}
-                  </a-button>
-                </div>
+        <template v-for="kind in KINDS" :key="kind">
+          <a-divider orientation="left" plain>{{ t(`personas.form.style_${kind}`) }}</a-divider>
+          <PersonaVoiceFields v-model="form[kind]" :kind="kind" :lengths="table" />
+          <template v-if="kind === 'post'">
+            <a-form-item :label="t('personas.form.hashtags')">
+              <a-select v-model:value="form.hashtags" mode="tags" :open="false" :token-separators="[' ', ',', '，']" />
+            </a-form-item>
+            <a-row :gutter="12">
+              <a-col :xs="24" :sm="12"><a-form-item :label="t('personas.form.opening')"><a-input v-model:value="form.opening" :maxlength="200" /></a-form-item></a-col>
+              <a-col :xs="24" :sm="12"><a-form-item :label="t('personas.form.closing')"><a-input v-model:value="form.closing" :maxlength="200" /></a-form-item></a-col>
+            </a-row>
+          </template>
+          <a-collapse ghost class="sections">
+            <a-collapse-panel v-if="kind === 'post'" key="more" :header="t('personas.form.more')">
+              <a-form-item :label="t('personas.form.audience')"><a-input v-model:value="form.audience" :maxlength="200" /></a-form-item>
+              <a-form-item :label="t('personas.form.notes')">
+                <a-textarea v-model:value="form.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 6 }" show-count />
+              </a-form-item>
+            </a-collapse-panel>
+            <a-collapse-panel key="examples" :header="t(`personas.form.examples_${kind}`, { n: examples[kind].length, max: maxExamples })">
+              <div v-if="!id" class="muted small">{{ t('personas.form.examplesAfterSave') }}</div>
+              <template v-else>
                 <div v-if="!examples[kind].length" class="muted small">{{ t('personas.form.examplesEmpty') }}</div>
                 <div v-for="(row, i) in examples[kind]" :key="row.id ?? `new-${i}`" class="ex-row">
                   <a-textarea v-model:value="row.text" :auto-size="{ minRows: 2, maxRows: 6 }" :maxlength="kind === 'post' ? 2200 : 500" />
@@ -227,23 +217,14 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
                     <a-button size="small" type="link" danger @click="removeExample(kind, i)">{{ t('common.delete') }}</a-button>
                   </a-space>
                 </div>
-              </div>
-              <div class="muted small">{{ t('personas.form.examplesHint') }}</div>
-            </template>
-          </a-collapse-panel>
-          <!-- 更多 -->
-          <a-collapse-panel key="more" :header="t('personas.form.more')">
-            <a-form-item :label="t('personas.form.hashtags')">
-              <a-select v-model:value="form.hashtags" mode="tags" :open="false" :token-separators="[' ', ',', '，']" />
-            </a-form-item>
-            <a-form-item :label="t('personas.form.audience')"><a-input v-model:value="form.audience" :maxlength="200" /></a-form-item>
-            <a-form-item :label="t('personas.form.opening')"><a-input v-model:value="form.opening" :maxlength="200" /></a-form-item>
-            <a-form-item :label="t('personas.form.closing')"><a-input v-model:value="form.closing" :maxlength="200" /></a-form-item>
-            <a-form-item :label="t('personas.form.notes')">
-              <a-textarea v-model:value="form.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 6 }" show-count />
-            </a-form-item>
-          </a-collapse-panel>
-        </a-collapse>
+                <a-button size="small" type="link" :disabled="examples[kind].length >= maxExamples" @click="addExample(kind)">
+                  <template #icon><PlusOutlined /></template>{{ t('personas.form.addExample') }}
+                </a-button>
+                <div class="muted small">{{ t(`personas.form.examplesHint_${kind}`, { max: maxExamples }) }}</div>
+              </template>
+            </a-collapse-panel>
+          </a-collapse>
+        </template>
 
         <!-- AI 草稿: one row -->
         <a-divider orientation="left" plain>{{ t('personas.form.ai') }}</a-divider>
@@ -271,10 +252,7 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
 </template>
 
 <style scoped>
-.below { margin-top: 8px; }
 .sections :deep(.ant-collapse-header) { padding-inline-start: 0 !important; }
-.ex-block { margin-bottom: 12px; }
-.ex-head { display: flex; align-items: center; justify-content: space-between; }
 .ex-row { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; }
 .ai-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .ai-hint { margin: 6px 0; }

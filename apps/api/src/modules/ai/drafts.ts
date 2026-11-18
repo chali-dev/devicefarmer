@@ -11,7 +11,7 @@ import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { setContentMedia, setContentTags, setContentTargets } from '../content/content.js';
 import { SOURCE_LANG } from '../content/languages.js';
-import { bannedHits, EMOJI_PROMPT, exampleWhere, MAX_EXAMPLES, PERSONA_LENGTHS, styleOf, TONE_PROMPT } from '../comments/persona-style.js';
+import { bannedHits, EMOJI_PROMPT, exampleWhere, PERSONA_LENGTHS, PROMPT_EXAMPLES, styleOf, TONE_PROMPT } from '../comments/persona-style.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
@@ -24,8 +24,8 @@ import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
  *   device-less `persona-drafts` task (queue `ai-ops`, key `persona-drafts:<personaId>:<local date>`) asks the Anthropic
  *   API for `drafts_per_day` drafts in one structured-output request. "Generate one now" = the same task with count 1,
  *   rate-limited to once per persona per 10 minutes.
- * - Sent to Anthropic (approved by the owner): the persona's 定位 + style (tone, emoji, length, topics, banned words,
- *   hashtags, audience, fixed opening/closing, notes), up to 5 of its post examples (范例) and title + a body snippet of the
+ * - Sent to Anthropic (approved by the owner): the persona's 定位 + 发文风格 (tone, emoji, length, hashtags, audience,
+ *   fixed opening/closing, notes) + shared topics and banned words, the oldest 5 of its post examples (范例) and title + a body snippet of the
  *   persona's contents of the last 30 days. Never the API key in payloads/logs, never the prompt in logs.
  * - Drafts are always written in Chinese (the fixed source language); accounts in other languages need a human
  *   translation, recorded as `ai_generated.needsTranslation` (no machine translation).
@@ -123,7 +123,8 @@ export interface PromptInput {
 /** The user message: persona settings, examples and recent posts as tagged reference data (always Chinese). */
 export function buildUserMessage(i: PromptInput): string {
   const st = styleOf(i.persona);
-  const [min, max] = PERSONA_LENGTHS.post[st.length];
+  const ps = st.post;
+  const [min, max] = PERSONA_LENGTHS.post[ps.length];
   return [
     `Date: ${i.day}`,
     `Number of drafts: ${i.count}`,
@@ -132,16 +133,16 @@ export function buildUserMessage(i: PromptInput): string {
     '<persona>',
     `Name: ${i.persona.name}`,
     `Positioning: ${i.persona.description || '(none)'}`,
-    `Tone: ${st.tone} — ${st.toneNote || TONE_PROMPT[st.tone]}`,
-    `Emoji: ${EMOJI_PROMPT[st.emoji]}`,
+    `Tone: ${ps.tone} — ${ps.toneNote || TONE_PROMPT[ps.tone]}`,
+    `Emoji: ${EMOJI_PROMPT[ps.emoji]}`,
     `Length: ${min} to ${max} characters`,
-    `Audience: ${st.audience || '(none)'}`,
+    `Audience: ${ps.audience || '(none)'}`,
     `Topics:\n${list(st.topics)}`,
-    `Preferred hashtags:\n${list(st.hashtags)}`,
+    `Preferred hashtags:\n${list(ps.hashtags)}`,
     `Banned words and phrases:\n${list(st.bannedWords)}`,
-    `Fixed opening line (added by the system): ${st.opening || '(none)'}`,
-    `Fixed closing line (added by the system): ${st.closing || '(none)'}`,
-    `Notes: ${st.notes || '(none)'}`,
+    `Fixed opening line (added by the system): ${ps.opening || '(none)'}`,
+    `Fixed closing line (added by the system): ${ps.closing || '(none)'}`,
+    `Notes: ${ps.notes || '(none)'}`,
     '</persona>',
     '',
     '<examples>',
@@ -217,7 +218,7 @@ export async function saveDrafts(i: SaveDraftsInput): Promise<SaveDraftsResult> 
   const dropped: string[] = [];
   const keep: (DraftOut & { media: string[] })[] = [];
   for (const raw of i.drafts) {
-    const d = { ...raw, body: withFixedLines(raw.body, st.opening, st.closing) };
+    const d = { ...raw, body: withFixedLines(raw.body, st.post.opening, st.post.closing) };
     const hit = bannedHit(d, st.bannedWords);
     if (hit) { dropped.push(hit); continue; }
     keep.push({ ...d, media: await suggestMedia(i.ownerId, d.mediaTags) });
@@ -256,10 +257,10 @@ class AiFinalError extends UnrecoverableError {
 
 interface DraftPayload { personaId: string; count: number; day: string; trigger: 'schedule' | 'manual' }
 
-/** The persona's post examples (范例: its post templates in its own scope), at most 5, oldest first like the form. */
+/** The persona's post examples (范例: its post templates in its own scope), the oldest 5 (of up to 20), oldest first like the form. */
 export async function loadExamples(p: Persona): Promise<{ name: string; text: string }[]> {
   const T = schema.commentTemplates;
-  return db.select({ name: T.name, text: T.text }).from(T).where(exampleWhere(p, 'post')).orderBy(asc(T.createdAt), asc(T.id)).limit(MAX_EXAMPLES);
+  return db.select({ name: T.name, text: T.text }).from(T).where(exampleWhere(p, 'post')).orderBy(asc(T.createdAt), asc(T.id)).limit(PROMPT_EXAMPLES);
 }
 
 /** Contents of the owner from the last 30 days that belong to the persona (its AI drafts, or targeted at its accounts). */

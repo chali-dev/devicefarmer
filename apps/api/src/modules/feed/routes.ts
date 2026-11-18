@@ -285,7 +285,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     return {
       items: await Promise.all(rows.map(async ({ s, inst, owner }) => ({
         id: s.id, platform: s.platform, handle: s.handle, displayName: s.displayName, accountStatus: s.accountStatus, loginStatus: s.loginStatus,
-        userId: s.userId, ownerName: owner ?? null, own: s.userId === req.user.id,
+        userId: s.userId, ownerName: owner ?? null, own: s.userId === req.user.id, personaId: s.personaId,
         instance: { id: inst.id, name: inst.name, online: inst.status === 'running' && inst.adbState === 'device', halted: !!(await deviceHalt(inst.id)) },
       }))),
     };

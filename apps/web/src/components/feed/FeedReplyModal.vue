@@ -44,6 +44,8 @@ async function loadAccounts() {
 }
 const chosen = computed(() => accounts.value.find((a) => a.id === accountId.value) ?? null)
 const accountLabel = (a: ReplyAccountOption) => `@${a.handle} · ${a.instance.name}${a.own ? '' : ` · ${t('feed.accountOwner', { name: a.ownerName ?? '?' })}`}`
+/** 评论风格 of the sending account: given by the caller, else the picked own account (tracked posts) or the draft's account. */
+const persona = computed(() => props.personaId ?? chosen.value?.personaId ?? props.draft?.account?.personaId ?? null)
 const isHalted = computed(() => (tracked.value ? !!chosen.value?.instance.halted : !!props.halted))
 
 watch(open, (o) => { if (o) { text.value = props.draft?.text ?? ''; accountId.value = null; accounts.value = []; void loadAccounts() } })
@@ -81,7 +83,7 @@ async function submit() {
   <a-modal v-model:open="open" :title="title" :width="MODAL_WIDTH.sm" :confirm-loading="busy" :ok-text="t('feed.saveDraft')" destroy-on-close @ok="submit">
     <a-alert v-if="isHalted" type="warning" show-icon class="block" :message="t('feed.halted')" />
     <div v-if="quoted" class="quote">{{ quoted }}</div>
-    <PersonaCard :persona-id="personaId" kind="comment" :text="text" insertable @insert="(x: string) => (text = x)" />
+    <PersonaCard v-if="!tracked || chosen" :persona-id="persona" kind="comment" :text="text" insertable @insert="(x: string) => (text = x)" />
     <a-form layout="vertical">
       <a-form-item v-if="tracked" :label="t('feed.replyAccount')" :extra="t('feed.replyAccountHint')" required>
         <a-select v-model:value="accountId" :loading="accountsLoading" :placeholder="t('feed.pickAccount')" :not-found-content="t('feed.noReplyAccounts')"

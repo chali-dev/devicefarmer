@@ -12,7 +12,7 @@ import type { RiskSettings } from '../../api/types'
  */
 const { t } = useI18n()
 const state = ref<RiskSettings | null>(null)
-const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6, feedOn: true, feedCollectHours: 24, feedPosts: 3, feedCommentsPerPost: 30 })
+const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6, feedOn: true, feedCollectHours: 24, feedPosts: 3, feedCommentsPerPost: 30, accountDiscovery: true })
 const saving = ref(false)
 
 function fill(s: RiskSettings) {
@@ -21,7 +21,7 @@ function fill(s: RiskSettings) {
     minIntervalSec: s.device.minIntervalSec, maxPerHour: s.device.maxPerHour, busyRetrySec: s.device.busyRetrySec,
     checkOn: s.device.accountCheckHours !== null, accountCheckHours: s.device.accountCheckHours ?? s.defaults.accountCheckHours ?? 6,
     feedOn: s.device.feedCollectHours !== null, feedCollectHours: s.device.feedCollectHours ?? s.defaults.feedCollectHours ?? 24,
-    feedPosts: s.device.feedPosts, feedCommentsPerPost: s.device.feedCommentsPerPost,
+    feedPosts: s.device.feedPosts, feedCommentsPerPost: s.device.feedCommentsPerPost, accountDiscovery: s.device.accountDiscovery,
   })
 }
 onMounted(async () => { try { fill(await api<RiskSettings>('GET', '/api/risk/settings')) } catch (e) { message.error(errorText(e)) } })
@@ -35,6 +35,7 @@ async function save() {
       minIntervalSec: form.minIntervalSec, maxPerHour: form.maxPerHour, busyRetrySec: form.busyRetrySec,
       accountCheckHours: form.checkOn ? form.accountCheckHours : null,
       feedCollectHours: form.feedOn ? form.feedCollectHours : null, feedPosts: form.feedPosts, feedCommentsPerPost: form.feedCommentsPerPost,
+      accountDiscovery: form.accountDiscovery,
     }))
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
@@ -94,6 +95,15 @@ async function save() {
             <a-form-item :label="t('risk.feed.comments')"><a-input-number v-model:value="form.feedCommentsPerPost" :min="0" :max="100" :precision="0" style="width: 100%" /></a-form-item>
           </a-col>
         </a-row>
+
+        <a-typography-title :level="5">{{ t('risk.discovery.title') }}</a-typography-title>
+        <a-typography-paragraph type="secondary">{{ t('risk.discovery.hint') }}</a-typography-paragraph>
+        <a-form-item>
+          <a-space>
+            <a-switch v-model:checked="form.accountDiscovery" />
+            <span>{{ form.accountDiscovery ? t('risk.discovery.on') : t('risk.discovery.off') }}</span>
+          </a-space>
+        </a-form-item>
         <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
       </a-form>
     </a-spin>

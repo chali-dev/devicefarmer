@@ -1,7 +1,10 @@
 /**
  * 话术库 + 定时采集 + 趋势热点 test against the real API, DB, Redis/BullMQ and (where noted) the real YouTube Data API. No mocks.
- * - Templates (comment_templates with kind comment|post, persona (personas, see personas-check.ts), tags): CRUD for both kinds, the unchanged default
- *   (kind=comment) list used by the reply composer, shared vs private rules, isolation/RBAC, filters, facets, audit.
+ * - Templates (comment_templates with kind comment|post, persona (personas, see personas-check.ts), tags): the 话术库 page
+ *   is gone (2026-11-18), templates are the 范例 of personas: a template without a persona is refused (create and
+ *   edit, template.persona_required); CRUD for both kinds, the unchanged default (kind=comment) list, shared vs private
+ *   rules, isolation/RBAC, filters, facets, audit; migration 0040 (delete templates without a persona) run twice in a
+ *   rolled-back transaction.
  * - Scheduled collection: per-account interval, the collection tick enqueues each due slot exactly once (also under two
  *   concurrent ticks), skips paused / in-progress / manual-only / unconfigured accounts with codes, re-checks at run time.
  *   Scheduled refresh tasks created here run in the future and are cancelled, so no YouTube call is made for them.
@@ -99,12 +102,16 @@ try {
   const pChef2 = await mkPersona(T, 'public', `Chef2 ${tag}`);
   const pSecret = await mkPersona(B.token, 'mine', `Secret ${tag}`);
   let r = await tpl(A.token, { name: `reply ${tag}`, text: 'Thanks for watching!' });
+  const rNull = await tpl(A.token, { name: `reply ${tag}`, text: 'Thanks for watching!', personaId: null });
+  check('a template without a persona is refused (话术库 removed: templates are the 范例 of personas) → 400 template.persona_required',
+    r.status === 400 && r.body.code === 'template.persona_required' && rNull.status === 400 && rNull.body.code === 'template.persona_required', `${r.status} ${r.body?.code}`);
+  r = await tpl(A.token, { name: `reply ${tag}`, text: 'Thanks for watching!', personaId: pFit.id });
   const aComment = r.body.template;
-  check('create without kind → comment template (unchanged API)', r.status === 201 && aComment.kind === 'comment' && aComment.persona === null && aComment.tags.length === 0 && aComment.shared === false);
+  check('create without kind → comment template (unchanged API)', r.status === 201 && aComment.kind === 'comment' && aComment.persona?.id === pFit.id && aComment.tags.length === 0 && aComment.shared === false);
   r = await tpl(A.token, { name: `post ${tag}`, text: 'Leg day 💪 #gym', kind: 'post', personaId: pFit.id, tags: ['Gym', 'gym ', 'Diet'] });
   const aPost = r.body.template;
   check('create post template with persona; tags lowercased + deduplicated', r.status === 201 && aPost.kind === 'post' && aPost.persona?.name === 'Fitness Coach' && JSON.stringify(aPost.tags) === '["gym","diet"]', JSON.stringify(aPost?.tags));
-  r = await tpl(A.token, { name: `x ${tag}`, text: 'x', kind: 'post', shared: true });
+  r = await tpl(A.token, { name: `x ${tag}`, text: 'x', kind: 'post', shared: true, personaId: pChef.id });
   check('user cannot create a shared template (403 comment.admin_only)', r.status === 403 && r.body.code === 'comment.admin_only');
   r = await tpl(A.token, { name: `x ${tag}`, text: 'x', kind: 'story' });
   const r2 = await tpl(A.token, { name: `x ${tag}`, text: 'x', personaId: 'p'.repeat(51) });
@@ -112,6 +119,8 @@ try {
   r = await tpl(T, { name: `shared post ${tag}`, text: 'Dinner in 15 minutes', kind: 'post', personaId: pChef.id, shared: true });
   const sharedPost = r.body.template;
   r = await tpl(T, { name: `shared reply ${tag}`, text: 'We appreciate it', shared: true });
+  check('admin: a shared template without a persona is refused too', r.status === 400 && r.body.code === 'template.persona_required');
+  r = await tpl(T, { name: `shared reply ${tag}`, text: 'We appreciate it', shared: true, personaId: pChef.id });
   const sharedComment = r.body.template;
   check('admin creates shared post + comment templates', sharedPost?.shared === true && sharedComment?.shared === true && sharedPost.kind === 'post');
   r = await tpl(B.token, { name: `b post ${tag}`, text: 'B private caption', kind: 'post', personaId: pSecret.id, tags: ['bonly'] });
@@ -133,8 +142,8 @@ try {
   const lQ = await list(A.token, `?kind=all&q=${encodeURIComponent('dinner')}`);
   const lShared = await list(A.token, '?kind=all&scope=shared');
   const lOwn = await list(A.token, '?kind=all&scope=own');
-  check('filters: personaId, personaId=none, tag (case-insensitive), q in text, scope shared/own',
-    names(l) === `post ${tag}` && lNone.length === 2 && names(lTag) === `post ${tag}` && names(lQ) === `shared post ${tag}` && lShared.length === 2 && lOwn.length === 2,
+  check('filters: personaId, personaId=none (empty: every template has a persona), tag (case-insensitive), q in text, scope shared/own',
+    names(l) === `post ${tag}` && lNone.length === 0 && names(lTag) === `post ${tag}` && names(lQ) === `shared post ${tag}` && lShared.length === 2 && lOwn.length === 2,
     `${l.length}/${lNone.length}/${lTag.length}/${lQ.length}/${lShared.length}/${lOwn.length}`);
   r = await http('GET', '/api/comment-templates/facets?kind=post', A.token);
   check('facets: tags of visible post templates only', r.status === 200 && r.body.tags.includes('gym') && !r.body.tags.includes('bonly'), JSON.stringify(r.body));
@@ -146,7 +155,9 @@ try {
   r = await http('PUT', `/api/comment-templates/${sharedPost.id}`, A.token, { text: 'changed' });
   check('user cannot edit a shared template (403)', r.status === 403 && r.body.code === 'comment.admin_only');
   r = await http('PUT', `/api/comment-templates/${aPost.id}`, A.token, { personaId: null, tags: ['Travel'], text: 'Edited caption' });
-  check('edit own: personaId null clears, tags replaced, text changed', r.status === 200 && r.body.template.persona === null && JSON.stringify(r.body.template.tags) === '["travel"]' && r.body.template.text === 'Edited caption');
+  check('edit own: personaId null → 400 template.persona_required, nothing changed', r.status === 400 && r.body.code === 'template.persona_required');
+  r = await http('PUT', `/api/comment-templates/${aPost.id}`, A.token, { personaId: pChef.id, tags: ['Travel'], text: 'Edited caption' });
+  check('edit own: persona changed (public), tags replaced, text changed', r.status === 200 && r.body.template.persona?.id === pChef.id && JSON.stringify(r.body.template.tags) === '["travel"]' && r.body.template.text === 'Edited caption');
   r = await http('PUT', `/api/comment-templates/${aPost.id}`, A.token, {});
   check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
   r = await http('PUT', `/api/comment-templates/${aComment.id}`, A.token, { kind: 'post' });
@@ -156,6 +167,38 @@ try {
   check('admin edits shared template', r.status === 200 && r.body.template.persona?.name === `Chef2 ${tag}`);
   r = await http('DELETE', `/api/comment-templates/${aComment.id}`, A.token);
   check('delete own template → 204', r.status === 204);
+
+  // migration 0040: templates without a persona are deleted (data only); executed twice in a rolled-back transaction
+  {
+    const { readFileSync } = await import('node:fs');
+    const sqlText = readFileSync(new URL('../drizzle/0040_templates_need_persona.sql', import.meta.url), 'utf8');
+    const stmts = sqlText.split('--> statement-breakpoint').map((x) => x.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean);
+    const seeded = await db.insert(schema.commentTemplates).values([
+      { userId: null, kind: 'post', name: `legacy shared ${tag}`, text: 'old demo post' },
+      { userId: A.id, kind: 'comment', name: `legacy own ${tag}`, text: 'old demo reply' },
+      { userId: A.id, kind: 'post', name: `legacy with persona ${tag}`, text: 'kept', personaId: pFit.id },
+    ]).returning({ id: schema.commentTemplates.id });
+    templateIds.push(...seeded.map((x) => x.id));
+    const ROLLBACK = new Error('rollback');
+    let seen: Record<string, number> = {};
+    try {
+      await sqlClient.begin(async (tx) => {
+        const n = async () => (await tx`select count(*)::int n from comment_templates where persona_id is null`)[0]!.n as number;
+        const before = await n();
+        let first = 0; let second = 0;
+        for (const st of stmts) first += (await tx.unsafe(st)).count;
+        for (const st of stmts) second += (await tx.unsafe(st)).count;
+        const kept = (await tx`select count(*)::int n from comment_templates where id = ${seeded[2]!.id}`)[0]!.n as number;
+        seen = { before, first, second, after: await n(), kept };
+        throw ROLLBACK;
+      });
+    } catch (e) { if (e !== ROLLBACK) throw e; }
+    check('migration 0040: deletes every template without a persona (seeded shared + private), keeps templates with one; a second run deletes nothing',
+      seen.before! >= 2 && seen.first === seen.before && seen.second === 0 && seen.after === 0 && seen.kept === 1, JSON.stringify(seen));
+    const { createHash } = await import('node:crypto');
+    const [mig] = await sqlClient`select count(*)::int n from drizzle.__drizzle_migrations where hash = ${createHash('sha256').update(sqlText).digest('hex')}`;
+    check('the migration was applied once by db:migrate (drizzle journal: exactly one row with its hash, so a rerun is a no-op)', mig?.n === 1, String(mig?.n));
+  }
 
   // ================================================================ 定时采集 (scheduled collection)
   const track = async (token: string, input: string, platform?: string) => {

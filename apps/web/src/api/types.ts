@@ -559,7 +559,7 @@ export interface CommentReplyItem {
   /** Test run / device send: what the input field showed (the screenshot: GET /api/comment-replies/:id/evidence). */
   evidence: { at: string; inputText: string | null; excerpt: string | null } | null
   hasEvidence: boolean
-  account: { id: string; handle: string; platform: string } | null
+  account: { id: string; handle: string; platform: string; personaId: string | null } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
   canEdit: boolean
 }
@@ -591,7 +591,7 @@ export interface FeedCollectState {
 /** An own account that may comment on a tracked account's posts (GET /api/tracked-accounts/:id/reply-accounts). */
 export interface ReplyAccountOption {
   id: string; platform: string; handle: string; displayName: string | null; accountStatus: string; loginStatus: string
-  userId: string; ownerName: string | null; own: boolean
+  userId: string; ownerName: string | null; own: boolean; personaId: string | null
   instance: { id: string; name: string; online: boolean; halted: boolean }
 }
 export interface FeedResponse {
@@ -626,13 +626,18 @@ export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
 export type PersonaTone = (typeof PERSONA_TONES)[number]
 export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const
 export type PersonaLevel = (typeof PERSONA_LEVELS)[number]
-/** 人设风格, shared by posts and replies (API fills tone/emoji/length and the lists with defaults). */
+/** Tone, emoji and length of one kind (API fills them with defaults). */
+export interface PersonaVoice { tone: PersonaTone; toneNote?: string; emoji: PersonaLevel; length: PersonaLevel }
+/**
+ * 人设风格 (split 2026-11-18): shared topics + banned words (checked on posts and comments), 发文风格 `post` and 评论风格
+ * `comment`. The API reads older single-style personas as both.
+ */
 export interface PersonaStyle {
-  tone: PersonaTone; toneNote?: string; emoji: PersonaLevel; length: PersonaLevel
-  topics: string[]; bannedWords: string[]; hashtags: string[]
-  audience?: string; opening?: string; closing?: string; notes?: string
+  topics: string[]; bannedWords: string[]
+  post: PersonaVoice & { hashtags: string[]; audience?: string; opening?: string; closing?: string; notes?: string }
+  comment: PersonaVoice
 }
-/** Character ranges per length level: posts and replies (GET /api/personas[/:id] `lengths`). */
+/** Character ranges per length level: posts and comments (GET /api/personas[/:id] `lengths`). */
 export type PersonaLengths = Record<'post' | 'comment', Record<PersonaLevel, [number, number]>>
 export interface PersonaExample { id: string; kind: TemplateKind; name: string; text: string }
 /** GET /api/personas/:id: the persona (draft owner + runs only for managers), its 范例 per kind and the length table. */
@@ -643,6 +648,8 @@ export interface PersonaDetail {
   }
   examples: { post: PersonaExample[]; comment: PersonaExample[] }
   lengths: PersonaLengths
+  /** 范例 per kind (20). */
+  maxExamples: number
 }
 export interface AiSettingsState { enabled: boolean; keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */
@@ -652,7 +659,7 @@ export type ContentCategory = ScopedItem
 export interface ContentCategoryRef { id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null }
 export interface CommentTemplate {
   id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string
-  /** 话术库: reply (comment) or post/caption template, optional persona (人设) and lowercase tags. */
+  /** 范例 of a persona (required since 2026-11-18): comment or post template, lowercase tags. */
   kind: TemplateKind; personaId: string | null; persona: PersonaRef | null; tags: string[]
 }
 
@@ -732,6 +739,8 @@ export interface RiskDeviceSettings {
   minIntervalSec: number; maxPerHour: number; busyRetrySec: number; accountCheckHours: number | null
   /** 帖子与评论采集: every N hours (null = off), newest posts per account, comments per post. */
   feedCollectHours: number | null; feedPosts: number; feedCommentsPerPost: number
+  /** 自动发现: hourly `dumpsys account` on running phones finds Instagram accounts not yet in 社交号 (default on). */
+  accountDiscovery: boolean
 }
 export interface RiskSettings { device: RiskDeviceSettings; defaults: RiskDeviceSettings; capacityPerHour: number; eventRetentionDays: number }
 /** GET /api/instances/automation: 风控暂停 / busy (an automatic operation holds the device lock), per device id. */

@@ -22,7 +22,8 @@ const router = createRouter({
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
         { path: 'personas', name: 'personas', component: () => import('../views/PersonasView.vue') },
-        { path: 'scripts', name: 'scripts', component: () => import('../views/ScriptsView.vue') },
+        // 话术库 removed (owner decision 2026-11-18): templates are the 范例 in the persona form.
+        { path: 'scripts', redirect: '/personas' },
         { path: 'trending', name: 'trending', component: () => import('../views/TrendingView.vue') },
         { path: 'notifications', name: 'notifications', component: () => import('../views/NotificationsView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },

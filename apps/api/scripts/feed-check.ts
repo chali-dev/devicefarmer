@@ -250,6 +250,11 @@ try {
     const after = (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.accountId, accA.id))).length;
     check('post comment with a word banned by the account\'s persona → 400 persona.banned_word (words), nothing stored',
       r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '私信' && before === after, `${r.status} ${r.text.slice(0, 200)}`);
+    // the comment modal on a tracked post shows the 评论风格 of the picked own account: reply accounts carry its persona
+    const raP = ((await http('GET', `/api/tracked-accounts/${tacc!.id}/reply-accounts`, A)).body.items as any[] ?? []).find((x) => x.id === accA.id);
+    const pd = await http('GET', `/api/personas/${pid}`, A);
+    check('reply accounts carry the account\'s personaId; its persona has the 评论风格 + comment length range (lengths.comment)',
+      raP?.personaId === pid && pd.body.persona?.style?.comment?.length === 'medium' && pd.body.lengths?.comment?.medium?.join() === '15,80', JSON.stringify(raP));
     await http('DELETE', `/api/personas/${pid}`, A);
   }
   r = await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[2]!.id}/comments`, A, { text: `Post note ${tag}`, scheduledAt: new Date().toISOString() });

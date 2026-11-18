@@ -343,7 +343,7 @@ function moveMedia(i: number, d: number) {
   m.splice(i + d, 0, x!)
   form.media = m
 }
-/** 话术库: puts a post template's text into the current text tab; the person edits it before saving. */
+/** 插入话术: puts a 发文范例 of a target account's persona into the current text tab; the person edits it before saving. */
 function insertTemplate(text: string, replace: boolean) {
   const texts = currentTr.value?.texts ?? form.texts
   const cur = texts[textTab.value] ?? ''
@@ -652,7 +652,7 @@ async function submitBatchForm() {
       </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="trTabs" :values="currentTr.texts">
-          <template #extra><TemplateInsert :default-persona-id="firstTarget?.personaId" @insert="insertTemplate" /></template>
+          <template #extra><TemplateInsert :persona-ids="editorPersonas" @insert="insertTemplate" /></template>
           <template #default="{ tab }">
             <a-form-item v-if="tab.key === 'youtube'" :label="t('content.ytTitle')" class="tab-field">
               <a-input v-model:value="currentTr.hints.youtube!.title" :maxlength="100" show-count :placeholder="form.hints.youtube?.title || currentTr.title || form.title" />
@@ -674,7 +674,7 @@ async function submitBatchForm() {
       </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="sourceTabs" :values="form.texts">
-          <template #extra><TemplateInsert :default-persona-id="firstTarget?.personaId" @insert="insertTemplate" /></template>
+          <template #extra><TemplateInsert :persona-ids="editorPersonas" @insert="insertTemplate" /></template>
           <template #default="{ tab }">
             <a-row v-if="tab.key === 'youtube'" :gutter="12" class="tab-field">
               <a-col :xs="24" :sm="16">

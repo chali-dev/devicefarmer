@@ -1,9 +1,9 @@
-import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { COMMENT_REPLY_STATUSES, COMMENT_STATUSES, type Comment, type CommentTask } from '../../db/schema.js';
-import { forbidden, HttpError } from '../../lib/errors.js';
+import { badRequest, forbidden, HttpError } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { visibleAccount } from '../social/social.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
@@ -11,6 +11,7 @@ import {
   assertTemplateWritable, cancelReply, createManualComment, createReply, deleteDraft, deleteManualComment, editReply, getRules, recordReplyOutcome,
   REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
 } from './comments.js';
+import { exampleWhere, MAX_EXAMPLES } from './persona-style.js';
 import { assertPersonaFor } from './personas.js';
 
 const C = schema.comments;
@@ -40,7 +41,7 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
     db.select({ id: C.id, text: C.text, authorName: C.authorName, authorHandle: C.authorHandle, source: C.source, status: C.status, externalPostId: C.externalPostId,
       postUrl: C.postUrl, publishedAt: C.publishedAt, parentExternalId: C.parentExternalId }).from(C).where(inArray(C.id, idsOf(rows.map((r) => r.commentId)))),
     db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, platform: schema.socialAccounts.platform, instanceId: schema.socialAccounts.instanceId,
-      userId: schema.socialAccounts.userId }).from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))),
+      userId: schema.socialAccounts.userId, personaId: schema.socialAccounts.personaId }).from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))),
   ]);
   const posts = rows.some((r) => r.postId) ? await db.select({ id: schema.socialAccountPosts.id, caption: schema.socialAccountPosts.caption, permalink: schema.socialAccountPosts.permalink,
     publishedAt: schema.socialAccountPosts.publishedAt }).from(schema.socialAccountPosts).where(inArray(schema.socialAccountPosts.id, idsOf(rows.map((r) => r.postId)))) : [];
@@ -73,7 +74,7 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
       trackedPost: tposts.find((p) => p.id === r.trackedPostId) ?? null,
       /** null with `trackedCommentId` set = the comment is gone (a reply, never a post comment) */
       trackedComment: tcomments.find((c) => c.id === r.trackedCommentId) ?? null,
-      account: acc ? { id: acc.id, handle: acc.handle, platform: acc.platform } : null,
+      account: acc ? { id: acc.id, handle: acc.handle, platform: acc.platform, personaId: acc.personaId } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
       canEdit: r.status === 'draft',
     };
@@ -392,20 +393,37 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   const TemplateBody = z.object({
     name: z.string().trim().min(1).max(100), text: z.string().trim().min(1).max(5000),
     kind: z.enum(['comment', 'post']).optional(),
-    /** null clears; must fit the template's scope (assertPersonaFor) */
+    /** required on create, null refused (`template.persona_required`); must fit the template's scope (assertPersonaFor) */
     personaId: z.string().uuid().nullable().optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(20).transform(normTags).optional(),
   });
+  /**
+   * Every template belongs to a persona (owner decision 2026-11-18: the 话术库 page is gone, templates are the 范例 of
+   * personas, edited in the persona form): no persona → 400 `template.persona_required`. At most `MAX_EXAMPLES` (20) per
+   * persona and kind in the persona's own scope → 400 `persona.examples_full` (checked under a lock on the persona row).
+   */
+  const assertExampleRoom = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], personaId: string, kind: 'post' | 'comment', userId: string | null, exceptId?: string) => {
+    const [p] = await tx.select().from(P).where(eq(P.id, personaId)).for('update');
+    if (!p || (p.ownerType === 'public' ? userId !== null : userId !== p.ownerId)) return; // not one of its 范例
+    const [n] = await tx.select({ n: count() }).from(TPL).where(and(exampleWhere(p, kind), exceptId ? ne(TPL.id, exceptId) : undefined));
+    if ((n?.n ?? 0) >= MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条${kind === 'post' ? '发文' : '评论'}范例`, 'persona.examples_full', { max: MAX_EXAMPLES, kind });
+  };
+  const personaRequired = () => badRequest('话术必须属于一个人设', 'template.persona_required');
   /** `ownerId` (admin): a private template of another user, e.g. an example (范例) of that user's personal persona. */
   app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional(), ownerId: z.string().uuid().optional() }) } }, async (req, reply) => {
     const { shared, ownerId, ...b } = req.body;
     if ((shared || (ownerId && ownerId !== req.user.id)) && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
+    if (!b.personaId) throw personaRequired();
+    const personaId = b.personaId;
     const userId = shared ? null : ownerId ?? req.user.id;
-    const p = b.personaId ? await assertPersonaFor(userId, b.personaId) : null;
-    const [row] = await db.insert(TPL).values({ ...b, userId, createdBy: req.user.id }).returning();
-    if (req.audit) req.audit.extra = { id: row!.id, kind: row!.kind, persona: p?.name ?? null };
+    const p = await assertPersonaFor(userId, personaId);
+    const row = await db.transaction(async (tx) => {
+      await assertExampleRoom(tx, personaId, b.kind ?? 'comment', userId);
+      return (await tx.insert(TPL).values({ ...b, userId, createdBy: req.user.id }).returning())[0]!;
+    });
+    if (req.audit) req.audit.extra = { id: row.id, kind: row.kind, persona: p.name };
     reply.code(201);
-    return { template: templateItem(row!, p) };
+    return { template: templateItem(row, p) };
   });
 
   app.put('/api/comment-templates/:id', { schema: { params: Id, body: TemplateBody.partial() } }, async (req) => {
@@ -413,12 +431,19 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     assertTemplateWritable(req.user, t);
     const set: Partial<typeof TPL.$inferInsert> = Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined));
     if (!Object.keys(set).length) throw new HttpError(400, 'nothing to update', 'common.nothing_to_update');
+    if (req.body.personaId === null) throw personaRequired();
     if (req.body.personaId) await assertPersonaFor(t.userId, req.body.personaId);
     if (req.body.personaId !== undefined) set.persona = null; // legacy text, see persona-data-migration.ts
-    const [row] = await db.update(TPL).set(set).where(eq(TPL.id, t.id)).returning();
-    const p = await personaOf(row!.personaId);
+    const personaId = req.body.personaId ?? t.personaId;
+    const kind = req.body.kind ?? t.kind;
+    const moves = personaId !== t.personaId || kind !== t.kind;
+    const row = await db.transaction(async (tx) => {
+      if (moves && personaId) await assertExampleRoom(tx, personaId, kind, t.userId, t.id);
+      return (await tx.update(TPL).set(set).where(eq(TPL.id, t.id)).returning())[0]!;
+    });
+    const p = await personaOf(row.personaId);
     if (req.audit && req.body.personaId !== undefined) req.audit.extra = { persona: p?.name ?? null };
-    return { template: templateItem(row!, p) };
+    return { template: templateItem(row, p) };
   });
 
   app.delete('/api/comment-templates/:id', { schema: { params: Id } }, async (req, reply) => {
