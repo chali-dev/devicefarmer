@@ -84,6 +84,11 @@ const EXACT: Record<string, string> = {
   'account check: login screen': 'acctLoginScreen',
   'account check: challenge screen, device halted': 'acctChallenge',
   'account check: profile did not show in time': 'acctTimeout',
+  // 从云手机同步 (task account-device-sync)
+  'account sync: username not readable': 'acctNoUsername',
+  'account sync: login screen': 'acctLoginScreen',
+  'account sync: challenge screen, device halted': 'acctChallenge',
+  'account sync: profile did not show in time': 'acctTimeout',
   // 帖子与评论采集 (task feed-collect) / 云手机发评论 (comment-reply on the device)
   'feed: profile opened': 'feedOpened',
   'feed: no posts on the profile': 'feedNoPosts',
@@ -160,6 +165,10 @@ const RULES: Rule[] = [
   [/^account check: device accounts read$/, 'acctDeviceAccounts', (_m, d) => ({ count: String(d?.count ?? '?') })],
   [/^account check result: (\w+)$/, 'acctResult', (m) => ({ result: te(`social.checkResult.${m[1]}`) ? t(`social.checkResult.${m[1]}`) : m[1]! })],
   [/^account check skipped: (\S+)$/, 'acctSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^account sync: device accounts read$/, 'acctDeviceAccounts', (_m, d) => ({ count: String(d?.count ?? '?') })],
+  [/^account sync: own profile read$/, 'syncProfileRead', (_m, d) => ({ handle: typeof d?.handle === 'string' ? d.handle : '?' })],
+  [/^account sync result: (\w+)$/, 'syncResult', (m) => ({ result: te(`social.sync.result.${m[1]}`) ? t(`social.sync.result.${m[1]}`) : m[1]! })],
+  [/^account sync skipped: (\S+)$/, 'syncSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^stored (\d+) trending videos for (\w+)$/, 'trendingStored', (m) => ({ n: m[1]!, region: m[2]! })],
   [/^collection: (\d+) tracked refreshes queued, (\d+) skipped; (\d+) trending refreshes queued; (\d+) old trending snapshots deleted$/, 'collectionTick',
     (m) => ({ queued: m[1]!, skipped: m[2]!, trending: m[3]!, purged: m[4]! })],

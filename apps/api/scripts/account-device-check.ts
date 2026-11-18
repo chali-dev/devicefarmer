@@ -24,6 +24,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
@@ -111,6 +112,11 @@ try {
     const r = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', ownerId: uU, ...body });
     if (r.status !== 201) throw new Error(`account create failed: ${r.text}`);
     accIds.push(r.body.account.id);
+    // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
+    if (typeof body.instanceId === 'string') {
+      await linkAccount(r.body.account.id, body.instanceId);
+      return (await http('GET', `/api/social/accounts/${r.body.account.id}`, admin)).body.account as { id: string; autoCheckUnsupported: string | null };
+    }
     return r.body.account as { id: string; autoCheckUnsupported: string | null };
   };
   const real = await mk({ handle: HANDLE, externalId: EXTERNAL_ID, instanceId: phone.id });

@@ -231,16 +231,19 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
-    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId, lang: body.lang }),
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, personaId: body.personaId, lang: body.lang }),
   },
   'PUT /api/social/accounts/:id': {
     action: 'social.account_update',
     detail: ({ body }) => ({
-      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, personaId: body.personaId, lang: body.lang,
+      fields: Object.keys(body).filter((k) => body[k] !== undefined && k !== 'instanceId'), personaId: body.personaId, lang: body.lang,
     }),
   },
   // 立即检测 (automatic check on the cloud phone, queued; the manual "mark checked" was removed)
   'POST /api/social/accounts/:id/check': { action: 'social.account_check' },
+  // 从云手机同步 (queued; the result is the task's) and 自动发现 now
+  'POST /api/social/sync-from-device': { action: 'social.sync_from_device', target: ({ body }) => String(body.instanceId), detail: ({ body }) => ({ instanceId: body.instanceId, ownerId: body.ownerId }) },
+  'POST /api/social/discover': { action: 'social.discover' },
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,

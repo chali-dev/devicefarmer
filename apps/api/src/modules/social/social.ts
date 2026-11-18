@@ -2,7 +2,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
-import { accessibleInstanceIds, assertInstanceAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
+import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { enabledPlatforms, PLATFORMS, platformById } from './platforms.js';
@@ -10,7 +10,8 @@ import { enabledPlatforms, PLATFORMS, platformById } from './platforms.js';
 /**
  * Social accounts (社交账号). Rules:
  * - Owner-only for `user` (others' rows are 404), admins see and manage everything.
- * - Linking a device needs a grant on it; the number of accounts per (device, platform) is capped
+ * - The device link is read only in the API: 从云手机同步 sets it (grant on the device), the batch unlink clears it;
+ *   the number of accounts per (device, platform) is capped
  *   (`social.limits` setting, default from the registry), enforced under a per (device, platform)
  *   transaction advisory lock so concurrent links cannot exceed it.
  * - The egress proxy is derived from the device (instances.proxy_id), never stored on the account.
@@ -48,29 +49,25 @@ export function platformsWithLimits(limits: Record<string, number>) {
 }
 
 /**
- * Checks that `user` may link `instanceId` and that it has room for one more `platform` account.
- * Must run inside the transaction that then writes the link: the advisory lock is held until commit,
- * so concurrent linkers of the same (device, platform) serialize and the second one sees the first.
+ * The device allows `platform` and has room for one more account of it (codes social.platform_disabled /
+ * social.device_limit). Takes the per (device, platform) advisory lock: call it in the writing transaction.
+ * The only way an account gets linked to a device is 从云手机同步 (sync.ts `applySync`; read only in the account
+ * API since 2026-11-18), so the access check is the sync request's (instance grant), not this function's.
  */
-export async function assertLinkable(tx: Tx, user: AuthUser, instanceId: string, platform: string, exceptAccountId?: string): Promise<{ id: string; name: string }> {
-  const [inst] = await tx.select({ id: schema.instances.id, name: schema.instances.name, allowedPlatforms: schema.instances.allowedPlatforms })
-    .from(schema.instances).where(eq(schema.instances.id, instanceId));
-  if (!inst) throw notFound('设备不存在', 'instances.not_found');
-  await assertInstanceAccess(user, instanceId, 'operate');
+export async function assertDeviceRoom(tx: Tx, inst: { id: string; name: string; allowedPlatforms: string[] | null }, platform: string, exceptAccountId?: string): Promise<void> {
   if (!platformAllowed(inst.allowedPlatforms, platform)) {
     const name = platformById(platform)?.name ?? platform;
     throw conflict(`设备 ${inst.name} 未开启 ${name}`, 'social.platform_disabled', { device: inst.name, platform: name });
   }
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`social:${instanceId}:${platform}`}, 0))`);
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`social:${inst.id}:${platform}`}, 0))`);
   const limit = (await getLimits(tx))[platform] ?? 1;
   const [{ n } = { n: 0 }] = await tx.select({ n: sql<number>`count(*)::int` }).from(sa).where(and(
-    eq(sa.instanceId, instanceId), eq(sa.platform, platform), exceptAccountId ? sql`${sa.id} <> ${exceptAccountId}` : undefined,
+    eq(sa.instanceId, inst.id), eq(sa.platform, platform), exceptAccountId ? sql`${sa.id} <> ${exceptAccountId}` : undefined,
   ));
   if (n >= limit) {
     const name = platformById(platform)?.name ?? platform;
     throw conflict(`设备 ${inst.name} 上的 ${name} 账号已达上限（${limit} 个）`, 'social.device_limit', { device: inst.name, platform: name, limit });
   }
-  return { id: inst.id, name: inst.name };
 }
 
 /** instances.allowed_platforms: null = every platform. */
