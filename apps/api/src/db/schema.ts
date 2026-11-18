@@ -845,6 +845,30 @@ export const socialAccountPosts = pgTable('social_account_posts', {
   index('social_account_posts_account_published_idx').on(t.socialAccountId, t.publishedAt),
 ]);
 
+/**
+ * 追踪中 (following list) of an own social account, read in the Instagram app on its cloud phone
+ * (modules/social/following.ts, task `account-following`). One row per followed account (handle lowercased).
+ * A run upserts what it saw (last_seen_at, position = order in the app, gone_at cleared); only a COMPLETE run
+ * (reached the end of the list) marks rows it did not see as `gone_at` (取消追踪 history); a capped run never does.
+ */
+export const socialAccountFollowing = pgTable('social_account_following', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  socialAccountId: uuid('social_account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
+  handle: text('handle').notNull(),
+  displayName: text('display_name'),
+  /** null = not readable on that screen (the app draws the badge inside the username text). */
+  verified: boolean('verified'),
+  /** Position in the list as the app showed it on the last run that saw it (0 = first). */
+  position: integer('position'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Not in the list any more (seen missing by a complete run); cleared when it shows up again. */
+  goneAt: timestamp('gone_at', { withTimezone: true }),
+}, (t) => [
+  unique('social_account_following_account_handle').on(t.socialAccountId, t.handle),
+  index('social_account_following_account_idx').on(t.socialAccountId, t.goneAt, t.position),
+]);
+
 /** Business log of a publish task: distribution, every pre-run check, method hand-over, operator actions. */
 export const publishLogs = pgTable('publish_logs', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -1375,6 +1399,7 @@ export type SocialAccountStats = typeof socialAccountStats.$inferSelect;
 export type TrackedPost = typeof trackedPosts.$inferSelect;
 export type TrackedPostComment = typeof trackedPostComments.$inferSelect;
 export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
+export type SocialAccountFollowing = typeof socialAccountFollowing.$inferSelect;
 export type Content = typeof contents.$inferSelect;
 export type ContentTranslation = typeof contentTranslations.$inferSelect;
 export type PublishTask = typeof publishTasks.$inferSelect;

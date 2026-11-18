@@ -25,11 +25,13 @@ import PlatformTag from './PlatformTag.vue'
 import AccountAiGenerateModal from './AccountAiGenerateModal.vue'
 import SocialAccountFeedDrawer from '../feed/SocialAccountFeedDrawer.vue'
 import SyncFromDeviceModal from './SyncFromDeviceModal.vue'
+import AccountAudience from './AccountAudience.vue'
 import { useAuthStore } from '../../stores/auth'
 import { useInstancesStore } from '../../stores/instances'
 
 /**
- * 媒体管理 → 我的媒体号: the operator's own accounts (人设, status, 配置语系, 从云手机同步, detail drawer). The page's header
+ * 我的媒体 → 我的媒体号: the operator's own accounts (人设, status, 配置语系, 从云手机同步, detail drawer). Each row expands into
+ * 粉丝 / 追踪中 (AccountAudience.vue, owner 2026-11-18: 「移到媒体号下展开」). The page's header
  * actions are teleported into `extraTo` (the page header of SocialAccountsView) while this tab is shown.
  */
 defineProps<{ extraTo?: string }>()
@@ -302,6 +304,9 @@ const rowProps = (record: SocialAccount) => ({
   onClick: (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('a, button, input, label, .ant-dropdown, .ant-checkbox-wrapper, .ant-typography')) openFeed(record) },
 })
 
+/** Rows expanded into 粉丝 / 追踪中 (the expand icon; a row click still opens the detail drawer). */
+const expandedKeys = ref<string[]>([])
+
 // ---------------------------------------------------------------- logs
 const logOpen = ref(false)
 const logFor = ref<SocialAccount | null>(null)
@@ -489,8 +494,10 @@ async function submitBatchForm() {
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total, totalText: (n) => t('social.total', { n }) })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         :custom-row="(r: any) => rowProps(r as SocialAccount)"
+        :expanded-row-keys="expandedKeys" @expanded-rows-change="(k: any[]) => (expandedKeys = k as string[])"
         @change="onTableChange"
       >
+        <template #expandedRowRender="{ record }"><AccountAudience :account="record as SocialAccount" /></template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformName(record.platform)" /></template>
           <template v-else-if="column.key === 'handle'">

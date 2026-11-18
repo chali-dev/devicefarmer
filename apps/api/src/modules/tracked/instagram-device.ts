@@ -33,6 +33,8 @@ export interface UiNode {
   /** [x1, y1, x2, y2] on screen, null when missing. */
   bounds: [number, number, number, number] | null;
   cls: string; hint: string; clickable: boolean; focused: boolean;
+  /** `selected` (e.g. the active tab of a tab bar). */
+  selected: boolean;
 }
 
 const decode = (s: string) => s
@@ -55,6 +57,7 @@ export function parseUiDump(xml: string): UiNode[] {
       rid: attr(m[0], 'resource-id'), text: attr(m[0], 'text'), desc: attr(m[0], 'content-desc'), pkg: attr(m[0], 'package'), depth,
       bounds: b ? [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])] : null,
       cls: attr(m[0], 'class'), hint: attr(m[0], 'hint'), clickable: attr(m[0], 'clickable') === 'true', focused: attr(m[0], 'focused') === 'true',
+      selected: attr(m[0], 'selected') === 'true',
     });
     if (m[1] !== '/') depth++;
   }

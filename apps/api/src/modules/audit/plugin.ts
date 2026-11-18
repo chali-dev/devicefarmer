@@ -419,6 +419,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // 帖子与评论 (account feed): collect now, comment directly under an own post (texts are not copied)
   'POST /api/social/accounts/:id/collect': { action: 'feed.collect', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
   'POST /api/tracked-accounts/:id/collect': { action: 'feed.collect_tracked', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
+  'POST /api/social/accounts/:id/following/sync': { action: 'social.following_sync', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
   'POST /api/social/accounts/:id/posts/:postId/comments': {
     action: 'comment.post_comment_create', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null),
     detail: ({ body }) => ({ scheduledAt: body.scheduledAt }),

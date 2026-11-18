@@ -93,7 +93,7 @@ const HALTS_KEY = 'risk.halts';
 export interface DeviceHalt {
   at: string;
   code: string;
-  source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish';
+  source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish' | 'following';
   platform: string;
   socialAccountId?: string | null;
   trackedAccountId?: string | null;
@@ -252,7 +252,7 @@ export interface DeviceOpOptions {
   /** What the operation does, shown as the device's 忙 state on 云机管理 (stored in the lock value). */
   what?: DeviceOpKind;
 }
-export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish';
+export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish' | 'following';
 
 /**
  * Automatic operations running now (the device lock is held), per device id: what and since when. Read only (one
@@ -265,7 +265,7 @@ export async function deviceBusy(instanceIds: string[]): Promise<Map<string, { w
   vals.forEach((v, i) => {
     if (!v) return;
     const [, what, at] = v.split('|');
-    const ok = ['collect', 'check', 'feed', 'reply', 'publish'].includes(what ?? '');
+    const ok = ['collect', 'check', 'feed', 'reply', 'publish', 'following'].includes(what ?? '');
     out.set(instanceIds[i]!, { what: ok ? (what as DeviceOpKind) : 'auto', since: at && Number(at) ? new Date(Number(at)).toISOString() : null });
   });
   return out;

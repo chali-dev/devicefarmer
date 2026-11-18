@@ -309,6 +309,13 @@
       "when": 1795012466772,
       "tag": "0043_custom_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795015750481,
+      "tag": "0044_account_following",
+      "breakpoints": true
     }
   ]
 }
