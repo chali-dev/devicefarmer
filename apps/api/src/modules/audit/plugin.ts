@@ -356,7 +356,13 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },
-  'POST /api/personas/:id/drafts/generate': { action: 'persona.draft_generate' },
+  // AI测试: never the draft texts or the save token; the route adds model / ok / error code (preview) and the content id (save).
+  'POST /api/personas/:id/drafts/preview': { action: 'persona.draft_preview', detail: () => ({}) },
+  'POST /api/personas/:id/drafts/save': { action: 'persona.draft_preview_save', detail: () => ({}) },
+  'PUT /api/social/accounts/:id/ai-drafts': {
+    action: 'social.ai_drafts', target: ({ params }) => socialAccountName(params.id),
+    detail: ({ body }) => ({ enabled: body.enabled, perDay: body.perDay }),
+  },
   // target = the source persona's name, targetId = its id; the route adds sourceId, the new id/name, ownerId and example counts.
   'POST /api/personas/:id/copy': { action: 'persona.copy', detail: ({ body }) => ({ ownerId: body.ownerId }) },
   // 内容分类: names only (no descriptions); the merge route adds the target name.

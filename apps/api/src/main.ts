@@ -43,7 +43,7 @@ import { publishRoutes } from './modules/publish/routes.js';
 import './modules/publish/publish.js'; // registers the publish task handler (manual publishing)
 import { personaRoutes } from './modules/comments/personas.js';
 import { aiRoutes } from './modules/ai/routes.js';
-import { schedulePersonaDrafts } from './modules/ai/drafts.js'; // 人设每日草稿 (AI): persona-drafts task handler + daily schedule
+import { scheduleAccountDrafts } from './modules/ai/drafts.js'; // 每日 AI 草稿 per social account: account-drafts task handler + daily schedule
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-reply task handler
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { analyticsRoutes } from './modules/analytics/routes.js';
@@ -167,7 +167,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
-    void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
+    void scheduleAccountDrafts().catch((err) => app.log.warn({ err }, 'AI draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
@@ -178,7 +178,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
-    void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
+    void scheduleAccountDrafts().catch((err) => app.log.warn({ err }, 'AI draft scheduling failed'));
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));

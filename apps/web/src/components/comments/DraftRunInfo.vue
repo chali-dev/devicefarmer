@@ -4,7 +4,7 @@ import { codeText } from '../../api/client'
 import type { PersonaDraftRun } from '../../api/types'
 import { dateLocale } from '../../i18n'
 
-/** One 人设每日草稿 generation task: time, trigger (每日/手动), status, drafts created or the error (内容设定 drawer, 人设 page). */
+/** One daily AI draft task: time, trigger, status, drafts created, the skip reason or the error (社交号 → AI 草稿). */
 defineProps<{ run: PersonaDraftRun }>()
 const { t, te } = useI18n()
 const triggerText = (x: string | null) => (x && te(`scripts.drafts.runTrigger.${x}`) ? t(`scripts.drafts.runTrigger.${x}`) : x ?? '')
@@ -17,6 +17,7 @@ const statusText = (x: string) => (te(`tasks.status.${x}`) ? t(`tasks.status.${x
     <a-tag>{{ triggerText(run.trigger) }}</a-tag>
     <a-tag :color="run.status === 'success' ? 'success' : run.status === 'failed' ? 'error' : 'processing'">{{ statusText(run.status) }}</a-tag>
     <span v-if="run.created !== null" class="small">{{ t('scripts.drafts.runCreated', { n: run.created }) }}</span>
+    <span v-if="run.skipped" class="small muted">{{ t('scripts.drafts.runSkipped', { reason: codeText(run.skipped, undefined, run.skipped) }) }}</span>
     <span v-if="run.errorCode" class="small err">{{ codeText(run.errorCode, undefined, run.errorCode) }}</span>
   </span>
 </template>

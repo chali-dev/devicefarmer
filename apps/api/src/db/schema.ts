@@ -489,6 +489,12 @@ export const socialAccounts = pgTable('social_accounts', {
    * translation in this language (else the Chinese source); the set of these = the 配置语系 offered in the editor.
    */
   lang: text('lang'),
+  /**
+   * 每日 AI 草稿 (modules/ai/drafts.ts): on = the daily `account-drafts` task writes `ai_drafts_per_day` (1..10) drafts
+   * in the account's persona style for its owner, targeting this account. Only with a persona (ai.account_no_persona).
+   */
+  aiDraftsEnabled: boolean('ai_drafts_enabled').notNull().default(false),
+  aiDraftsPerDay: integer('ai_drafts_per_day').notNull().default(4),
   loginStatus: text('login_status', { enum: ['unknown', 'logged_in', 'logged_out', 'needs_verification'] }).notNull().default('unknown'),
   accountStatus: text('account_status', { enum: ['active', 'limited', 'suspended', 'disabled'] }).notNull().default('active'),
   notes: text('notes'),
@@ -1008,7 +1014,7 @@ export const personas = pgTable('personas', {
   /** 一句话定位 (one-line positioning). */
   description: text('description'),
   sort: integer('sort').notNull().default(0),
-  /** 人设每日草稿 (AI): generate `drafts_per_day` draft contents per day from the persona (定位, `style`, 范例; modules/ai). Off by default. */
+  /** LEGACY (daily AI drafts moved to social accounts 2026-11-18): not read or written; drop in a later release. */
   draftEnabled: boolean('draft_enabled').notNull().default(false),
   draftsPerDay: integer('drafts_per_day').notNull().default(4),
   /**
@@ -1016,7 +1022,7 @@ export const personas = pgTable('personas', {
    * (the former 内容设定). The flat pre-split shape is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
    */
   style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
-  /** Public personas: the (enabled) user who owns the generated drafts. Personal personas: unused (their owner). */
+  /** LEGACY (see draftEnabled): not read or written; drop in a later release. */
   draftOwnerId: uuid('draft_owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1124,8 +1130,13 @@ export const trendingItems = pgTable('trending_items', {
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
 }, (t) => [unique('trending_items_snapshot_rank').on(t.snapshotId, t.rank)]);
 
-/** Origin of an AI draft: the model that served it, the persona, the task and when; `mediaTags` = the model's media keywords. */
+/**
+ * Origin of an AI draft: the model that served it, the persona, the task and when; `mediaTags` = the model's media keywords.
+ * `via`: `account` = daily run of one social account (`accountId`), `preview` = AI测试 preview saved by a person.
+ */
 export interface ContentAiInfo {
+  via?: 'account' | 'preview';
+  accountId?: string;
   model: string;
   requestedModel: string;
   personaId: string;
