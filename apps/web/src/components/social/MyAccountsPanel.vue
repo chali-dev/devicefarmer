@@ -23,6 +23,7 @@ import LangSelect from '../common/LangSelect.vue'
 import { langName } from '../../api/lang'
 import PlatformTag from './PlatformTag.vue'
 import AccountAiDrafts from './AccountAiDrafts.vue'
+import AccountAiGenerateModal from './AccountAiGenerateModal.vue'
 import SocialAccountFeedDrawer from '../feed/SocialAccountFeedDrawer.vue'
 import SyncFromDeviceModal from './SyncFromDeviceModal.vue'
 import { useAuthStore } from '../../stores/auth'
@@ -45,6 +46,10 @@ const allTags = ref<string[]>([])
 const personas = ref<Persona[]>([])
 const users = ref<ManagedUser[]>([])
 const items = ref<SocialAccount[]>([])
+/** 「AI生成草稿」 row action (AccountAiGenerateModal). */
+const aiGenFor = ref<SocialAccount | null>(null)
+const aiGenOpen = ref(false)
+function openAiGenerate(a: SocialAccount) { aiGenFor.value = a; aiGenOpen.value = true }
 const total = ref(0)
 const loading = ref(false)
 const selectedKeys = ref<string[]>([])
@@ -511,6 +516,7 @@ async function submitBatchForm() {
                 <template #overlay>
                   <a-menu>
                     <a-menu-item key="feed" @click="openFeed(record as SocialAccount)">{{ t('feed.tabs.posts') }}</a-menu-item>
+                    <a-menu-item key="ai" :disabled="!record.personaId" :title="record.personaId ? undefined : t('social.aiDrafts.noPersonaGenerate')" @click="openAiGenerate(record as SocialAccount)">{{ t('social.aiDrafts.generateNow') }}</a-menu-item>
                     <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
                     <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
@@ -525,6 +531,7 @@ async function submitBatchForm() {
   </div>
 
   <SocialAccountFeedDrawer v-model:open="feedOpen" :account="feedFor" />
+  <AccountAiGenerateModal v-model:open="aiGenOpen" :account="aiGenFor" />
   <SyncFromDeviceModal v-model:open="syncOpen" :users="users" :instance-id="filters.instanceId" @synced="onSynced" />
 
   <!-- create / edit -->
@@ -561,7 +568,7 @@ async function submitBatchForm() {
         <a-select v-model:value="form.personaId" allow-clear show-search option-filter-prop="label" :placeholder="t('social.noPersona')"
           :options="formPersonas.map((p) => ({ value: p.id, label: personaLabel(p) }))" />
       </a-form-item>
-      <a-form-item v-if="editing" :label="t('social.aiDrafts.title')"><AccountAiDrafts :account-id="editing.id" @changed="load" /></a-form-item>
+      <a-form-item v-if="editing" :label="t('social.aiDrafts.title')"><AccountAiDrafts :account-id="editing.id" :handle="editing.handle" @changed="load" /></a-form-item>
       <a-form-item :label="t('social.colLang')" name="lang" :extra="t('social.langHint')">
         <LangSelect v-model="form.lang" :extra="accountLangs" :placeholder="t('social.noLang')" />
       </a-form-item>

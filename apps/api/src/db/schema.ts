@@ -1132,11 +1132,14 @@ export const trendingItems = pgTable('trending_items', {
 
 /**
  * Origin of an AI draft: the model that served it, the persona, the task and when; `mediaTags` = the model's media keywords.
- * `via`: `account` = daily run of one social account (`accountId`), `preview` = AI测试 preview saved by a person.
+ * `via`: `account` = an `account-drafts` run of one social account (`accountId`; daily or 立即生成), `preview` = LEGACY
+ * (an AI测试 preview saved by a person; saving was removed on 2026-11-18, older rows keep it).
  */
 export interface ContentAiInfo {
   via?: 'account' | 'preview';
   accountId?: string;
+  /** 立即生成 with a 主题: the topic the person asked for. */
+  topic?: string;
   model: string;
   requestedModel: string;
   personaId: string;

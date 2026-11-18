@@ -17,7 +17,7 @@ import { forgetPersona, type VoiceForm } from './persona'
  * 发文风格 = tone preset + note, emoji, length (post range), hashtags, fixed opening/closing, 更多 (audience, notes) and
  * the 发文范例; 评论风格 = tone + note, emoji, length (comment range) and the 评论范例 (范例 = templates of the persona,
  * ≤ 20 per kind, edited in place one by one); AI测试 = a preview of one draft in the saved 发文风格 (DraftPreviewModal,
- * nothing stored unless 保存为草稿). How many drafts a day is set per social account (社交号 → AI 草稿), not here.
+ * a style test with an optional 主题, never stored). How many drafts a day is set per social account (社交号 → AI 草稿), not here.
  * No language: it belongs to the social account.
  * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one): 范例 can be written right
  * away and are created with the persona in one request (POST /api/personas `examples`, one transaction); after creating,
