@@ -19,13 +19,13 @@ import { forgetPersona, type VoiceForm } from './persona'
  * ≤ 20 per kind, edited in place one by one); AI 草稿 in one row (on/off, per day, public: who gets the drafts, generate
  * one now; written with the 发文风格). No language: it belongs to the social account.
  * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one); after creating, the
- * drawer stays open on the new persona so examples can be added.
+ * drawer stays open on the new persona so examples can be added. 复制到我的人设 (saved state) is emitted as `copy` to the page.
  */
 const props = defineProps<{
   open: boolean; personaId: string | null; scope: 'public' | 'mine'; ownerId?: string
   users: { id: string; username: string; disabled: boolean }[]
 }>()
-const emit = defineEmits<{ 'update:open': [boolean]; saved: [id: string] }>()
+const emit = defineEmits<{ 'update:open': [boolean]; saved: [id: string]; copy: [persona: { id: string; name: string }] }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const KINDS = ['post', 'comment'] as const
@@ -244,6 +244,7 @@ const lastRun = computed(() => detail.value?.persona.runs?.[0] ?? null)
     </a-spin>
     <template #footer>
       <a-space>
+        <a-button v-if="detail" @click="emit('copy', { id: detail.persona.id, name: detail.persona.name })">{{ t('personas.copy') }}</a-button>
         <a-button @click="emit('update:open', false)">{{ t('common.cancel') }}</a-button>
         <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
       </a-space>

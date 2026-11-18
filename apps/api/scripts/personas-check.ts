@@ -18,6 +18,9 @@
  *   banned words inside the fixed opening/closing refused.
  * - Migration 0037 (persona reset) executed inside a transaction on seeded rows and rolled back: personas, their
  *   templates, 账号人设 and legacy texts/groups cleared; contents.ai_generated untouched.
+ * - 复制到我的人设 (POST /api/personas/:id/copy): name 「(副本)」 + numbering (case-insensitive, parallel, 50 chars), 定位 + style +
+ *   范例 equal and private to the new owner, AI off; 404 for invisible personas, 403 for a user's other ownerId, admin
+ *   ownerId; one transaction (a seeded 21-example source fails with nothing left behind); audit persona.copy.
  * - Audit entries (names only).
  * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
  *   (shared + personal, case/space variants), migrated twice → personas created once, templates linked, no re-link
@@ -347,6 +350,122 @@ try {
   const [b2row] = await db.select().from(TPL).where(eq(TPL.id, B2.id));
   check('owner deletes own persona → its template is deleted too', r.status === 204 && b2row === undefined);
 
+  // ================================================================ 复制到我的人设 (POST /api/personas/:id/copy)
+  const copyIds: { src: string; id: string }[] = [];
+  {
+    const [adminRow] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.username, process.env.ADMIN_USERNAME!));
+    const adminId = adminRow!.id;
+    const style = {
+      topics: ['跑步', '早餐'], bannedWords: ['广告', '最便宜'],
+      post: { tone: 'pro', toneNote: '干货', emoji: 'low', length: 'high', hashtags: ['run', 'morning'], audience: '上班族', opening: '早安', closing: '明天见', notes: '少用感叹号' },
+      comment: { tone: 'warm', toneNote: '温柔', emoji: 'high', length: 'low' },
+    };
+    const src = (await persona(T, { scope: 'public', name: `Copy ${tag}`, description: '复制定位', style, draftEnabled: true, draftsPerDay: 7, draftOwnerId: B.id })).body.persona;
+    const ex = async (token: string, body: Record<string, unknown>) => {
+      const x = await http('POST', '/api/comment-templates', token, body);
+      if (x.body?.template?.id) templateIds.push(x.body.template.id);
+      return x;
+    };
+    const exs = [
+      await ex(T, { shared: true, kind: 'post', name: 'p1', text: `发文一 ${tag}`, personaId: src.id, tags: ['a'] }),
+      await ex(T, { shared: true, kind: 'comment', name: 'c1', text: `评论一 ${tag}`, personaId: src.id }),
+      await ex(T, { shared: true, kind: 'post', name: 'p2', text: `发文二 ${tag}`, personaId: src.id, tags: ['b', 'c'] }),
+      await ex(T, { shared: true, kind: 'comment', name: 'c2', text: `评论二 ${tag}`, personaId: src.id }),
+      await ex(A.token, { kind: 'post', name: 'own', text: `A 自己的 ${tag}`, personaId: src.id }), // A's private template on the public persona: not one of its 范例
+    ];
+    check('copy setup: public persona with style, AI on, 2 post + 2 comment examples', !!src?.id && exs.every((x) => x.status === 201), exs.map((x) => x.status).join());
+    const srcDetail = (await http('GET', `/api/personas/${src.id}`, T)).body;
+
+    let c = await http('POST', `/api/personas/${src.id}/copy`, A.token);
+    const cp = c.body?.persona;
+    if (cp) copyIds.push({ src: src.id, id: cp.id });
+    check('user copies a public persona → 201, personal persona of the caller named 「原名 (副本)」, examples {post 2, comment 2}',
+      c.status === 201 && cp.ownerType === 'user' && cp.ownerId === A.id && cp.name === `Copy ${tag} (副本)` && c.body.examples.post === 2 && c.body.examples.comment === 2,
+      `${c.status} ${c.text.slice(0, 200)}`);
+    const d = (await http('GET', `/api/personas/${cp?.id}`, A.token)).body;
+    check('copy: 定位 and the whole style (shared + 发文 + 评论) equal the source',
+      d.persona.description === '复制定位' && JSON.stringify(d.persona.style) === JSON.stringify(srcDetail.persona.style) && d.persona.style.post.closing === '明天见' && d.persona.style.comment.tone === 'warm',
+      JSON.stringify(d.persona.style));
+    check('copy: AI drafts off, default per day 4, no draft owner (drafts go to the owner)',
+      cp.draftEnabled === false && cp.draftsPerDay === 4 && cp.draftOwnerId === null && d.persona.draftOwnerName === `pea${tag}`);
+    check('copy: examples per kind equal the source in the same order (A\'s own template on the source not copied)',
+      d.examples.post.map((e: any) => `${e.name}:${e.text}`).join() === srcDetail.examples.post.map((e: any) => `${e.name}:${e.text}`).join()
+        && d.examples.comment.map((e: any) => e.text).join() === `评论一 ${tag},评论二 ${tag}` && d.examples.post.length === 2,
+      JSON.stringify(d.examples));
+    const copied = await db.select().from(TPL).where(eq(TPL.personaId, cp.id));
+    check('copy: examples are private templates of the caller on the new persona, tags kept',
+      copied.length === 4 && copied.every((t) => t.userId === A.id && t.createdBy === A.id)
+        && copied.find((t) => t.name === 'p2')?.tags.join() === 'b,c', JSON.stringify(copied.map((t) => [t.userId, t.name, t.tags])));
+    const srcAfter = await db.select().from(TPL).where(eq(TPL.personaId, src.id));
+    check('copy: the source keeps its 4 shared examples (+ A\'s own template)', srcAfter.length === 5 && srcAfter.filter((t) => t.userId === null).length === 4);
+    const mineList = await plist(A.token, 'scope=mine');
+    check('copy is listed under 我的人设 with count 4', mineList.items.find((p) => p.id === cp.id)?.count === 4);
+
+    // names: next free number, case-insensitive
+    c = await http('POST', `/api/personas/${src.id}/copy`, A.token, {});
+    if (c.body?.persona) copyIds.push({ src: src.id, id: c.body.persona.id });
+    const taken = await persona(A.token, { scope: 'mine', name: `COPY ${tag.toUpperCase()} (副本 3)` });
+    const c3 = await http('POST', `/api/personas/${src.id}/copy`, A.token, { ownerId: A.id });
+    if (c3.body?.persona) copyIds.push({ src: src.id, id: c3.body.persona.id });
+    check('names: second copy 「(副本 2)」; with 「COPY … (副本 3)」 taken (other case) the next is 「(副本 4)」; ownerId = self allowed',
+      c.status === 201 && c.body.persona.name === `Copy ${tag} (副本 2)` && taken.status === 201 && c3.status === 201 && c3.body.persona.name === `Copy ${tag} (副本 4)`,
+      `${c.body?.persona?.name} | ${c3.status} ${c3.body?.persona?.name ?? c3.text}`);
+    const longSrc = (await persona(T, { scope: 'public', name: `${tag}${'长'.repeat(44)}` })).body.persona;
+    c = await http('POST', `/api/personas/${longSrc.id}/copy`, A.token);
+    check('a 50-character name is shortened so 「 (副本)」 fits (≤ 50)', c.status === 201 && [...c.body.persona.name].length === 50 && c.body.persona.name.endsWith(' (副本)')
+      && c.body.persona.name.startsWith(tag), `${c.status} ${c.body?.persona?.name}`);
+    const par = await Promise.all([1, 2, 3].map(() => http('POST', `/api/personas/${src.id}/copy`, B.token)));
+    check('3 parallel copies by one user → 3 × 201 with distinct names (副本, 副本 2, 副本 3)',
+      par.every((x) => x.status === 201) && par.map((x) => x.body.persona.name).sort().join() === [`Copy ${tag} (副本)`, `Copy ${tag} (副本 2)`, `Copy ${tag} (副本 3)`].sort().join(),
+      par.map((x) => `${x.status} ${x.body?.persona?.name ?? x.body?.code}`).join());
+
+    // RBAC
+    const bOwn = (await persona(B.token, { scope: 'mine', name: `BOwn ${tag}`, description: 'B 的定位', style })).body.persona;
+    await ex(B.token, { kind: 'comment', name: 'bc', text: `B 评论 ${tag}`, personaId: bOwn.id });
+    const before = (await sqlClient`select (select count(*) from personas)::int p, (select count(*) from comment_templates)::int t`)[0]!;
+    const n1 = await http('POST', `/api/personas/${bOwn.id}/copy`, A.token);
+    const n2 = await http('POST', '/api/personas/00000000-0000-4000-8000-000000000000/copy', A.token);
+    check('another user\'s personal persona / unknown id → 404 persona.not_found', n1.status === 404 && n1.body.code === 'persona.not_found' && n2.status === 404 && n2.body.code === 'persona.not_found',
+      `${n1.status} ${n1.body?.code} ${n2.status}`);
+    const f1 = await http('POST', `/api/personas/${src.id}/copy`, A.token, { ownerId: B.id });
+    check('user with another ownerId → 403 persona.admin_only', f1.status === 403 && f1.body.code === 'persona.admin_only', `${f1.status} ${f1.body?.code}`);
+    const ub = await http('POST', `/api/personas/${src.id}/copy`, A.token, { ownerId: 'x' });
+    const ux = await http('POST', `/api/personas/${src.id}/copy`, A.token, { ownerId: A.id, name: 'x' });
+    check('invalid body (ownerId not a uuid, unknown field) → 400', ub.status === 400 && ux.status === 400, `${ub.status} ${ux.status}`);
+    const after = (await sqlClient`select (select count(*) from personas)::int p, (select count(*) from comment_templates)::int t`)[0]!;
+    check('refused copies create nothing', before.p === after.p && before.t === after.t, JSON.stringify([before, after]));
+    const own = await http('POST', `/api/personas/${bOwn.id}/copy`, B.token);
+    if (own.body?.persona) copyIds.push({ src: bOwn.id, id: own.body.persona.id });
+    const ownT = own.body?.persona ? await db.select().from(TPL).where(eq(TPL.personaId, own.body.persona.id)) : [];
+    check('owner copies an own personal persona → 「BOwn … (副本)」 with its example', own.status === 201 && own.body.persona.name === `BOwn ${tag} (副本)`
+      && own.body.persona.description === 'B 的定位' && ownT.length === 1 && ownT[0]!.userId === B.id);
+    const ad = await http('POST', `/api/personas/${bOwn.id}/copy`, T, { ownerId: A.id });
+    if (ad.body?.persona) copyIds.push({ src: bOwn.id, id: ad.body.persona.id });
+    const adT = ad.body?.persona ? await db.select().from(TPL).where(eq(TPL.personaId, ad.body.persona.id)) : [];
+    check('admin copies B\'s personal persona to A (ownerId): A\'s persona, B\'s example becomes A\'s private template', ad.status === 201 && ad.body.persona.ownerId === A.id
+      && ad.body.persona.name === `BOwn ${tag} (副本)` && adT.length === 1 && adT[0]!.userId === A.id && adT[0]!.text === `B 评论 ${tag}`, `${ad.status} ${ad.text.slice(0, 200)}`);
+    const self = await http('POST', `/api/personas/${src.id}/copy`, T);
+    if (self.body?.persona) copyIds.push({ src: src.id, id: self.body.persona.id });
+    check('admin without ownerId → own personal persona', self.status === 201 && self.body.persona.ownerId === adminId && self.body.persona.ownerType === 'user');
+    const nu = await http('POST', `/api/personas/${src.id}/copy`, T, { ownerId: '00000000-0000-4000-8000-000000000000' });
+    check('admin with an unknown ownerId → 404 users.not_found', nu.status === 404 && nu.body.code === 'users.not_found', `${nu.status} ${nu.body?.code}`);
+
+    // one transaction: a source with 21 post examples (seeded past the API limit) fails after the persona and the first
+    // templates were inserted → nothing left behind
+    const big = (await persona(T, { scope: 'public', name: `Big ${tag}` })).body.persona;
+    const seeded = await db.insert(TPL).values(Array.from({ length: 21 }, (_, i) => ({ userId: null, kind: 'post' as const, personaId: big.id, name: `big${i}`, text: `big ${i} ${tag}` }))).returning({ id: TPL.id });
+    templateIds.push(...seeded.map((x) => x.id));
+    const b0 = (await sqlClient`select (select count(*) from personas)::int p, (select count(*) from comment_templates)::int t`)[0]!;
+    const bad = await http('POST', `/api/personas/${big.id}/copy`, A.token);
+    const b1 = (await sqlClient`select (select count(*) from personas)::int p, (select count(*) from comment_templates)::int t`)[0]!;
+    const half = await db.select().from(P).where(ilike(P.name, `Big ${tag} (%`));
+    check('transaction: a copy failing the 20-per-kind check (seeded 21) → 400 persona.examples_full, no persona and no templates left',
+      bad.status === 400 && bad.body.code === 'persona.examples_full' && b0.p === b1.p && b0.t === b1.t && half.length === 0, `${bad.status} ${bad.body?.code} ${JSON.stringify([b0, b1])}`);
+    const again = await http('POST', `/api/personas/${src.id}/copy`, A.token);
+    if (again.body?.persona) copyIds.push({ src: src.id, id: again.body.persona.id });
+    check('after the rolled-back copy the next copy works (「(副本 5)」)', again.status === 201 && again.body.persona.name === `Copy ${tag} (副本 5)`, again.body?.persona?.name);
+  }
+
   // ================================================================ audit
   await sleep(500);
   const acts = await sqlClient`select action, target, detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action like 'persona.%'`;
@@ -355,6 +474,13 @@ try {
   check('audit: names only (target = persona name, no description text)',
     acts.some((x) => x.action === 'persona.delete' && x.target === `Old ${tag}`)
       && !JSON.stringify(acts).includes('Upbeat') && !JSON.stringify(acts).includes('Calm'));
+  const copyActs = await sqlClient`select target, target_id, status, detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'persona.copy' and status = 201`;
+  check(`audit persona.copy: one entry per successful copy (${copyIds.length}+${3 + 1}), targetId/sourceId = source, id = new persona, no texts`,
+    copyIds.every((x) => copyActs.some((a) => a.target_id === x.src && a.detail?.sourceId === x.src && a.detail?.id === x.id))
+      && copyActs.length === copyIds.length + 3 + 1 && copyActs.some((a) => a.target === `Copy ${tag}`) && !JSON.stringify(copyActs).includes('复制定位'),
+    `${copyActs.length} ${JSON.stringify(copyActs[0])}`);
+  const failedCopy = await sqlClient`select status, detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'persona.copy' and status >= 400`;
+  check('audit persona.copy also records refused copies (404/403/400)', failedCopy.length >= 5, String(failedCopy.length));
   const tplActs = await sqlClient`select detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'comment.template_create' and target = ${`a1 ${tag}`}`;
   check('audit: template create records the persona name', tplActs[0]?.detail?.persona === `Coach ${tag} Pro`, JSON.stringify(tplActs[0]?.detail));
 
@@ -426,6 +552,8 @@ try {
   check(`unexpected error: ${(err as Error).stack ?? (err as Error).message}`, false);
 } finally {
   if (templateIds.length) await db.delete(TPL).where(inArray(TPL.id, templateIds));
+  // copies' examples (e.g. the admin's own copy, not removed with the test users)
+  await db.delete(TPL).where(inArray(TPL.personaId, db.select({ id: P.id }).from(P).where(ilike(P.name, `%${tag}%`))));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   await db.delete(P).where(ilike(P.name, `%${tag}%`));
   const left = await db.select().from(P).where(ilike(P.name, `%${tag}%`));

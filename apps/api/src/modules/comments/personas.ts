@@ -3,7 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { Persona } from '../../db/schema.js';
-import { badRequest } from '../../lib/errors.js';
+import { badRequest, notFound } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
 import { assertDraftOwnerCandidate } from '../ai/drafts.js';
 import { personaDraftRuns } from '../ai/runs.js';
@@ -27,6 +27,17 @@ const TPL = schema.commentTemplates;
 const SA = schema.socialAccounts;
 const Id = z.object({ id: z.string().uuid() });
 const scoped = scopedList('persona', '人设', P, P);
+/** Suffix of a copy's name: 「原名 (副本)」, then 「原名 (副本 2)」, … (names are at most 50 characters). */
+const COPY_SUFFIX = '副本';
+const NAME_MAX = 50;
+/** Name of a copy for an owner who already has `taken` (lower-case) names. */
+export function copyName(source: string, taken: Set<string>): string {
+  for (let i = 1; ; i++) {
+    const suffix = ` (${COPY_SUFFIX}${i > 1 ? ` ${i}` : ''})`;
+    const name = `${[...source].slice(0, NAME_MAX - suffix.length).join('').trimEnd()}${suffix}`;
+    if (!taken.has(name.toLowerCase())) return name;
+  }
+}
 
 /** Template visibility for the per-persona counts (same rule as the template list). */
 const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, user.id)));
@@ -190,6 +201,52 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       if (req.audit) req.audit.extra = { templates: moved.length, accounts: accounts.length };
     });
     reply.code(204);
+  });
+
+  /**
+   * 复制到我的人设: a new personal persona of the caller (admins: of `ownerId`, any existing user; users: only themselves,
+   * another ownerId → 403 `persona.admin_only`) from any persona the caller may see (else 404): name 「原名 (副本)」 (taken
+   * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the whole stored style and every 范例 (post +
+   * comment) copied as private templates of the new owner on the new persona. AI drafts off (`draft_enabled` false,
+   * default per day, no draft owner: a personal persona's drafts go to its owner). One transaction: the 20-per-kind limit is
+   * checked after the copy and a violation (`persona.examples_full`) leaves nothing behind.
+   */
+  app.post('/api/personas/:id/copy', {
+    schema: { params: Id, body: z.object({ ownerId: z.string().uuid().optional() }).strict().nullish() },
+  }, async (req, reply) => {
+    const src = await visiblePersona(req.user, req.params.id);
+    const ownerId = req.body?.ownerId ?? req.user.id;
+    if (ownerId !== req.user.id) {
+      if (!isAdmin(req.user)) throw scoped.adminOnly();
+      const [u] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, ownerId));
+      if (!u) throw notFound('用户不存在', 'users.not_found');
+    }
+    const { row, examples } = await scoped.uniqueName(src.name, () => db.transaction(async (tx) => {
+      // Serialises copies for one owner, so two parallel copies pick different numbers.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`persona-copy:${ownerId}`}))`);
+      const taken = new Set((await tx.select({ name: P.name }).from(P).where(eq(P.ownerId, ownerId))).map((x) => x.name.toLowerCase()));
+      const [last] = await tx.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(eq(P.ownerId, ownerId));
+      const [row] = await tx.insert(P).values({
+        ownerType: 'user', ownerId, name: copyName(src.name, taken), description: src.description, sort: (last?.max ?? -1) + 1,
+        style: src.style, draftEnabled: false, draftOwnerId: null, createdBy: req.user.id,
+      }).returning();
+      const tpls = await tx.select().from(TPL).where(exampleWhere(src)).orderBy(asc(TPL.createdAt), asc(TPL.id));
+      if (tpls.length) {
+        // created_at 1 ms apart so the copies keep the source order (范例 are listed oldest first).
+        const t0 = Date.now();
+        await tx.insert(TPL).values(tpls.map((t, i) => ({
+          userId: ownerId, kind: t.kind, personaId: row!.id, tags: t.tags, name: t.name, text: t.text, createdBy: req.user.id, createdAt: new Date(t0 + i),
+        })));
+      }
+      const examples = { post: tpls.filter((t) => t.kind === 'post').length, comment: tpls.filter((t) => t.kind === 'comment').length };
+      for (const kind of ['post', 'comment'] as const) {
+        if (examples[kind] > MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条${kind === 'post' ? '发文' : '评论'}范例`, 'persona.examples_full', { max: MAX_EXAMPLES, kind });
+      }
+      return { row: row!, examples };
+    }));
+    if (req.audit) req.audit.extra = { sourceId: src.id, id: row.id, name: row.name, ownerId, examples };
+    reply.code(201);
+    return { persona: publicPersona(row, true), examples };
   });
 
   // No merge for personas (owner decision 2026-11-18): POST /api/personas/:id/merge does not exist (404).
