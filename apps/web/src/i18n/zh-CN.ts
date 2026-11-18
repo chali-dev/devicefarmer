@@ -895,7 +895,6 @@ const zhCN = {
       aiOff: '（管理员尚未配置 AI 密钥，当前不会生成）',
       generateNow: 'AI生成草稿',
       generateTitle: 'AI生成草稿：{\'@\'}{handle}',
-      previewIntro: '按账号人设的发文风格生成一篇草稿（不受每日开关影响），先在这里预览、修改，再选择存草稿、立即发布或排程发布。草稿归账号所有者、发布目标是这个账号。',
       noPersonaGenerate: '先给账号设置人设并保存，才能 AI 生成草稿',
       topic: '主题（选填）',
       topicPlaceholder: '例如：咖啡豆保存',

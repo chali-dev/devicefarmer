@@ -894,7 +894,6 @@ const en: Messages = {
       aiOff: '(no AI key is configured by an admin yet, so nothing is generated now)',
       generateNow: 'AI drafts now',
       generateTitle: 'AI drafts: {\'@\'}{handle}',
-      previewIntro: 'Writes one draft in the post style of the account\'s persona (independent of the daily switch). Preview and edit it here, then save it as a draft, publish it now or schedule it. The draft belongs to the account owner and targets this account.',
       noPersonaGenerate: 'Set and save a persona on the account to generate AI drafts',
       topic: 'Topic (optional)',
       topicPlaceholder: 'e.g. storing coffee beans',

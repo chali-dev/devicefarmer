@@ -166,7 +166,6 @@ const close = () => emit('update:open', false)
   <a-modal :open="open" :title="t('social.aiDrafts.generateTitle', { handle: account?.handle ?? '' })" :width="draft ? 960 : MODAL_WIDTH.sm" :mask-closable="false" @cancel="close">
     <a-alert v-if="account && !account.personaId" type="warning" show-icon :message="t('social.aiDrafts.noPersonaGenerate')" />
     <template v-else>
-      <p class="muted small">{{ t('social.aiDrafts.previewIntro') }}</p>
       <div class="topic-row">
         <a-input v-model:value="topic" :maxlength="200" allow-clear :placeholder="t('social.aiDrafts.topicPlaceholder')" :disabled="busy" @press-enter="draft ? regenerate() : generate()">
           <template #addonBefore>{{ t('social.aiDrafts.topic') }}</template>
