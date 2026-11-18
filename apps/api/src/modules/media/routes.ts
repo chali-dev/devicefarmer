@@ -152,8 +152,8 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
    * multipart, one file per request. Text fields BEFORE the file: scope=public|mine (public: admin),
    * optional process (JSON, ProcessOptionsSchema: crop/compress in the job), and the same metadata as
    * PUT /api/media/:id (MediaMetaSchema + assertMetaFor): name (default: file name without extension),
-   * categoryId, tags (JSON array of strings), status=ready|disabled (public only: visible to users once
-   * processed). All checks run before the file is stored, so a refused upload leaves no row.
+   * categoryId, tags (JSON array of strings). A legacy status=ready is ignored, status=disabled is refused
+   * (media.visibility_removed: public media is always visible to users). All checks run before the file is stored, so a refused upload leaves no row.
    * Returns 201 with status 'processing'; a media-process task does the rest.
    */
   app.post('/api/media/upload', async (req, reply) => {
@@ -226,14 +226,9 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     assertCanManage(req.user, a);
     const b = req.body;
     const set: Partial<MediaAsset> = {};
-    const statusChange = b.status !== undefined && b.status !== a.status ? b.status : undefined;
-    await assertMetaFor({ ownerType: a.ownerType, ownerId: a.ownerId }, { categoryId: b.categoryId, status: statusChange });
+    await assertMetaFor({ ownerType: a.ownerType, ownerId: a.ownerId }, { categoryId: b.categoryId, status: b.status });
     if (b.name !== undefined) set.name = b.name;
     if (b.categoryId !== undefined) set.categoryId = b.categoryId;
-    if (statusChange !== undefined) {
-      if (a.status !== 'ready' && a.status !== 'disabled') throw conflict(`素材状态为 ${a.status}，不能启用/禁用`, 'media.not_ready', { status: a.status });
-      set.status = statusChange;
-    }
     if (!Object.keys(set).length && b.tags === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
     if (Object.keys(set).length) {
       const done = await db.update(ma).set(set).where(and(eq(ma.id, a.id), isNull(ma.deletedAt))).returning({ id: ma.id });

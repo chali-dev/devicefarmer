@@ -10,7 +10,7 @@ import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFiel
 
 /**
  * Multi-file upload: drag & drop / picker → nothing is sent yet; the files open in MediaEditor
- * (crop, size, quality, preview; name, category, tags, 对用户可见). 保存 there queues the file here: 2 parallel XHRs with progress,
+ * (crop, size, quality, preview; name, category, tags). 保存 there queues the file here: 2 parallel XHRs with progress,
  * retry. Crop/compress itself runs on the server (media-process job) with the chosen options.
  */
 const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
@@ -46,7 +46,7 @@ function add(file: File) {
     pending.value.push(reactive<PendingFile>({
       uid: ++uid, file, url: URL.createObjectURL(file), video: isVideoFile(file, props.limits), processable: Boolean(fmt?.processable), formatId: fmt?.id ?? '',
       settings: { aspect: 'free', maxSize: 'original', quality: 'original' }, rect: null, dims: null,
-      meta: { name: fileStem(file.name), categoryId: undefined, tags: [], visible: true },
+      meta: { name: fileStem(file.name), categoryId: undefined, tags: [] },
     }))
     editorOpen.value = true
   }
@@ -76,7 +76,7 @@ async function start(e: Entry) {
   e.state = 'uploading'
   e.pct = 0
   e.error = ''
-  const fields: Record<string, string> = { scope: props.scope, ...(e.meta ? metaFields(e.meta, props.scope) : {}) }
+  const fields: Record<string, string> = { scope: props.scope, ...(e.meta ? metaFields(e.meta) : {}) }
   if (e.process) fields.process = JSON.stringify(e.process)
   const up = xhrUpload(fields, e.file, (p) => { e.pct = p })
   e.abort = up.abort

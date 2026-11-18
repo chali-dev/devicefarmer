@@ -45,7 +45,10 @@ function cleanName(s: string, max: number): string {
 
 // ---------------------------------------------------------------- access rules
 
-/** Non-admins see public assets only when ready (not disabled/processing/failed) and only their own private ones. */
+/**
+ * Non-admins see public assets only when ready (not processing/failed; legacy 'disabled' rows, which the
+ * public-media-visibility migration turns ready, stay hidden) and only their own private ones.
+ */
 export function canView(user: AuthUser, a: MediaAsset): boolean {
   if (a.deletedAt) return false;
   if (isAdmin(user)) return true;
@@ -91,7 +94,7 @@ export async function assertCategoryFor(owner: Owner, categoryId: string): Promi
 }
 
 /**
- * Name / category / tags / 对用户可见 of an asset: one schema and one rule check for both the edit
+ * Name / category / tags of an asset: one schema and one rule check for both the edit
  * (PUT /api/media/:id) and the upload (multipart fields), so they can't drift apart.
  */
 export const MediaTag = z.string().trim().min(1).max(32);
@@ -99,15 +102,18 @@ export const MediaMetaSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   categoryId: z.string().uuid().nullable().optional(),
   tags: z.array(MediaTag).max(20).optional(),
-  /** Public assets only (admin): 'ready' = visible to users, 'disabled' = hidden. */
+  /**
+   * LEGACY (owner decision 2026-11-18: public media is always visible to every user, no 对用户可见).
+   * 'ready' from an older page is accepted and ignored; 'disabled' is refused (media.visibility_removed).
+   */
   status: z.enum(['ready', 'disabled']).optional(),
 });
 export type MediaMeta = z.infer<typeof MediaMetaSchema>;
 
-/** Rules for metadata of an asset of `owner`: category of the same owner, visibility only on public assets. */
+/** Rules for metadata of an asset of `owner`: category of the same owner; hiding an asset is gone. */
 export async function assertMetaFor(owner: Owner, m: Pick<MediaMeta, 'categoryId' | 'status'>): Promise<void> {
+  if (m.status === 'disabled') throw badRequest('公共素材始终对所有用户可见，已不能停用', 'media.visibility_removed');
   if (m.categoryId) await assertCategoryFor(owner, m.categoryId);
-  if (m.status !== undefined && owner.ownerType !== 'public') throw badRequest('只有公共素材可以启用/禁用', 'media.status_public_only');
 }
 
 /**
@@ -210,7 +216,6 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
         name, fileName, storage: storage.kind, fileKey, fileType: format.kind, mimeType: format.mime, fileSize: size,
         checksum: hash.digest('hex'), status: 'processing', createdBy: input.userId,
         processing: input.process ? { options: input.process } : null,
-        disableOnReady: meta.status === 'disabled',
       }).returning()) as [MediaAsset];
     } catch (err) {
       await storage.delete(fileKey).catch(() => undefined);
@@ -309,7 +314,7 @@ export async function processMedia(assetId: string, signal?: AbortSignal): Promi
       written.push(thumbnailKey);
       await st.put(thumbnailKey, thumb, ts.size, 'image/jpeg');
       const done = await db.update(schema.mediaAssets)
-        .set({ ...info, ...(replace ?? {}), processing, thumbnailKey, status: asset.disableOnReady ? 'disabled' : 'ready', error: null })
+        .set({ ...info, ...(replace ?? {}), processing, thumbnailKey, status: 'ready', error: null })
         .where(and(eq(schema.mediaAssets.id, asset.id), isNull(schema.mediaAssets.deletedAt), eq(schema.mediaAssets.status, 'processing'), eq(schema.mediaAssets.fileKey, asset.fileKey)))
         .returning({ id: schema.mediaAssets.id });
       if (!done.length) { for (const k of written) await st.delete(k).catch(() => undefined); }

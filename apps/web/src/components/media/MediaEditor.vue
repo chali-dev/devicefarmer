@@ -12,8 +12,7 @@ import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan,
 
 /**
  * Edit-before-upload: crop (move/resize, aspect presets), size and quality per file, with a
- * client-side preview of the result, plus the 编辑素材 fields (name, category, tags, 对用户可见 for
- * public uploads) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
+ * client-side preview of the result, plus the 编辑素材 fields (name, category, tags) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
  * 取消 drops the current file; closing the dialog drops all files still in it.
  * `categories` are the upload owner's (public ones for a public upload, the uploader's own otherwise);
  * 新建分类 adds one in the same scope.
@@ -42,7 +41,7 @@ function setAspect(i: PendingFile, a: EditSettings['aspect']) {
   i.settings.aspect = a
   i.rect = null // re-fit: largest centred box of the new preset
 }
-/** Crop preset/size/quality (processable files) and category/tags/visibility (all files) of the current one; names stay per file. */
+/** Crop preset/size/quality (processable files) and category/tags (all files) of the current one; names stay per file. */
 function applyToAll() {
   const c = cur.value
   if (!c) return
@@ -50,7 +49,6 @@ function applyToAll() {
     if (i === c) continue
     i.meta.categoryId = c.meta.categoryId
     i.meta.tags = [...c.meta.tags]
-    i.meta.visible = c.meta.visible
     if (!i.processable || !c.processable) continue
     setAspect(i, c.settings.aspect)
     i.settings.maxSize = c.settings.maxSize
@@ -235,13 +233,10 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
           </a-col>
         </a-row>
         <a-row :gutter="16">
-          <a-col :xs="24" :sm="scope === 'public' ? 18 : 24">
+          <a-col :span="24">
             <a-form-item :label="t('media.tags')">
               <a-select v-model:value="cur.meta.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :token-separators="[',']" :placeholder="t('media.addTag')" style="width: 100%" />
             </a-form-item>
-          </a-col>
-          <a-col v-if="scope === 'public'" :xs="24" :sm="6">
-            <a-form-item :label="t('media.visible')"><a-switch v-model:checked="cur.meta.visible" /></a-form-item>
           </a-col>
         </a-row>
       </a-form>

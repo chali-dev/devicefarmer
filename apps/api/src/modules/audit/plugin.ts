@@ -189,8 +189,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
     detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size, scope: upload.scope, categoryId: upload.categoryId, status: upload.status } : undefined),
   },
   'PUT /api/media/:id': {
-    action: ({ body }) => (body.status === 'disabled' ? 'media.disable' : body.status === 'ready' ? 'media.enable' : 'media.update'),
-    detail: ({ body }) => ({ name: body.name, categoryId: body.categoryId, tags: body.tags, status: body.status }),
+    action: 'media.update', // media.enable / media.disable: older rows only (visibility removed 2026-11-18)
+    detail: ({ body }) => ({ name: body.name, categoryId: body.categoryId, tags: body.tags }),
   },
   'DELETE /api/media/:id': { action: 'media.delete' },
   'POST /api/media/batch-delete': {

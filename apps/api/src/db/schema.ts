@@ -216,7 +216,8 @@ export const settings = pgTable('settings', {
  * recorded in `storage` under public/{images,videos,thumbnails}/ or users/{owner_id}/...,
  * always with random names. Upload stores the file with status 'processing'; the media-process
  * queue job computes metadata + thumbnail and sets 'ready' or 'failed' (`error`).
- * 'disabled' (public only) hides a ready asset from non-admins.
+ * 'disabled' is LEGACY (public media is always visible since 2026-11-18; never written, existing rows
+ * are set ready by src/db/media-visibility-migration.ts; non-admins still don't see one).
  * `deleted_at` marks a row whose files are being purged: it is hidden immediately, the files are
  * deleted, then the row (and its tags/favorites, by cascade) is removed. A row that stays with
  * deleted_at set means a storage delete failed; purgeDeletedMedia() retries it.
@@ -279,7 +280,7 @@ export const mediaAssets = pgTable('media_assets', {
   error: text('error'),
   /** Crop/compress requested at upload (null = stored as uploaded) and, once done, what it did. */
   processing: jsonb('processing').$type<MediaProcessing>(),
-  /** Public assets uploaded with 对用户可见 off: the media-process job ends in 'disabled' instead of 'ready'. */
+  /** LEGACY (migration 0039, expand/contract): no longer written or read (对用户可见 removed 2026-11-18); drop in a later release. */
   disableOnReady: boolean('disable_on_ready').notNull().default(false),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
