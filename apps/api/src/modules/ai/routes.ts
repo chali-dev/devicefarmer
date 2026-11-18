@@ -42,7 +42,7 @@ export const aiRoutes: FastifyPluginAsyncZod = async (app) => {
   app.get('/api/social/accounts/:id/ai-drafts', { schema: { params: Id } }, async (req) => {
     const a = await visibleAccount(req.user, req.params.id);
     const s = await getAiSettings();
-    return { enabled: a.aiDraftsEnabled, perDay: a.aiDraftsPerDay, personaId: a.personaId, runs: await accountDraftRuns(a.id), ai: { enabled: s.enabled, keySet: s.keySet, hour: s.hour } };
+    return { enabled: a.aiDraftsEnabled, perDay: a.aiDraftsPerDay, personaId: a.personaId, runs: await accountDraftRuns(a.id), ai: { keySet: s.keySet, hour: s.hour } };
   });
 
   app.put('/api/social/accounts/:id/ai-drafts', { schema: { params: Id, body: AccountDraftsInput } }, async (req) => {
