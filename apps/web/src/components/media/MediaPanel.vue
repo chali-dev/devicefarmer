@@ -38,7 +38,6 @@ const tabLabel = computed(() => t(`media.tabs.${props.tab}`))
 const q = ref('')
 const type = ref<'' | 'image' | 'video'>('')
 const categoryId = ref<string>('')
-const tags = ref<string[]>([])
 const status = ref<string>('')
 const page = ref(1)
 const pageSize = ref(24)
@@ -62,7 +61,6 @@ const items = ref<MediaItem[]>([])
 const total = ref(0)
 const loading = ref(false)
 const categories = ref<MediaCategory[]>([])
-const tagOptions = ref<string[]>([])
 const thumbs = useThumbs()
 
 async function load(silent = false) {
@@ -73,7 +71,6 @@ async function load(silent = false) {
     if (q.value.trim()) p.set('q', q.value.trim())
     if (type.value) p.set('type', type.value)
     if (categoryId.value) p.set('categoryId', categoryId.value)
-    if (tags.value.length) p.set('tags', tags.value.join(','))
     if (status.value) p.set('status', status.value)
     const r = await api<{ items: MediaItem[]; total: number }>('GET', `/api/media?${p}`)
     if (!r.items.length && r.total && page.value > 1) { page.value = Math.ceil(r.total / pageSize.value); return load(silent) }
@@ -92,12 +89,7 @@ async function loadCategories() {
   try { categories.value = (await api<{ categories: MediaCategory[] }>('GET', `/api/media/categories?${qs}`)).categories }
   catch (e) { message.error(errMsg(e)) }
 }
-async function loadTags() {
-  const p = new URLSearchParams({ scope: apiScope.value })
-  if (ownerId.value) p.set('ownerId', ownerId.value)
-  try { tagOptions.value = (await api<{ tags: string[] }>('GET', `/api/media/tags?${p}`)).tags } catch { tagOptions.value = [] }
-}
-const refreshAll = () => Promise.all([load(), loadCategories(), loadTags()])
+const refreshAll = () => Promise.all([load(), loadCategories()])
 
 /** While something is processing, refresh quietly every 3 s. */
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -114,8 +106,8 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => { clearTimeout(pollTimer); thumbs.dispose(); closePreview() })
 
-watch([type, categoryId, tags, status], () => { page.value = 1; void load() })
-watch(owner, () => { categoryId.value = ''; tags.value = []; page.value = 1; void refreshAll() })
+watch([type, categoryId, status], () => { page.value = 1; void load() })
+watch(owner, () => { categoryId.value = ''; page.value = 1; void refreshAll() })
 function search() { page.value = 1; void load() }
 function onPage(p: number, size: number) { page.value = p; pageSize.value = size; void load() }
 
@@ -253,14 +245,13 @@ function processedText(m: MediaItem): string {
 
 // edit
 const editing = ref<MediaItem | null>(null)
-const editForm = reactive({ name: '', categoryId: undefined as string | undefined, tags: [] as string[] })
+const editForm = reactive({ name: '', categoryId: undefined as string | undefined })
 const editCategories = ref<MediaCategory[]>([])
 const editSaving = ref(false)
 async function openEdit(m: MediaItem) {
   editing.value = m
   editForm.name = m.name
   editForm.categoryId = m.categoryId ?? undefined
-  editForm.tags = [...m.tags]
   const qs = m.ownerType === 'public' ? 'scope=public' : m.ownerId === auth.user?.id ? 'scope=mine' : `scope=mine&ownerId=${m.ownerId}`
   try { editCategories.value = (await api<{ categories: MediaCategory[] }>('GET', `/api/media/categories?${qs}`)).categories }
   catch { editCategories.value = [] }
@@ -270,16 +261,14 @@ async function saveEdit() {
   if (!m) return
   const name = editForm.name.trim()
   if (!name) { message.warning(t('media.nameRequired')); return }
-  const tagList = editForm.tags.map((x) => x.trim()).filter(Boolean)
-  if (tagList.some((x) => x.length > 32)) { message.warning(t('media.tagTooLong')); return }
-  if (tagList.length > 20) { message.warning(t('media.tooManyTags')); return }
-  const body: Record<string, unknown> = { name, categoryId: editForm.categoryId ?? null, tags: tagList }
+  // No tags since 2026-11-18 (owner): the body omits them, so the API keeps an asset's stored tags.
+  const body: Record<string, unknown> = { name, categoryId: editForm.categoryId ?? null }
   editSaving.value = true
   try {
     await api('PUT', `/api/media/${m.id}`, body)
     editing.value = null
     message.success(t('common.saved'))
-    await Promise.all([load(), loadCategories(), loadTags()])
+    await Promise.all([load(), loadCategories()])
   } catch (e) { message.error(errMsg(e)) }
   finally { editSaving.value = false }
 }
@@ -344,10 +333,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
       <a-input-search v-model:value="q" :placeholder="t('media.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
       <a-select v-model:value="type" :options="typeOptions" style="width: 130px" />
       <a-select v-if="categoryQuery" v-model:value="categoryId" :options="categoryOptions" style="width: 180px" />
-      <a-select
-        v-model:value="tags" mode="multiple" :placeholder="t('media.tagFilter')" allow-clear :max-tag-count="2" style="width: 180px"
-        :options="tagOptions.map((x) => ({ value: x, label: x }))"
-      />
       <a-select v-if="showStatus" v-model:value="status" :options="statusOptions" style="width: 130px" />
       <a-checkbox
         v-if="items.length && view === 'grid'" :checked="allChecked" :indeterminate="selected.length > 0 && !allChecked"
@@ -395,9 +380,8 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
               {{ m.fileType === 'video' ? t('media.video') : t('media.image') }} · {{ fmtSize(m.fileSize) }}<template v-if="m.width"> · {{ m.width }}×{{ m.height }}</template>
             </div>
             <div class="muted small ellipsis">{{ fmtTime(m.createdAt) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
-            <div v-if="m.categoryName || m.tags.length" class="tags">
-              <a-tag v-if="m.categoryName" color="blue"><FolderOutlined /> {{ m.categoryName }}</a-tag>
-              <a-tag v-for="x in m.tags" :key="x">{{ x }}</a-tag>
+            <div v-if="m.categoryName" class="tags">
+              <a-tag color="blue"><FolderOutlined /> {{ m.categoryName }}</a-tag>
             </div>
           </div>
           <div class="actions">
@@ -432,7 +416,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
               </span>
               <a-typography-text class="name" :content="record.name" :ellipsis="{ tooltip: record.name }" />
             </div>
-            <div v-if="record.tags.length"><a-tag v-for="x in record.tags" :key="x">{{ x }}</a-tag></div>
           </template>
           <template v-else-if="column.key === 'type'">{{ record.fileType === 'video' ? t('media.video') : t('media.image') }}</template>
           <template v-else-if="column.key === 'size'">{{ fmtSize(record.fileSize) }}</template>
@@ -501,9 +484,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
         <a-form-item :label="t('media.category')">
           <a-select v-model:value="editForm.categoryId" allow-clear :placeholder="t('media.uncategorized')" :options="editCategories.map((c) => ({ value: c.id, label: c.name }))" />
         </a-form-item>
-        <a-form-item :label="t('media.tags')">
-          <a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :placeholder="t('media.addTag')" style="width: 100%" />
-        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -521,7 +501,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 
     <MediaUploader
       v-if="canUpload" v-model:open="uploadOpen" :scope="uploadScope" :scope-label="tabLabel" :limits="limits" :categories="categories"
-      :tag-options="tagOptions" @uploaded="refreshAll" @categories-changed="loadCategories"
+      @uploaded="refreshAll" @categories-changed="loadCategories"
     />
     <ScopedListManager v-if="canManageCategories" v-model:open="categoriesOpen" path="/api/media/categories" list-key="categories" texts="media.categories"
       :merge-into-public="false" :initial-tab="uploadScope" @changed="() => { void loadCategories(); void load() }" />

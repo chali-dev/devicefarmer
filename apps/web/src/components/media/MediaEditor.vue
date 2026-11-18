@@ -8,16 +8,16 @@ import type { MediaCategory } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
 import VNodes from '../common/VNodes'
 import MediaCropper from './MediaCropper.vue'
-import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan, tagProblem, type EditSettings, type PendingFile, type Rect } from './media'
+import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan, type EditSettings, type PendingFile, type Rect } from './media'
 
 /**
  * Edit-before-upload: crop (move/resize, aspect presets), size and quality per file, with a
- * client-side preview of the result, plus the 编辑素材 fields (name, category, tags) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
+ * client-side preview of the result, plus the 编辑素材 fields (name, category) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
  * 取消 drops the current file; closing the dialog drops all files still in it.
  * `categories` are the upload owner's (public ones for a public upload, the uploader's own otherwise);
  * 新建分类 adds one in the same scope (with ownerId: a personal category of that user, admin).
  */
-const props = defineProps<{ items: PendingFile[]; scope: 'public' | 'mine'; ownerId?: string; categories: MediaCategory[]; tagOptions: string[] }>()
+const props = defineProps<{ items: PendingFile[]; scope: 'public' | 'mine'; ownerId?: string; categories: MediaCategory[] }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ save: [uids: number[]]; discard: [uids: number[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
@@ -41,14 +41,13 @@ function setAspect(i: PendingFile, a: EditSettings['aspect']) {
   i.settings.aspect = a
   i.rect = null // re-fit: largest centred box of the new preset
 }
-/** Crop preset/size/quality (processable files) and category/tags (all files) of the current one; names stay per file. */
+/** Crop preset/size/quality (processable files) and category (all files) of the current one; names stay per file. */
 function applyToAll() {
   const c = cur.value
   if (!c) return
   for (const i of props.items) {
     if (i === c) continue
     i.meta.categoryId = c.meta.categoryId
-    i.meta.tags = [...c.meta.tags]
     if (!i.processable || !c.processable) continue
     setAspect(i, c.settings.aspect)
     i.settings.maxSize = c.settings.maxSize
@@ -74,15 +73,6 @@ async function addCategory() {
     message.success(t('media.categories.created'))
     emit('categoriesChanged')
   } catch (e) { message.error(errorText(e)) }
-}
-/** Tags trimmed, then the edit dialog's limits; jumps to the first file that breaks them. */
-function metaOk(uids: number[]): boolean {
-  for (const i of props.items.filter((x) => uids.includes(x.uid))) {
-    i.meta.tags = i.meta.tags.map((x) => x.trim()).filter(Boolean)
-    const bad = tagProblem(i.meta.tags)
-    if (bad) { currentUid.value = i.uid; message.warning(t(bad)); return false }
-  }
-  return true
 }
 
 const result = computed(() => (cur.value?.dims && cur.value.processable ? plan(cur.value.dims.w, cur.value.dims.h, cur.value.settings, cur.value.rect, cur.value.video) : null))
@@ -146,8 +136,8 @@ const pixelPct = computed(() => {
 })
 
 function discardCurrent() { if (cur.value) emit('discard', [cur.value.uid]) }
-function saveCurrent() { if (cur.value && metaOk([cur.value.uid])) emit('save', [cur.value.uid]) }
-function saveAll() { const uids = props.items.map((i) => i.uid); if (metaOk(uids)) emit('save', uids) }
+function saveCurrent() { if (cur.value) emit('save', [cur.value.uid]) }
+function saveAll() { emit('save', props.items.map((i) => i.uid)) }
 function close() { emit('discard', props.items.map((i) => i.uid)) }
 </script>
 
@@ -229,13 +219,6 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
                   </div>
                 </template>
               </a-select>
-            </a-form-item>
-          </a-col>
-        </a-row>
-        <a-row :gutter="16">
-          <a-col :span="24">
-            <a-form-item :label="t('media.tags')">
-              <a-select v-model:value="cur.meta.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :token-separators="[',']" :placeholder="t('media.addTag')" style="width: 100%" />
             </a-form-item>
           </a-col>
         </a-row>

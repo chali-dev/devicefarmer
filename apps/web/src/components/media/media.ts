@@ -118,24 +118,16 @@ export interface PendingFile {
   settings: EditSettings; rect: Rect | null; dims: { w: number; h: number } | null
   meta: UploadMeta
 }
-/** Stored with the upload (same fields and rules as the 编辑素材 dialog). Public media is always visible to every user. */
-export interface UploadMeta { name: string; categoryId: string | undefined; tags: string[] }
+/** Stored with the upload (same fields as the 编辑素材 dialog; no tags since 2026-11-18). Public media is always visible to every user. */
+export interface UploadMeta { name: string; categoryId: string | undefined }
 /** File name without its extension (the server's default name). */
 export const fileStem = (name: string) => name.replace(/\.[^.]{1,8}$/, '') || name
-/** The edit dialog's client-side tag rules; returns an i18n key when they're broken. */
-export function tagProblem(tags: string[]): string | null {
-  if (tags.some((x) => x.length > 32)) return 'media.tagTooLong'
-  if (tags.length > 20) return 'media.tooManyTags'
-  return null
-}
 /** Multipart fields for the metadata. */
 export function metaFields(m: UploadMeta): Record<string, string> {
   const f: Record<string, string> = {}
   const name = m.name.trim()
   if (name) f.name = name
   if (m.categoryId) f.categoryId = m.categoryId
-  const tags = m.tags.map((x) => x.trim()).filter(Boolean)
-  if (tags.length) f.tags = JSON.stringify(tags)
   return f
 }
 /** Source pixels. */
