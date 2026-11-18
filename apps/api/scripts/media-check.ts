@@ -514,8 +514,9 @@ try {
   await new Promise((r) => setTimeout(r, 1000));
   const audit = await db.select({ action: schema.auditLogs.action }).from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), dlike(schema.auditLogs.action, 'media.%')));
   const actions = new Set(audit.map((a) => a.action));
-  const want = ['media.upload', 'media.update', 'media.disable', 'media.enable', 'media.delete', 'media.batch_delete', 'media.favorite', 'media.unfavorite', 'media.category_create', 'media.category_update', 'media.category_delete', 'media.category_merge', 'media.push'];
+  const want = ['media.upload', 'media.update', 'media.delete', 'media.batch_delete', 'media.favorite', 'media.unfavorite', 'media.category_create', 'media.category_update', 'media.category_delete', 'media.category_merge', 'media.push'];
   check('audit rows for media actions', want.every((w) => actions.has(w)), `missing: ${want.filter((w) => !actions.has(w)).join(', ') || 'none'}`);
+  check('no media.disable / media.enable audit actions any more (status=ready/disabled PUTs are media.update)', !actions.has('media.disable') && !actions.has('media.enable'), [...actions].join(','));
   const catAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), dlike(schema.auditLogs.action, 'media.category_%')));
   check('category audit: names only (merge source + into), no description text', catAudit.some((a) => a.action === 'media.category_merge' && a.target === `合并源-${tag}` && (a.detail as any)?.into === `改名-${tag}`)
     && catAudit.some((a) => a.action === 'media.category_delete' && a.target === `改名-${tag}`) && !JSON.stringify(catAudit).includes(`desc ${tag}`), JSON.stringify(catAudit.map((a) => [a.action, a.target])));

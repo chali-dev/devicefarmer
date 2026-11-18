@@ -43,7 +43,7 @@ const run = promisify(execFile);
 // ---------------------------------------------------------------- spec (exported for the verify script)
 
 export type Owner = 'public' | 'admin' | 'user';
-export interface MediaSpec { file: string; owner: Owner; w: number; h: number; color: [string, string]; label: string; category?: string; tags: string[]; secs?: number; disabled?: boolean }
+export interface MediaSpec { file: string; owner: Owner; w: number; h: number; color: [string, string]; label: string; category?: string; tags: string[]; secs?: number }
 /** 素材分类 (media categories): public + personal, with an optional description (shared scoped-list model). */
 export const CATEGORIES: { name: string; owner: Owner; description?: string }[] = [
   { name: 'demo 产品图', owner: 'public', description: '白底 / 场景产品图' },
@@ -63,7 +63,7 @@ export const MEDIA: MediaSpec[] = [
   { file: 'demo-双十一海报.jpg', owner: 'public', w: 1080, h: 1350, color: ['#b71c1c', '#ffd54f'], label: '11.11', category: 'demo 节日活动', tags: ['demo', 'Promo', '双十一'] },
   { file: 'demo-圣诞倒计时.mp4', owner: 'public', w: 720, h: 1280, color: ['#1b5e20', '#c62828'], label: 'XMAS', category: 'demo 节日活动', tags: ['demo', 'promo', 'christmas'], secs: 5 },
   { file: 'demo-开箱短片.mp4', owner: 'public', w: 1280, h: 720, color: ['#212121', '#90caf9'], label: 'UNBOXING', category: 'demo 产品图', tags: ['demo', 'tech', 'unboxing'], secs: 6 },
-  { file: 'demo-旧版LOGO.png', owner: 'public', w: 512, h: 512, color: ['#9e9e9e', '#424242'], label: 'OLD LOGO', tags: ['demo', 'archive'], disabled: true },
+  { file: 'demo-旧版LOGO.png', owner: 'public', w: 512, h: 512, color: ['#9e9e9e', '#424242'], label: 'OLD LOGO', tags: ['demo', 'archive'] },
   { file: 'demo-admin-草图-01.jpg', owner: 'admin', w: 800, h: 600, color: ['#eceff1', '#546e7a'], label: 'SKETCH', category: 'demo 待审素材', tags: ['demo', 'draft'] },
   { file: 'demo-admin-街拍.mp4', owner: 'admin', w: 1080, h: 1080, color: ['#37474f', '#ffca28'], label: 'STREET', category: 'demo 待审素材', tags: ['demo', 'City'], secs: 4 },
   { file: 'demo-user-自拍-01.jpg', owner: 'user', w: 1080, h: 1350, color: ['#f8bbd0', '#6a1b9a'], label: 'SELFIE', category: 'demo 我的拍摄', tags: ['demo', 'selfie'] },
@@ -350,11 +350,9 @@ async function seed() {
   for (const m of MEDIA) {
     const id = mediaIds.get(m.file)!;
     const item = await waitReady(tok(m.owner), id);
-    const wantStatus = m.disabled ? 'disabled' : 'ready';
     const sameTags = JSON.stringify([...item.tags].map((x: string) => x.toLowerCase()).sort()) === JSON.stringify([...new Set(m.tags.map((x) => x.toLowerCase()))].sort());
     if (!sameTags) must(await http('PUT', `/api/media/${id}`, tok(m.owner), { tags: m.tags }), `tag ${m.file}`);
     if (item.status === 'failed') console.log(`! ${m.file}: processing failed (${item.error ?? item.lastError ?? ''})`);
-    else if (item.status !== wantStatus && m.owner === 'public') must(await http('PUT', `/api/media/${id}`, T, { status: wantStatus }), `status ${m.file}`);
   }
   for (const [who, files] of Object.entries(FAVORITES) as ['admin' | 'user', string[]][]) {
     for (const f of files) must(await http('POST', `/api/media/${mediaIds.get(f)}/favorite`, tok(who)), `favorite ${f}`);
