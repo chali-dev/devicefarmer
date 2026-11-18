@@ -6,13 +6,20 @@
  *   length range, hashtags, audience, fixed opening/closing, notes; nothing of the 评论风格), shared topics + banned
  *   words, Language zh-CN, the persona's oldest 5 post examples (in its own scope; not comment examples, not other
  *   users' templates).
- * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/hour/workspace validation;
- *   no global on/off any more (removed 2026-11-18): GET never returns `enabled`, a stored `enabled: false` written into
- *   the row is ignored (preview, daily schedule and manual runs all reach the real API → ai.key_invalid), a PUT with
- *   `enabled` from an older page is accepted, ignored and drops the stored value;
- *   mapApiError turns the documented workspace errors into ai.workspace_required/_invalid/_not_found.
- * - 社交号 → AI 草稿 (GET/PUT /api/social/accounts/:id/ai-drafts): owner/admin, others 404; per day 1..10; switching on
- *   needs a persona (ai.account_no_persona) and an enabled platform; list items carry aiDraftsEnabled/aiDraftsPerDay; audit.
+ * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/workspace validation;
+ *   no global on/off and no daily hour any more (removed 2026-11-18): GET returns neither `enabled` nor `hour`, a
+ *   stored `enabled: false` written into the row is ignored (previews reach the real API → ai.key_invalid), a PUT with
+ *   `enabled` / `hour` from an older page is accepted, ignored and drops the stored values; the settings.ai audit has
+ *   no hour; mapApiError turns the documented workspace errors into ai.workspace_required/_invalid/_not_found.
+ * - No daily drafts any more (owner decision 2026-11-18, 「这个定时功能不要了；让用户手动生成」): with a key set and the
+ *   LEGACY account columns ai_drafts_enabled/ai_drafts_per_day switched on in the DB, the drafts module exports no
+ *   scheduler, the hourly collection run and the system maintenance create no account-drafts task, and no
+ *   account-drafts task appears for the test accounts except the ones this script queues itself; an account-drafts
+ *   task of an older release (daily or manual trigger) finishes success skipped ai.daily_removed without a model
+ *   call; a legacy persona-drafts task ends skipped (ai.moved_to_accounts); account list items carry no aiDrafts* fields.
+ * - LEGACY GET/PUT /api/social/accounts/:id/ai-drafts (older pages): owner/admin, others 404; GET = old shape with
+ *   the switch off, no runs; PUT accepted and ignored (columns untouched, not audited); the task-based
+ *   POST …/ai-drafts/generate is gone (404).
  * - AI测试 preview (POST /api/personas/:id/drafts/preview {topic?}): a pure style test: RBAC (other user 404, public
  *   persona as user 403), no key → 400 ai.not_configured, topic > 200 chars → 400, topic
  *   with a banned word → 400 persona.banned_word (not counted), a REAL call with an invalid key → 502 ai.key_invalid
@@ -20,12 +27,6 @@
  *   save endpoint POST …/drafts/save is gone (404), audit persona.draft_preview with requested model / ok / error code /
  *   topic given (boolean) and no texts.
  * - The prompt with a topic names it ("Requested topic …"), without one it doesn't.
- * - 「AI生成草稿」 (POST /api/social/accounts/:id/ai-drafts/generate {count?, topic?}): owner/admin (others 404), no key
- *   ai.not_configured, no persona ai.account_no_persona, platform.disabled, count 1..10, topic
- *   ≤ 200 + banned word persona.banned_word, 202 + an account-drafts task (payload trigger manual + count + topic,
- *   key account-drafts-manual:<id>:<uuid>, created by the caller) also when the daily switch is off, a second request
- *   within MANUAL_WINDOW_SEC → 429 ai.rate_limited {seconds}; the run reaches the REAL API with the invalid key → failed
- *   ai.key_invalid after 1 attempt; GET …/ai-drafts shows it as the last run (trigger manual); audit count + topic flag.
  * - 「AI生成草稿」 preview → edit → save (→ publish): POST …/ai-drafts/preview {topic?} (RBAC 404, ai.not_configured,
  *   ai.account_no_persona, platform.disabled, topic ≤ 200 + banned word, REAL invalid-key call → 502 ai.key_invalid and
  *   nothing written, PREVIEW_LIMIT per account → 429); POST …/ai-drafts/save (refusals: RBAC, persona, platform, banned
@@ -35,14 +36,6 @@
  *   caller's is ignored; en account: translation row / needsTranslation; publish now on a PLACEHOLDER phone (adb port
  *   5588, inert) → publish_tasks.lang en + caption from the translation → device tried → operator publish.device_offline;
  *   no media → publish.error, draft kept; scheduled; admin on B's account); audit without texts.
- * - Daily schedule per social account (`account-drafts`): not before the hour, nothing without a
- *   key; one task per switched-on account with a persona per local day (count = its per day, owner = account owner),
- *   idempotent; skips disabled owners (ai.owner_disabled) and disabled platforms; switched-off accounts get none; the
- *   runs reach the real API with the invalid key and fail ai.key_invalid after 1 attempt (no key in payload/logs); the
- *   account's last run in GET …/ai-drafts; a task of a switched-off account ends skipped; a legacy `persona-drafts` task
- *   ends skipped (ai.moved_to_accounts).
- * - saveDrafts from a HAND-MADE structured result (no model): per account (target = that account) and for a persona's
- *   accounts (disabled platform skipped, needsTranslation), banned-word drafts dropped, suggested media, visibility.
  * - With ANTHROPIC_TEST_API_KEY (+ ANTHROPIC_TEST_WORKSPACE_ID): one REAL preview (with a topic).
  * Usage (from apps/api, API running with default ENABLED_PLATFORMS=instagram; never against an API you don't own):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/persona-drafts-check.ts
@@ -54,9 +47,9 @@ import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import {
-  ACCOUNT_DRAFT_TASK, buildUserMessage, closeAiRedis, DRAFT_TAG, DRAFT_TASK, loadExamples, MANUAL_WINDOW_SEC, mapApiError, PREVIEW_LIMIT,
-  saveDrafts, scheduleAccountDrafts, SYSTEM_PROMPT,
+  ACCOUNT_DRAFT_TASK, buildUserMessage, closeAiRedis, DRAFT_TAG, DRAFT_TASK, loadExamples, mapApiError, PREVIEW_LIMIT, SYSTEM_PROMPT,
 } from '../src/modules/ai/drafts.js';
+import * as draftsModule from '../src/modules/ai/drafts.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
@@ -98,7 +91,6 @@ const fakeIds: string[] = [];
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const settingsBefore = (await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value ?? null;
 const INVALID_KEY = `sk-ant-api03-invalid-${'x'.repeat(40)}-${tag}`;
-const localAt = (h: number, plusDays = 0) => { const d = new Date(); d.setDate(d.getDate() + plusDays); d.setHours(h, 30, 0, 0); return d; };
 const redis = new Redis(config.REDIS_URL);
 const contentCount = async () => Number((await sqlClient`select count(*)::int n from contents`)[0]!.n);
 const resetPreviewLimit = (personaId: string) => redis.del(`ai:preview:count:${personaId}`);
@@ -168,16 +160,21 @@ try {
   // ================================================================ AI settings (admin, key write-only)
   r = await http('GET', '/api/settings/ai', A.token);
   check('users cannot read the AI settings (403)', r.status === 403);
+  // a stored daily hour of an older release, written directly into the row
+  await db.insert(schema.settings).values({ key: 'ai', value: { hour: 9 } }).onConflictDoUpdate({ target: schema.settings.key, set: { value: { hour: 9 } } });
+  const g0 = await http('GET', '/api/settings/ai', T);
   const rOld = await http('PUT', '/api/settings/ai', T, { apiKey: null, enabled: true, model: 'claude-opus-5-5', hour: 6, workspaceId: null });
+  const rowOld = (await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value as Record<string, unknown>;
   r = await http('GET', '/api/settings/ai', T);
-  check('defaults: no key, model claude-opus-5-5, hour 6; no `enabled` returned (global switch removed); an older page\'s PUT with enabled → 200',
-    rOld.status === 200 && !('enabled' in rOld.body.ai) && r.status === 200 && r.body.ai.keySet === false && r.body.ai.model === 'claude-opus-5-5' && r.body.ai.hour === 6 && !('enabled' in r.body.ai),
-    JSON.stringify(r.body.ai));
-  const r7 = await http('PUT', '/api/settings/ai', T, { hour: 24 });
+  check('a stored hour (older release) is not returned by GET', g0.status === 200 && !('hour' in g0.body.ai), JSON.stringify(g0.body.ai));
+  check('defaults: no key, model claude-opus-5-5; neither `enabled` nor `hour` returned; an older page\'s PUT with enabled + hour → 200, both ignored, the stored hour dropped',
+    rOld.status === 200 && !('enabled' in rOld.body.ai) && !('hour' in rOld.body.ai) && r.status === 200 && r.body.ai.keySet === false && r.body.ai.model === 'claude-opus-5-5'
+      && !('hour' in r.body.ai) && !('enabled' in r.body.ai) && !('hour' in rowOld) && !('enabled' in rowOld),
+    `${JSON.stringify(r.body.ai)} stored ${JSON.stringify(rowOld)}`);
   const r8 = await http('PUT', '/api/settings/ai', T, { apiKey: 'short' });
   const r9 = await http('PUT', '/api/settings/ai', A.token, { enabled: false });
   const rm = await http('PUT', '/api/settings/ai', T, { model: 'gpt-x' });
-  check('invalid model / hour / key format → 400; users 403', rm.status === 400 && r7.status === 400 && r8.status === 400 && r9.status === 403);
+  check('invalid model / key format → 400; users 403', rm.status === 400 && r8.status === 400 && r9.status === 403);
   {
     const bad = await http('PUT', '/api/settings/ai', T, { workspaceId: 'ws-123' });
     const okWs = await http('PUT', '/api/settings/ai', T, { workspaceId: 'wrkspc_01TestWorkspace0001' });
@@ -205,44 +202,43 @@ try {
   const [ytA] = await db.insert(schema.socialAccounts).values({ userId: A.id, platform: 'youtube', handle: `pd_yt_${tag}`, personaId: pA.id }).returning();
   check('accounts: A ig (pA), A ig (pA, en), A ig (no persona), B ig (public), C ig (public), A youtube (platform disabled)',
     [igA, igAen, igA2, igB, igC].every((x) => !!x?.id) && !!ytA);
+  // LEGACY account switch, as an older release could leave it: on for igA (2/day), igB (3/day), igC, youtube
+  await db.update(schema.socialAccounts).set({ aiDraftsEnabled: true, aiDraftsPerDay: 2 }).where(eq(schema.socialAccounts.id, igA.id));
+  await db.update(schema.socialAccounts).set({ aiDraftsEnabled: true, aiDraftsPerDay: 3 }).where(inArray(schema.socialAccounts.id, [igB.id, igC.id, ytA!.id]));
   r = await http('GET', `/api/social/accounts/${igA.id}/ai-drafts`, A.token);
-  check('GET ai-drafts: off, 4 per day, persona pA, no runs', r.status === 200 && r.body.enabled === false && r.body.perDay === 4 && r.body.personaId === pA.id && r.body.runs.length === 0 && r.body.ai.keySet === false,
+  check('LEGACY GET ai-drafts (older page): old shape with the switch off (legacy column not read), no runs, persona, keySet; no hour',
+    r.status === 200 && r.body.enabled === false && r.body.personaId === pA.id && Array.isArray(r.body.runs) && r.body.runs.length === 0 && r.body.ai.keySet === false && !('hour' in r.body.ai),
     JSON.stringify(r.body));
   const rb = await http('GET', `/api/social/accounts/${igA.id}/ai-drafts`, B.token);
   const rbp = await http('PUT', `/api/social/accounts/${igA.id}/ai-drafts`, B.token, { enabled: true });
-  check('another user: 404 social.not_found (read and write)', rb.status === 404 && rb.body.code === 'social.not_found' && rbp.status === 404);
-  r = await http('PUT', `/api/social/accounts/${igA2.id}/ai-drafts`, A.token, { enabled: true });
-  check('account without persona → 400 ai.account_no_persona', r.status === 400 && r.body.code === 'ai.account_no_persona', `${r.status} ${r.body?.code}`);
-  r = await http('PUT', `/api/social/accounts/${ytA!.id}/ai-drafts`, A.token, { enabled: true });
-  check('account on a disabled platform → 400 platform.disabled', r.status === 400 && r.body.code === 'platform.disabled', `${r.status} ${r.body?.code}`);
-  const r0 = await http('PUT', `/api/social/accounts/${igA.id}/ai-drafts`, A.token, { perDay: 0 });
-  const r11 = await http('PUT', `/api/social/accounts/${igA.id}/ai-drafts`, A.token, { perDay: 11 });
-  check('per day outside 1..10 → 400', r0.status === 400 && r11.status === 400);
-  r = await http('PUT', `/api/social/accounts/${igA.id}/ai-drafts`, A.token, { enabled: true, perDay: 2 });
-  const rT = await http('PUT', `/api/social/accounts/${igB.id}/ai-drafts`, T, { enabled: true, perDay: 3 });
-  const rC = await http('PUT', `/api/social/accounts/${igC.id}/ai-drafts`, C.token, { enabled: true });
-  check('owner switches on (2/day), admin switches on B\'s account (3/day), C on (4/day)', r.status === 200 && r.body.enabled && r.body.perDay === 2 && rT.status === 200 && rT.body.perDay === 3 && rC.status === 200,
-    `${r.status} ${rT.status} ${rC.status}`);
+  check('LEGACY ai-drafts of another user: 404 social.not_found (read and write)', rb.status === 404 && rb.body.code === 'social.not_found' && rbp.status === 404);
+  {
+    const p1 = await http('PUT', `/api/social/accounts/${igA2.id}/ai-drafts`, A.token, { enabled: true, perDay: 7 });
+    const p2 = await http('PUT', `/api/social/accounts/${igA.id}/ai-drafts`, A.token, { enabled: false });
+    const p3 = await http('PUT', `/api/social/accounts/${igB.id}/ai-drafts`, T, { perDay: 5 });
+    const rows = await db.select().from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, [igA.id, igA2.id, igB.id]));
+    const get = (id: string) => rows.find((x) => x.id === id)!;
+    check('LEGACY PUT ai-drafts (older page): 200 for owner/admin, body ignored (also without a persona), the legacy columns untouched',
+      p1.status === 200 && p2.status === 200 && p3.status === 200 && p1.body.enabled === false
+        && get(igA2.id).aiDraftsEnabled === false && get(igA2.id).aiDraftsPerDay === 4 && get(igA.id).aiDraftsEnabled === true && get(igA.id).aiDraftsPerDay === 2 && get(igB.id).aiDraftsPerDay === 3,
+      `${p1.status} ${p2.status} ${p3.status} ${JSON.stringify(p1.body)}`);
+  }
   const listA = (await http('GET', '/api/social/accounts', A.token)).body.items as any[];
-  check('account list carries aiDraftsEnabled / aiDraftsPerDay', listA.find((x) => x.id === igA.id)?.aiDraftsEnabled === true && listA.find((x) => x.id === igA.id)?.aiDraftsPerDay === 2
-    && listA.find((x) => x.id === igA2.id)?.aiDraftsEnabled === false);
-  await db.update(schema.socialAccounts).set({ aiDraftsEnabled: true }).where(eq(schema.socialAccounts.id, ytA!.id)); // e.g. switched on before the platform was disabled
+  check('account list items carry no aiDraftsEnabled / aiDraftsPerDay (LEGACY, not returned)', listA.length >= 3 && listA.every((x) => !('aiDraftsEnabled' in x) && !('aiDraftsPerDay' in x)));
   await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, C.id));
 
   // ================================================================ no key
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token);
   check('preview without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
   r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/generate`, A.token, {});
-  check('AI生成草稿 without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
+  check('the task-based POST …/ai-drafts/generate is gone (404)', r.status === 404, `${r.status} ${r.text.slice(0, 120)}`);
   r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/preview`, A.token, {});
   check('account preview without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
-  let sch = await scheduleAccountDrafts(localAt(23));
-  check('schedule without a key: nothing, reason ai.not_configured', sch.reason === 'ai.not_configured' && sch.created === 0, JSON.stringify(sch));
 
   // ================================================================ AI测试 preview with an invalid key (real calls)
   r = await http('PUT', '/api/settings/ai', T, { apiKey: INVALID_KEY });
-  // An older release's global switch, stored OFF directly in the row: it must be ignored from here on (every preview,
-  // daily schedule and manual run below reaches the real API with the invalid key).
+  // An older release's global switch, stored OFF directly in the row: it must be ignored from here on (every preview
+  // below reaches the real API with the invalid key).
   await sqlClient`update settings set value = value || '{"enabled": false}'::jsonb where key = 'ai'`;
   const storedOff = async () => ((await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value as any)?.enabled === false;
   const gs = await http('GET', '/api/settings/ai', T);
@@ -278,86 +274,31 @@ try {
   r = await http('POST', `/api/personas/${pP.id}/drafts/preview`, T);
   check('preview as admin of the public persona with the stored enabled:false → reaches the API, 502 ai.key_invalid (no ai.disabled)', await storedOff() && r.status === 502 && r.body.code === 'ai.key_invalid', `${r.status} ${r.body?.code}`);
 
-  // ================================================================ daily schedule per account (real calls, invalid key)
-  sch = await scheduleAccountDrafts(localAt(3));
-  check('before the configured hour (06:00): reason ai.not_due', sch.reason === 'ai.not_due' && sch.created === 0);
-  check('the stored enabled:false is still in the row for the schedule and the manual runs below', await storedOff());
-  sch = await scheduleAccountDrafts(localAt(23));
+  // ================================================================ no daily drafts (key set, legacy columns on)
   const mineAcc = [igA.id, igAen.id, igA2.id, igB.id, igC.id, ytA!.id];
   const accTasks = async () => db.select().from(schema.tasks).where(and(eq(schema.tasks.type, ACCOUNT_DRAFT_TASK), inArray(schema.tasks.refId, mineAcc), gte(schema.tasks.createdAt, t0)));
-  let sTasks = await accTasks();
-  const legacy = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, DRAFT_TASK), gte(schema.tasks.createdAt, t0)));
-  check('schedule: one task per switched-on account with a persona (igA 2/day owner A, igB 3/day owner B); igA2/igAen off; C disabled and youtube skipped',
-    sTasks.length === 2 && sTasks.some((x) => x.refId === igA.id && (x.payload as any).count === 2 && x.createdBy === A.id) && sTasks.some((x) => x.refId === igB.id && (x.payload as any).count === 3 && x.createdBy === B.id)
-      && sch.skipped.some((x) => x.accountId === igC.id && x.code === 'ai.owner_disabled') && sch.skipped.some((x) => x.accountId === ytA!.id && x.code === 'platform.disabled'),
-    JSON.stringify(sch));
-  check('the legacy persona switch (pA.draft_enabled = true in the DB) creates no persona-drafts task', legacy.length === 0);
-  check('idempotency key account-drafts:<accountId>:<local date>', sTasks.every((x) => new RegExp(`^${ACCOUNT_DRAFT_TASK}:${x.refId}:\\d{4}-\\d{2}-\\d{2}$`).test(x.idempotencyKey ?? '')), sTasks.map((x) => x.idempotencyKey).join());
-  const again = await scheduleAccountDrafts(localAt(23));
-  check('schedule again the same day: nothing new (idempotent)', (await accTasks()).length === 2 && again.created === 0 && again.existing === 2, JSON.stringify(again));
-  const done = await Promise.all(sTasks.map((x) => waitTask(x.id)));
-  const logs = JSON.stringify(await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, sTasks.map((x) => x.id))));
-  check('daily runs reach the real API and fail ai.key_invalid once each (not retried)', done.every((x) => x.status === 'failed' && x.errorCode === 'ai.key_invalid' && x.attempts === 1),
-    done.map((x) => `${x.status}/${x.errorCode}/${x.attempts}`).join(' '));
-  check('task payload/logs never contain the key; the log names the count and model', !JSON.stringify(done.map((x) => x.payload)).includes(INVALID_KEY) && !logs.includes(INVALID_KEY) && !logs.includes('sk-ant')
-    && logs.includes('drafts: requesting 2 from claude-opus-5-5') && logs.includes('drafts: requesting 3 from claude-opus-5-5'));
-  r = await http('GET', `/api/social/accounts/${igA.id}/ai-drafts`, A.token);
-  const rB = await http('GET', `/api/social/accounts/${igB.id}/ai-drafts`, T);
-  check('GET ai-drafts: the account\'s last run (failed ai.key_invalid), admin sees B\'s', r.body.runs[0]?.id === sTasks.find((x) => x.refId === igA.id)!.id && r.body.runs[0].status === 'failed' && r.body.runs[0].errorCode === 'ai.key_invalid'
-    && r.body.runs[0].created === null && r.body.runs[0].trigger === 'schedule' && rB.body.runs[0]?.id === sTasks.find((x) => x.refId === igB.id)!.id, JSON.stringify(r.body.runs));
-  // switched off → no task the next day; a task of a switched-off account ends as a skipped no-op
-  await http('PUT', `/api/social/accounts/${igB.id}/ai-drafts`, B.token, { enabled: false });
-  const next = await scheduleAccountDrafts(localAt(23, 1));
-  const nextTasks = (await accTasks()).filter((x) => !sTasks.some((y) => y.id === x.id));
-  check('next day after B switched off: only igA gets a task', next.created === 1 && nextTasks.length === 1 && nextTasks[0]!.refId === igA.id, JSON.stringify(next));
-  await waitTask(nextTasks[0]!.id);
-  const off = await createTask({ type: ACCOUNT_DRAFT_TASK, userId: B.id, refType: 'social_account', refId: igB.id, payload: { accountId: igB.id, count: 1, day: '2026-11-18' }, idempotencyKey: `check-off:${tag}` });
-  const offT = await waitTask(off.task.id);
-  check('a queued task of a switched-off account ends success, skipped ai.account_drafts_off (no model call)', offT.status === 'success' && (offT.result as any)?.skipped === 'ai.account_drafts_off', `${offT.status} ${JSON.stringify(offT.result)}`);
-  const lg = await createTask({ type: DRAFT_TASK, userId: A.id, refType: 'persona', refId: pA.id, payload: { personaId: pA.id, count: 1, day: '2026-11-18', trigger: 'schedule' }, idempotencyKey: `check-legacy:${tag}` });
-  const lgT = await waitTask(lg.task.id);
-  check('a legacy persona-drafts task (older release) ends skipped ai.moved_to_accounts', lgT.status === 'success' && (lgT.result as any)?.skipped === 'ai.moved_to_accounts', `${lgT.status} ${JSON.stringify(lgT.result)}`);
-
-  // ================================================================ 「AI生成草稿」 now (real calls, invalid key)
+  check('the drafts module exports no scheduler (scheduleAccountDrafts / requestAccountDrafts / saveDrafts gone)',
+    !('scheduleAccountDrafts' in draftsModule) && !('requestAccountDrafts' in draftsModule) && !('saveDrafts' in draftsModule));
   {
-    const gen = (id: string, token: string, body: unknown = {}) => http('POST', `/api/social/accounts/${id}/ai-drafts/generate`, token, body);
-    const asB = await gen(igA.id, B.token);
-    const noP = await gen(igA2.id, A.token);
-    const yt = await gen(ytA!.id, A.token);
-    check('AI生成草稿: other user 404 social.not_found; no persona 400 ai.account_no_persona; youtube 400 platform.disabled',
-      asB.status === 404 && asB.body.code === 'social.not_found' && noP.status === 400 && noP.body.code === 'ai.account_no_persona' && yt.status === 400 && yt.body.code === 'platform.disabled',
-      `${asB.status} ${noP.status}/${noP.body?.code} ${yt.status}/${yt.body?.code}`);
-    const c0 = await gen(igAen.id, A.token, { count: 0 });
-    const c11 = await gen(igAen.id, A.token, { count: 11 });
-    const tLong = await gen(igAen.id, A.token, { topic: 'x'.repeat(201) });
-    const tBan = await gen(igAen.id, A.token, { topic: 'ForbiddenWord 的保存方法' });
-    check('AI生成草稿: count 0 / 11 → 400, topic > 200 → 400, topic with a banned word → 400 persona.banned_word (nothing queued, not rate limited)',
-      c0.status === 400 && c11.status === 400 && tLong.status === 400 && tBan.status === 400 && tBan.body.code === 'persona.banned_word' && tBan.body.params?.words === 'forbiddenword',
-      `${c0.status} ${c11.status} ${tLong.status} ${tBan.status} ${JSON.stringify(tBan.body)}`);
-    const [enRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, igAen.id));
-    const ok = await gen(igAen.id, A.token, { count: 2, topic: '  咖啡豆保存  ' });
-    const again = await gen(igAen.id, A.token, {});
-    check(`AI生成草稿 on an account with the daily switch OFF → 202 + task; again at once → 429 ai.rate_limited {seconds ≤ ${MANUAL_WINDOW_SEC}}`,
-      enRow!.aiDraftsEnabled === false && ok.status === 202 && !!ok.body.task?.id && again.status === 429 && again.body.code === 'ai.rate_limited'
-        && Number(again.body.params?.seconds) > MANUAL_WINDOW_SEC - 30 && Number(again.body.params?.seconds) <= MANUAL_WINDOW_SEC, `${ok.status} ${again.status} ${JSON.stringify(again.body)}`);
-    const [mt] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, ok.body.task.id));
-    check('task: account-drafts, refType social_account, created by the caller, payload {count 2, trigger manual, topic trimmed}, key account-drafts-manual:<id>:<uuid>',
-      mt?.type === ACCOUNT_DRAFT_TASK && mt.refType === 'social_account' && mt.refId === igAen.id && mt.createdBy === A.id
-        && (mt.payload as any).count === 2 && (mt.payload as any).trigger === 'manual' && (mt.payload as any).topic === '咖啡豆保存'
-        && new RegExp(`^${ACCOUNT_DRAFT_TASK}-manual:${igAen.id}:[0-9a-f-]{36}$`).test(mt.idempotencyKey ?? ''), JSON.stringify(mt).slice(0, 400));
-    const adm = await gen(igB.id, T, {});
-    check('admin generates for B\'s account → 202 (task created by the admin, no topic in the payload)', adm.status === 202, `${adm.status} ${adm.text.slice(0, 120)}`);
-    const [mtB] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, adm.body.task.id));
-    check('admin task: created by the admin, count 1, no topic', mtB?.createdBy !== B.id && (mtB?.payload as any)?.count === 1 && !('topic' in (mtB?.payload as any)));
-    const [d1, d2] = [await waitTask(mt!.id), await waitTask(mtB!.id)];
-    const mlogs = JSON.stringify(await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, [mt!.id, mtB!.id])));
-    check('manual runs reach the REAL API (not skipped although the daily switch is off) and fail ai.key_invalid once (not retried)',
-      [d1, d2].every((x) => x.status === 'failed' && x.errorCode === 'ai.key_invalid' && x.attempts === 1), [d1, d2].map((x) => `${x.status}/${x.errorCode}/${x.attempts}`).join(' '));
-    check('manual task logs: "drafts: requesting 2 …" with the topic, never the key', mlogs.includes('drafts: requesting 2 from claude-opus-5-5') && mlogs.includes('咖啡豆保存') && !mlogs.includes(INVALID_KEY) && !mlogs.includes('sk-ant'));
-    r = await http('GET', `/api/social/accounts/${igAen.id}/ai-drafts`, A.token);
-    check('GET ai-drafts: the manual run is the last run (trigger manual, failed ai.key_invalid)', r.body.runs[0]?.id === mt!.id && r.body.runs[0].trigger === 'manual' && r.body.runs[0].errorCode === 'ai.key_invalid',
-      JSON.stringify(r.body.runs?.[0]));
-    check('GET ai-drafts: ai = {keySet, hour} only (no enabled)', r.body.ai?.keySet === true && r.body.ai?.hour === 6 && !('enabled' in r.body.ai), JSON.stringify(r.body.ai));
+    const col = await http('POST', '/api/collection/run', T);
+    const mt = await http('POST', '/api/system/maintenance', T);
+    await sleep(3000);
+    const legacyP = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, DRAFT_TASK), gte(schema.tasks.createdAt, t0)));
+    check('key set + legacy ai_drafts_enabled on: the hourly collection run and the system maintenance create no account-drafts / persona-drafts task',
+      col.status < 300 && mt.status < 300 && (await accTasks()).length === 0 && legacyP.length === 0, `${col.status} ${mt.status}`);
+  }
+  {
+    const n0 = await contentCount();
+    const mk = (trigger: string, key: string) => createTask({ type: ACCOUNT_DRAFT_TASK, userId: A.id, refType: 'social_account', refId: igA.id, payload: { accountId: igA.id, count: 2, day: '2026-11-18', trigger }, idempotencyKey: `${key}:${tag}` });
+    const [d1, d2] = await Promise.all([mk('schedule', 'check-old-daily'), mk('manual', 'check-old-manual')]);
+    const [t1, t2] = [await waitTask(d1.task.id), await waitTask(d2.task.id)];
+    const lg = JSON.stringify(await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, [t1.id, t2.id])));
+    check('an account-drafts task of an older release (daily and manual trigger) ends success, skipped ai.daily_removed, no model call, no content',
+      [t1, t2].every((x) => x.status === 'success' && (x.result as any)?.skipped === 'ai.daily_removed' && x.attempts === 1) && !lg.includes('drafts: requesting') && lg.includes('ai.daily_removed') && await contentCount() === n0,
+      [t1, t2].map((x) => `${x.status} ${JSON.stringify(x.result)}`).join(' | '));
+    const lgP = await createTask({ type: DRAFT_TASK, userId: A.id, refType: 'persona', refId: pA.id, payload: { personaId: pA.id, count: 1, day: '2026-11-18', trigger: 'schedule' }, idempotencyKey: `check-legacy:${tag}` });
+    const lgT = await waitTask(lgP.task.id);
+    check('a legacy persona-drafts task (older release) ends skipped ai.moved_to_accounts', lgT.status === 'success' && (lgT.result as any)?.skipped === 'ai.moved_to_accounts', `${lgT.status} ${JSON.stringify(lgT.result)}`);
   }
   {
     // An older page's PUT with enabled:false: accepted, ignored, and the stored legacy value is dropped on this save.
@@ -370,7 +311,7 @@ try {
     check('after that save a preview still reaches the API (502 ai.key_invalid)', pv.status === 502 && pv.body.code === 'ai.key_invalid', `${pv.status} ${pv.body?.code}`);
   }
 
-  // ================================================================ saveDrafts from a hand-made structured result (no model)
+  // ================================================================ a tagged public image (suggested media / content media)
   await db.insert(schema.mediaTags).values({ name: `Beach${tag}` }).onConflictDoNothing();
   const [img] = await db.insert(schema.mediaAssets).values({
     ownerType: 'public', ownerId: null, name: `beach ${tag}`, fileName: 'beach.jpg', storage: 'local', fileKey: `public/images/${randomUUID()}.jpg`,
@@ -379,38 +320,6 @@ try {
   mediaIds.push(img!.id);
   const [mt2] = await db.select().from(schema.mediaTags).where(eq(schema.mediaTags.name, `Beach${tag}`));
   await db.insert(schema.mediaAssetTags).values({ assetId: img!.id, tagId: mt2!.id });
-  const [personaA] = await db.select().from(schema.personas).where(eq(schema.personas.id, pA.id));
-  const SA = schema.socialAccounts;
-  const personaAccs = await db.select({ id: SA.id, platform: SA.platform, lang: SA.lang }).from(SA).where(and(eq(SA.userId, A.id), eq(SA.personaId, pA.id)));
-  const saved = await saveDrafts({
-    accounts: personaAccs,
-    persona: personaA!, ownerId: A.id, model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
-    drafts: [
-      { title: 'Weeknight pasta', body: 'Five ingredients, one pan.', hashtags: ['#pasta', 'pasta', 'home cooking', 'dinner'], mediaTags: [`beach${tag}`, 'food'] },
-      { title: 'Bad one', body: 'This has a ForbiddenWord inside.', hashtags: ['x'], mediaTags: [] },
-      { title: 'Soup season', body: '今晚吃什么？\nWhich soup do you make first when it gets cold?', hashtags: [], mediaTags: ['soup'] },
-    ],
-  });
-  check('saveDrafts (persona accounts): 2 written, banned one dropped, 2 targets, youtube skipped, needs en',
-    saved.contentIds.length === 2 && saved.dropped.length === 1 && saved.targets === 2 && saved.skippedAccounts === 1 && saved.needsTranslation.join() === 'en', JSON.stringify(saved));
-  const items = ((await http('GET', `/api/contents?tag=${DRAFT_TAG}`, A.token)).body.items as any[]).filter((x) => saved.contentIds.includes(x.id));
-  const pasta = items.find((x) => x.title === 'Weeknight pasta');
-  check('fixed opening/closing added once, hashtags appended once each',
-    pasta?.body === '今晚吃什么？\nFive ingredients, one pan.\n你们最爱哪道？\n\n#pasta #homecooking #dinner'
-      && items.find((x) => x.title === 'Soup season')?.body === '今晚吃什么？\nWhich soup do you make first when it gets cold?\n你们最爱哪道？', JSON.stringify(items.map((x) => x.body)));
-  check('suggested media: the tagged ready image, only on the matching draft', pasta?.media.length === 1 && pasta.media[0].id === img!.id && items.find((x) => x.title === 'Soup season')?.media.length === 0);
-  r = await http('GET', `/api/contents/${pasta.id}`, B.token);
-  check('another user cannot see the drafts (404)', r.status === 404);
-  const [personaP] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
-  const [igBRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, igB.id));
-  const savedB = await saveDrafts({ persona: personaP!, ownerId: B.id, accounts: [igBRow!], model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null, via: 'account', accountId: igB.id, topic: '咖啡豆保存',
-    drafts: [{ title: '标题', body: '正文', hashtags: ['标签'], mediaTags: [] }] });
-  const [bRow] = await db.select().from(schema.contents).where(eq(schema.contents.id, savedB.contentIds[0]!));
-  const bTargets = await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.contentId, bRow!.id));
-  check('per account: draft of the account owner, target = exactly that account, via account, topic recorded', bRow?.userId === B.id && bTargets.length === 1 && bTargets[0]!.accountId === igB.id
-    && bRow?.aiGenerated?.via === 'account' && bRow?.aiGenerated?.accountId === igB.id && bRow?.aiGenerated?.topic === '咖啡豆保存' && savedB.needsTranslation.length === 0);
-  check('saveDrafts without a topic records none', !('topic' in ((await db.select().from(schema.contents).where(eq(schema.contents.id, saved.contentIds[0]!)))[0]!.aiGenerated ?? {})));
-
   // ================================================================ 「AI生成草稿」 = account preview → edit → save (→ publish)
   {
     const prev = (id: string, token: string, body: unknown = {}) => http('POST', `/api/social/accounts/${id}/ai-drafts/preview`, token, body);
@@ -550,22 +459,19 @@ try {
     check('admin saves on B\'s account: content owned by B, created by the admin', sAdm.status === 201 && rowAdm?.userId === B.id && rowAdm.createdBy !== B.id, `${sAdm.status}`);
   }
 
+  check('over the whole run: no account-drafts task for the test accounts except the 2 this script queued',
+    (await accTasks()).length === 2, `${(await accTasks()).length}`);
+
   // ================================================================ audit
   await sleep(600);
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const prev = audits.filter((a) => a.action === 'persona.draft_preview');
-  const gens = audits.filter((a) => a.action === 'social.ai_drafts_generate');
-  const accA = audits.filter((a) => a.action === 'social.ai_drafts');
   const all = JSON.stringify(audits);
   check('audit persona.draft_preview: requested model, ok false, error code ai.key_invalid / ai.rate_limited / ai.not_configured',
     prev.some((a) => (a.detail as any)?.errorCode === 'ai.key_invalid' && (a.detail as any)?.requestedModel === 'claude-opus-5-5' && (a.detail as any)?.ok === false)
       && prev.some((a) => (a.detail as any)?.errorCode === 'ai.rate_limited') && prev.some((a) => (a.detail as any)?.errorCode === 'ai.not_configured'), JSON.stringify(prev.map((a) => a.detail)).slice(0, 400));
   check('audit persona.draft_preview: topic given only as a boolean (never its text)',
     prev.some((a) => (a.detail as any)?.topic === true) && prev.some((a) => (a.detail as any)?.topic === false) && !JSON.stringify(prev).includes('咖啡豆') && !JSON.stringify(prev).includes('最便宜的'));
-  check('audit social.ai_drafts_generate: account name, count, topic flag (never its text), refusals recorded too',
-    gens.some((a) => a.ok && (a.detail as any)?.count === 2 && (a.detail as any)?.topic === true && (a.target ?? '').includes(`pd_ig_en_${tag}`))
-      && gens.some((a) => a.ok && (a.detail as any)?.count === 1 && (a.detail as any)?.topic === false) && gens.some((a) => !a.ok)
-      && !JSON.stringify(gens).includes('咖啡豆') && !JSON.stringify(gens).includes('ForbiddenWord'), JSON.stringify(gens.map((a) => [a.target, a.ok, a.detail])).slice(0, 400));
   {
     const ap = audits.filter((a) => a.action === 'social.ai_drafts_preview');
     const as = audits.filter((a) => a.action === 'social.ai_drafts_save');
@@ -582,8 +488,9 @@ try {
         && !txt.includes('改过的正文') && !txt.includes('English caption') && !txt.includes('我改的标题'), JSON.stringify(as.map((a) => [a.ok, a.detail])).slice(0, 500));
   }
   check('audit: no persona.draft_preview_save any more', !audits.some((a) => a.action === 'persona.draft_preview_save'));
-  check('audit social.ai_drafts: enabled/perDay with the account name', accA.some((a) => (a.detail as any)?.enabled === true && (a.detail as any)?.perDay === 2 && (a.target ?? '').includes(`pd_ig_a_${tag}`)),
-    JSON.stringify(accA.map((a) => [a.target, a.detail])).slice(0, 300));
+  check('audit: no social.ai_drafts (legacy PUT not audited) and no social.ai_drafts_generate (endpoint gone) in this run',
+    !audits.some((a) => a.action === 'social.ai_drafts' || a.action === 'social.ai_drafts_generate'));
+  check('audit settings.ai: no hour in the detail', audits.filter((a) => a.action === 'settings.ai').length > 0 && audits.filter((a) => a.action === 'settings.ai').every((a) => !('hour' in ((a.detail as any) ?? {}))));
   check('audit: the key never appears', !all.includes(INVALID_KEY));
 
   // ================================================================ optional: one real preview (with a topic)

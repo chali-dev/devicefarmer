@@ -300,9 +300,6 @@ export interface SocialAccount {
   /** Why 自动检测 can't run (account_check.unsupported_platform | account_check.no_device), null = it can. */
   autoCheckUnsupported: string | null
   exception: boolean
-  /** 每日 AI 草稿 (set in the account form, AccountAiDrafts). */
-  aiDraftsEnabled: boolean
-  aiDraftsPerDay: number
   createdAt: string
   updatedAt: string
 }
@@ -395,12 +392,12 @@ export interface Content {
   targets: ContentTarget[]
   /** 媒体号 of the publish tasks the viewer may see (latest task per account), next due time of an unfinished task, latest published time. */
   publishAccounts: ContentPublishAccount[]; nextPublishAt: string | null; lastPublishedAt: string | null
-  /** 人设每日草稿: set when the content was written as an AI draft (must be reviewed and edited by a person). */
+  /** AI 草稿: set when the content was written as an AI draft (must be reviewed and edited by a person). */
   aiGenerated?: ContentAiInfo | null
   createdAt: string; updatedAt: string
 }
 export interface ContentAiInfo {
-  /** account = account-drafts run of one social account (daily or 立即生成), preview = LEGACY (an AI测试 saved before 2026-11-18). */
+  /** account = 「AI生成草稿」 of one social account (older rows: a daily / 立即生成 run), preview = LEGACY (an AI测试 saved before 2026-11-18). */
   via?: 'account' | 'preview'; accountId?: string
   /** 立即生成 with a 主题: the topic the person asked for. */
   topic?: string
@@ -627,11 +624,6 @@ export interface ScopedItem extends PersonaRef {
   /** 人设 only: style (with defaults). */
   style?: PersonaStyle
 }
-/** A daily AI draft task of a social account (`created` = drafts written, null until it succeeded; `skipped` = skip code). */
-export interface PersonaDraftRun {
-  id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null
-  created: number | null; skipped?: string | null
-}
 /** POST /api/personas/:id/drafts/preview {topic?} (AI测试): one draft, a style test, nothing stored. */
 export interface DraftPreview {
   preview: {
@@ -640,11 +632,6 @@ export interface DraftPreview {
     topic: string | null
   }
   limit: number
-}
-/** GET /api/social/accounts/:id/ai-drafts (社交号 → AI 草稿). */
-export interface AccountAiDrafts {
-  enabled: boolean; perDay: number; personaId: string | null; runs: PersonaDraftRun[]
-  ai: { keySet: boolean; hour: number }
 }
 export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
 export type PersonaTone = (typeof PERSONA_TONES)[number]
@@ -672,7 +659,7 @@ export interface PersonaDetail {
   /** 范例 per kind (20). */
   maxExamples: number
 }
-export interface AiSettingsState { keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
+export interface AiSettingsState { keySet: boolean; workspaceId: string | null; model: string; updatedAt: string | null }
 /** 人设 (count = templates using it). */
 export type Persona = ScopedItem
 /** 内容分类 (count = contents using it). */
