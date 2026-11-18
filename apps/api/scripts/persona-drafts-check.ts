@@ -10,15 +10,19 @@
  *   mapApiError turns the documented workspace errors into ai.workspace_required/_invalid/_not_found.
  * - 社交号 → AI 草稿 (GET/PUT /api/social/accounts/:id/ai-drafts): owner/admin, others 404; per day 1..10; switching on
  *   needs a persona (ai.account_no_persona) and an enabled platform; list items carry aiDraftsEnabled/aiDraftsPerDay; audit.
- * - AI测试 preview (POST /api/personas/:id/drafts/preview): RBAC (other user 404, public persona as user 403), no key →
- *   400 ai.not_configured, switched off → 400 ai.disabled, a REAL call with an invalid key → 502 ai.key_invalid with no
- *   token and no content, rate limit PREVIEW_LIMIT per persona per 10 min (429 ai.rate_limited {seconds, limit}), audit
- *   persona.draft_preview with requested model / ok / error code and no texts.
- * - Saving a preview (POST …/drafts/save {token}): tokens are written into Redis BY THIS SCRIPT with storePreview (a
- *   hand-made draft, NOT model output): another user's token (admin) / other persona → 400 ai.preview_invalid and the
- *   token stays usable; save → 201 one draft of the current user by the saveDrafts rules (fixed lines, hashtags, tag,
- *   via preview, targets = the user's accounts with the persona on enabled platforms, needsTranslation); reuse / expired /
- *   unknown → 400 ai.preview_expired; banned word → 400 ai.preview_banned, nothing written; audit without texts/token.
+ * - AI测试 preview (POST /api/personas/:id/drafts/preview {topic?}): a pure style test: RBAC (other user 404, public
+ *   persona as user 403), no key → 400 ai.not_configured, switched off → 400 ai.disabled, topic > 200 chars → 400, topic
+ *   with a banned word → 400 persona.banned_word (not counted), a REAL call with an invalid key → 502 ai.key_invalid
+ *   with no content, rate limit PREVIEW_LIMIT per persona per 10 min (429 ai.rate_limited {seconds, limit}), the former
+ *   save endpoint POST …/drafts/save is gone (404), audit persona.draft_preview with requested model / ok / error code /
+ *   topic given (boolean) and no texts.
+ * - The prompt with a topic names it ("Requested topic …"), without one it doesn't.
+ * - 「AI生成草稿」 (POST /api/social/accounts/:id/ai-drafts/generate {count?, topic?}): owner/admin (others 404), no key
+ *   ai.not_configured, switched off ai.disabled, no persona ai.account_no_persona, platform.disabled, count 1..10, topic
+ *   ≤ 200 + banned word persona.banned_word, 202 + an account-drafts task (payload trigger manual + count + topic,
+ *   key account-drafts-manual:<id>:<uuid>, created by the caller) also when the daily switch is off, a second request
+ *   within MANUAL_WINDOW_SEC → 429 ai.rate_limited {seconds}; the run reaches the REAL API with the invalid key → failed
+ *   ai.key_invalid after 1 attempt; GET …/ai-drafts shows it as the last run (trigger manual); audit count + topic flag.
  * - Daily schedule per social account (`account-drafts`): not before the hour, nothing when switched off or without a
  *   key; one task per switched-on account with a persona per local day (count = its per day, owner = account owner),
  *   idempotent; skips disabled owners (ai.owner_disabled) and disabled platforms; switched-off accounts get none; the
@@ -27,7 +31,7 @@
  *   ends skipped (ai.moved_to_accounts).
  * - saveDrafts from a HAND-MADE structured result (no model): per account (target = that account) and for a persona's
  *   accounts (disabled platform skipped, needsTranslation), banned-word drafts dropped, suggested media, visibility.
- * - With ANTHROPIC_TEST_API_KEY (+ ANTHROPIC_TEST_WORKSPACE_ID): one REAL preview and its save.
+ * - With ANTHROPIC_TEST_API_KEY (+ ANTHROPIC_TEST_WORKSPACE_ID): one REAL preview (with a topic).
  * Usage (from apps/api, API running with default ENABLED_PLATFORMS=instagram; never against an API you don't own):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/persona-drafts-check.ts
  */
@@ -38,8 +42,8 @@ import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import {
-  ACCOUNT_DRAFT_TASK, buildUserMessage, closePreviewStore, DRAFT_TAG, DRAFT_TASK, loadExamples, mapApiError, personaAccounts, PREVIEW_LIMIT,
-  saveDrafts, scheduleAccountDrafts, storePreview, SYSTEM_PROMPT,
+  ACCOUNT_DRAFT_TASK, buildUserMessage, closeAiRedis, DRAFT_TAG, DRAFT_TASK, loadExamples, MANUAL_WINDOW_SEC, mapApiError, PREVIEW_LIMIT,
+  saveDrafts, scheduleAccountDrafts, SYSTEM_PROMPT,
 } from '../src/modules/ai/drafts.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
@@ -137,6 +141,10 @@ try {
     check('prompt: topics, banned words, hashtags (# stripped), audience, fixed opening/closing, notes, recent posts',
       has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('Audience: 上班族')
         && has('Fixed opening line (added by the system): 今晚吃什么？') && has('Fixed closing line (added by the system): 你们最爱哪道？') && has('Notes: 不要推荐品牌') && has('上周的汤'));
+    check('prompt without a topic: no "Requested topic" line', !has('Requested topic'));
+    const withTopic = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: ex, recent: [], topic: '咖啡豆保存' });
+    check('prompt with a topic: "Requested topic (every draft is about it, each from a different angle): 咖啡豆保存"',
+      withTopic.includes('Requested topic (every draft is about it, each from a different angle): 咖啡豆保存') && SYSTEM_PROMPT.includes('requested topic'));
     check('system prompt: Chinese only, draft-only role', SYSTEM_PROMPT.includes('Write in Simplified Chinese (zh-CN)') && SYSTEM_PROMPT.includes('DRAFT'));
     const [pubRow] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
     const exP = await loadExamples(pubRow!);
@@ -208,6 +216,8 @@ try {
   // ================================================================ no key
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token);
   check('preview without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
+  r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/generate`, A.token, {});
+  check('AI生成草稿 without a key → 400 ai.not_configured', r.status === 400 && r.body.code === 'ai.not_configured', `${r.status} ${r.body?.code}`);
   let sch = await scheduleAccountDrafts(localAt(23));
   check('schedule without a key: nothing, reason ai.not_configured', sch.reason === 'ai.not_configured' && sch.created === 0, JSON.stringify(sch));
 
@@ -219,11 +229,19 @@ try {
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, B.token);
   const rPub = await http('POST', `/api/personas/${pP.id}/drafts/preview`, A.token);
   check('preview: other user 404, public persona as user 403', r.status === 404 && rPub.status === 403, `${r.status} ${rPub.status}`);
+  {
+    const long = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token, { topic: 'x'.repeat(201) });
+    const bad = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token, { topic: '最便宜的咖啡' });
+    check('preview topic: > 200 chars → 400; banned word → 400 persona.banned_word {words} (before the model, not counted)',
+      long.status === 400 && bad.status === 400 && bad.body.code === 'persona.banned_word' && bad.body.params?.words === '最便宜', `${long.status} ${bad.status} ${JSON.stringify(bad.body)}`);
+    const saveGone = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token: randomBytes(24).toString('base64url') });
+    check('the former 「保存为草稿」 endpoint POST …/drafts/save is gone (404)', saveGone.status === 404, `${saveGone.status}`);
+  }
   const before = await contentCount();
   const tStart = Date.now();
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token);
   const ms = Date.now() - tStart;
-  check('REAL Anthropic call with an invalid key: preview → 502 ai.key_invalid, no token, synchronous', r.status === 502 && r.body.code === 'ai.key_invalid' && !r.body.token && !r.text.includes(INVALID_KEY),
+  check('REAL Anthropic call with an invalid key: preview → 502 ai.key_invalid, synchronous', r.status === 502 && r.body.code === 'ai.key_invalid' && !r.text.includes(INVALID_KEY),
     `${r.status} ${r.body?.code} ${ms} ms`);
   const statuses: number[] = [];
   for (let k = 2; k <= PREVIEW_LIMIT; k++) statuses.push((await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token)).status);
@@ -231,53 +249,17 @@ try {
   check(`rate limit: previews 2..${PREVIEW_LIMIT} still reach the API (502), #${PREVIEW_LIMIT + 1} → 429 ai.rate_limited {seconds, limit}`,
     statuses.every((s) => s === 502) && r.status === 429 && r.body.code === 'ai.rate_limited' && Number(r.body.params?.seconds) > 500 && r.body.params?.limit === PREVIEW_LIMIT,
     `${statuses.join()} ${r.status} ${JSON.stringify(r.body)}`);
-  const rOther = await http('POST', `/api/personas/${pA2.id}/drafts/preview`, A.token);
-  check('rate limit is per persona (another persona still reaches the API)', rOther.status === 502 && rOther.body.code === 'ai.key_invalid', `${rOther.status}`);
+  const rOther = await http('POST', `/api/personas/${pA2.id}/drafts/preview`, A.token, { topic: '咖啡豆保存' });
+  check('rate limit is per persona (another persona, with a topic, still reaches the API)', rOther.status === 502 && rOther.body.code === 'ai.key_invalid', `${rOther.status}`);
   check('no content created by any preview', await contentCount() === before);
   await http('PUT', '/api/settings/ai', T, { enabled: false });
   r = await http('POST', `/api/personas/${pP.id}/drafts/preview`, T);
   check('preview while AI is switched off → 400 ai.disabled', r.status === 400 && r.body.code === 'ai.disabled');
+  r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/generate`, A.token, {});
+  check('AI生成草稿 while AI is switched off → 400 ai.disabled', r.status === 400 && r.body.code === 'ai.disabled', `${r.status} ${r.body?.code}`);
   sch = await scheduleAccountDrafts(localAt(23));
   check('schedule while switched off: reason ai.disabled', sch.reason === 'ai.disabled' && sch.created === 0);
   await http('PUT', '/api/settings/ai', T, { enabled: true });
-
-  // ================================================================ save a preview (tokens written here, NOT model output)
-  const hand = { title: 'Weeknight pasta', body: 'Five ingredients, one pan.', hashtags: ['#pasta', 'pasta', 'home cooking'], mediaTags: ['food'] };
-  const rec = (userId: string, personaId: string, draft = hand) => ({ userId, personaId, draft, model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', fallback: false, generatedAt: new Date().toISOString() });
-  {
-    const { token } = await storePreview(rec(A.id, pA.id));
-    const asB = await http('POST', `/api/personas/${pA.id}/drafts/save`, B.token, { token });
-    const asAdmin = await http('POST', `/api/personas/${pA.id}/drafts/save`, T, { token });
-    const otherPersona = await http('POST', `/api/personas/${pA2.id}/drafts/save`, A.token, { token });
-    check('save: other user 404; admin with A\'s token → 400 ai.preview_invalid; A on another persona → 400 ai.preview_invalid',
-      asB.status === 404 && asAdmin.status === 400 && asAdmin.body.code === 'ai.preview_invalid' && otherPersona.status === 400 && otherPersona.body.code === 'ai.preview_invalid',
-      `${asB.status} ${asAdmin.status}/${asAdmin.body?.code} ${otherPersona.status}/${otherPersona.body?.code}`);
-    const ok = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token });
-    check('save with own token → 201 (the refused attempts did not use it up)', ok.status === 201 && !!ok.body.contentId && ok.body.targets === 2 && ok.body.needsTranslation.join() === 'en', `${ok.status} ${ok.text.slice(0, 200)}`);
-    const again = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token });
-    const unknown = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token: randomBytes(24).toString('base64url') });
-    const short = await storePreview(rec(A.id, pA.id), 1);
-    await sleep(1500);
-    const expired = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token: short.token });
-    check('reuse / unknown / expired (TTL) token → 400 ai.preview_expired',
-      [again, unknown, expired].every((x) => x.status === 400 && x.body.code === 'ai.preview_expired'), [again, unknown, expired].map((x) => `${x.status}/${x.body?.code}`).join(' '));
-    const c = (await http('GET', `/api/contents/${ok.body.contentId}`, A.token)).body;
-    const item = c.content ?? c;
-    check('saved draft = saveDrafts rules: owner A, zh-CN, stage draft, tag ai-draft, fixed lines + hashtags once, via preview, no task',
-      item.userId === A.id && item.lang === 'zh-CN' && item.stage === 'draft' && item.tags?.includes(DRAFT_TAG)
-        && item.body === '今晚吃什么？\nFive ingredients, one pan.\n你们最爱哪道？\n\n#pasta #homecooking' && item.aiGenerated?.via === 'preview' && item.aiGenerated?.taskId === null
-        && item.aiGenerated?.model === 'handmade-test-result' && item.aiGenerated?.needsTranslation?.join() === 'en', JSON.stringify(item).slice(0, 400));
-    check('saved draft targets = A\'s instagram accounts with the persona (youtube skipped, no-persona account not)',
-      (item.targets ?? []).map((x: any) => x.id).sort().join() === [igA.id, igAen.id].sort().join(), JSON.stringify(item.targets));
-    const bt = await storePreview(rec(A.id, pA.id, { ...hand, body: 'This has a ForbiddenWord inside.' }));
-    const n0 = await contentCount();
-    const banned = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token: bt.token });
-    check('banned word in the stored preview → 400 ai.preview_banned {words}, nothing written', banned.status === 400 && banned.body.code === 'ai.preview_banned' && banned.body.params?.words === 'forbiddenword' && await contentCount() === n0,
-      `${banned.status} ${JSON.stringify(banned.body)}`);
-    const pt = await storePreview(rec((await db.select().from(schema.users).where(eq(schema.users.username, process.env.ADMIN_USERNAME!)))[0]!.id, pP.id, { ...hand, body: '公共人设预览' }));
-    const pub = await http('POST', `/api/personas/${pP.id}/drafts/save`, T, { token: pt.token });
-    check('admin saves a preview of a public persona → draft of the admin (no accounts with the persona → 0 targets)', pub.status === 201 && pub.body.targets === 0, `${pub.status} ${pub.text.slice(0, 160)}`);
-  }
 
   // ================================================================ daily schedule per account (real calls, invalid key)
   sch = await scheduleAccountDrafts(localAt(3));
@@ -304,7 +286,7 @@ try {
   r = await http('GET', `/api/social/accounts/${igA.id}/ai-drafts`, A.token);
   const rB = await http('GET', `/api/social/accounts/${igB.id}/ai-drafts`, T);
   check('GET ai-drafts: the account\'s last run (failed ai.key_invalid), admin sees B\'s', r.body.runs[0]?.id === sTasks.find((x) => x.refId === igA.id)!.id && r.body.runs[0].status === 'failed' && r.body.runs[0].errorCode === 'ai.key_invalid'
-    && r.body.runs[0].created === null && rB.body.runs[0]?.id === sTasks.find((x) => x.refId === igB.id)!.id, JSON.stringify(r.body.runs));
+    && r.body.runs[0].created === null && r.body.runs[0].trigger === 'schedule' && rB.body.runs[0]?.id === sTasks.find((x) => x.refId === igB.id)!.id, JSON.stringify(r.body.runs));
   // switched off → no task the next day; a task of a switched-off account ends as a skipped no-op
   await http('PUT', `/api/social/accounts/${igB.id}/ai-drafts`, B.token, { enabled: false });
   const next = await scheduleAccountDrafts(localAt(23, 1));
@@ -318,6 +300,47 @@ try {
   const lgT = await waitTask(lg.task.id);
   check('a legacy persona-drafts task (older release) ends skipped ai.moved_to_accounts', lgT.status === 'success' && (lgT.result as any)?.skipped === 'ai.moved_to_accounts', `${lgT.status} ${JSON.stringify(lgT.result)}`);
 
+  // ================================================================ 「AI生成草稿」 now (real calls, invalid key)
+  {
+    const gen = (id: string, token: string, body: unknown = {}) => http('POST', `/api/social/accounts/${id}/ai-drafts/generate`, token, body);
+    const asB = await gen(igA.id, B.token);
+    const noP = await gen(igA2.id, A.token);
+    const yt = await gen(ytA!.id, A.token);
+    check('AI生成草稿: other user 404 social.not_found; no persona 400 ai.account_no_persona; youtube 400 platform.disabled',
+      asB.status === 404 && asB.body.code === 'social.not_found' && noP.status === 400 && noP.body.code === 'ai.account_no_persona' && yt.status === 400 && yt.body.code === 'platform.disabled',
+      `${asB.status} ${noP.status}/${noP.body?.code} ${yt.status}/${yt.body?.code}`);
+    const c0 = await gen(igAen.id, A.token, { count: 0 });
+    const c11 = await gen(igAen.id, A.token, { count: 11 });
+    const tLong = await gen(igAen.id, A.token, { topic: 'x'.repeat(201) });
+    const tBan = await gen(igAen.id, A.token, { topic: 'ForbiddenWord 的保存方法' });
+    check('AI生成草稿: count 0 / 11 → 400, topic > 200 → 400, topic with a banned word → 400 persona.banned_word (nothing queued, not rate limited)',
+      c0.status === 400 && c11.status === 400 && tLong.status === 400 && tBan.status === 400 && tBan.body.code === 'persona.banned_word' && tBan.body.params?.words === 'forbiddenword',
+      `${c0.status} ${c11.status} ${tLong.status} ${tBan.status} ${JSON.stringify(tBan.body)}`);
+    const [enRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, igAen.id));
+    const ok = await gen(igAen.id, A.token, { count: 2, topic: '  咖啡豆保存  ' });
+    const again = await gen(igAen.id, A.token, {});
+    check(`AI生成草稿 on an account with the daily switch OFF → 202 + task; again at once → 429 ai.rate_limited {seconds ≤ ${MANUAL_WINDOW_SEC}}`,
+      enRow!.aiDraftsEnabled === false && ok.status === 202 && !!ok.body.task?.id && again.status === 429 && again.body.code === 'ai.rate_limited'
+        && Number(again.body.params?.seconds) > MANUAL_WINDOW_SEC - 30 && Number(again.body.params?.seconds) <= MANUAL_WINDOW_SEC, `${ok.status} ${again.status} ${JSON.stringify(again.body)}`);
+    const [mt] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, ok.body.task.id));
+    check('task: account-drafts, refType social_account, created by the caller, payload {count 2, trigger manual, topic trimmed}, key account-drafts-manual:<id>:<uuid>',
+      mt?.type === ACCOUNT_DRAFT_TASK && mt.refType === 'social_account' && mt.refId === igAen.id && mt.createdBy === A.id
+        && (mt.payload as any).count === 2 && (mt.payload as any).trigger === 'manual' && (mt.payload as any).topic === '咖啡豆保存'
+        && new RegExp(`^${ACCOUNT_DRAFT_TASK}-manual:${igAen.id}:[0-9a-f-]{36}$`).test(mt.idempotencyKey ?? ''), JSON.stringify(mt).slice(0, 400));
+    const adm = await gen(igB.id, T, {});
+    check('admin generates for B\'s account → 202 (task created by the admin, no topic in the payload)', adm.status === 202, `${adm.status} ${adm.text.slice(0, 120)}`);
+    const [mtB] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, adm.body.task.id));
+    check('admin task: created by the admin, count 1, no topic', mtB?.createdBy !== B.id && (mtB?.payload as any)?.count === 1 && !('topic' in (mtB?.payload as any)));
+    const [d1, d2] = [await waitTask(mt!.id), await waitTask(mtB!.id)];
+    const mlogs = JSON.stringify(await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, [mt!.id, mtB!.id])));
+    check('manual runs reach the REAL API (not skipped although the daily switch is off) and fail ai.key_invalid once (not retried)',
+      [d1, d2].every((x) => x.status === 'failed' && x.errorCode === 'ai.key_invalid' && x.attempts === 1), [d1, d2].map((x) => `${x.status}/${x.errorCode}/${x.attempts}`).join(' '));
+    check('manual task logs: "drafts: requesting 2 …" with the topic, never the key', mlogs.includes('drafts: requesting 2 from claude-opus-5-5') && mlogs.includes('咖啡豆保存') && !mlogs.includes(INVALID_KEY) && !mlogs.includes('sk-ant'));
+    r = await http('GET', `/api/social/accounts/${igAen.id}/ai-drafts`, A.token);
+    check('GET ai-drafts: the manual run is the last run (trigger manual, failed ai.key_invalid)', r.body.runs[0]?.id === mt!.id && r.body.runs[0].trigger === 'manual' && r.body.runs[0].errorCode === 'ai.key_invalid',
+      JSON.stringify(r.body.runs?.[0]));
+  }
+
   // ================================================================ saveDrafts from a hand-made structured result (no model)
   await db.insert(schema.mediaTags).values({ name: `Beach${tag}` }).onConflictDoNothing();
   const [img] = await db.insert(schema.mediaAssets).values({
@@ -328,8 +351,11 @@ try {
   const [mt2] = await db.select().from(schema.mediaTags).where(eq(schema.mediaTags.name, `Beach${tag}`));
   await db.insert(schema.mediaAssetTags).values({ assetId: img!.id, tagId: mt2!.id });
   const [personaA] = await db.select().from(schema.personas).where(eq(schema.personas.id, pA.id));
+  const SA = schema.socialAccounts;
+  const personaAccs = await db.select({ id: SA.id, platform: SA.platform, lang: SA.lang }).from(SA).where(and(eq(SA.userId, A.id), eq(SA.personaId, pA.id)));
   const saved = await saveDrafts({
-    persona: personaA!, ownerId: A.id, accounts: await personaAccounts(A.id, pA.id), model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
+    accounts: personaAccs,
+    persona: personaA!, ownerId: A.id, model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null,
     drafts: [
       { title: 'Weeknight pasta', body: 'Five ingredients, one pan.', hashtags: ['#pasta', 'pasta', 'home cooking', 'dinner'], mediaTags: [`beach${tag}`, 'food'] },
       { title: 'Bad one', body: 'This has a ForbiddenWord inside.', hashtags: ['x'], mediaTags: [] },
@@ -348,61 +374,60 @@ try {
   check('another user cannot see the drafts (404)', r.status === 404);
   const [personaP] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
   const [igBRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, igB.id));
-  const savedB = await saveDrafts({ persona: personaP!, ownerId: B.id, accounts: [igBRow!], model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null, via: 'account', accountId: igB.id,
+  const savedB = await saveDrafts({ persona: personaP!, ownerId: B.id, accounts: [igBRow!], model: 'handmade-test-result', requestedModel: 'claude-opus-5-5', taskId: null, via: 'account', accountId: igB.id, topic: '咖啡豆保存',
     drafts: [{ title: '标题', body: '正文', hashtags: ['标签'], mediaTags: [] }] });
   const [bRow] = await db.select().from(schema.contents).where(eq(schema.contents.id, savedB.contentIds[0]!));
   const bTargets = await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.contentId, bRow!.id));
-  check('per account: draft of the account owner, target = exactly that account, via account', bRow?.userId === B.id && bTargets.length === 1 && bTargets[0]!.accountId === igB.id
-    && bRow.aiGenerated?.via === 'account' && bRow.aiGenerated?.accountId === igB.id && savedB.needsTranslation.length === 0);
+  check('per account: draft of the account owner, target = exactly that account, via account, topic recorded', bRow?.userId === B.id && bTargets.length === 1 && bTargets[0]!.accountId === igB.id
+    && bRow?.aiGenerated?.via === 'account' && bRow?.aiGenerated?.accountId === igB.id && bRow?.aiGenerated?.topic === '咖啡豆保存' && savedB.needsTranslation.length === 0);
+  check('saveDrafts without a topic records none', !('topic' in ((await db.select().from(schema.contents).where(eq(schema.contents.id, saved.contentIds[0]!)))[0]!.aiGenerated ?? {})));
 
   // ================================================================ audit
   await sleep(600);
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const prev = audits.filter((a) => a.action === 'persona.draft_preview');
-  const saves = audits.filter((a) => a.action === 'persona.draft_preview_save');
+  const gens = audits.filter((a) => a.action === 'social.ai_drafts_generate');
   const accA = audits.filter((a) => a.action === 'social.ai_drafts');
   const all = JSON.stringify(audits);
   check('audit persona.draft_preview: requested model, ok false, error code ai.key_invalid / ai.rate_limited / ai.not_configured',
     prev.some((a) => (a.detail as any)?.errorCode === 'ai.key_invalid' && (a.detail as any)?.requestedModel === 'claude-opus-5-5' && (a.detail as any)?.ok === false)
       && prev.some((a) => (a.detail as any)?.errorCode === 'ai.rate_limited') && prev.some((a) => (a.detail as any)?.errorCode === 'ai.not_configured'), JSON.stringify(prev.map((a) => a.detail)).slice(0, 400));
-  check('audit persona.draft_preview_save: content id + model, failures with their code, no texts, no token',
-    saves.some((a) => a.ok && !!(a.detail as any)?.contentId && (a.detail as any)?.model === 'handmade-test-result') && saves.some((a) => !a.ok)
-      && !JSON.stringify(saves).includes('Five ingredients') && !JSON.stringify(saves).includes('"token"'), JSON.stringify(saves.map((a) => a.detail)).slice(0, 300));
+  check('audit persona.draft_preview: topic given only as a boolean (never its text)',
+    prev.some((a) => (a.detail as any)?.topic === true) && prev.some((a) => (a.detail as any)?.topic === false) && !JSON.stringify(prev).includes('咖啡豆') && !JSON.stringify(prev).includes('最便宜的'));
+  check('audit social.ai_drafts_generate: account name, count, topic flag (never its text), refusals recorded too',
+    gens.some((a) => a.ok && (a.detail as any)?.count === 2 && (a.detail as any)?.topic === true && (a.target ?? '').includes(`pd_ig_en_${tag}`))
+      && gens.some((a) => a.ok && (a.detail as any)?.count === 1 && (a.detail as any)?.topic === false) && gens.some((a) => !a.ok)
+      && !JSON.stringify(gens).includes('咖啡豆') && !JSON.stringify(gens).includes('ForbiddenWord'), JSON.stringify(gens.map((a) => [a.target, a.ok, a.detail])).slice(0, 400));
+  check('audit: no persona.draft_preview_save any more', !audits.some((a) => a.action === 'persona.draft_preview_save'));
   check('audit social.ai_drafts: enabled/perDay with the account name', accA.some((a) => (a.detail as any)?.enabled === true && (a.detail as any)?.perDay === 2 && (a.target ?? '').includes(`pd_ig_a_${tag}`)),
     JSON.stringify(accA.map((a) => [a.target, a.detail])).slice(0, 300));
   check('audit: the key never appears', !all.includes(INVALID_KEY));
 
-  // ================================================================ optional: one real preview + save
+  // ================================================================ optional: one real preview (with a topic)
   const realKey = process.env.ANTHROPIC_TEST_API_KEY;
   if (realKey) {
     await http('PUT', '/api/settings/ai', T, { apiKey: realKey, workspaceId: process.env.ANTHROPIC_TEST_WORKSPACE_ID || null });
     await resetPreviewLimit(pA.id);
     const n0 = await contentCount();
     const t1 = Date.now();
-    const pv = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token);
+    const pv = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token, { topic: '咖啡豆保存' });
     const p = pv.body?.preview;
-    check('REAL preview: 200 with title/text/model/usage, nothing stored', pv.status === 200 && !!p?.title && !!p?.text && !!p?.model && p.usage?.output > 0 && await contentCount() === n0,
+    check('REAL preview: 200 with title/text/model/usage + topic, nothing stored', pv.status === 200 && !!p?.title && !!p?.text && !!p?.model && p.usage?.output > 0 && p.topic === '咖啡豆保存' && await contentCount() === n0,
       `${pv.status} ${pv.body?.code ?? ''} ${Date.now() - t1} ms model=${p?.model} fallback=${p?.fallback} usage=${JSON.stringify(p?.usage)} banned=${JSON.stringify(p?.banned)}`);
     if (p) console.log(`  preview: ${JSON.stringify(p.title)} — ${JSON.stringify(p.text.slice(0, 200))}`);
-    if (pv.status === 200 && !p.banned.length) {
-      const sv = await http('POST', `/api/personas/${pA.id}/drafts/save`, A.token, { token: pv.body.token });
-      check('REAL preview saved → 201 one draft', sv.status === 201 && await contentCount() === n0 + 1, `${sv.status}`);
-    }
     check('REAL preview: response carries no key', !pv.text.includes(realKey));
   } else {
     console.log('- ANTHROPIC_TEST_API_KEY not set: no real generation (only the invalid-key calls reached the model API)');
   }
 } finally {
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T).catch(() => undefined);
-  // the admin's saved preview draft of the public persona (test users' contents go with the users)
-  await sqlClient`delete from contents where ai_generated->>'personaName' = ${`Brand ${tag}`}`;
   if (publicPersonaIds.length) await db.delete(schema.personas).where(inArray(schema.personas.id, publicPersonaIds));
   if (sharedTemplateIds.length) await db.delete(schema.commentTemplates).where(inArray(schema.commentTemplates.id, sharedTemplateIds));
   if (mediaIds.length) await db.delete(schema.mediaAssets).where(inArray(schema.mediaAssets.id, mediaIds));
   if (settingsBefore) await db.update(schema.settings).set({ value: settingsBefore }).where(eq(schema.settings.key, 'ai'));
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'ai'));
   redis.disconnect();
-  await closePreviewStore();
+  await closeAiRedis();
   await closeTaskQueues();
   await sqlClient.end();
 }
