@@ -66,7 +66,7 @@
    ```
    （把 `STF_AUTH_SECRET` 写进 `infra/stf/.env` 以便以后重启。）
 7. 反向代理 + TLS：`deploy.env` 里 `SITE_ADDRESS=<域名>`，DNS 指向服务器，80/443 可达，Caddy 首次部署时自动申请 Let's Encrypt 证书（数据在 volume `caddy-data`）。无域名测试可用 `SITE_ADDRESS=:8080`（纯 HTTP）。
-8. 比特客户端的反向隧道（Windows → Linux `127.0.0.1:54345`）：按 docs/08 §5.1–5.2 配置；API 在 host 网络里直接访问 `http://127.0.0.1:54345`。
+8. 比特客户端接口：用 **Tailscale 组网**（店主 2026-11-18 选定），按 docs/08 §5.5 配置：Linux VPS 和装比特客户端的 Windows 都加入 Tailscale，ACL 只允许 `tag:cloudphone-api` → `tag:bitbrowser:54345`，Windows 防火墙只放行 Linux 的 Tailscale IP，比特客户端开 Local API Token；平台的设备来源地址填 `http://<Windows 的 Tailscale IP>:54345` 并填 Token。API 是 host 网络，直接能访问 Tailscale 地址。（旧方案反向 SSH 隧道见 docs/08 §5.1–5.2，切换步骤见 §5.5.6。）
 9. 时区：`app.env` 里 `TZ=UTC`，Windows 也用 UTC（docs/08 §4.3）。
 
 ## 3. GitHub 设置

@@ -6,6 +6,8 @@
 
 ## 0. 结论摘要
 
+> **更新（2026-11-18）**：店主选定 **Tailscale 组网（方案 A-TS，§5.5）** 连接 Linux VPS 与比特客户端，取代下面推荐的反向 SSH 隧道。§4.3 的前提改动（Token、短超时与熔断）已经上线，所以 A-WG/A-TS 在断线时也是快速失败。下面的比较保留作为背景。
+
 **推荐方案 A：Linux VPS（我们的全部服务）+ 一台小型 Windows VPS（只跑比特客户端），两者之间用反向 SSH 隧道连接**（Windows 主动连 Linux，`-R 127.0.0.1:54345:127.0.0.1:54345`，Linux 上用只能转发的受限账号）。WireGuard 留作备选，到 ≥2 个客户端或 SSH 隧道频繁断开时再换。
 
 理由：
@@ -296,6 +298,98 @@ kill %1
   - 退出比特客户端：同上，确认 Autologon 加开机自启在重启 Windows 后能自己恢复（`Restart-Computer`，计时到 Linux 端 `curl` 成功为止）。
   - RDP 断开（不注销）24 小时后，确认客户端仍在运行，比特账号仍保持登录。
 - **需要计费的端到端验证**（开机 → 隧道 → adb → STF → 远控 → 关机）：`bitbrowser-check.ts --power` **必须事先征得店主同意**，测试结束后它会自动关机。这一步还会顺带验证 Linux 上 docker0 绑定这条 adb 路径；第 152 行“tunnel listens on 127.0.0.1 only”的断言在 docker0 绑定下会失败（见 §4.3 P2），属于预期。
+
+## 5.5 方案 A-TS：Tailscale 组网（店主 2026-11-18 选定，取代 §5.1–5.2 的反向 SSH 隧道）
+
+和 A-WG（§3.1）同一个思路：Linux VPS 与装比特客户端的 Windows 机器（Windows VPS 或一直开着的办公室电脑）加入同一个 Tailscale 网络，API 直接访问 `http://<Windows 的 Tailscale IP>:54345`。不需要隧道脚本、计划任务和受限 SSH 账号，断线由 Tailscale 自动重连。
+
+前提（代码已具备）：来源配置支持 Local API Token（`apiKey`，加密保存，请求头 `x-api-key`，§4.3 P0-1 已做）；只读调用 8 s 超时 + 每个客户端的健康记录，客户端失联时 monitor 跳过它的手机（§4.3 P0-3 已做）。所以 Tailscale 断线时数据包被静默丢弃也只会等 8 s，不会拖住其它来源。
+
+### 5.5.1 Tailscale 后台（一次性）
+
+1. 用店主的账号登录 https://login.tailscale.com 。免费版够用：本方案只有 2 台机器。若不想依赖 Tailscale 的协调服务器，可以自建 Headscale，步骤相同，只是 `tailscale up` 多一个 `--login-server`。
+2. **Access controls**：只允许 API 服务器访问 Windows 的 54345 端口，其它一概不通（默认策略是全通，必须改）：
+   ```json
+   {
+     "tagOwners": {
+       "tag:cloudphone-api": ["autogroup:admin"],
+       "tag:bitbrowser":     ["autogroup:admin"]
+     },
+     "acls": [
+       { "action": "accept", "src": ["tag:cloudphone-api"], "dst": ["tag:bitbrowser:54345"] }
+     ]
+   }
+   ```
+   需要通过 Tailscale 远程桌面或 SSH 管理时，再按需加规则（例如管理员设备 → `tag:bitbrowser:3389`），不要加 `*:*`。
+3. **Settings → Keys**：生成两个**一次性、带标签、预授权**的 auth key，一个带 `tag:cloudphone-api`，一个带 `tag:bitbrowser`。auth key 只用来入网，用完即失效，不要存进仓库或 `.env`。
+4. 两台机器入网后，在 **Machines** 里对它们都点 **Disable key expiry**，否则默认 180 天后掉线。
+
+### 5.5.2 Linux VPS
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --auth-key=<tag:cloudphone-api 的 key> --hostname=cloudphone-api
+tailscale ip -4            # 记下本机 IP（100.x.y.z），Windows 防火墙要用
+```
+- API 容器是 host 网络（docs/10 §1），直接就能访问 Tailscale 地址，不需要改 compose 或 ufw（只有出站连接，没有新入站）。
+- 不要开 `--advertise-exit-node` / `--advertise-routes`，也不要让 Tailscale 接管 DNS（`--accept-dns=false`，避免影响容器解析）：
+  `sudo tailscale set --accept-dns=false`
+
+### 5.5.3 Windows（Windows VPS 或办公室电脑）
+
+1. 系统准备照 §5.2 的第 1、3、4、5 步（UTC 时区、不睡眠、安装比特客户端并开机自启、Autologon、RDP 断开不注销、更新窗口）。**§5.2 第 6 步的反向隧道不用做。**
+2. 安装 Tailscale（官网 Windows 安装包），管理员 PowerShell：
+   ```powershell
+   tailscale up --auth-key=<tag:bitbrowser 的 key> --hostname=bitbrowser-win-01 --unattended
+   tailscale ip -4            # 记下这台的 IP，平台里要填
+   ```
+   `--unattended` 让 Tailscale 以服务方式运行，不依赖桌面登录，重启后自动连上。
+3. **在比特客户端里打开 Local API Token**，复制 Token（平台里要填）。
+4. **防火墙**：本地 API 固定绑定 0.0.0.0（§2），必须挡住除 API 服务器以外的一切来源。注意 Windows 防火墙里**阻止规则优先于允许规则**，所以不要用 §5.2 第 2 步那条全局阻止规则，改成「默认阻止入站 + 只放行 API 服务器」：
+   ```powershell
+   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block
+   # 删掉/禁用安装时可能自动生成的比特客户端放行规则（名称因版本而异，先查看）
+   Get-NetFirewallRule -Direction Inbound -Enabled True | Where-Object { $_.DisplayName -match 'BitBrowser|比特' } | Disable-NetFirewallRule
+   # 只允许 Linux VPS 的 Tailscale IP 访问 54345
+   New-NetFirewallRule -DisplayName "BitBrowser API from cloudphone-api" -Direction Inbound -Protocol TCP -LocalPort 54345 `
+     -RemoteAddress <Linux 的 Tailscale IP> -Action Allow -Profile Any
+   ```
+   供应商安全组照旧：只放行管理员 IP 的 RDP（或干脆不开 RDP，改走 Tailscale）。三道防线：供应商安全组（公网）、Tailscale ACL（组网内）、Windows 防火墙（本机）。
+
+### 5.5.4 平台内配置
+
+管理员：设备 → 创建设备 → 比特云手机 → 新建来源（或编辑已有来源）：
+- 客户端地址：`http://<Windows 的 Tailscale IP>:54345`（用 IP，不用 MagicDNS 名称，少一个依赖）
+- API Token：填上一步复制的 Token（保存后不再显示）
+- 时区：Windows 的时区（按 §5.2 设成 UTC 就填 `UTC`）
+
+保存时会先做连通性测试，显示手机数量。添加设备不会开机。
+
+### 5.5.5 验证（全部免费，不开机）
+
+在 Linux 上：
+```bash
+tailscale ping bitbrowser-win-01                     # 期望 pong（direct 或 via DERP 都行）
+# 客户端可达（只输出成功标志和条数，不打印列表内容：列表里可能有 adb 密码）
+curl -s -m 10 -X POST http://<WIN_TS_IP>:54345/phone/list -H 'content-type: application/json' \
+  -H "x-api-key: $BB_TOKEN" -d '{"page":0,"pageSize":1}' | jq '{success, total: .data.totalNum}'
+# 不带 Token 应被拒绝（403）
+curl -s -o /dev/null -w '%{http_code}\n' -m 10 -X POST http://<WIN_TS_IP>:54345/phone/list -H 'content-type: application/json' -d '{}'
+# 集成测试（API 已运行；不加 --power）
+cd apps/api && BITBROWSER_API_URL=http://<WIN_TS_IP>:54345 npx tsx --env-file=../../.env scripts/bitbrowser-check.ts
+```
+从另一台不在 Tailscale 网络里的机器：`nc -zv -w 5 <WIN_PUBLIC_IP> 54345` 期望超时或被拒绝。在 Tailscale 网络里但不是 `tag:cloudphone-api` 的设备上执行同样的 `curl`，期望超时（ACL 生效）。
+
+故障演练：
+- Windows 上 `tailscale down`：平台的来源健康状态在一次调用（≤ 8 s）内变成不可达，monitor 跳过它的手机，设备状态不变；`tailscale up` 后 15–60 s 内恢复。
+- 重启 Windows（`Restart-Computer`）：Tailscale 服务、Autologon、客户端开机自启三者都恢复后，平台自动恢复；计时到 Linux 端 `curl` 成功为止。
+- adb 隧道（`ssh -N -L` 到比特网关）不经过 Tailscale，不受影响；它只依赖 API 能从客户端拿到 adb 密码。
+
+### 5.5.6 从 A-SSH 切换过来（如果已经部署了反向隧道）
+
+1. 按上面完成 Tailscale 与防火墙。
+2. 平台里把来源地址从 `http://127.0.0.1:54345` 改成 Tailscale 地址并填 Token，保存（会测试连通）。
+3. 停掉并删除 Windows 计划任务 `bbtunnel`，删除 Linux 上的 `bbtunnel` 受限账号和 `authorized_keys` 条目。
 
 ## 6. 监控与恢复清单
 
