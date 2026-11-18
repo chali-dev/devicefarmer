@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { dateLocale } from '../i18n'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
-import { api, errorText } from '../api/client'
+import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import {
   PROXY_KINDS, proxyLabel, type PoolProxy, type ProxyCheck, type ProxyImportResult, type ProxyKind, type ProxyStatus, type ProxyType,
 } from '../api/types'
@@ -92,8 +92,9 @@ async function checkOne(p: PoolProxy) {
   } catch (e) { message.error(errorText(e)) }
   finally { checkingIds.value.delete(p.id) }
 }
-async function checkBatch() {
-  const ids = selectedKeys.value.length ? [...selectedKeys.value] : items.value.map((p) => p.id)
+/** Checks the selected rows (批量栏) or, without `selectedOnly`, every row of the current list. */
+async function checkBatch(selectedOnly = false) {
+  const ids = selectedOnly ? [...selectedKeys.value] : items.value.map((p) => p.id)
   if (!ids.length) return
   batchChecking.value = true
   ids.forEach((id) => checkingIds.value.add(id))
@@ -193,6 +194,44 @@ function remove(p: PoolProxy) {
   })
 }
 
+// ---- batch (批量操作, POST /api/proxies/batch): delete skips proxies bound to a device; set-kind moves rows to another tab
+interface BatchResult { ok: string[]; skipped: { id: string; code: string; params?: ErrorParams }[]; changed: number }
+const batchKind = ref<ProxyKind | undefined>()
+const batchBusy = ref(false)
+function batch(action: 'delete' | 'set-kind') {
+  const ids = [...selectedKeys.value]
+  if (!ids.length) return
+  // Name/address only, never credentials.
+  const names = new Map(items.value.map((p) => [p.id, p.label ? `${p.label} (${p.host}:${p.port})` : `${p.host}:${p.port}`]))
+  const run = async () => {
+    batchBusy.value = true
+    try {
+      const body: Record<string, unknown> = { ids, action }
+      if (action === 'set-kind') body.kind = batchKind.value
+      const r = await api<BatchResult>('POST', '/api/proxies/batch', body)
+      const done = action === 'delete' ? t('proxies.batch.doneDelete', { n: r.ok.length }) : t('proxies.batch.doneKind', { n: r.changed })
+      if (r.skipped.length) {
+        Modal.warning({
+          title: t('proxies.batch.skippedTitle', { ok: r.ok.length, skipped: r.skipped.length }),
+          content: h('div', [
+            h('p', done),
+            h('ul', { style: 'padding-inline-start: 18px; margin: 0; max-height: 240px; overflow: auto' },
+              r.skipped.map((x) => h('li', `${names.get(x.id) ?? x.id}: ${codeText(x.code, x.params, x.code)}`))),
+          ]),
+        })
+      } else message.success(done)
+      selectedKeys.value = []
+      batchKind.value = undefined
+      void load()
+    } catch (e) { message.error(errorText(e)) }
+    finally { batchBusy.value = false }
+  }
+  if (action === 'delete') {
+    const bound = items.value.filter((p) => ids.includes(p.id) && p.boundInstance).length
+    confirmDanger({ title: t('proxies.batch.confirmDelete', { n: ids.length }), content: t('proxies.batch.deleteHint', { bound }), onOk: run })
+  } else void run()
+}
+
 // ---- bulk import (preview = dry run, then import)
 const importOpen = ref(false)
 const importing = ref(false)
@@ -276,13 +315,23 @@ async function openUsage(p: PoolProxy) {
         <a-input v-model:value="filters.country" :placeholder="t('proxies.filterCountry')" allow-clear style="width: 120px" @press-enter="load" />
         <template #actions>
           <span class="muted small">{{ t('proxies.summary', summary) }}</span>
-          <a-tooltip :title="t('proxies.checkBatchHint')">
-            <a-button :loading="batchChecking" :disabled="!items.length" @click="checkBatch">
-              {{ t('proxies.checkBatch') }}{{ selectedKeys.length ? ` (${selectedKeys.length})` : '' }}
+          <a-tooltip :title="t('proxies.checkAllHint')">
+            <a-button :loading="batchChecking && !selectedKeys.length" :disabled="!items.length || batchChecking" @click="checkBatch()">
+              {{ t('proxies.checkAll') }}
             </a-button>
           </a-tooltip>
         </template>
       </SearchBar>
+
+      <a-space v-if="selectedKeys.length" wrap class="batch-bar">
+        <span>{{ t('proxies.batch.selected', { n: selectedKeys.length }) }}</span>
+        <a-button size="small" :loading="batchChecking" :disabled="batchBusy" @click="checkBatch(true)">{{ t('proxies.check') }}</a-button>
+        <a-select v-model:value="batchKind" :placeholder="t('proxies.kind')" size="small" style="width: 120px"
+          :options="PROXY_KINDS.map((k) => ({ value: k, label: t(`proxies.kinds.${k}`) }))" />
+        <a-button size="small" :disabled="!batchKind || batchBusy" @click="batch('set-kind')">{{ t('proxies.batch.setKind') }}</a-button>
+        <a-button size="small" danger :disabled="batchBusy" @click="batch('delete')">{{ t('common.delete') }}</a-button>
+        <a-button size="small" type="link" @click="selectedKeys = []">{{ t('proxies.batch.clear') }}</a-button>
+      </a-space>
 
       <a-table
         :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1340 }"
@@ -487,4 +536,5 @@ async function openUsage(p: PoolProxy) {
 .test-result { margin-top: 4px; }
 .modal-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .test-btn { padding-left: 0; }
+.batch-bar { margin-bottom: var(--cp-gap); padding: 8px 12px; background: var(--cp-fill-alter); border-radius: 6px; }
 </style>
