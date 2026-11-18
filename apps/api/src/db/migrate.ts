@@ -12,6 +12,7 @@ import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
 import { migrateOfficialApiRemoval } from './official-api-removal-migration.js';
 import { migrateCommentApproval } from './comment-approval-migration.js';
 import { migrateTestModeRemoval } from './test-mode-removal-migration.js';
+import { migrateMediaVisibility } from './media-visibility-migration.js';
 
 // Data migration around the schema migrations (see proxy-data-migration.ts); both steps are idempotent.
 const stashed = await stashInlineProxies(sqlClient);
@@ -29,5 +30,6 @@ await migrateTrackedIgSchedule(sqlClient);
 await migrateOfficialApiRemoval(sqlClient);
 await migrateCommentApproval(sqlClient);
 await migrateTestModeRemoval(sqlClient);
+await migrateMediaVisibility(sqlClient);
 console.log('migrations applied');
 await sqlClient.end();
