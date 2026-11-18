@@ -456,9 +456,6 @@ async function submitBatchForm() {
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">
-                <a-button type="link" size="small" :disabled="!record.instance?.accessible" @click="router.push(`/instances/${record.instance.id}`)">{{ t('social.openDevice') }}</a-button>
-              </a-tooltip>
               <a-tooltip :title="record.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.checkNowHint')">
                 <a-button type="link" size="small" :disabled="!!record.autoCheckUnsupported" :loading="checking === record.id" @click="checkNow(record as SocialAccount)">{{ t('social.checkNow') }}</a-button>
               </a-tooltip>
