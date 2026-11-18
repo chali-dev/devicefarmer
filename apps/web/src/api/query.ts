@@ -9,3 +9,9 @@ export function queryParam<T extends string = string>(q: LocationQuery, key: str
   if (typeof v !== 'string' || !v) return undefined
   return !allowed || allowed.includes(v as T) ? (v as T) : undefined
 }
+
+/**
+ * Link to one device in 云机管理 (`/instances?id=`): the list shows only that device, highlighted. Used by device-name links
+ * that mean "show this device"; it never opens remote control (the list's 控制 button / `/instances/:id` does that).
+ */
+export const deviceListLink = (id: string) => ({ path: '/instances', query: { id } })

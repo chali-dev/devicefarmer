@@ -6,7 +6,7 @@ import { computed, h, onMounted, onUnmounted, reactive, ref, watch, type Compone
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
-import { queryParam } from '../api/query'
+import { deviceListLink, queryParam } from '../api/query'
 import { BUSY_STATUSES, egressGeo, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
@@ -58,6 +58,14 @@ type StatusGroup = 'running' | 'stopped' | 'busy' | 'error'
 const statusFilter = ref<StatusGroup | undefined>(queryParam<StatusGroup>(useRoute().query, 'status', ['running', 'stopped', 'busy', 'error']))
 const inGroup = (i: Instance, g: StatusGroup) => (g === 'busy' ? BUSY_STATUSES.includes(i.status) : i.status === g)
 const ownerFilter = ref<InstanceOwner | null>(null)
+// ?id= from device-name links on other pages (deviceListLink): only that device, highlighted; never opens remote control.
+const route = useRoute()
+const focusId = ref<string | undefined>(queryParam(route.query, 'id'))
+watch(() => route.query.id, () => { focusId.value = queryParam(route.query, 'id') })
+function clearFocus() {
+  focusId.value = undefined
+  if (route.query.id) void router.replace({ query: { ...route.query, id: undefined } })
+}
 // Search: name / id / phone id / image / proxy / egress IP; several terms separated by comma or space match any.
 const search = ref('')
 const terms = computed(() => search.value.toLowerCase().split(/[\s,，;；]+/).filter(Boolean))
@@ -70,7 +78,8 @@ function matches(i: Instance) {
 const rows = computed(() => {
   const f = ownerFilter.value
   const s = statusFilter.value
-  return store.list.filter((i) => (!f || i.owners?.some((o) => o.id === f.id)) && (!s || inGroup(i, s)) && matches(i))
+  const id = focusId.value
+  return store.list.filter((i) => (!id || i.id === id) && (!f || i.owners?.some((o) => o.id === f.id)) && (!s || inGroup(i, s)) && matches(i))
 })
 const statusOptions = computed(() => [
   { value: '', label: t('cloud.allPhones', { n: counts.value.total }) },
@@ -110,6 +119,9 @@ function filterByOwner(o: InstanceOwner) {
   selectedKeys.value = selectedKeys.value.filter((k) => visible.has(k))
 }
 const ownerName = (o: InstanceOwner) => o.displayName ? t('permissions.userLabel', { display: o.username, username: o.displayName }) : o.username
+/** Card line (admin): first two granted users, then "+N". */
+const ownersShort = (list: InstanceOwner[]) =>
+  list.slice(0, 2).map((o) => o.username).join(t('common.listSep')) + (list.length > 2 ? ` +${list.length - 2}` : '')
 
 // ---- actions menu (row and batch)
 type MenuKey = Action | 'install' | 'uninstall'
@@ -450,6 +462,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         </a-input>
         <a-select :value="statusFilter ?? ''" :options="statusOptions" style="width: 150px" @change="(v: any) => (statusFilter = v || undefined)" />
         <a-tag v-if="ownerFilter" closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
+        <a-tag v-if="focusId" closable color="blue" @close="clearFocus">{{ t('devices.focusTag', { name: store.byId.get(focusId)?.name ?? focusId.slice(0, 8) }) }}</a-tag>
         <a-dropdown :disabled="!selectedKeys.length" :trigger="['click']">
           <a-button :disabled="!selectedKeys.length">{{ selectedKeys.length ? t('devices.batchCount', { n: selectedKeys.length }) : t('devices.batch') }} <DownOutlined /></a-button>
           <template #overlay>
@@ -479,6 +492,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         :size="TABLE_SIZE"
         :pagination="pagination({ defaultPageSize: 50 })"
         :scroll="{ x: auth.isAdmin ? 1500 : 1300 }"
+        :row-class-name="(r: Instance) => (r.id === focusId ? 'row-focus' : '')"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
       >
         <template #emptyText>
@@ -500,7 +514,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <StatusTag :status="record.status" />
           </template>
           <template v-else-if="column.key === 'owners'">
-            <span v-if="!record.owners?.length" class="faint">—</span>
+            <span v-if="!record.owners?.length" class="faint">{{ t('devices.unassigned') }}</span>
             <a-tooltip v-else :title="record.owners.length > 3 ? record.owners.map(ownerName).join(t('common.listSep')) : undefined">
               <span>
                 <a-tag v-for="o in record.owners.slice(0, 3)" :key="o.id" class="clickable" @click="filterByOwner(o)">{{ o.username }}</a-tag>
@@ -576,7 +590,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         </aside>
 
         <section class="grid">
-          <div v-for="i in rows" :key="i.id" class="phone" :class="{ selected: selectedKeys.includes(i.id) }">
+          <div v-for="i in rows" :key="i.id" class="phone" :class="{ selected: selectedKeys.includes(i.id), focus: i.id === focusId }">
             <div class="phone-head">
               <a-checkbox :checked="selectedKeys.includes(i.id)" @change="(e: any) => toggleOne(i.id, e.target.checked)" />
               <span class="phone-name ellipsis" :title="i.name">{{ i.name }}</span>
@@ -597,6 +611,15 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                   </a-menu>
                 </template>
               </a-dropdown>
+            </div>
+            <div v-if="auth.isAdmin && i.owners" class="phone-owners small">
+              <span v-if="!i.owners.length" class="faint">{{ t('devices.unassigned') }}</span>
+              <a-popover v-else :trigger="['hover', 'click']" :title="t('devices.colOwners')">
+                <template #content>
+                  <div v-for="o in i.owners" :key="o.id"><a @click="filterByOwner(o)">{{ ownerName(o) }}</a></div>
+                </template>
+                <span class="ellipsis muted clickable">{{ ownersShort(i.owners) }}</span>
+              </a-popover>
             </div>
             <div class="phone-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
               <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :paused="phoneOpen" :slow="!!i.sourceId" :width="i.spec.width" :height="i.spec.height">
@@ -775,7 +798,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
         <template v-else-if="column.key === 'device'">
-          <a @click="failedOpen = false; router.push(`/instances/${record.instanceId}`)">{{ store.byId.get(record.instanceId)?.name ?? record.instanceName }}</a>
+          <a @click="failedOpen = false; router.push(deviceListLink(record.instanceId))">{{ store.byId.get(record.instanceId)?.name ?? record.instanceName }}</a>
         </template>
         <template v-else-if="column.key === 'type'">{{ taskText(record.type) }}</template>
         <template v-else-if="column.key === 'error'">
@@ -826,6 +849,9 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 .grid { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--cp-gap); align-items: start; }
 .phone { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius-lg); background: var(--cp-bg-container); min-width: 0; }
 .phone.selected { border-color: var(--cp-primary); }
+.phone.focus { border-color: var(--cp-primary); box-shadow: 0 0 0 2px var(--cp-primary-bg); }
+.phone-owners { display: flex; min-width: 0; margin-top: -4px; }
+:deep(.row-focus > td) { background: var(--cp-primary-bg) !important; }
 .phone-head { display: flex; align-items: center; gap: 8px; }
 .phone-name { flex: 1; font-weight: 600; }
 .phone-screen { position: relative; cursor: pointer; border-radius: var(--cp-radius-lg); outline: none; }

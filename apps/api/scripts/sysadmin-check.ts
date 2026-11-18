@@ -5,7 +5,7 @@
  *   retention keeps N → delete; the daily schedule is idempotent; no DB password in payloads/logs/audit.
  * - System logs: ring + daily file, level/text/time filters, redaction of secret-looking values.
  * - Connection monitoring: status history written by repo.updateInstance (directly and by the monitor)
- *   on placeholder device rows (adb ports 5595–5597, no containers), offline counts, RBAC.
+ *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, RBAC.
  * - Admin-only routes (a user gets 403) and audit entries.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3104 npx tsx --env-file=../../.env scripts/sysadmin-check.ts
  */
@@ -226,18 +226,22 @@ try {
   const panelD1 = await waitFor('monitor transition', async () => {
     const r = await http('GET', '/api/system/connections', T);
     const d = (r.body.devices as any[]).find((x) => x.id === D1.id);
-    return d && d.offline24h >= 1 ? d : null;
+    return d && d.lastOfflineAt ? d : null;
   }, 30_000);
-  check('monitor transition recorded (running → error, adb lost) and counted as offline', panelD1.status === 'error' && panelD1.offline24h >= 1 && !!panelD1.lastOfflineAt, JSON.stringify(panelD1));
+  check('monitor transition recorded (running → error, adb lost) as last offline time', panelD1.status === 'error' && !!panelD1.lastOfflineAt, JSON.stringify(panelD1));
   const h1 = (await http('GET', `/api/system/connections/${D1.id}/history`, T)).body.events as any[];
   check('D1 history: status running→error and adb device→null, both offline', h1.some((e) => e.field === 'status' && e.from === 'running' && e.to === 'error' && e.offline)
     && h1.some((e) => e.field === 'adb' && e.from === 'device' && e.to === null && e.offline), JSON.stringify(h1));
   const h2 = (await http('GET', `/api/system/connections/${D2.id}/history`, T)).body.events as any[];
   check('D2 history: exactly the 3 real status changes, no offline event', h2.length === 3 && h2.every((e) => e.field === 'status' && !e.offline)
     && h2.map((e) => `${e.from}>${e.to}`).join(',') === 'stopping>stopped,starting>stopping,stopped>starting', JSON.stringify(h2));
+  // The device log drawer's 连线 tab switches the range (24 h … 30 days).
+  const h2w = (await http('GET', `/api/system/connections/${D2.id}/history?hours=720`, T)).body.events as any[];
+  check('D2 history over 30 days (log drawer range): same 3 changes', h2w.length === 3, JSON.stringify(h2w));
+  check('history range out of bounds refused (400)', (await http('GET', `/api/system/connections/${D2.id}/history?hours=0`, T)).status === 400);
   const panel = (await http('GET', '/api/system/connections', T)).body.devices as any[];
   const p2 = panel.find((x) => x.id === D2.id);
-  check('panel row: changes/offline counts, adb/STF/scrcpy/proxy fields', p2?.changes24h === 3 && p2.offline24h === 0 && 'stfReady' in p2 && 'adbRttMs' in p2 && p2.scrcpy === null && 'proxyStatus' in p2, JSON.stringify(p2));
+  check('panel row: no offline time for a deliberate stop, no 24 h counters, adb/STF/scrcpy/proxy fields', p2?.lastOfflineAt === null && !('changes24h' in p2) && !('offline24h' in p2) && 'stfReady' in p2 && 'adbRttMs' in p2 && p2.scrcpy === null && 'proxyStatus' in p2, JSON.stringify(p2));
   check('admin sees all placeholder devices', fakeIds.every((id) => panel.some((x) => x.id === id)));
 
   // RBAC

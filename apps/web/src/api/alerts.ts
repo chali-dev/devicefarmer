@@ -1,6 +1,7 @@
 import type { RouteLocationRaw } from 'vue-router'
 import { t, te } from '../i18n'
 import { codeText } from './client'
+import { deviceListLink } from './query'
 import type { AppNotification } from './types'
 
 /**
@@ -31,7 +32,7 @@ export function alertDetail(n: Pick<AppNotification, 'params' | 'recovered'>): s
 /** Where clicking the alert leads (same targets as the Telegram links built by the API). */
 export function alertLink(n: Pick<AppNotification, 'refType' | 'refId' | 'params'>): RouteLocationRaw | null {
   if (!n.refId) return null
-  if (n.refType === 'instance') return `/instances/${n.refId}`
+  if (n.refType === 'instance') return deviceListLink(n.refId)
   if (n.refType === 'social_account') return { path: '/social', query: { q: String(n.params?.handle ?? '') } }
   if (n.refType === 'publish') return { path: '/publish', query: { task: n.refId } }
   if (n.refType === 'task') return { path: '/tasks', query: { task: n.refId } }

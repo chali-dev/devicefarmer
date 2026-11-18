@@ -8,7 +8,7 @@ import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { queryParam } from '../api/query'
+import { deviceListLink, queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
@@ -354,7 +354,7 @@ async function batch(action: 'set-persona' | 'add-tags' | 'remove-tags' | 'unlin
           </template>
           <template v-else-if="column.key === 'device'">
             <template v-if="record.instance">
-              <router-link v-if="record.instance.accessible" :to="`/instances/${record.instance.id}`">{{ record.instance.name }}</router-link>
+              <router-link v-if="record.instance.accessible" :to="deviceListLink(record.instance.id)">{{ record.instance.name }}</router-link>
               <a-tooltip v-else :title="t('social.noDeviceAccess')"><span class="muted">{{ record.instance.name }}</span></a-tooltip>
             </template>
             <span v-else class="muted">{{ t('social.notLinked') }}</span>

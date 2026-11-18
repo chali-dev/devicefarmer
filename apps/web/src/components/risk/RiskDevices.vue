@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
+import { deviceListLink } from '../../api/query'
 import type { RiskDevice } from '../../api/types'
 import { dateLocale } from '../../i18n'
 import { confirmAction, TABLE_SIZE } from '../common/ui'
@@ -53,7 +54,7 @@ const columns = computed(() => [
     :locale="{ emptyText: t('risk.devices.empty') }">
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'device'">
-        <router-link :to="`/instances/${record.id}`">{{ record.name }}</router-link>
+        <router-link :to="deviceListLink(record.id)">{{ record.name }}</router-link>
         <div><a-badge :status="record.online ? 'success' : 'default'" :text="record.online ? t('risk.devices.online') : t('risk.devices.offline')" /></div>
       </template>
       <template v-else-if="column.key === 'use'">

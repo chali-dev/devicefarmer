@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
+import { deviceListLink } from '../../api/query'
 import type { RiskDevice, RiskEvent } from '../../api/types'
 import { dateLocale } from '../../i18n'
 import SearchBar from '../common/SearchBar.vue'
@@ -60,7 +61,7 @@ const columns = computed(() => [
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'at'">{{ fmt(record.at) }}</template>
       <template v-else-if="column.key === 'device'">
-        <router-link v-if="record.instanceId" :to="`/instances/${record.instanceId}`">{{ record.instanceName ?? record.instanceId.slice(0, 8) }}</router-link>
+        <router-link v-if="record.instanceId" :to="deviceListLink(record.instanceId)">{{ record.instanceName ?? record.instanceId.slice(0, 8) }}</router-link>
         <span v-else class="muted">{{ record.instanceName ?? '—' }}</span>
       </template>
       <template v-else-if="column.key === 'source'">{{ t(`risk.sources.${record.source}`) }}</template>
