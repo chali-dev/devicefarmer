@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
-import { PlusOutlined, StarFilled, StarOutlined } from '@ant-design/icons-vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { EditOutlined, PlusOutlined, StarFilled, StarOutlined } from '@ant-design/icons-vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
 import { api, codeText, errorText } from '../api/client'
 import {
   compactNumber, TRACKED_SCHEDULE_HOURS, trackedHandle,
-  type ManagedUser, type TrackedAccount, type TrackedPlatform, type TrackedStatus,
+  type ManagedUser, type TrackedAccount, type TrackedCapacity, type TrackedPlatform, type TrackedStatus,
 } from '../api/types'
 import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
 import TrackedAccountDrawer from '../components/tracked/TrackedAccountDrawer.vue'
+import ScheduleCapacityHint from '../components/tracked/ScheduleCapacityHint.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -81,7 +82,7 @@ function reset() {
 }
 onMounted(async () => {
   await loadPlatforms()
-  void load(); void loadFacets()
+  void load(); void loadFacets(); void loadCapacity()
   if (auth.isAdmin) { try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch { /* filter only */ } }
 })
 
@@ -113,6 +114,24 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 /** 定时采集 interval label. */
 const intervalText = (h: number | null) => (h === null ? t('collect.off') : h < 24 ? t('collect.everyHours', { n: h }) : t('collect.everyDays', { n: h / 24 }))
 const scheduleOptions = computed(() => [{ value: 0, label: t('collect.off') }, ...TRACKED_SCHEDULE_HOURS.map((h) => ({ value: h, label: intervalText(h) }))])
+
+// ---- 采集频率: capacity hint (collector-device load of all users' scheduled accounts, aggregates only)
+const capacity = ref<TrackedCapacity | null>(null)
+async function loadCapacity() {
+  try { capacity.value = await api<TrackedCapacity>('GET', '/api/tracked-accounts/capacity') } catch { /* hint only */ }
+}
+const devicePlatforms = computed(() => new Set((capacity.value?.platforms ?? []).map((p) => p.platform)))
+/** Scheduled visits/hour one account adds to its collector device (0 when off, paused or not device-collected). */
+const load1 = (platform: string, status: string, hours: number | null) => (hours && status !== 'paused' && devicePlatforms.value.has(platform) ? 1 / hours : 0)
+/** Capacity deltas for setting `hours` on these accounts (keys = device platforms involved). */
+function deltasFor(accts: TrackedAccount[], hours: number | null, status?: string): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const a of accts) {
+    if (!devicePlatforms.value.has(a.platform)) continue
+    out[a.platform] = (out[a.platform] ?? 0) + load1(a.platform, status ?? a.status, hours) - load1(a.platform, a.status, a.refreshIntervalHours)
+  }
+  return out
+}
 async function runScheduler() {
   try { await api('POST', '/api/collection/run'); message.info(t('collect.runQueued')); setTimeout(() => void load(true), 3000) } catch (e) { message.error(errorText(e)) }
 }
@@ -144,6 +163,46 @@ async function refreshOne(a: TrackedAccount) {
     await load(true)
   } catch (e) { message.error(errorText(e)) }
 }
+// ---- 定时采集 column: click → popover with the interval picker
+const schedOpen = ref<string | null>(null)
+const schedDraft = ref(0)
+const schedSaving = ref(false)
+function openSched(a: TrackedAccount, open: boolean) {
+  schedOpen.value = open ? a.id : null
+  if (open) { schedDraft.value = a.refreshIntervalHours ?? 0; void loadCapacity() }
+}
+async function saveSched(a: TrackedAccount) {
+  if ((a.refreshIntervalHours ?? 0) === schedDraft.value) { schedOpen.value = null; return }
+  schedSaving.value = true
+  try {
+    replace((await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${a.id}`, { refreshIntervalHours: schedDraft.value || null })).account)
+    message.success(t('common.saved'))
+    schedOpen.value = null
+    void loadCapacity()
+  } catch (e) { message.error(errorText(e)) }
+  finally { schedSaving.value = false }
+}
+
+// ---- batch 设置采集频率 (selected rows; platforms without a data source are skipped by the API with a reason)
+const batchOpen = ref(false)
+const batchSaving = ref(false)
+const batchInterval = ref(24)
+const selectedRows = computed(() => items.value.filter((a) => selectedKeys.value.includes(a.id)))
+function openBatchSchedule() { batchInterval.value = 24; batchOpen.value = true; void loadCapacity() }
+async function saveBatchSchedule() {
+  batchSaving.value = true
+  try {
+    const r = await api<{ updated: string[]; unchanged: string[]; skipped: { id: string; code: string }[] }>('POST', '/api/tracked-accounts/schedule', {
+      ids: selectedKeys.value, refreshIntervalHours: batchInterval.value || null,
+    })
+    const reasons = [...new Set(r.skipped.map((s) => codeText(s.code, undefined, s.code)))].join(t('common.reasonSep'))
+    message.info(t('collect.batchDone', { n: r.updated.length + r.unchanged.length }) + (r.skipped.length ? ` ${t('common.skipped', { n: r.skipped.length, reasons })}` : ''))
+    batchOpen.value = false
+    await load(true); void loadCapacity()
+  } catch (e) { message.error(errorText(e)) }
+  finally { batchSaving.value = false }
+}
+
 async function refreshBatch() {
   const ok = new Set(collectable.value.map((a) => a.id))
   const ids = selectedKeys.value.length ? selectedKeys.value.filter((k) => ok.has(k)) : [...ok]
@@ -172,14 +231,22 @@ function remove(a: TrackedAccount) {
 // ---- add
 const addOpen = ref(false)
 const adding = ref(false)
-const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', tags: [] as string[], favorite: false, notes: '' })
+const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', tags: [] as string[], favorite: false, notes: '', interval: 0 })
 const preview = ref<{ platform: string; handle: string; profileUrl: string } | null>(null)
 const previewError = ref('')
 function openAdd() {
-  Object.assign(addForm, { platform: undefined, input: '', displayName: '', tags: [], favorite: false, notes: '' })
+  Object.assign(addForm, { platform: undefined, input: '', displayName: '', tags: [], favorite: false, notes: '', interval: 0 })
   preview.value = null; previewError.value = ''
   addOpen.value = true
+  void loadCapacity()
 }
+/** Platform of the account being added (parsed preview, else the picked platform) and whether it can be collected. */
+const addPlatform = computed(() => preview.value?.platform ?? addForm.platform)
+const addCollectable = computed(() => !!platforms.value.find((p) => p.id === addPlatform.value)?.api)
+/** Default 采集频率 per platform: Instagram 24 h (the API's default), others off. */
+watch(addPlatform, (p) => { addForm.interval = p === 'instagram' ? 24 : 0 })
+const addDeltas = computed(() => (addPlatform.value && devicePlatforms.value.has(addPlatform.value)
+  ? { [addPlatform.value]: load1(addPlatform.value, 'active', addForm.interval || null) } : {}))
 async function parseInput() {
   preview.value = null; previewError.value = ''
   if (!addForm.input.trim()) return
@@ -194,10 +261,11 @@ async function saveAdd() {
     await api('POST', '/api/tracked-accounts', {
       input: addForm.input, platform: addForm.platform, displayName: addForm.displayName || undefined,
       tags: addForm.tags, favorite: addForm.favorite, notes: addForm.notes || undefined,
+      ...(addCollectable.value ? { refreshIntervalHours: addForm.interval || null } : {}),
     })
     message.success(t('common.created'))
     addOpen.value = false
-    void load(); void loadFacets()
+    void load(); void loadFacets(); void loadCapacity()
   } catch (e) { message.error(errorText(e)) }
   finally { adding.value = false }
 }
@@ -214,6 +282,7 @@ function openEdit(a: TrackedAccount) {
     status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '', interval: a.refreshIntervalHours ?? 0,
   })
   editOpen.value = true
+  void loadCapacity()
 }
 async function saveEdit() {
   if (!editing.value) return
@@ -228,7 +297,7 @@ async function saveEdit() {
     replace(r.account)
     message.success(t('common.saved'))
     editOpen.value = false
-    void loadFacets()
+    void loadFacets(); void loadCapacity()
   } catch (e) { message.error(errorText(e)) }
   finally { editSaving.value = false }
 }
@@ -269,6 +338,11 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
           <a-button v-if="collectable.length" @click="refreshBatch">
             {{ t('tracked.refreshBatch') }}{{ selectedCollectable ? ` (${selectedCollectable})` : '' }}
           </a-button>
+          <a-tooltip v-if="collectable.length" :title="selectedCollectable ? undefined : t('collect.batchSelectHint')">
+            <a-button :disabled="!selectedCollectable" @click="openBatchSchedule">
+              {{ t('collect.batchSet') }}{{ selectedCollectable ? ` (${selectedCollectable})` : '' }}
+            </a-button>
+          </a-tooltip>
         </template>
       </SearchBar>
 
@@ -315,7 +389,22 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
           <template v-else-if="column.key === 'schedule'">
             <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
             <template v-else>
-              <span :class="{ muted: record.refreshIntervalHours === null }">{{ intervalText(record.refreshIntervalHours) }}</span>
+              <a-popover trigger="click" placement="bottomLeft" :open="schedOpen === record.id" @open-change="(v: boolean) => openSched(record as TrackedAccount, v)">
+                <template #content>
+                  <div class="sched-pop">
+                    <div class="small muted">{{ t('collect.interval') }}</div>
+                    <a-select v-model:value="schedDraft" :options="scheduleOptions" size="small" style="width: 100%" />
+                    <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor([record as TrackedAccount], schedDraft || null)" />
+                    <div class="sched-actions">
+                      <a-button size="small" @click="schedOpen = null">{{ t('common.cancel') }}</a-button>
+                      <a-button size="small" type="primary" :loading="schedSaving" @click="saveSched(record as TrackedAccount)">{{ t('common.save') }}</a-button>
+                    </div>
+                  </div>
+                </template>
+                <a :class="['sched-link', { muted: record.refreshIntervalHours === null }]" :title="t('collect.change')">
+                  {{ intervalText(record.refreshIntervalHours) }} <EditOutlined />
+                </a>
+              </a-popover>
               <div v-if="record.nextRefreshAt" class="muted small">{{ t('collect.next', { time: new Date(record.nextRefreshAt).toLocaleString(dateLocale()) }) }}</div>
               <div v-if="record.scheduleSkipCode" class="warn small">{{ t('collect.skipped', { reason: codeText(record.scheduleSkipCode, undefined, record.scheduleSkipCode) }) }}</div>
             </template>
@@ -367,6 +456,10 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
         {{ t('tracked.willTrack') }} <PlatformTag :platform="preview.platform" :name="platformLabel(preview.platform)" />
         <a :href="preview.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(preview) }}</a>
       </div>
+      <a-form-item v-if="addCollectable" :label="t('collect.interval')" :extra="t('collect.intervalHint')">
+        <a-select v-model:value="addForm.interval" :options="scheduleOptions" style="width: 200px" />
+        <ScheduleCapacityHint :capacity="capacity" :deltas="addDeltas" />
+      </a-form-item>
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="addForm.displayName" :maxlength="200" :placeholder="t('common.optional')" /></a-form-item>
       <a-form-item :label="t('tracked.tags')"><a-select v-model:value="addForm.tags" mode="tags" :options="tagOptions" :max-tag-count="6" /></a-form-item>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="addForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
@@ -392,15 +485,30 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
         <a-col v-if="editing && canCollect(editing)" :xs="24" :sm="12">
           <a-form-item :label="t('collect.interval')">
             <a-select v-model:value="editForm.interval" :options="scheduleOptions" />
+            <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor([editing], editForm.interval || null, editForm.status)" />
           </a-form-item>
         </a-col>
       </a-row>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="editForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
     </a-form>
   </a-modal>
+
+  <a-modal v-model:open="batchOpen" :title="t('collect.batchSet')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="batchSaving" :width="MODAL_WIDTH.sm" @ok="saveBatchSchedule">
+    <p>{{ t('collect.batchIntro', { n: selectedKeys.length }) }}</p>
+    <a-form layout="vertical">
+      <a-form-item :label="t('collect.interval')" :extra="selectedKeys.length > selectedCollectable ? t('collect.batchSkipHint', { n: selectedKeys.length - selectedCollectable }) : undefined">
+        <a-select v-model:value="batchInterval" :options="scheduleOptions" style="width: 200px" />
+        <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor(selectedRows, batchInterval || null)" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
 </template>
 
 <style scoped>
+.sched-link { white-space: nowrap; }
+.sched-link :deep(.anticon) { font-size: 11px; opacity: 0.6; }
+.sched-pop { width: 220px; display: flex; flex-direction: column; gap: 6px; }
+.sched-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
 .small-tag { font-size: 11px; margin-top: 2px; }
 .acct { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .acct-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }

@@ -135,6 +135,9 @@ try {
   check('refresh of the youtube tracked account → platform.disabled', disabled(r), r.text.slice(0, 200));
   r = await http('PATCH', `/api/tracked-accounts/${ytTracked!.id}`, T, { refreshIntervalHours: 12 });
   check('changing the youtube tracked schedule → platform.disabled', disabled(r), r.text.slice(0, 200));
+  r = await http('POST', '/api/tracked-accounts/schedule', T, { ids: [ytTracked!.id], refreshIntervalHours: 12 });
+  check('batch 采集频率 on the youtube tracked account → skipped platform.disabled, nothing updated', r.status === 200 && r.body.updated.length === 0
+    && r.body.skipped[0]?.code === 'platform.disabled', r.text.slice(0, 200));
 
   // ---------------------------------------------------------------- schedulers skip disabled platforms
   const checks = await scheduleAccountChecks(new Date(), 25 * 3600_000);

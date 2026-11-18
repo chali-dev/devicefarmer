@@ -579,6 +579,11 @@ export interface CommentTemplate {
 
 /** Intervals offered for 定时采集 (hours; the API accepts exactly these). */
 export const TRACKED_SCHEDULE_HOURS = [1, 2, 3, 6, 12, 24, 48, 72, 168] as const
+/** GET /api/tracked-accounts/capacity: scheduled collector-device load of all users (aggregates only). */
+export interface TrackedCapacity {
+  pace: { minIntervalSec: number; maxPerHour: number; capacityPerHour: number }
+  platforms: { platform: string; scheduledAccounts: number; visitsPerHour: number; capacityPerHour: number; overloaded: boolean }[]
+}
 
 /** 趋势热点 */
 export interface TrendingSettings { regions: string[]; categoryId: string | null; intervalHours: number; maxResults: number; retentionDays: number; updatedAt: string | null }

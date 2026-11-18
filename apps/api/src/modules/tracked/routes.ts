@@ -5,12 +5,12 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { TrackedAccount } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
-import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platforms.js';
 import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts } from './tracked.js';
-import { SCHEDULE_INTERVALS } from './schedule.js';
+import { SCHEDULE_INTERVALS, scheduleCapacity } from './schedule.js';
 import { firstSlot, IG_DEFAULT_INTERVAL_HOURS } from './slots.js';
 import { normTags, TAG_LIMIT, TAG_MAX } from './tags.js';
 
@@ -23,6 +23,18 @@ const HttpUrl = z.string().trim().max(1000).url().refine((u) => /^https?:\/\//i.
 const Tags = z.array(z.string().trim().min(1).max(TAG_MAX)).max(TAG_LIMIT);
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const Platform = z.enum(PLATFORM_IDS);
+/** 定时采集 interval in hours; null = off. Only for platforms with a data source (API or collector device). */
+const Interval = z.number().int().refine((n) => SCHEDULE_INTERVALS.includes(n), 'unsupported interval').nullable();
+
+/** Why `hours` can't be set on this platform, as a code (null = OK). Switching off is always allowed. */
+const scheduleSkip = (platform: string, hours: number | null) => (hours === null ? null
+  : !isPlatformEnabled(platform) ? 'platform.disabled' : !platformDef(platform).source ? 'tracked.schedule_manual_only' : null);
+function assertSchedulable(platform: string, hours: number | null): void {
+  if (scheduleSkip(platform, hours) === 'platform.disabled') assertPlatformEnabled(platform);
+  if (scheduleSkip(platform, hours)) throw badRequest('该平台没有数据来源，无法定时采集', 'tracked.schedule_manual_only');
+}
+/** Columns for a new interval: the first slot is within the next hour at the account's minute offset. */
+const scheduleSet = (id: string, hours: number | null) => ({ refreshIntervalHours: hours, nextRefreshAt: hours === null ? null : firstSlot(id), scheduleSkipCode: null });
 
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 const blankToNull = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim());
@@ -56,6 +68,8 @@ const CreateBody = z.object({
   tags: Tags.optional(),
   favorite: z.boolean().optional(),
   notes: optText(1000),
+  /** Omitted = the platform default (Instagram 24 h, others off). */
+  refreshIntervalHours: Interval.optional(),
 });
 
 const UpdateBody = z.object({
@@ -67,8 +81,7 @@ const UpdateBody = z.object({
   /** 'error' is set by refreshes only. */
   status: z.enum(['active', 'paused']).optional(),
   notes: optText(1000),
-  /** 定时采集 interval in hours; null = off. Only for platforms with a data source (API or collector device). */
-  refreshIntervalHours: z.number().int().refine((n) => SCHEDULE_INTERVALS.includes(n), 'unsupported interval').nullable().optional(),
+  refreshIntervalHours: Interval.optional(),
 });
 
 /**
@@ -111,18 +124,53 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { tags: tags.map((t) => t.t) };
   });
 
+  /** Scheduled collector-device load of all users (aggregate numbers only), for the 采集频率 capacity hint. */
+  app.get('/api/tracked-accounts/capacity', async () => scheduleCapacity());
+
+  /**
+   * Batch 设置采集频率. All ids must be visible to the caller (own rows; admins any), else the whole batch is
+   * 404. Rows that can't take the interval (no data source, platform disabled) are skipped with a code; rows
+   * already on it keep their slot (`unchanged`); the rest get the interval and a first slot like a single PATCH.
+   */
+  app.post('/api/tracked-accounts/schedule', {
+    schema: { body: z.object({ ids: z.array(z.string().uuid()).min(1).max(500), refreshIntervalHours: Interval }) },
+  }, async (req) => {
+    const ids = [...new Set(req.body.ids)];
+    const hours = req.body.refreshIntervalHours;
+    const rows = await db.select().from(ta).where(and(inArray(ta.id, ids), ownerWhere(req.user)));
+    if (rows.length !== ids.length) throw notFound('追踪账号不存在', 'tracked.not_found');
+    const updated: string[] = [];
+    const unchanged: string[] = [];
+    const skipped: { id: string; code: string }[] = [];
+    await db.transaction(async (tx) => {
+      for (const acc of rows) {
+        const code = scheduleSkip(acc.platform, hours);
+        if (code) skipped.push({ id: acc.id, code });
+        else if (acc.refreshIntervalHours === hours) unchanged.push(acc.id);
+        else {
+          await tx.update(ta).set(scheduleSet(acc.id, hours)).where(eq(ta.id, acc.id));
+          updated.push(acc.id);
+        }
+      }
+    });
+    if (req.audit) req.audit.extra = { updated: updated.length, unchanged: unchanged.length, skipped: skipped.length };
+    return { updated, unchanged, skipped };
+  });
+
   app.post('/api/tracked-accounts', { schema: { body: CreateBody } }, async (req, reply) => {
     const b = req.body;
     const p = parseProfile(b.input, b.platform);
     if (req.audit) req.audit.target = display(p);
-    // Instagram (read on the collector device) is collected on a schedule by default (24 h; changeable / off per account).
+    // Instagram (read on the collector device) is collected on a schedule by default (24 h); the form may pick
+    // another interval or off.
     const id = randomUUID();
-    const interval = p.platform === 'instagram' ? IG_DEFAULT_INTERVAL_HOURS : null;
+    const interval = b.refreshIntervalHours !== undefined ? b.refreshIntervalHours : p.platform === 'instagram' ? IG_DEFAULT_INTERVAL_HOURS : null;
+    assertSchedulable(p.platform, interval);
     const [row] = await db.insert(ta).values({
       id, userId: req.user.id, platform: p.platform, handle: p.handle, profileUrl: p.profileUrl, externalId: p.externalId,
       displayName: blankToNull(b.displayName) ?? null, tags: normTags(b.tags ?? []),
       favorite: b.favorite ?? false, notes: blankToNull(b.notes) ?? null,
-      refreshIntervalHours: interval, nextRefreshAt: interval ? firstSlot(id) : null,
+      ...scheduleSet(id, interval),
     }).returning().catch((err) => {
       if (isUnique(err)) throw conflict(`已在追踪 ${display(p)}`, 'tracked.duplicate', { account: display(p) });
       throw err;
@@ -149,13 +197,8 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (b.favorite !== undefined) set.favorite = b.favorite;
     if (b.status !== undefined) set.status = b.status;
     if (b.refreshIntervalHours !== undefined && b.refreshIntervalHours !== cur.refreshIntervalHours) {
-      if (b.refreshIntervalHours !== null) assertPlatformEnabled(cur.platform);
-      if (b.refreshIntervalHours !== null && !platformDef(cur.platform).source) {
-        throw badRequest('该平台没有数据来源，无法定时采集', 'tracked.schedule_manual_only');
-      }
-      set.refreshIntervalHours = b.refreshIntervalHours;
-      set.nextRefreshAt = b.refreshIntervalHours === null ? null : firstSlot(cur.id);
-      set.scheduleSkipCode = null;
+      assertSchedulable(cur.platform, b.refreshIntervalHours);
+      Object.assign(set, scheduleSet(cur.id, b.refreshIntervalHours));
     }
     if (!Object.keys(set).length) throw badRequest('nothing to update', 'common.nothing_to_update');
     const [row] = await db.update(ta).set(set).where(eq(ta.id, cur.id)).returning();
