@@ -19,6 +19,7 @@ import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
+import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
@@ -214,6 +215,16 @@ async function checkNow(a: SocialAccount) {
   finally { checking.value = null }
 }
 
+// ---------------------------------------------------------------- detail (动态 / 帖子 / 回复记录), opened by clicking a row
+const feedOpen = ref(false)
+const feedFor = ref<SocialAccount | null>(null)
+function openFeed(a: SocialAccount) { feedFor.value = a; feedOpen.value = true }
+/** A click on the row's own controls (links, buttons, checkbox, dropdown) is not a row click. */
+const rowProps = (record: SocialAccount) => ({
+  class: 'row-click',
+  onClick: (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('a, button, input, label, .ant-dropdown, .ant-checkbox-wrapper, .ant-typography')) openFeed(record) },
+})
+
 // ---------------------------------------------------------------- logs
 const logOpen = ref(false)
 const logFor = ref<SocialAccount | null>(null)
@@ -336,6 +347,7 @@ async function batch(action: 'set-persona' | 'add-tags' | 'remove-tags' | 'unlin
         :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1910 }"
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total, totalText: (n) => t('social.total', { n }) })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
+        :custom-row="(r: any) => rowProps(r as SocialAccount)"
         @change="onTableChange"
       >
         <template #bodyCell="{ column, record }">
@@ -395,6 +407,7 @@ async function batch(action: 'set-persona' | 'add-tags' | 'remove-tags' | 'unlin
                 <a-button type="link" size="small">{{ t('social.more') }}</a-button>
                 <template #overlay>
                   <a-menu>
+                    <a-menu-item key="feed" @click="openFeed(record as SocialAccount)">{{ t('feed.tabs.posts') }}</a-menu-item>
                     <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
                     <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
@@ -407,6 +420,8 @@ async function batch(action: 'set-persona' | 'add-tags' | 'remove-tags' | 'unlin
       </a-table>
     </a-card>
   </PageContainer>
+
+  <SocialAccountFeedDrawer v-model:open="feedOpen" :account="feedFor" />
 
   <!-- create / edit -->
   <a-drawer v-model:open="editOpen" :title="editing ? t('social.edit') : t('social.add')" :width="DRAWER_WIDTH.md" destroy-on-close>

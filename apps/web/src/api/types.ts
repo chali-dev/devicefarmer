@@ -481,13 +481,15 @@ export interface TaskRetentionSettings {
 
 // ---------------------------------------------------------------- comments & engagement (评论互动)
 export type CommentStatus = 'new' | 'read' | 'replied' | 'hidden' | 'ignored'
-export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'rejected' | 'cancelled'
+/** dry_run = test mode on the cloud phone: pasted and checked, not sent. */
+export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'rejected' | 'cancelled' | 'dry_run'
 export const COMMENT_STATUS_COLOR: Record<CommentStatus, string> = { new: 'blue', read: 'default', replied: 'success', hidden: 'default', ignored: 'default' }
 export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
-  sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default',
+  sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default', dry_run: 'cyan',
 }
-export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
+/** comments.rules; sendsPerDay / minGapSec / testMode = 云手机发评论 (device sends). */
+export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number; sendsPerDay: number; minGapSec: number; testMode: boolean }
 export interface CommentAccount {
   id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
   newCount: number
@@ -496,7 +498,7 @@ export interface CommentReplySummary {
   id: string; status: CommentReplyStatus; text: string; method: string | null; errorCode: string | null; error: string | null; authorName: string | null; sentAt: string | null; updatedAt: string
 }
 export interface CommentItem {
-  id: string; userId: string; accountId: string; platform: string; source: 'api' | 'manual'; externalId: string; parentExternalId: string | null
+  id: string; userId: string; accountId: string; platform: string; source: 'api' | 'manual' | 'device'; externalId: string; parentExternalId: string | null
   externalPostId: string | null; postUrl: string | null; publishTaskId: string | null; authorName: string | null; authorHandle: string | null; text: string
   likeCount: number | null; replyCount: number | null; publishedAt: string | null; fetchedAt: string; status: CommentStatus; createdAt: string
   /** personaId = 账号人设 (default persona filter of the reply templates). */
@@ -506,17 +508,55 @@ export interface CommentItem {
   children?: CommentItem[]
 }
 export interface CommentReplyItem {
-  id: string; userId: string; accountId: string; commentId: string; platform: string; text: string; templateId: string | null; status: CommentReplyStatus
-  method: 'api' | 'manual' | null; scheduledAt: string | null; round: number; maxAttempts: number; taskId: string | null; externalReplyId: string | null
+  /** commentId null = a comment written directly under the account's post (`post`). */
+  id: string; userId: string; accountId: string; commentId: string | null; postId: string | null; platform: string; text: string; templateId: string | null; status: CommentReplyStatus
+  method: 'api' | 'manual' | 'device' | null; scheduledAt: string | null; round: number; maxAttempts: number; taskId: string | null; externalReplyId: string | null
   error: string | null; errorCode: string | null; authorId: string | null; authorName: string | null; submittedAt: string | null
   reviewerId: string | null; reviewerName: string | null; reviewedAt: string | null; reviewNote: string | null
   senderId: string | null; senderName: string | null; handedAt: string | null; sentAt: string | null; createdAt: string; updatedAt: string
   ownerName: string | null
-  comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null
+  comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual' | 'device'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null
+  post: { id: string; caption: string | null; permalink: string | null; publishedAt: string | null } | null
+  /** Test run / device send: what the input field showed (the screenshot: GET /api/comment-replies/:id/evidence). */
+  evidence: { at: string; inputText: string | null; excerpt: string | null } | null
+  hasEvidence: boolean
   account: { id: string; handle: string; platform: string } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
   canEdit: boolean
 }
+// ---------------------------------------------------------------- 帖子与评论 (account feed)
+export interface FeedReply {
+  id: string; status: CommentReplyStatus; text: string; method: string | null; scheduledAt: string | null; sentAt: string | null; handedAt: string | null
+  errorCode: string | null; error: string | null; authorName: string | null; hasEvidence: boolean; updatedAt: string
+}
+export interface FeedComment {
+  id: string; source?: 'api' | 'manual' | 'device'; authorName?: string | null; authorHandle: string | null; text: string; likeCount: number | null; replyCount: number | null
+  publishedAt: string | null; status?: CommentStatus; reply?: FeedReply | null; children?: FeedComment[]
+}
+export interface FeedPost {
+  id: string; externalId: string; source: string; permalink: string | null; caption: string | null; mediaType: string | null; publishedAt: string | null
+  likes: number | null; comments: number | null; views?: number | null; approx: string[]; firstSeenAt: string; fetchedAt: string; commentsFetchedAt: string | null
+  commentRows: FeedComment[]; commentsTotal: number; postComments?: (FeedReply | null)[]
+}
+export type FeedActivity =
+  | { type: 'stats'; at: string; followers: number | null; following: number | null; posts: number | null; approx: string[]; source: string; delta: { followers: number | null; following: number | null; posts: number | null } }
+  | { type: 'post'; at: string; postId: string; caption: string | null; publishedAt: string | null; permalink: string | null }
+  | { type: 'collect'; at: string; status: string; errorCode: string | null; outcome: string | null; posts: number | null; newPosts: number | null; comments: number | null; newComments: number | null }
+  | { type: 'reply'; at: string; status: CommentReplyStatus; text: string; errorCode: string | null; replyId: string }
+export interface FeedCollectState {
+  unsupported: string | null; instanceId: string | null; halted: boolean; kind: 'social' | 'tracked'
+  settings: { hours: number | null; posts: number; commentsPerPost: number }
+  last: { taskId: string; status: string; at: string; errorCode: string | null; result: Record<string, unknown> | null } | null
+  pending: { taskId: string; status: string; runAt: string | null } | null
+}
+export interface FeedResponse {
+  account: { id: string; platform: string; handle: string; instanceId?: string | null; userId: string }
+  collect: FeedCollectState
+  send?: { testMode: boolean; deviceCapable: boolean }
+  activity: FeedActivity[]
+  posts: { items: FeedPost[]; total: number }
+}
+
 export interface CommentLog {
   id: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; action: string; code: string | null; message: string | null
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
@@ -632,7 +672,11 @@ export interface AppNotification {
 }
 
 // ---------------------------------------------------------------- 风控 (risk control, admin)
-export interface RiskDeviceSettings { minIntervalSec: number; maxPerHour: number; busyRetrySec: number; accountCheckHours: number | null }
+export interface RiskDeviceSettings {
+  minIntervalSec: number; maxPerHour: number; busyRetrySec: number; accountCheckHours: number | null
+  /** 帖子与评论采集: every N hours (null = off), newest posts per account, comments per post. */
+  feedCollectHours: number | null; feedPosts: number; feedCommentsPerPost: number
+}
 export interface RiskSettings { device: RiskDeviceSettings; defaults: RiskDeviceSettings; capacityPerHour: number; eventRetentionDays: number }
 export interface RiskDevice {
   id: string; name: string; status: string; adbState: string | null; external: boolean; online: boolean
@@ -640,11 +684,11 @@ export interface RiskDevice {
   collectorFor: string[]
   /** Social accounts on this phone that the automatic check covers. */
   checkedAccounts: number
-  halted: { at: string; code: string; source: 'collector' | 'account_check'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
+  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
   visitsLastHour: number; lastVisitAt: string | null
 }
 export interface RiskEvent {
-  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check'; code: string; detail: string | null
+  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check' | 'feed' | 'reply'; code: string; detail: string | null
   socialAccountId: string | null; trackedAccountId: string | null; userId: string | null
   socialHandle: string | null; trackedHandle: string | null; username: string | null
 }

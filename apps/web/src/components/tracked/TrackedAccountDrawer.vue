@@ -6,14 +6,21 @@ import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import {
   compactNumber, trackedHandle,
-  type TrackedAccount, type TrackedMetric, type TrackedPlatform, type TrackedPost, type TrackedSnapshot,
+  type TrackedAccount, type TrackedMetric, type TrackedPlatform, type TrackedSnapshot,
 } from '../../api/types'
 import LineChart from './LineChart.vue'
+import FeedActivity from '../feed/FeedActivity.vue'
+import FeedCollectBar from '../feed/FeedCollectBar.vue'
+import FeedPosts from '../feed/FeedPosts.vue'
+import { useAccountFeed } from '../feed/useAccountFeed'
 import StatusTag from '../common/StatusTag.vue'
 import PlatformTag from '../social/PlatformTag.vue'
 import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
-/** Detail of one tracked account: follower history chart + table, public posts, refresh (manual entry was removed). */
+/**
+ * Detail of one tracked account: 动态 (counter changes, new posts, collection runs), follower history chart + table,
+ * 帖子 (posts read on the collector phone with their comments folded under each, read only), refresh.
+ */
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ account: TrackedAccount | null; platforms: TrackedPlatform[] }>()
 const emit = defineEmits<{ changed: [TrackedAccount]; edit: [TrackedAccount]; refresh: [TrackedAccount] }>()
@@ -25,20 +32,16 @@ const metrics = computed<TrackedMetric[]>(() => platform.value?.metrics ?? ['fol
 const tab = ref('history')
 
 const snapshots = ref<TrackedSnapshot[]>([])
-const posts = ref<TrackedPost[]>([])
-const postsTotal = ref(0)
-const postsPage = ref(1)
 const loading = ref(false)
+const feedApi = useAccountFeed('tracked')
+const { feed, page: postsPage, pageSize: postsPageSize, loading: feedLoading, collecting } = feedApi
 
 async function loadSnapshots() {
   if (!acc.value) return
   snapshots.value = (await api<{ snapshots: TrackedSnapshot[] }>('GET', `/api/tracked-accounts/${acc.value.id}/snapshots?limit=1000`)).snapshots
 }
-async function loadPosts() {
-  if (!acc.value) return
-  const r = await api<{ posts: TrackedPost[]; total: number }>('GET', `/api/tracked-accounts/${acc.value.id}/posts?page=${postsPage.value}&pageSize=20`)
-  posts.value = r.posts
-  postsTotal.value = r.total
+async function loadPosts(p = postsPage.value) {
+  if (acc.value) await feedApi.load(acc.value.id, p)
 }
 async function loadAll() {
   loading.value = true
@@ -50,7 +53,7 @@ async function reloadAccount() {
   try { emit('changed', (await api<{ account: TrackedAccount }>('GET', `/api/tracked-accounts/${acc.value.id}`)).account) } catch { /* list refresh shows it */ }
 }
 watch(() => [open.value, acc.value?.id], ([o], prev) => {
-  if (o && acc.value && (prev?.[1] !== acc.value.id || !prev?.[0])) { postsPage.value = 1; tab.value = 'history'; void loadAll() }
+  if (o && acc.value && (prev?.[1] !== acc.value.id || !prev?.[0])) { feedApi.reset(); tab.value = 'posts'; void loadAll() }
 })
 // A finished refresh brings new data.
 watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s && s !== old && (s === 'success' || s === 'failed')) void loadAll() })
@@ -86,14 +89,7 @@ function removeSnap(s: TrackedSnapshot) {
 }
 
 // ---- posts
-const postColumns = computed(() => [
-  { title: t('tracked.postTitle'), key: 'title' },
-  { title: t('tracked.publishedAt'), key: 'publishedAt', width: 150 },
-  { title: t('tracked.firstSeen'), key: 'firstSeenAt', width: 150 },
-  { title: t('tracked.postMetrics'), key: 'metrics', width: 170 },
-  { title: t('common.action'), key: 'ops', width: 70 },
-])
-function removePost(p: TrackedPost) {
+function removePost(p: { id: string }) {
   confirmDanger({
     title: t('tracked.confirmDeletePost'),
     onOk: async () => {
@@ -101,7 +97,6 @@ function removePost(p: TrackedPost) {
     },
   })
 }
-const isHttp = (u: string | null) => !!u && /^https?:\/\//i.test(u)
 const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 </script>
 
@@ -150,7 +145,11 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
         </a-col>
       </a-row>
 
+      <FeedCollectBar v-if="feed && acc.platform === 'instagram'" :state="feed.collect" :collecting="collecting" @collect="feedApi.collectNow(acc.id)" />
       <a-tabs v-model:active-key="tab">
+        <a-tab-pane key="activity" :tab="t('feed.tabs.activity')">
+          <a-spin :spinning="feedLoading"><FeedActivity :items="feed?.activity ?? []" /></a-spin>
+        </a-tab-pane>
         <a-tab-pane key="history" :tab="t('tracked.history')">
           <a-space style="margin-bottom: 8px" wrap>
             <a-radio-group v-model:value="metric" size="small" button-style="solid">
@@ -177,25 +176,9 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
           </a-table>
         </a-tab-pane>
 
-        <a-tab-pane key="posts" :tab="`${t('tracked.posts')} (${postsTotal})`">
-          <a-table :data-source="posts" :columns="postColumns" row-key="id" size="small" :loading="loading"
-            :pagination="pagination({ current: postsPage, pageSize: 20, total: postsTotal, showSizeChanger: false, hideOnSinglePage: true, onChange: (p: number) => { postsPage = p; loadPosts() } })">
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'title'">
-                <a v-if="isHttp(record.url)" :href="record.url" target="_blank" rel="noopener noreferrer">{{ record.title || record.externalId }}</a>
-                <span v-else>{{ record.title || record.externalId }}</span>
-                <a-tag v-if="record.source === 'manual'" class="small-tag">{{ t('tracked.sources.manual') }}</a-tag>
-              </template>
-              <template v-else-if="column.key === 'publishedAt'">{{ when(record.publishedAt) }}</template>
-              <template v-else-if="column.key === 'firstSeenAt'">{{ when(record.firstSeenAt) }}</template>
-              <template v-else-if="column.key === 'metrics'">
-                <span class="small">{{ t('tracked.postMetricsText', { views: compactNumber(record.views), likes: compactNumber(record.likes), comments: compactNumber(record.comments) }) }}</span>
-              </template>
-              <template v-else-if="column.key === 'ops'">
-                <a-button size="small" type="link" danger @click="removePost(record as TrackedPost)">{{ t('common.delete') }}</a-button>
-              </template>
-            </template>
-          </a-table>
+        <a-tab-pane key="posts" :tab="`${t('tracked.posts')} (${feed?.posts.total ?? 0})`">
+          <FeedPosts kind="tracked" :account-id="acc.id" :posts="feed?.posts.items ?? []" :total="feed?.posts.total ?? 0" :page="postsPage" :page-size="postsPageSize"
+            :loading="feedLoading" readonly deletable @page="(n) => loadPosts(n)" @remove="removePost" />
         </a-tab-pane>
       </a-tabs>
     </template>
