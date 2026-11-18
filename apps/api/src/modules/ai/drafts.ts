@@ -312,7 +312,12 @@ function mapApiError(err: unknown): Error {
   if (err instanceof Anthropic.RateLimitError) return new TaskError('ai.api_rate_limited', 'the Anthropic API is rate limiting (429)');
   if (err instanceof Anthropic.InternalServerError) return new TaskError('ai.unavailable', `the Anthropic API is unavailable (${err.status})`);
   if (err instanceof Anthropic.APIConnectionError) return new TaskError('ai.unavailable', `the Anthropic API could not be reached (${err.name})`);
-  if (err instanceof Anthropic.APIError) return new AiFinalError('ai.request_failed', `the Anthropic API refused the request (${err.status ?? '?'}: ${err.type ?? err.name})`);
+  if (err instanceof Anthropic.APIError) {
+    // The API's own message says which parameter it rejected (it never contains the key); keep it short.
+    const body = err.error as { error?: { message?: unknown } } | undefined;
+    const detail = typeof body?.error?.message === 'string' ? `: ${body.error.message.slice(0, 300)}` : '';
+    return new AiFinalError('ai.request_failed', `the Anthropic API refused the request (${err.status ?? '?'}: ${err.type ?? err.name})${detail}`);
+  }
   return err as Error;
 }
 
