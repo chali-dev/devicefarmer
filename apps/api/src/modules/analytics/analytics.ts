@@ -1,29 +1,17 @@
-import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { db, schema } from '../../db/index.js';
+import { sql, type SQL } from 'drizzle-orm';
+import { db } from '../../db/index.js';
 import { counterDeltas } from '../../lib/counter-deltas.js';
 import { registerDashboardWidget } from '../dashboard/registry.js';
-import { ACCOUNT_REF_TYPE } from '../platforms/check.js';
-import { appOptions } from '../platforms/credentials.js';
-import { connectionFor } from '../platforms/connections.js';
-import { adapterById, enabledAdapters } from '../platforms/index.js';
-import { apiAccountStats, apiOwnPosts, platformCapabilities } from '../platforms/service.js';
-import type { OwnPost } from '../platforms/types.js';
-import type { SocialAccount } from '../../db/schema.js';
-import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 
 /**
  * Account analytics (账号分析) of the operator's OWN social accounts: daily stats rows
- * (`social_account_stats`, one per account and UTC day) from the official APIs of connected accounts
- * (task `account-stats`, daily + "refresh now") or entered by hand. RBAC = social accounts: users see
- * their own accounts, admins all. A failed run is a failed task with a coded error (task centre);
- * the account's own status is never touched here.
+ * (`social_account_stats`, one per account and UTC day) and own posts (`social_account_posts`).
+ * READ ONLY: the data source (official-API task `account-stats`, its daily schedule and "refresh now")
+ * was removed on 2026-11-18 by owner decision, and manual entry was removed before; rows collected
+ * earlier stay readable. RBAC = social accounts: users see their own accounts, admins all.
  */
-export const STATS_TASK = 'account-stats';
-/** Days of day activity asked for on each run (YouTube Analytics reports with ~2 days delay). */
-const ACTIVITY_DAYS = 5;
 export const MAX_RANGE_DAYS = 90;
 const DAY_MS = 86_400_000;
-const st = schema.socialAccountStats;
 
 export const utcDay = (d: Date) => d.toISOString().slice(0, 10);
 /** `n` UTC days ending with `to`, oldest first. */
@@ -32,126 +20,6 @@ export function dayRange(to: string, n: number): string[] {
   return Array.from({ length: n }, (_, i) => utcDay(new Date(end - (n - 1 - i) * DAY_MS)));
 }
 
-export const METRICS = ['followers', 'following', 'posts', 'totalViews', 'totalLikes', 'views', 'likes', 'shares', 'comments'] as const;
-export type Metric = typeof METRICS[number];
-export type StatValues = Partial<Record<Metric, number | null>>;
-const COLUMN: Record<Metric, string> = {
-  followers: 'followers', following: 'following', posts: 'posts', totalViews: 'total_views', totalLikes: 'total_likes',
-  views: 'views', likes: 'likes', shares: 'shares', comments: 'comments',
-};
-
-/**
- * Writes one day of an account. `api`: values the platform did not return (null/undefined) keep what
- * the row had. `manual`: the given keys are set as entered (null clears). `missing` replaces the
- * row's list only when given. Idempotent: the same input twice leaves the same row.
- */
-export async function upsertDay(
-  exec: Pick<typeof db, 'insert'>, accountId: string, day: string, values: StatValues, source: 'api' | 'manual',
-  opts: { missing?: string[]; createdBy?: string | null; capturedAt?: Date } = {},
-) {
-  const keys = METRICS.filter((k) => values[k] !== undefined);
-  const set: Record<string, unknown> = { source, capturedAt: sql`excluded.captured_at` };
-  for (const k of keys) {
-    set[k] = source === 'api' ? sql.raw(`coalesce(excluded.${COLUMN[k]}, social_account_stats.${COLUMN[k]})`) : sql.raw(`excluded.${COLUMN[k]}`);
-  }
-  if (opts.missing) set.missing = sql`excluded.missing`;
-  if (source === 'manual') set.createdBy = sql`excluded.created_by`;
-  const [row] = await exec.insert(st).values({
-    socialAccountId: accountId, day, source, capturedAt: opts.capturedAt ?? new Date(), createdBy: opts.createdBy ?? null,
-    missing: opts.missing ?? [], ...Object.fromEntries(keys.map((k) => [k, values[k] ?? null])),
-  }).onConflictDoUpdate({ target: [st.socialAccountId, st.day], set }).returning();
-  return row!;
-}
-
-/** Enabled platforms whose adapter can fetch account stats. */
-const statsPlatforms = () => enabledAdapters().filter((a) => a.capabilities({}).accountStats).map((a) => a.id);
-
-// ---------------------------------------------------------------- refresh (task)
-export async function refreshAccountStats(accountId: string, ctx: Pick<TaskContext, 'signal' | 'log'>): Promise<Record<string, unknown>> {
-  const [account] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
-  if (!account) { await ctx.log('warn', 'account no longer exists'); return { outcome: 'account_deleted' }; }
-  const adapter = adapterById(account.platform);
-  if (!adapter || !adapter.capabilities(await appOptions(account.platform)).accountStats) {
-    await ctx.log('info', 'no official stats API for this platform: manual entry only');
-    return { outcome: 'manual_only' };
-  }
-  if (!(await connectionFor(account.id))) {
-    await ctx.log('info', 'no official API connection: manual entry only, nothing changed');
-    return { outcome: 'manual_only' };
-  }
-  const now = new Date();
-  const today = utcDay(now);
-  const days = dayRange(today, ACTIVITY_DAYS);
-  const s = await apiAccountStats(account, days, { signal: ctx.signal, log: (m, d) => ctx.log('info', m, d) });
-  const byDay = new Map(s.days.map((d) => [d.day, d]));
-  await db.transaction(async (tx) => {
-    const t = byDay.get(today);
-    await upsertDay(tx, account.id, today, {
-      followers: s.followers, following: s.following, posts: s.posts, totalViews: s.totalViews, totalLikes: s.totalLikes,
-      views: t?.views, likes: t?.likes, shares: t?.shares, comments: t?.comments,
-    }, 'api', { missing: s.missing, capturedAt: now });
-    for (const d of s.days) {
-      if (d.day === today || d.day > today) continue;
-      await upsertDay(tx, account.id, d.day, { views: d.views, likes: d.likes, shares: d.shares, comments: d.comments }, 'api', { capturedAt: now });
-    }
-  });
-  await ctx.log('info', 'stats stored', { day: today, followers: s.followers, activityDays: s.days.length });
-  const posts = await refreshPosts(account, ctx);
-  if (s.missing.length) {
-    await ctx.log('warn', 'scope missing: re-authorise the account to get these metrics', { missing: s.missing, scopes: s.missingScopes });
-    return { outcome: 'partial', code: 'analytics.scope_missing', day: today, missing: s.missing, missingScopes: s.missingScopes, posts };
-  }
-  return { outcome: 'refreshed', day: today, activityDays: s.days.length, posts };
-}
-
-/** Platform pages of own posts read per refresh (Instagram: 25 per page → the newest 100 posts). */
-export const POST_PAGES = 4;
-
-/**
- * Own posts with per-post counters (capability accountPosts), after the account stats of the same run.
- * A failure here is logged with its code and reported in the result; the stats already stored stay.
- */
-async function refreshPosts(account: SocialAccount,ctx: Pick<TaskContext, 'signal' | 'log'>): Promise<Record<string, unknown> | null> {
-  if (!(await platformCapabilities(account.platform))?.accountPosts) return null;
-  try {
-    const posts = await apiOwnPosts(account, POST_PAGES, { signal: ctx.signal, log: (m, d) => ctx.log('info', m, d) });
-    const r = await upsertAccountPosts(account.id, account.platform, posts);
-    await ctx.log('info', 'posts stored', r);
-    return r;
-  } catch (err) {
-    if (ctx.signal.aborted) throw err;
-    const e = err as { code?: string; message?: string };
-    await ctx.log('warn', 'posts could not be fetched, stats kept', { code: e.code ?? 'analytics.posts_failed' });
-    return { error: e.code ?? 'analytics.posts_failed' };
-  }
-}
-
-const sp = schema.socialAccountPosts;
-/**
- * Upserts own posts of an account: new ones are inserted (first_seen_at = now); existing ones get the
- * current counters/caption/permalink (values the platform did not return keep what the row had) and
- * fetched_at, first_seen_at stays. Idempotent.
- */
-export async function upsertAccountPosts(accountId: string, platform: string, posts: OwnPost[], now = new Date()): Promise<{ fetched: number; inserted: number; updated: number }> {
-  let inserted = 0; let updated = 0;
-  for (const p of posts) {
-    const [row] = await db.insert(sp).values({
-      socialAccountId: accountId, platform, externalId: p.id, mediaType: p.mediaType, productType: p.productType, caption: p.caption,
-      permalink: p.permalink, publishedAt: p.publishedAt ? new Date(p.publishedAt) : null, likes: p.likes, comments: p.comments,
-      firstSeenAt: now, fetchedAt: now,
-    }).onConflictDoUpdate({
-      target: [sp.socialAccountId, sp.externalId],
-      set: {
-        mediaType: sql`coalesce(excluded.media_type, ${sp.mediaType})`, productType: sql`coalesce(excluded.product_type, ${sp.productType})`,
-        caption: sql`coalesce(excluded.caption, ${sp.caption})`, permalink: sql`coalesce(excluded.permalink, ${sp.permalink})`,
-        publishedAt: sql`coalesce(excluded.published_at, ${sp.publishedAt})`,
-        likes: sql`coalesce(excluded.likes, ${sp.likes})`, comments: sql`coalesce(excluded.comments, ${sp.comments})`, fetchedAt: sql`excluded.fetched_at`,
-      },
-    }).returning({ inserted: sql<boolean>`xmax = 0` });
-    if (row?.inserted) inserted++; else updated++;
-  }
-  return { fetched: posts.length, inserted, updated };
-}
 
 export const POST_SORTS = ['published', 'likes', 'comments'] as const;
 /**
@@ -187,62 +55,6 @@ export async function accountPosts(accountId: string, o: { limit: number; offset
     })),
   };
 }
-
-// Device-less, one attempt: the next daily run (or "refresh now") is the retry.
-registerTaskHandler<{ socialAccountId: string }>(STATS_TASK, {
-  queue: 'task-ops',
-  timeoutMs: 3 * 60_000,
-  maxAttempts: 1,
-  run: (ctx) => refreshAccountStats(ctx.payload.socialAccountId ?? ctx.task.refId!, ctx),
-});
-
-/** Stats tasks of these accounts that have not finished yet. */
-export async function pendingStats(ids: string[]): Promise<Set<string>> {
-  if (!ids.length) return new Set();
-  const T = schema.tasks;
-  const rows = await db.select({ refId: T.refId }).from(T).where(and(
-    eq(T.type, STATS_TASK), eq(T.refType, ACCOUNT_REF_TYPE), inArray(T.refId, ids), inArray(T.status, ['pending', 'scheduled', 'running']),
-  ));
-  return new Set(rows.map((r) => r.refId!));
-}
-
-export const accountLabel = (a: { platform: string; handle: string }) => `${a.platform} @${a.handle}`;
-
-/** Stable 0..1 per account, so each account keeps its time of day. */
-const slot = (id: string) => parseInt(id.replace(/-/g, '').slice(0, 8), 16) / 0x1_0000_0000;
-
-/**
- * Daily run for every connected account of a platform with a stats API: one task per account and UTC
- * day (idempotency key account-stats:<id>:<day>), spread over the day by account id; a slot already
- * passed runs within the hour. Called hourly (main.ts); accounts already scheduled today are skipped
- * in the query, so repeated calls create nothing. `spread: false` runs them now (tests).
- */
-export async function scheduleDailyAccountStats(now = new Date(), opts: { spread?: boolean } = {}): Promise<{ created: number }> {
-  const day = utcDay(now);
-  const platforms = statsPlatforms();
-  if (!platforms.length) return { created: 0 };
-  const rows = await db.execute<{ id: string; user_id: string; platform: string; handle: string }>(sql`
-    select sa.id, sa.user_id, sa.platform, sa.handle from social_accounts sa
-    join platform_connections pc on pc.social_account_id = sa.id and pc.status = 'connected'
-    where sa.platform in (${sql.join(platforms.map((p) => sql`${p}`), sql`, `)})
-      and not exists (select 1 from tasks t where t.type = ${STATS_TASK} and t.idempotency_key = ${`${STATS_TASK}:`} || sa.id::text || ${`:${day}`})`);
-  let created = 0;
-  const dayStart = Date.parse(`${day}T00:00:00Z`);
-  for (const a of rows) {
-    let runAt: Date | null = null;
-    if (opts.spread !== false) {
-      const at = dayStart + Math.floor(slot(a.id) * DAY_MS);
-      runAt = new Date(at > now.getTime() ? at : now.getTime() + Math.floor(slot(a.id) * 3600_000));
-    }
-    const r = await createTask({
-      type: STATS_TASK, userId: a.user_id, label: accountLabel(a), refType: ACCOUNT_REF_TYPE, refId: a.id,
-      payload: { socialAccountId: a.id }, idempotencyKey: `${STATS_TASK}:${a.id}:${day}`, runAt,
-    });
-    if (r.created) created++;
-  }
-  return { created };
-}
-
 // ---------------------------------------------------------------- queries
 /** Accounts in scope (alias `sa`): admin = all (optional owner), user = own. */
 export function accountScope(o: { admin: boolean; userId: string; ownerId?: string; platform?: string; accountId?: string }): SQL {
@@ -294,37 +106,31 @@ export async function dailyRows(scope: SQL, from: string, to: string): Promise<D
 
 export interface AccountRow {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; displayName: string | null;
-  connection: string | null;
   latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: string } | null;
+  /** Metrics the last stored day lacked (historical API rows). */
   missing: string[];
-  lastRun: { id: string; status: string; errorCode: string | null; error: string | null; createdAt: string; finishedAt: string | null } | null;
 }
 
-/** Accounts in scope with connection status, latest follower reading, missing metrics and the last stats task. */
+/** Accounts in scope with their latest follower reading and the metrics missing on the last stored day. */
 export async function accountRows(scope: SQL): Promise<AccountRow[]> {
   const rows = await db.execute<Record<string, unknown>>(sql`
-    select sa.id, sa.user_id, u.username as owner_name, sa.platform, sa.handle, sa.display_name, pc.status as connection,
-      l.latest, coalesce(m.missing, '{}') as missing, r.last_run
+    select sa.id, sa.user_id, u.username as owner_name, sa.platform, sa.handle, sa.display_name,
+      l.latest, coalesce(m.missing, '{}') as missing
     from social_accounts sa
     left join users u on u.id = sa.user_id
-    left join platform_connections pc on pc.social_account_id = sa.id
     left join lateral (select json_build_object('day', to_char(x.day, 'YYYY-MM-DD'), 'followers', x.followers, 'following', x.following,
         'posts', x.posts, 'capturedAt', x.captured_at, 'source', x.source) as latest
       from social_account_stats x where x.social_account_id = sa.id and x.followers is not null order by x.day desc limit 1) l on true
     left join lateral (select x.missing from social_account_stats x where x.social_account_id = sa.id order by x.day desc limit 1) m on true
-    left join lateral (select json_build_object('id', t.id, 'status', t.status, 'errorCode', t.error_code, 'error', t.error,
-        'createdAt', t.created_at, 'finishedAt', t.finished_at) as last_run
-      from tasks t where t.ref_type = ${ACCOUNT_REF_TYPE} and t.ref_id = sa.id and t.type = ${STATS_TASK} order by t.created_at desc limit 1) r on true
     where ${scope}
     order by sa.platform, lower(sa.handle)`);
   return [...rows].map((r) => {
     const latest = r.latest as AccountRow['latest'] & Record<string, unknown> | null;
     return {
       id: String(r.id), userId: String(r.user_id), ownerName: (r.owner_name as string | null) ?? null, platform: String(r.platform),
-      handle: String(r.handle), displayName: (r.display_name as string | null) ?? null, connection: (r.connection as string | null) ?? null,
+      handle: String(r.handle), displayName: (r.display_name as string | null) ?? null,
       latest: latest ? { ...latest, followers: numOrNull(latest.followers), following: numOrNull(latest.following), posts: numOrNull(latest.posts) } : null,
       missing: (r.missing as string[]) ?? [],
-      lastRun: (r.last_run as AccountRow['lastRun']) ?? null,
     };
   });
 }

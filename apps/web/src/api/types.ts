@@ -326,49 +326,6 @@ export function compactNumber(n: number | null | undefined): string {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
 
-// ---------------------------------------------------------------- official platform integrations (平台接入)
-export interface PlatformCapabilities {
-  publishVideo: boolean
-  publishImage: boolean
-  publishCarousel: boolean
-  draftOnly: boolean
-  needsPublicMediaUrl: boolean
-  commentsRead: boolean
-  commentsReply: boolean
-  profileStats: boolean
-  accountStats: boolean
-}
-export interface PlatformInfo { id: string; name: string; configured: boolean; capabilities: PlatformCapabilities; scopes: string[]; pkce: boolean }
-export interface PlatformAppSettings {
-  platform: string
-  name: string
-  clientId: string | null
-  clientSecretSet: boolean
-  configured: boolean
-  redirectUri: string
-  options: { directPost?: boolean; accountStats?: boolean }
-  scopes: string[]
-  updatedAt: string | null
-}
-export type PlatformConnectionStatus = 'connected' | 'expired' | 'revoked' | 'error'
-export interface PlatformConnection {
-  id: string
-  socialAccountId: string
-  userId: string
-  platform: string
-  externalAccountId: string | null
-  externalAccountName: string | null
-  scopes: string[]
-  status: PlatformConnectionStatus
-  expiresAt: string | null
-  lastError: string | null
-  lastErrorCode: string | null
-  connectedAt: string
-  lastRefreshedAt: string | null
-  lastCheckedAt: string | null
-}
-export const CONNECTION_COLOR: Record<PlatformConnectionStatus, string> = { connected: 'success', expired: 'warning', revoked: 'error', error: 'error' }
-
 // ---------------------------------------------------------------- content (内容管理) + publish scheduler (定时发布)
 export type ContentStatus = 'draft' | 'ready' | 'scheduled' | 'partially_published' | 'published' | 'failed' | 'archived'
 export const CONTENT_STATUSES: ContentStatus[] = ['draft', 'ready', 'scheduled', 'partially_published', 'published', 'failed', 'archived']
@@ -448,7 +405,7 @@ export interface PublishCapability {
   title: { required: boolean; max: number } | null
   captionMax: number; hashtagsMax: number; privacy?: string[]
 }
-export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; methods: ('api' | 'manual')[]; known: boolean }
+export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; known: boolean }
 
 // ---------------------------------------------------------------- dashboard (概览) + settings (设置)
 export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
@@ -457,7 +414,6 @@ export interface DashboardWidgets {
   proxies?: { total: number; bound: number; free: number; freeUsable: number; ok: number; failed: number; unchecked: number }
   social?: {
     total: number; exceptions: number; linked: number; byPlatform: Record<string, number>; byLogin: Record<string, number>
-    connections: { connected: number; expired: number; revoked: number; error: number }
   }
   tracked?: { total: number; byStatus: Record<string, number>; topGainers: { id: string; platform: string; handle: string; displayName: string | null; followers: number; gain: number }[] }
   publishing?: {
@@ -522,10 +478,7 @@ export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
 export interface CommentRules { requireApproval: boolean; duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
 export interface CommentAccount {
   id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
-  commentsRead: boolean; commentsReply: boolean; readMode: 'api' | 'manual'; readReason: string | null; replyMode: 'api' | 'manual'; replyReason: string | null
   newCount: number
-  sync: { lastSyncedAt: string | null; lastFetched: number | null; lastNew: number | null; lastError: string | null; lastErrorCode: string | null
-    task: { id: string; status: TaskStatus; errorCode: string | null; finishedAt: string | null } | null } | null
 }
 export interface CommentReplySummary {
   id: string; status: CommentReplyStatus; text: string; method: string | null; errorCode: string | null; error: string | null; authorName: string | null; sentAt: string | null; updatedAt: string
@@ -608,12 +561,9 @@ export interface TrendingData {
 export interface AnalyticsSums { followersGained: number | null; views: number | null; likes: number | null; shares: number | null; comments: number | null }
 export interface AnalyticsAccount {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; displayName: string | null
-  /** platform_connections.status, null = no official API connection (manual entry). */
-  connection: 'connected' | 'expired' | 'revoked' | 'error' | null
   latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: 'api' | 'manual' } | null
-  /** Metrics the API could not provide (connection lacks a scope). */
+  /** Metrics the official API could not provide when the row was collected (history). */
   missing: string[]
-  lastRun: { id: string; status: TaskStatus; errorCode: string | null; error: string | null; createdAt: string; finishedAt: string | null } | null
 }
 export interface AnalyticsSummary {
   from: string; to: string
@@ -625,8 +575,8 @@ export interface AnalyticsDay extends Partial<AnalyticsSums> {
   day: string; source: 'api' | 'manual' | null
   followers?: number | null; following?: number | null; posts?: number | null; totalViews?: number | null; totalLikes?: number | null
 }
-export interface AnalyticsSeries { account: AnalyticsAccount; apiStats: boolean; from: string; to: string; days: AnalyticsDay[] }
-/** One of the account's own posts (GET /api/analytics/accounts/:id/posts; Instagram /me/media via the stats refresh). */
+export interface AnalyticsSeries { account: AnalyticsAccount; from: string; to: string; days: AnalyticsDay[] }
+/** One of the account's own posts (GET /api/analytics/accounts/:id/posts; collected before the official APIs were removed). */
 export interface AnalyticsPost {
   id: string; externalId: string; mediaType: string | null; productType: string | null; caption: string | null; permalink: string | null
   publishedAt: string | null; likes: number | null; comments: number | null; firstSeenAt: string; fetchedAt: string
@@ -634,7 +584,7 @@ export interface AnalyticsPost {
   publish: { taskId: string; contentId: string; title: string | null } | null
 }
 export interface AnalyticsPosts {
-  apiPosts: boolean; total: number; likes: number | null; comments: number | null; lastFetchedAt: string | null; posts: AnalyticsPost[]
+  total: number; likes: number | null; comments: number | null; lastFetchedAt: string | null; posts: AnalyticsPost[]
 }
 export interface DashboardAnalytics {
   accounts: number; withData: number; followers: number

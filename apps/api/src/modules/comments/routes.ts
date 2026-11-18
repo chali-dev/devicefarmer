@@ -5,11 +5,10 @@ import { db, schema } from '../../db/index.js';
 import { COMMENT_REPLY_STATUSES, COMMENT_STATUSES, type Comment, type CommentTask } from '../../db/schema.js';
 import { forbidden, HttpError } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
-import { platformCapabilities } from '../platforms/service.js';
 import { visibleAccount } from '../social/social.js';
 import {
-  approveReply, assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, readMode, recordReplyOutcome,
-  rejectReply, REPLY_REF, replyMode, saveRules, setCommentStatus, startSync, submitReply, visibleComment, visibleReply, visibleTemplate,
+  approveReply, assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, recordReplyOutcome,
+  rejectReply, REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
 } from './comments.js';
 import { assertPersonaFor } from './personas.js';
 
@@ -140,42 +139,18 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     return { rules: await saveRules(req.body) };
   });
 
-  // ------------------------------------------------------------ accounts (filters, sync status, modes)
+  // ------------------------------------------------------------ accounts (filters, new-comment counts)
   app.get('/api/comments/accounts', async (req) => {
     const accs = await db.select().from(schema.socialAccounts)
       .where(isAdmin(req.user) ? undefined : eq(schema.socialAccounts.userId, req.user.id)).orderBy(asc(schema.socialAccounts.platform), asc(schema.socialAccounts.handle));
-    const ids = idsOf(accs.map((a) => a.id));
-    const [states, counts] = await Promise.all([
-      db.select().from(schema.commentSyncStates).where(inArray(schema.commentSyncStates.accountId, ids)),
-      db.select({ accountId: C.accountId, n: count() }).from(C).where(and(inArray(C.accountId, ids), eq(C.status, 'new'))).groupBy(C.accountId),
-    ]);
-    const tasks = await db.select({ id: schema.tasks.id, status: schema.tasks.status, errorCode: schema.tasks.errorCode, finishedAt: schema.tasks.finishedAt })
-      .from(schema.tasks).where(inArray(schema.tasks.id, idsOf(states.map((s) => s.lastTaskId))));
-    const caps = new Map<string, Awaited<ReturnType<typeof platformCapabilities>>>();
-    for (const p of new Set(accs.map((a) => a.platform))) caps.set(p, await platformCapabilities(p));
+    const counts = await db.select({ accountId: C.accountId, n: count() }).from(C)
+      .where(and(inArray(C.accountId, idsOf(accs.map((a) => a.id))), eq(C.status, 'new'))).groupBy(C.accountId);
     return {
-      accounts: await Promise.all(accs.map(async (a) => {
-        const st = states.find((s) => s.accountId === a.id);
-        const read = await readMode(a);
-        const reply = await replyMode(a, { source: 'api' });
-        return {
-          id: a.id, platform: a.platform, handle: a.handle, displayName: a.displayName, userId: a.userId, instanceId: a.instanceId,
-          commentsRead: !!caps.get(a.platform)?.commentsRead, commentsReply: !!caps.get(a.platform)?.commentsReply,
-          readMode: read.mode, readReason: read.reason, replyMode: reply.mode, replyReason: reply.reason,
-          newCount: counts.find((c) => c.accountId === a.id)?.n ?? 0,
-          sync: st ? { lastSyncedAt: st.lastSyncedAt, lastFetched: st.lastFetched, lastNew: st.lastNew, lastError: st.lastError, lastErrorCode: st.lastErrorCode,
-            task: tasks.find((t) => t.id === st.lastTaskId) ?? null } : null,
-        };
+      accounts: accs.map((a) => ({
+        id: a.id, platform: a.platform, handle: a.handle, displayName: a.displayName, userId: a.userId, instanceId: a.instanceId,
+        newCount: counts.find((c) => c.accountId === a.id)?.n ?? 0,
       })),
     };
-  });
-
-  app.post('/api/comments/accounts/:id/sync', { schema: { params: Id } }, async (req, reply) => {
-    const acc = await visibleAccount(req.user, req.params.id);
-    const { task, created } = await startSync(req.user, acc);
-    if (req.audit) req.audit.extra = { taskId: task.id, created };
-    reply.code(202);
-    return { taskId: task.id, created, status: task.status };
   });
 
   /** Posts that have comments (filter), with the linked published content when known. */
@@ -249,15 +224,11 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const rootExt = c.parentExternalId ?? c.externalId;
     const thread = await db.select().from(C).where(and(eq(C.accountId, c.accountId), or(eq(C.externalId, rootExt), eq(C.parentExternalId, rootExt))))
       .orderBy(asc(sql`coalesce(${C.publishedAt}, ${C.createdAt})`)).limit(1000);
-    const [replies, logs, acc] = await Promise.all([
+    const [replies, logs] = await Promise.all([
       db.select().from(R).where(eq(R.commentId, c.id)).orderBy(desc(R.createdAt)),
       db.select().from(schema.commentLogs).where(eq(schema.commentLogs.commentId, c.id)).orderBy(asc(schema.commentLogs.at)).limit(1000),
-      visibleAccount(req.user, c.accountId),
     ]);
-    return {
-      comment: (await toCommentItems([c]))[0], thread: await toCommentItems(thread), replies: await toReplyItems(replies, req.user), logs,
-      replyMode: await replyMode(acc, c),
-    };
+    return { comment: (await toCommentItems([c]))[0], thread: await toCommentItems(thread), replies: await toReplyItems(replies, req.user), logs };
   });
 
   app.patch('/api/comments/:id', { schema: { params: Id, body: z.object({ status: z.enum(['new', 'read', 'hidden', 'ignored']) }) } }, async (req) => {

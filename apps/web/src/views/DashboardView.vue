@@ -95,7 +95,7 @@ const kpis = computed(() => {
   if (x.devices) out.push({ key: 'devices', title: t('dashboard.kpi.devices'), value: x.devices.running, suffix: `/ ${x.devices.total}`, icon: MobileOutlined,
     footer: t('dashboard.devicesOnline', { n: x.devices.online, stopped: x.devices.stopped }), to: '/instances' })
   if (x.social) out.push({ key: 'social', title: t('dashboard.w.social'), value: x.social.total, icon: TeamOutlined,
-    footer: `${t('dashboard.exceptions')} ${x.social.exceptions} · ${t('dashboard.connConnected')} ${x.social.connections.connected}`, to: '/social' })
+    footer: `${t('dashboard.exceptions')} ${x.social.exceptions} · ${t('dashboard.linkedDevice')} ${x.social.linked}`, to: '/social' })
   if (x.publishing) out.push({ key: 'publishing', title: t('dashboard.published7d'), value: x.publishing.published7d, icon: SendOutlined,
     footer: `${t('dashboard.failed7d')} ${x.publishing.failed7d} · ${t('dashboard.upcoming7d')} ${x.publishing.upcoming7d}`, to: { path: '/publish', query: { tab: 'history', status: 'published' } } })
   if (x.tasks) out.push({ key: 'tasks', title: t('dashboard.kpi.tasks'), value: x.tasks.last24h.total, icon: ScheduleOutlined,
@@ -173,8 +173,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             <div class="grid4">
               <StatLink :label="t('dashboard.accounts')" :value="w.social.total" to="/social" />
               <StatLink :label="t('dashboard.exceptions')" :value="w.social.exceptions" :to="{ path: '/social', query: { exception: '1' } }" tone="error" />
-              <StatLink :label="t('dashboard.connConnected')" :value="w.social.connections.connected" to="/social" tone="success" />
-              <StatLink :label="t('dashboard.connExpired')" :value="w.social.connections.expired + w.social.connections.revoked + w.social.connections.error" to="/social" tone="warning" />
+              <StatLink :label="t('dashboard.linkedDevice')" :value="w.social.linked" to="/social" />
             </div>
             <div class="tags">
               <router-link v-for="[p, c] in entries(w.social.byPlatform)" :key="p" :to="{ path: '/social', query: { platform: p } }" class="tag-link">

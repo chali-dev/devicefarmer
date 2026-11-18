@@ -3,8 +3,8 @@
  * Real API + DB, no mocks. Two temporary users A and B (+ the built-in admin), placeholder `instances` rows
  * (adb ports 5598–5599, no containers). User A is granted device D1, which hosts one of B's accounts.
  * Seeds for both users: accounts (tag, personal persona), media + content with targets, scheduled
- * publish tasks (plus an admin distribution of A's content to B's account), manual analytics stats,
- * manual comments + a reply draft, an account-check task and an account.problem notification.
+ * publish tasks (plus an admin distribution of A's content to B's account), seeded analytics stats,
+ * manual comments + a reply (approved by the admin → B's comment-reply task) and an account.problem notification.
  * Then, as A: every list/detail/filter/count/action endpoint must never contain B's account ids, handles,
  * display name, tag or persona, others' rows are 404 and ownerId filters are ignored or 403;
  * A's /api/events WebSocket must not carry B's account events. The admin sees both.
@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { upsertDay } from '../src/modules/analytics/analytics.js';
+import { seedStatsDay } from './lib/analytics-seed.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -120,9 +120,9 @@ try {
   const publishIds = [dA.body.created[0].id, ptB, ptX];
 
   const today = new Date().toISOString().slice(0, 10);
-  // Manual stats entry was removed: the rows are seeded through the real upsert.
-  const sa = await upsertDay(db, a.account, today, { followers: 100, posts: 3 }, 'manual');
-  const sb = await upsertDay(db, b.account, today, { followers: 777, posts: 9 }, 'manual');
+  // The API cannot write analytics any more (no data source): historical rows are seeded directly.
+  const sa = await seedStatsDay(a.account, today, { followers: 100, posts: 3 });
+  const sb = await seedStatsDay(b.account, today, { followers: 777, posts: 9 });
   check('setup: analytics stats rows for A and B (seeded)', !!sa.id && !!sb.id);
 
   const cmA = await http('POST', '/api/comments', A, { accountId: a.account, text: `ava comment ${tag}`, authorName: 'Viewer A', externalPostId: 'post-a' });
@@ -132,11 +132,13 @@ try {
   const commentB: string = cmB.body.comment.id;
   const replyB: string = rpB.body.reply.id;
 
-  // B: account check task (manual-only without a connection) + an account.problem alert ("mark checked").
-  r = await http('POST', `/api/platforms/accounts/${b.account}/check`, B);
-  const taskB: string = r.body?.taskId;
-  check('setup: B queues a social-account-check task', r.status === 202 && !!taskB, r.text);
-  await waitFor('B check task finished', async () => ['success', 'failed'].includes((await http('GET', `/api/tasks/${taskB}`, B)).body?.task?.status));
+  // B: a comment-reply task (B submits the reply, the admin approves it → handed to an operator) + an account.problem alert ("mark checked").
+  r = await http('POST', `/api/comment-replies/${replyB}/submit`, B, {});
+  check('setup: B submits the reply for review', r.status === 200 && r.body.reply?.status === 'pending_review', r.text.slice(0, 200));
+  r = await http('POST', `/api/comment-replies/${replyB}/approve`, T, {});
+  const taskB: string = r.body?.reply?.taskId;
+  check('setup: admin approves → B\'s comment-reply task', r.status === 200 && !!taskB, r.text.slice(0, 200));
+  await waitFor('B reply task finished', async () => ['success', 'failed'].includes((await http('GET', `/api/tasks/${taskB}`, B)).body?.task?.status));
   r = await http('POST', `/api/social/accounts/${b.account}/checked`, B, { loginStatus: 'logged_out', message: 'test' });
   check('setup: B marks the account logged out (account.problem)', r.status === 200, r.text);
   await waitFor('B notification', async () => ((await http('GET', '/api/notifications', B)).body?.items ?? (await http('GET', '/api/notifications', B)).body?.notifications ?? [])
@@ -210,13 +212,6 @@ try {
   await clean('/api/analytics/summary?ownerId=<B>', `/api/analytics/summary?days=7&ownerId=${uB}`);
   check('A: analytics summary has no 777 followers (B\'s)', !r.text.includes('777'));
   await clean('/api/analytics/accounts/<B>', `/api/analytics/accounts/${b.account}`, 404);
-  await deny('refresh B\'s analytics', 'POST', `/api/analytics/accounts/${b.account}/refresh`);
-
-  // platform connections
-  await clean('/api/platforms/connections?accountIds=<B>', `/api/platforms/connections?accountIds=${b.account}`);
-  await deny('connect B\'s account', 'POST', '/api/platforms/instagram/connect', { socialAccountId: b.account }, [400, 404]);
-  await deny('disconnect B\'s account', 'DELETE', `/api/platforms/accounts/${b.account}/connection`);
-  await deny('check B\'s account', 'POST', `/api/platforms/accounts/${b.account}/check`);
 
   // content + publish
   r = await clean('/api/contents', '/api/contents');
@@ -257,7 +252,6 @@ try {
   await clean('/api/comment-replies?ownerId=<B>', `/api/comment-replies?ownerId=${uB}`, 403);
   await clean('/api/comment-replies/<B>', `/api/comment-replies/${replyB}`, 404);
   await deny('manual comment on B\'s account', 'POST', '/api/comments', { accountId: b.account, text: 'x', authorName: 'x' });
-  await deny('sync B\'s comments', 'POST', `/api/comments/accounts/${b.account}/sync`);
   await deny('reply to B\'s comment', 'POST', `/api/comments/${commentB}/replies`, { text: 'x' });
   await deny('approve B\'s reply', 'POST', `/api/comment-replies/${replyB}/approve`, {});
   await clean('/api/comment-templates', '/api/comment-templates?kind=all');

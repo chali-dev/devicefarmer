@@ -73,12 +73,8 @@ registerDashboardWidget('proxies', async (ctx) => {
 
 // ---------------------------------------------------------------- social accounts
 registerDashboardWidget('social', async (ctx) => {
-  const pc = schema.platformConnections;
-  const [rows, conns] = await Promise.all([
-    db.select({ platform: sa.platform, login: sa.loginStatus, exc: sql<boolean>`${EXCEPTION_SQL}`, linked: sql<boolean>`(${sa.instanceId} is not null)`, n: count() })
-      .from(sa).where(own(ctx, sa.userId)).groupBy(sa.platform, sa.loginStatus, sql`${EXCEPTION_SQL}`, sql`(${sa.instanceId} is not null)`),
-    db.select({ k: pc.status, n: count() }).from(pc).where(own(ctx, pc.userId)).groupBy(pc.status),
-  ]);
+  const rows = await db.select({ platform: sa.platform, login: sa.loginStatus, exc: sql<boolean>`${EXCEPTION_SQL}`, linked: sql<boolean>`(${sa.instanceId} is not null)`, n: count() })
+    .from(sa).where(own(ctx, sa.userId)).groupBy(sa.platform, sa.loginStatus, sql`${EXCEPTION_SQL}`, sql`(${sa.instanceId} is not null)`);
   const byPlatform: Record<string, number> = {}; const byLogin: Record<string, number> = {};
   let total = 0; let exceptions = 0; let linked = 0;
   for (const r of rows) {
@@ -89,11 +85,7 @@ registerDashboardWidget('social', async (ctx) => {
     if (r.exc) exceptions += c;
     if (r.linked) linked += c;
   }
-  const connections = tally(conns);
-  return {
-    total, exceptions, linked, byPlatform, byLogin,
-    connections: { connected: connections.connected ?? 0, expired: connections.expired ?? 0, revoked: connections.revoked ?? 0, error: connections.error ?? 0 },
-  };
+  return { total, exceptions, linked, byPlatform, byLogin };
 }, { order: 30 });
 
 // ---------------------------------------------------------------- tracked accounts

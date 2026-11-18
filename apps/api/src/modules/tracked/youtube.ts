@@ -40,7 +40,7 @@ async function apiKey(): Promise<string> {
   return openSecret(s.apiKeyEnc);
 }
 
-/** Google API error body (shared with the OAuth YouTube adapter in modules/platforms). */
+/** Google API error body. */
 export interface GoogleApiErrorBody { error?: { code?: number; message?: string; status?: string; errors?: { reason?: string }[] } }
 export const googleErrorReasons = (body: unknown): string[] => ((body as GoogleApiErrorBody | null)?.error?.errors ?? []).map((e) => e.reason ?? '');
 export const GOOGLE_QUOTA_REASONS = new Set(['quotaExceeded', 'dailyLimitExceeded', 'rateLimitExceeded', 'userRateLimitExceeded']);

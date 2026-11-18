@@ -496,10 +496,11 @@ export const socialAccountLogs = pgTable('social_account_logs', {
 }, (t) => [index('social_account_logs_account_at_idx').on(t.accountId, t.at)]);
 
 /**
- * Official-API authorisation of a social account (OAuth), 1:1 with the account. Tokens are sealed with
- * secret-box (AES-256-GCM) and never leave the API: not in responses, events, logs or task payloads.
- * Instagram (Instagram Login) has no separate refresh token: its long-lived access token is refreshed
- * itself, so `refresh_token_enc` stays null there.
+ * LEGACY (official platform APIs removed on 2026-11-18 by owner decision): no code reads or writes this
+ * table any more; src/db/official-api-removal-migration.ts deleted its rows (sealed OAuth tokens).
+ * Drop the table in the next release (expand/contract), together with comment_sync_states and the
+ * `settings` row `platform.apps` (OAuth app credentials, also unused now).
+ * Was: official-API authorisation of a social account (OAuth), 1:1 with the account, tokens sealed with secret-box.
  */
 export const platformConnections = pgTable('platform_connections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -535,6 +536,7 @@ export const platformConnections = pgTable('platform_connections', {
  * Per-day gains are differences between readings (lib/counter-deltas.ts, shared with tracked accounts);
  * views/likes per day fall back to the difference of the lifetime totals. `missing` lists metrics the
  * API could not provide because the connection lacks a scope. source api|manual like tracked snapshots.
+ * Read only since 2026-11-18: neither source exists any more (official APIs removed); old rows stay readable.
  */
 export const socialAccountStats = pgTable('social_account_stats', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -694,7 +696,7 @@ export const publishTasks = pgTable('publish_tasks', {
   /** When it is (or was) due; distributions "now" get the creation time. */
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull().defaultNow(),
   status: text('status', { enum: PUBLISH_STATUSES }).notNull().default('pending'),
-  /** Method chosen by the last run ('api' | 'manual'). */
+  /** Method of the last run: 'manual' (old rows may say 'api': official-API publishing was removed on 2026-11-18). */
   method: text('method'),
   attemptNo: integer('attempt_no').notNull().default(1),
   maxAttempts: integer('max_attempts').notNull().default(3),
@@ -720,8 +722,9 @@ export const publishTasks = pgTable('publish_tasks', {
 ]);
 
 /**
- * Posts of the operator's OWN social accounts as the official API lists them (账号分析 → 帖子): per-post
- * likes/comments counters, refreshed by the account-stats task (capability `accountPosts`; Instagram
+ * Read only since 2026-11-18 (official APIs removed; nothing writes this table any more).
+ * Posts of the operator's OWN social accounts as the official API listed them (账号分析 → 帖子): per-post
+ * likes/comments counters, formerly refreshed by the removed account-stats task (Instagram
  * /me/media today). Unique per account + platform post id; an upsert keeps first_seen_at and updates the
  * mutable fields. Linked to publish_tasks at read time (account + external_id), no FK.
  */
@@ -763,8 +766,8 @@ export const publishLogs = pgTable('publish_logs', {
 
 /**
  * Comments & engagement (评论互动, P5). `comments` is the local copy of comments received on a social
- * account: synced through the official API (`source` api) or entered by an operator who saw it on the
- * phone (`source` manual). Unique per (account, external id). `user_id` = the account owner.
+ * account, entered by an operator who saw it on the phone (`source` manual; `api` = synced through the
+ * official API before that was removed on 2026-11-18). Unique per (account, external id). `user_id` = the account owner.
  * `publish_task_id` links a comment to the post published by the scheduler (same external post id).
  */
 export const COMMENT_STATUSES = ['new', 'read', 'replied', 'hidden', 'ignored'] as const;
@@ -805,7 +808,10 @@ export const comments = pgTable('comments', {
   index('comments_publish_task_idx').on(t.publishTaskId),
 ]);
 
-/** Per-account sync cursor (YouTube: page token; Instagram: ISO time of the newest comment seen) and last result. */
+/**
+ * LEGACY (official-API comment sync removed on 2026-11-18): no longer read or written. Drop in the next release.
+ * Was: per-account sync cursor (YouTube page token; Instagram ISO time of the newest comment seen) and last result.
+ */
 export const commentSyncStates = pgTable('comment_sync_states', {
   accountId: uuid('account_id').primaryKey().references(() => socialAccounts.id, { onDelete: 'cascade' }),
   cursor: text('cursor'),
@@ -838,7 +844,7 @@ export const commentTasks = pgTable('comment_tasks', {
   textHash: text('text_hash').notNull(),
   templateId: uuid('template_id'),
   status: text('status', { enum: COMMENT_REPLY_STATUSES }).notNull().default('draft'),
-  /** 'api' | 'manual', chosen when sending. */
+  /** 'manual' (old rows may say 'api': API replies were removed on 2026-11-18). */
   method: text('method'),
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
   round: integer('round').notNull().default(1),

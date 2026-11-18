@@ -239,7 +239,7 @@ try {
   check('db:migrate: old Telegram settings → exactly one channel (name Telegram, enabled, chat id, language)',
     made.length === 1 && m!.type === 'telegram' && /^Telegram/.test(m!.name) && m!.enabled && m!.config.chatId === '-1005550001112' && m!.config.language === 'en', JSON.stringify(made.map((c) => ({ ...c, config: { ...c.config, botTokenEnc: '…' } }))));
   check('migrated: sealed token carried over (decrypts to the old token)', !!m && openSecret(String(m.config.botTokenEnc)) === oldTok);
-  check('migrated: kinds from the old per-kind telegram flags (others default: task.failed off)', !!m && [...m.kinds].sort().join() === 'device.down,publish.failed', m?.kinds.join());
+  check('migrated: kinds from the old per-kind telegram flags (kinds without an old flag take their default: collector.blocked on, task.failed off)', !!m && [...m.kinds].sort().join() === 'collector.blocked,device.down,publish.failed', m?.kinds.join());
   check('migrated: old settings key removed', (await db.select().from(schema.settings).where(eq(schema.settings.key, 'alerts.telegram'))).length === 0 && /migrated the Telegram settings/.test(out1));
   migrate();
   check('db:migrate again → no further channel', (await db.select({ id: CH.id }).from(CH)).length === after.length);

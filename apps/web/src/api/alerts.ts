@@ -22,7 +22,7 @@ export function alertText(n: Pick<AppNotification, 'kind' | 'recovered' | 'param
   return t(key, params)
 }
 
-/** Translated error code of the alert (e.g. platform.auth_expired), if any. */
+/** Translated error code of the alert (e.g. publish.device_offline), if any. */
 export function alertDetail(n: Pick<AppNotification, 'params' | 'recovered'>): string | null {
   const code = n.params?.code
   return !n.recovered && typeof code === 'string' && code ? codeText(code, {}, code) : null

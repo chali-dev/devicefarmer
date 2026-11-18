@@ -6,8 +6,9 @@
  * Seeds (idempotent, everything recognisable by the `demo` prefix, Instagram only):
  * - 社交号管理: 16 Instagram social accounts (admin + demo-user) with 账号人设 (personas are the grouping, see PERSONAS),
  *   tags, notes, varied statuses.
- * - 账号分析: demo daily stats (30–90 days, deterministic growth curves) for 13 of them, written with the real upsert
- *   (upsertDay, source manual), plus up to 10 own posts each with likes/comments (帖子 tab; the refresh's own upsert).
+ * - 账号分析: demo daily stats (30–90 days, deterministic growth curves) for 13 of them (DB rows, source manual; the page
+ *   has no data source since the official APIs were removed on 2026-11-18), plus up to 10 own posts each with
+ *   likes/comments (帖子 tab), both via scripts/lib/analytics-seed.ts.
  * - 追踪账号: 10 tracked Instagram accounts (tags incl. the former categories 灵感/竞品/合作候选, favourites, weekly snapshots, posts; history written to the
  *   DB as demo rows). Their 定时采集 is switched off, so the demo never sends the collector phone to these made-up handles.
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
@@ -302,8 +303,8 @@ for (const s of ACCOUNTS) {
 }
 
 // ---------------------------------------------------------------- seed: daily stats
-// Demo rows through the real upsert (DB): manual stats entry was removed from the API.
-const { upsertDay } = await import('../src/modules/analytics/analytics.js');
+// Demo rows in the DB: the API has no way to write analytics any more (no data source).
+const { seedStatsDay, seedOwnPosts } = await import('./lib/analytics-seed.js');
 const { db, schema } = await import('../src/db/index.js');
 const { upsertPosts } = await import('../src/modules/tracked/tracked.js');
 for (const s of ACCOUNTS) {
@@ -315,16 +316,14 @@ for (const s of ACCOUNTS) {
     const h = have.get(d.day);
     if (h && h.source && (['followers', 'following', 'posts', 'views', 'likes', 'shares', 'comments'] as const).every((k) => h[k] === d[k])) continue;
     const { day, ...values } = d;
-    await upsertDay(db, acc.id, day, values, 'manual');
+    await seedStatsDay(acc.id, day, values);
     counts.statDays++;
   }
 }
 
 // ---------------------------------------------------------------- seed: own posts (帖子 tab)
-// Own posts only ever come from the official API (account-stats refresh) and there is no Instagram connection
-// here, so this one step writes through the same upsert the refresh uses (DB, not HTTP). No permalinks: a made-up
+// Own posts have no source any more (official APIs removed), so this step writes DB rows. No permalinks: a made-up
 // instagram.com link would point at nobody's post.
-const { upsertAccountPosts } = await import('../src/modules/analytics/analytics.js');
 const CAPTIONS = ['demo: 周末出行清单', 'demo: 新品试用', 'demo: 幕后花絮', 'demo: 粉丝问答', 'demo: 本周精选', 'demo: 教程第 3 集', 'demo: 合作预告', 'demo: 日常记录'];
 /** Deterministic own posts of an account: one every 3 days back from the anchor, counters scaled by its followers. */
 function postsOf(a: AccSpec) {
@@ -346,7 +345,7 @@ function postsOf(a: AccSpec) {
 for (const s of ACCOUNTS) {
   const want = postsOf(s);
   if (!want.length) continue;
-  const r = await upsertAccountPosts(accByHandle.get(s.handle)!.id, 'instagram', want);
+  const r = await seedOwnPosts(accByHandle.get(s.handle)!.id, 'instagram', want);
   counts.ownPosts += r.inserted;
 }
 
@@ -739,13 +738,13 @@ try {
       if (!r) return d.source === null;
       return d.source === 'manual' && d.followers === r.followers && d.views === r.views && d.likes === r.likes && d.followersGained === (i > 0 ? r.followers - rows[i - 1]!.followers : null);
     });
-    check('per-account series 30d: every day, values + daily gain exact, apiStats flag', sOk && ser.from === windowOf(30).from && typeof ser.apiStats === 'boolean');
+    check('per-account series 30d: every day, values + daily gain exact, no apiStats flag', sOk && ser.from === windowOf(30).from && !('apiStats' in ser));
     const ref = await http('POST', `/api/analytics/accounts/${acc.id}/refresh`, DU.token);
-    check('refresh without platform connection refused (409 analytics.not_connected, no API call)', ref.status === 409 && codeOf(ref) === 'analytics.not_connected', ref.text);
+    check('refresh is gone (404: official APIs removed, no data source)', ref.status === 404, ref.text);
     // daily gains on a throw-away account (rows written like the seed: manual entry is gone from the API)
     const t = (await must('POST', '/api/social/accounts', DU.token, { platform: 'instagram', handle: `demotmp.${tmpTag}.stats` })).account; tmpIds.push(t.id);
     const d = (k: number) => utcDay((TODAY_N - k) * DAY);
-    for (const [k, f, v] of [[3, 1000, 50], [2, 1030, 70], [1, 1100, 90], [0, 1105, 20]] as const) await upsertDay(db, t.id, d(k), { followers: f, views: v }, 'manual');
+    for (const [k, f, v] of [[3, 1000, 50], [2, 1030, 70], [1, 1100, 90], [0, 1105, 20]] as const) await seedStatsDay(t.id, d(k), { followers: f, views: v });
     const s7 = ((await must('GET', `/api/analytics/accounts/${t.id}?days=7`, DU.token)).days as any[]);
     const gainOf = (day: string) => s7.find((x) => x.day === day)?.followersGained;
     check('daily gains 30/70/5', gainOf(d(2)) === 30 && gainOf(d(1)) === 70 && gainOf(d(0)) === 5);
@@ -765,7 +764,7 @@ try {
     const sum = (k: 'likes' | 'comments') => exp.reduce((s, x) => s + (x[k] ?? 0), 0);
     check('帖子: demo-user sees the seeded posts of an own account, newest first, exact like/comment totals, hidden likes null',
       p.total === exp.length && p.likes === sum('likes') && p.comments === sum('comments') && p.posts[0].externalId === exp[0]!.id
-        && p.posts.find((x: any) => x.externalId === exp[4]!.id)?.likes === null && p.apiPosts === true, JSON.stringify({ total: p.total, likes: p.likes, exp: sum('likes') }));
+        && p.posts.find((x: any) => x.externalId === exp[4]!.id)?.likes === null && !('apiPosts' in p), JSON.stringify({ total: p.total, likes: p.likes, exp: sum('likes') }));
     const adminAcc = accByHandle.get('demo.tokyo.bites')!;
     const denied = await http('GET', `/api/analytics/accounts/${adminAcc.id}/posts`, DU.token);
     const asAdmin = await http('GET', `/api/analytics/accounts/${acc.id}/posts`, ADMIN);
@@ -860,13 +859,13 @@ try {
     const q = await must('GET', `/api/comments?q=${encodeURIComponent('同问')}&limit=200`, ADMIN);
     check('search q matches thread replies', (q.items as any[]).filter((i) => accIds.has(i.accountId)).length === COMMENT_ACCOUNTS.length);
     const det = await must('GET', `/api/comments/${commentByExt.get('demo:demo.fit.with.mia:c1').id}`, DU.token);
-    check('comment detail: thread, replies, logs, replyMode manual (manual source)', det.thread.length >= 2 && det.replies.length >= 1 && det.logs.some((l: any) => l.action === 'entered') && det.replyMode.mode === 'manual' && det.replyMode.reason === 'comment.manual_source');
+    check('comment detail: thread, replies, logs (no replyMode: replies always go to an operator)', det.thread.length >= 2 && det.replies.length >= 1 && det.logs.some((l: any) => l.action === 'entered') && !('replyMode' in det));
     const posts = await must('GET', `/api/comments/posts?accountId=${accByHandle.get('demo.cozy.home').id}`, DU.token);
     check('posts with comments (filter)', posts.posts.length === 2);
     const sync = await http('POST', `/api/comments/accounts/${accByHandle.get('demo.cozy.home').id}/sync`, DU.token);
-    check('API sync refused without a connection (409, no task)', sync.status === 409, sync.text);
+    check('API comment sync is gone (404)', sync.status === 404, sync.text);
     const ca = await must('GET', '/api/comments/accounts', DU.token);
-    check('comment accounts (demo-user): own only, read/reply mode manual', (ca.accounts as any[]).every((a) => a.userId === DU.id && a.readMode === 'manual' && a.replyMode === 'manual'));
+    check('comment accounts (demo-user): own only, no read/reply modes', (ca.accounts as any[]).every((a) => a.userId === DU.id && !('readMode' in a) && !('replyMode' in a)));
 
     // review state machine on seeded data
     const replyOf = async (ext: string, tok: string) => latestReply(commentByExt.get(ext).id, tok);

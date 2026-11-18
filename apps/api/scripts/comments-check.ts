@@ -1,8 +1,8 @@
 /**
  * Comments & engagement (评论互动) test against the real API + DB + Redis + task centre (no mocks).
- * - Rules (admin-only settings), account read/reply modes, sync refused for manual-only platforms.
- * - Sync + reply jobs with placeholder OAuth connections holding fake tokens: the REAL YouTube / Instagram
- *   endpoints reject them → task fails with platform.auth_expired, nothing leaks the tokens.
+ * - Rules (admin-only settings), comment accounts (own only, no read/reply modes or sync status any more).
+ * - Official-API sync and API replies were removed on 2026-11-18: POST …/sync is 404, every reply (also to a
+ *   historical `api` comment) is handed to an operator after approval (method manual).
  * - Manual comment entry (threads), list/detail/status/delete, publish-task link by external post id.
  * - Reply workflow end to end on the manual path: draft → review → approve → awaiting_operator → sent / failed;
  *   self-approval refused, reject with reason, batch approval, scheduled send + cancel, edit rules.
@@ -15,10 +15,8 @@
 import { randomBytes } from 'node:crypto';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { sealSecret } from '../src/lib/secret-box.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
-import { storeSyncedComments } from '../src/modules/comments/comments.js'; // also registers comment-sync / comment-reply (idempotency check below)
-import { collectComments, IG_SYNC_LIMITS } from '../src/modules/platforms/instagram.js';
+import '../src/modules/comments/comments.js'; // registers comment-reply (idempotency check below)
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 import { withCaptcha } from './lib/login.js';
@@ -52,15 +50,10 @@ const waitTask = (id: string) => waitFor('task final', async () => { const t = a
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const tag = randomBytes(3).toString('hex');
 const h = (s: string) => `cc_${tag}_${s}`;
-const FAKE = { yt: `ya29.fake-${randomBytes(16).toString('hex')}`, ytR: `1//fake-${randomBytes(16).toString('hex')}`, ig: `IGfake${randomBytes(16).toString('hex')}` };
-const SECRET = `cs-${randomBytes(12).toString('hex')}`;
-const SECRETS = [SECRET, ...Object.values(FAKE)];
-const leaks = (s: string) => SECRETS.filter((x) => s.includes(x));
 const userIds: string[] = [];
 const sharedTemplates: string[] = [];
 const contentIds: string[] = [];
 const [rulesBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'comments.rules'));
-const [appsBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'platform.apps'));
 // Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
 // (Docker Desktop VM drift): take the start time from the database.
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
@@ -68,7 +61,6 @@ const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 try {
   // ---------------------------------------------------------------- setup
   await db.delete(schema.settings).where(eq(schema.settings.key, 'comments.rules'));
-  await db.delete(schema.settings).where(eq(schema.settings.key, 'platform.apps'));
   const pw = randomBytes(12).toString('base64url');
   for (const n of ['a', 'b']) {
     const r = await http('POST', '/api/users', T, { username: `cc${n}${tag}`, password: pw, role: 'user' });
@@ -95,101 +87,15 @@ try {
   r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, requireApproval: true });
   check('admin: PUT rules', r.status === 200 && r.body.rules.sendsPerHour === 20);
 
-  // ---------------------------------------------------------------- accounts / modes / sync refusals
+  // ---------------------------------------------------------------- accounts (no modes / sync any more)
   r = await http('GET', '/api/comments/accounts', A);
   const accA = (id: string) => r.body.accounts.find((x: any) => x.id === id);
   check('user A: comment accounts = own 4 only', r.status === 200 && r.body.accounts.length === 4 && !accA(tb), r.text.slice(0, 300));
-  check('TikTok: manual only (no comment API)', accA(ta)?.readMode === 'manual' && accA(ta)?.readReason === 'platform.capability_unsupported' && accA(ta)?.commentsRead === false);
-  check('YouTube without app credentials: manual (platform.not_configured)', accA(ya)?.readMode === 'manual' && accA(ya)?.readReason === 'platform.not_configured' && accA(ya)?.commentsReply === true);
-  r = await http('POST', `/api/comments/accounts/${ta}/sync`, A);
-  check('sync TikTok → 409 comment.sync_unsupported', r.status === 409 && r.body.code === 'comment.sync_unsupported', r.text);
-  r = await http('POST', `/api/comments/accounts/${ya}/sync`, A);
-  check('sync YouTube without credentials → 409 platform.not_configured', r.status === 409 && r.body.code === 'platform.not_configured', r.text);
-  r = await http('POST', `/api/comments/accounts/${ya}/sync`, B);
-  check('user B: sync A\'s account → 404', r.status === 404);
-
-  // placeholder app credentials + connections with fake tokens (like platforms-check)
-  await http('PUT', '/api/settings/platforms/youtube', T, { clientId: `000000000000-${tag}dummy.apps.googleusercontent.com`, clientSecret: SECRET });
-  await http('PUT', '/api/settings/platforms/instagram', T, { clientId: `9${Date.now()}`, clientSecret: SECRET });
-  r = await http('POST', `/api/comments/accounts/${ya}/sync`, A);
-  check('sync YouTube without a connection → 409 platform.not_connected', r.status === 409 && r.body.code === 'platform.not_connected', r.text);
-  const conn = (accountId: string, platform: string, access: string, refresh: string | null, ext: string) => ({
-    socialAccountId: accountId, userId: uA, platform, externalAccountId: ext, externalAccountName: `Fake ${platform}`, scopes: ['fake.scope'],
-    accessTokenEnc: sealSecret(access), refreshTokenEnc: refresh ? sealSecret(refresh) : null, expiresAt: new Date(Date.now() + 3600_000), status: 'connected' as const, connectedBy: uA,
-  });
-  await db.insert(schema.platformConnections).values([conn(ya, 'youtube', FAKE.yt, FAKE.ytR, 'UCfake'), conn(ia, 'instagram', FAKE.ig, null, '17841400000000000')]);
-
-  // ---------------------------------------------------------------- sync against the real platforms
-  for (const [acc, name] of [[ya, 'YouTube'], [ia, 'Instagram']] as const) {
+  check('account fields: id, platform, handle, displayName, userId, instanceId, newCount only',
+    JSON.stringify(Object.keys(accA(ya) ?? {}).sort()) === JSON.stringify(['displayName', 'handle', 'id', 'instanceId', 'newCount', 'platform', 'userId']), JSON.stringify(accA(ya)));
+  for (const acc of [ya, ia, ta]) {
     r = await http('POST', `/api/comments/accounts/${acc}/sync`, A);
-    check(`sync ${name} → 202 task-centre task comment-sync`, r.status === 202 && !!r.body.taskId, r.text);
-    const again = await http('POST', `/api/comments/accounts/${acc}/sync`, A);
-    check(`sync ${name} again while it runs → same task (created false) or a new one after it ended`,
-      again.status === 202 && (again.body.taskId === r.body.taskId ? again.body.created === false : true), again.text);
-    const task = await waitTask(r.body.taskId);
-    check(`sync ${name}: the real API rejects the fake token → failed platform.auth_expired`, task.status === 'failed' && task.errorCode === 'platform.auth_expired', `${task.status} ${task.errorCode} ${task.error}`);
-    if (again.body.taskId !== r.body.taskId) await waitTask(again.body.taskId);
-    const [st] = await db.select().from(schema.commentSyncStates).where(eq(schema.commentSyncStates.accountId, acc));
-    check(`sync ${name}: sync state records the error code`, st?.lastErrorCode === 'platform.auth_expired');
-    const [cn] = await db.select().from(schema.platformConnections).where(eq(schema.platformConnections.socialAccountId, acc));
-    check(`sync ${name}: connection marked expired`, cn?.status === 'expired');
-  }
-  r = await http('GET', '/api/comments/accounts', A);
-  check('accounts: sync status (task failed + error code) shown, mode now manual (auth_expired)',
-    accA(ya)?.sync?.task?.status === 'failed' && accA(ya)?.sync?.lastErrorCode === 'platform.auth_expired' && accA(ya)?.readReason === 'platform.auth_expired', JSON.stringify(accA(ya)));
-  r = await http('GET', `/api/tasks?type=comment-sync`, A);
-  check('user A sees the sync tasks in the task centre', r.status === 200 && r.body.tasks.filter((x: any) => [ya, ia].includes(x.refId)).length >= 2, r.text.slice(0, 200));
-
-  // ---------------------------------------------------------------- Instagram paging + like-count updates
-  // No real Instagram account exists here, so the Graph responses are recorded shapes from the official
-  // reference (IG User /media, IG Media /comments: data + paging.cursors.after + paging.next, newest first).
-  // The real collector (paging, cursor stop, caps) and the real store (DB upsert) run on them.
-  {
-    const ts = (hm: string) => `2026-11-16T${hm}:00+0000`;
-    const graph = (likes1: number, withNew: boolean): Record<string, any> => ({
-      'u/media:': { data: [{ id: 'm1', comments_count: 3 }, { id: 'm2', comments_count: 0 }], paging: { cursors: { after: 'mp2' }, next: 'https://graph.instagram.com/u/media?after=mp2&access_token=X' } },
-      'u/media:mp2': { data: [{ id: 'm3', comments_count: 1 }], paging: { cursors: { after: 'end' } } },
-      'm1/comments:': { data: [
-        ...(withNew ? [{ id: 'c0', text: 'new one', timestamp: ts('10:10'), username: 'z', like_count: 0 }] : []),
-        { id: 'c1', text: 'hello', timestamp: ts('10:05'), username: 'x', like_count: likes1, replies: { data: [{ id: 'r1', text: 'thanks', timestamp: ts('10:06'), username: 'me', like_count: 1 }] } },
-        { id: 'c2', text: 'second', timestamp: ts('10:03'), username: 'y', like_count: 0 },
-      ], paging: { cursors: { after: 'cp2' }, next: 'https://graph.instagram.com/m1/comments?after=cp2' } },
-      'm1/comments:cp2': { data: [{ id: 'c3', text: 'third', timestamp: ts('10:01'), username: 'y' }], paging: { cursors: { after: 'x' } } },
-      'm3/comments:': { data: [{ id: 'c4', text: 'on m3', timestamp: ts('09:00'), username: 'w', like_count: 5 }] },
-    });
-    const run = async (pages: Record<string, any>, cursor: string | null, limits = IG_SYNC_LIMITS) => {
-      const calls: string[] = [];
-      const get = async <X>(path: string, params: Record<string, string>) => { calls.push(`${path}:${params.after ?? ''}`); return (pages[`${path}:${params.after ?? ''}`] ?? {}) as X; };
-      return { ...(await collectComments(get, 'u', cursor, limits)), calls };
-    };
-    const first = await run(graph(2, false), null);
-    check('IG collect (no cursor): follows media + comment paging.next, skips posts without comments, returns replies, cursor = newest time',
-      first.calls.join(',') === 'u/media:,m1/comments:,m1/comments:cp2,u/media:mp2,m3/comments:' && first.comments.map((c) => c.id).join(',') === 'c1,r1,c2,c3,c4'
-        && first.comments[1]!.parentId === 'c1' && first.comments[0]!.replyCount === 1 && first.nextCursor === new Date(ts('10:06')).toISOString() && first.info?.truncated === false,
-      JSON.stringify({ calls: first.calls, ids: first.comments.map((c) => c.id), cur: first.nextCursor }));
-    const second = await run(graph(9, true), first.nextCursor);
-    check('IG collect (cursor): stops a post\'s comment pages at the page that reaches the cursor, returns already-known comments too (for counts), cursor advances',
-      !second.calls.includes('m1/comments:cp2') && second.comments.some((c) => c.id === 'c1' && c.likeCount === 9) && second.comments[0]!.id === 'c0'
-        && second.nextCursor === new Date(ts('10:10')).toISOString(), JSON.stringify({ calls: second.calls, cur: second.nextCursor }));
-    const capped = await run(graph(2, true), first.nextCursor, { ...IG_SYNC_LIMITS, MAX_CALLS: 2 });
-    check('IG collect: MAX_CALLS cap stops the run (truncated) and keeps the old cursor (no new comment skipped next time)',
-      capped.calls.length === 2 && capped.info?.truncated === true && capped.nextCursor === first.nextCursor, JSON.stringify({ calls: capped.calls, cur: capped.nextCursor }));
-    const backlog = await run(graph(2, false), null, { ...IG_SYNC_LIMITS, COMMENT_PAGES: 1 });
-    check('IG collect: per-post page cap leaves only the older backlog (backlog flag), cursor still advances',
-      !backlog.calls.includes('m1/comments:cp2') && backlog.info?.backlog === true && backlog.info?.truncated === false && backlog.nextCursor === first.nextCursor);
-
-    const [iaRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, ia));
-    const s1 = await storeSyncedComments(iaRow!, first.comments);
-    const s1b = await storeSyncedComments(iaRow!, first.comments);
-    const [c1Before] = await db.select().from(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.externalId, 'c1')));
-    const s2 = await storeSyncedComments(iaRow!, second.comments);
-    const [c1] = await db.select().from(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.externalId, 'c1')));
-    const igRows = await db.select().from(schema.comments).where(eq(schema.comments.accountId, ia));
-    check('store: 5 inserted, same again → 0 new / 0 updated (idempotent)', s1.inserted === 5 && s1.updated === 0 && s1b.inserted === 0 && s1b.updated === 0, JSON.stringify({ s1, s1b }));
-    check('store: next sync inserts the new comment and updates like_count of the stored one (2 → 9), no duplicates, fetched_at moves',
-      s2.inserted === 1 && s2.updated === 1 && c1?.likeCount === 9 && c1.replyCount === 1 && c1.id === c1Before!.id && c1.fetchedAt > c1Before!.fetchedAt
-        && igRows.length === 6 && igRows.every((c) => c.source === 'api' && c.platform === 'instagram'), JSON.stringify({ s2, likes: c1?.likeCount, n: igRows.length }));
-    await db.delete(schema.comments).where(and(eq(schema.comments.accountId, ia), eq(schema.comments.source, 'api')));
+    check(`POST …/sync is gone (404) for ${acc === ya ? 'YouTube' : acc === ia ? 'Instagram' : 'TikTok'}`, r.status === 404, String(r.status));
   }
 
   // ---------------------------------------------------------------- manual comment entry
@@ -239,7 +145,7 @@ try {
   r = await http('GET', `/api/comments/${c[0]}`, B);
   check('user B: GET A\'s comment → 404', r.status === 404 && r.body.code === 'comment.not_found');
   r = await http('GET', `/api/comments/${c[0]}`, A);
-  check('detail: thread (2 comments) + reply mode manual (TikTok)', r.status === 200 && r.body.thread.length === 2 && r.body.replyMode.mode === 'manual', r.text.slice(0, 300));
+  check('detail: thread (2 comments), no reply mode any more', r.status === 200 && r.body.thread.length === 2 && !('replyMode' in r.body), r.text.slice(0, 300));
   r = await http('GET', `/api/comments/posts?accountId=${ta}`, A);
   check('posts filter: vid-1 with the content title', r.status === 200 && r.body.posts.some((p: any) => p.postId === 'vid-1' && p.title === h('content') && p.n === 13), r.text);
   r = await http('PATCH', `/api/comments/${c[11]}`, A, { status: 'hidden' });
@@ -390,25 +296,20 @@ try {
   check('cancel the deferred reply', r.status === 200 && r.body.reply.status === 'cancelled' && (await taskRow(next.id)).status === 'cancelled');
   await http('PUT', '/api/comments/settings', T, { sendsPerHour: 20 });
 
-  // ---------------------------------------------------------------- API reply path (real YouTube, fake token)
+  // ---------------------------------------------------------------- historical API comment: replies go to an operator too
   const [apiC] = await db.insert(schema.comments).values({
     userId: uA, accountId: ya, platform: 'youtube', source: 'api', externalId: `Ugz${tag}fakecommentid`, externalPostId: `vid${tag}`, authorName: 'YT Viewer', text: `nice video ${tag}`,
     publishedAt: new Date(),
   }).returning();
-  await db.update(schema.platformConnections).set({ status: 'connected', lastError: null, lastErrorCode: null }).where(eq(schema.platformConnections.socialAccountId, ya));
-  r = await http('GET', `/api/comments/${apiC!.id}`, A);
-  check('API comment with a connected YouTube account → reply mode api', r.status === 200 && r.body.replyMode.mode === 'api', JSON.stringify(r.body?.replyMode));
   r = await http('POST', `/api/comments/${apiC!.id}/replies`, A, { text: `Thanks a lot ${tag}`, submit: true });
   const ry = r.body.reply.id as string;
   await http('POST', `/api/comment-replies/${ry}/approve`, T);
   row = await waitReply(ry, ['failed', 'sent', 'awaiting_operator']);
-  check('reply via the real YouTube API with a fake token → failed platform.auth_expired', row.status === 'failed' && row.method === 'api' && row.errorCode === 'platform.auth_expired', `${row.status} ${row.errorCode} ${row.error}`);
+  check('reply to a historical API comment → awaiting_operator, method manual (no API send)', row.status === 'awaiting_operator' && row.method === 'manual', `${row.status} ${row.method} ${row.errorCode}`);
   const ty = await waitTask(row.taskId!);
-  check('reply task failed after 1 attempt (auth errors are not retried) with the platform code', ty.status === 'failed' && ty.attempts === 1 && ty.errorCode === 'platform.auth_expired', `${ty.status} ${ty.attempts} ${ty.errorCode}`);
-  r = await http('GET', `/api/comments/${apiC!.id}`, A);
-  check('after auth failure: reply mode falls back to manual (platform.auth_expired)', r.body.replyMode.mode === 'manual' && r.body.replyMode.reason === 'platform.auth_expired');
-  r = await http('POST', `/api/comments/${apiC!.id}/replies`, A, { text: `Thanks a lot (retry) ${tag}` });
-  check('after an API failure a new reply may be written', r.status === 201);
+  check('its comment-reply task succeeded in 1 attempt', ty.status === 'success' && ty.attempts === 1, `${ty.status} ${ty.attempts} ${ty.errorCode}`);
+  r = await http('POST', `/api/comment-replies/${ry}/outcome`, A, { result: 'sent', externalReplyId: `Ugz${tag}reply` });
+  check('operator records it as sent', r.status === 200 && r.body.reply.status === 'sent', r.text.slice(0, 200));
   r = await http('DELETE', `/api/comments/${apiC!.id}`, A);
   check('delete an API comment → 409 comment.not_manual (hide instead)', r.status === 409 && r.body.code === 'comment.not_manual');
 
@@ -456,22 +357,22 @@ try {
   check('reply log: created → submitted → blocked (self-approval) → edited → approved → queued → run → handed_over → sent',
     ['created', 'submitted', 'blocked', 'edited', 'approved', 'queued', 'run', 'handed_over', 'sent'].every((a) => r1Logs.includes(a)), r1Logs.join(','));
   const taskRows = await db.select().from(schema.tasks).where(and(inArray(schema.tasks.type, ['comment-sync', 'comment-reply']), gte(schema.tasks.createdAt, t0)));
-  const taskLogRows = taskRows.length ? await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, taskRows.map((t) => t.id))) : [];
-  const syncStates = await db.select().from(schema.commentSyncStates).where(inArray(schema.commentSyncStates.accountId, [ya, ia]));
   const replies = await db.select().from(schema.commentTasks).where(inArray(schema.commentTasks.accountId, [ya, ia, ta, ta2]));
-  check('no token or client secret in tasks, task logs, comment logs, sync states or replies',
-    !leaks(JSON.stringify([taskRows, taskLogRows, logs, syncStates, replies])).length);
-  check('task payloads carry only ids', taskRows.every((t) => Object.keys(t.payload ?? {}).every((k) => ['socialAccountId', 'commentTaskId', 'round'].includes(k))));
+  check('only comment-reply tasks were created (no comment-sync)', taskRows.length > 0 && taskRows.every((t) => t.type === 'comment-reply'));
+  check('every handed-over / sent reply has method manual; no "method" or API log lines',
+    replies.filter((x) => ['awaiting_operator', 'sent'].includes(x.status)).every((x) => x.method === 'manual') && !logs.some((l) => l.action === 'method' || /official API/.test(l.message ?? '')),
+    JSON.stringify(replies.map((x) => [x.status, x.method])));
+  check('task payloads carry only ids', taskRows.every((t) => Object.keys(t.payload ?? {}).every((k) => ['commentTaskId', 'round'].includes(k))));
   await new Promise((res) => setTimeout(res, 500));
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const acts = new Set(audits.map((a) => a.action));
-  const wantA = ['comment.rules_update', 'comment.sync', 'comment.manual_create', 'comment.status', 'comment.delete', 'comment.reply_create', 'comment.reply_update',
+  const wantA = ['comment.rules_update', 'comment.manual_create', 'comment.status', 'comment.delete', 'comment.reply_create', 'comment.reply_update',
     'comment.reply_submit', 'comment.reply_approve', 'comment.reply_approve_batch', 'comment.reply_reject', 'comment.reply_cancel', 'comment.reply_outcome_sent',
     'comment.reply_outcome_failed', 'comment.template_create', 'comment.template_update', 'comment.template_delete'];
   check('audit actions recorded', wantA.every((x) => acts.has(x)), wantA.filter((x) => !acts.has(x)).join(','));
   check('audit: refused self-approval recorded with 403', audits.some((a) => a.action === 'comment.reply_approve' && a.status === 403 && a.userId === uA));
   check('audit: reply target is "platform @handle → author"', audits.some((a) => a.action === 'comment.reply_approve' && a.target === `tiktok @${h('ta')} → Viewer 0`), audits.filter((a) => a.action === 'comment.reply_approve').map((a) => a.target).join('|'));
-  check('audit never stores reply texts, tokens or the secret', !audits.some((a) => JSON.stringify(a.detail).includes(same) || JSON.stringify(a.detail).includes('Thank you')) && !leaks(JSON.stringify(audits)).length);
+  check('audit never stores reply texts', !audits.some((a) => JSON.stringify(a.detail).includes(same) || JSON.stringify(a.detail).includes('Thank you')));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
@@ -482,7 +383,7 @@ try {
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   await db.delete(schema.socialAccounts).where(like(schema.socialAccounts.handle, `cc_${tag}_%`));
   if (contentIds.length) await db.delete(schema.contents).where(inArray(schema.contents.id, contentIds));
-  for (const [key, before] of [['comments.rules', rulesBefore], ['platform.apps', appsBefore]] as const) {
+  for (const [key, before] of [['comments.rules', rulesBefore]] as const) {
     if (before) await db.insert(schema.settings).values({ key, value: before.value }).onConflictDoUpdate({ target: schema.settings.key, set: { value: before.value } });
     else await db.delete(schema.settings).where(eq(schema.settings.key, key));
   }

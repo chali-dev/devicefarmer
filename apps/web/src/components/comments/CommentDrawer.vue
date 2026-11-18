@@ -25,7 +25,6 @@ const comment = ref<CommentItem | null>(null)
 const thread = ref<CommentItem[]>([])
 const replies = ref<CommentReplyItem[]>([])
 const logs = ref<CommentLog[]>([])
-const mode = ref<{ mode: 'api' | 'manual'; reason: string | null } | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
@@ -44,9 +43,9 @@ async function load() {
   if (!props.commentId) return
   loading.value = true
   try {
-    const r = await api<{ comment: CommentItem; thread: CommentItem[]; replies: CommentReplyItem[]; logs: CommentLog[]; replyMode: { mode: 'api' | 'manual'; reason: string | null } }>(
+    const r = await api<{ comment: CommentItem; thread: CommentItem[]; replies: CommentReplyItem[]; logs: CommentLog[] }>(
       'GET', `/api/comments/${props.commentId}`)
-    comment.value = r.comment; thread.value = r.thread; replies.value = r.replies; logs.value = r.logs; mode.value = r.replyMode
+    comment.value = r.comment; thread.value = r.thread; replies.value = r.replies; logs.value = r.logs
     const a = active.value
     form.text = a?.status === 'draft' || (a?.status === 'pending_review' && a.canEdit) ? a.text : ''
     form.templateId = a?.templateId ?? undefined
@@ -65,7 +64,6 @@ const history = computed(() => replies.value.filter((r) => r.id !== active.value
 const editing = computed(() => !active.value || active.value.status === 'draft' || (active.value.status === 'pending_review' && active.value.canEdit))
 const needsReview = computed(() => !!props.rules?.requireApproval && !auth.isAdmin)
 const errText = (code: string | null, raw: string | null) => (code ? codeText(code, undefined, raw ?? code) : raw ?? '')
-const modeReason = computed(() => (mode.value?.reason ? codeText(mode.value.reason, { platform: comment.value?.platform ?? '' }, mode.value.reason) : ''))
 
 function pickTemplate(id: string | undefined) {
   const tpl = props.templates.find((x) => x.id === id)
@@ -138,7 +136,7 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
           <span>@{{ comment.account?.handle }}</span>
           <a v-if="comment.postUrl" :href="comment.postUrl" target="_blank" rel="noopener noreferrer">{{ t('comments.viewPost') }}</a>
           <span v-if="comment.publishTask?.title" class="muted small">{{ t('comments.publishedContent', { title: comment.publishTask.title }) }}</span>
-          <a-tag v-if="mode" :color="mode.mode === 'api' ? 'blue' : 'orange'" :title="modeReason">{{ mode.mode === 'api' ? t('comments.replyApi') : t('comments.replyManual') }}</a-tag>
+          <a-tag color="orange">{{ t('comments.replyManual') }}</a-tag>
         </a-space>
 
         <a-divider orientation="left" plain>{{ active && !editing ? t('comments.currentReply') : t('comments.composer') }}</a-divider>

@@ -4,20 +4,16 @@ import { and, eq, gte, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Comment, CommentReplyStatus, CommentTask, SocialAccount, Task } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
-import { connectionFor } from '../platforms/connections.js';
-import { isConfigured } from '../platforms/credentials.js';
-import { apiListComments, apiReplyToComment, platformCapabilities } from '../platforms/service.js';
-import type { PlatformComment } from '../platforms/types.js';
 import { visibleAccount, type Tx } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 
 /**
  * Comments & engagement (评论互动, P5).
  *
- * - Received comments are synced per account through the official API (task `comment-sync`, cursor in
- *   comment_sync_states) or entered by hand (platforms without a comment API, e.g. TikTok).
+ * - Received comments are entered by hand (the operator copies them from the phone). The official-API
+ *   comment sync (task `comment-sync`, comment_sync_states) was removed on 2026-11-18 by owner decision;
+ *   rows it stored earlier (source `api`) stay readable.
  * - Replies (comment_tasks) are always written by a person, optionally from a saved template. No
  *   generated text, no automatic replies, no "reply to all": one reply task per comment request.
  * - Review: with `requireApproval` (default on) a user's reply needs approval by someone else who can
@@ -27,17 +23,14 @@ import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext 
  *   partial unique index), the same text at most `duplicateMax` times per account per
  *   `duplicateWindowHours`, at most `sendsPerHour` sends per account (a send over the limit is
  *   deferred to the next free slot, never dropped or pushed through).
- * - Sending (task `comment-reply`, idempotency key comment-reply:<id>:<round>): official API when the
- *   platform supports replies, the app is configured, the account has a connected OAuth connection
- *   and the comment came from the API; otherwise the reply is handed to an operator
- *   (awaiting_operator), who replies on the phone and records the outcome.
+ * - Sending (task `comment-reply`, idempotency key comment-reply:<id>:<round>): applies the send rate
+ *   limit, then hands the reply to an operator (awaiting_operator), who replies on the phone and records
+ *   the outcome. There is no API sending (removed on 2026-11-18).
  */
 
 const C = schema.comments;
 const R = schema.commentTasks;
-export const SYNC_REF = 'comment_sync';
 export const REPLY_REF = 'comment_reply';
-export const SYNC_TYPE = 'comment-sync';
 export const REPLY_TYPE = 'comment-reply';
 const REPLY_MAX_ATTEMPTS = 3;
 /** Reply states that block another reply to the same comment. */
@@ -56,7 +49,7 @@ export interface CommentRules {
   /** Same reply text at most this many times per account within the window. */
   duplicateMax: number;
   duplicateWindowHours: number;
-  /** Sends (API or manual hand-over) per account per rolling hour. */
+  /** Hand-overs to an operator (sends) per account per rolling hour. */
   sendsPerHour: number;
 }
 const RULES_KEY = 'comments.rules';
@@ -127,33 +120,6 @@ export async function visibleReply(user: AuthUser, id: string, exec: Exec = db):
   return row;
 }
 
-// ---------------------------------------------------------------- capability / method
-
-export interface ReplyMode { mode: 'api' | 'manual'; reason: string | null }
-
-/** How this account can read comments: 'api' (sync) or 'manual' (entry form) with the reason. */
-export async function readMode(account: SocialAccount): Promise<ReplyMode> {
-  const caps = await platformCapabilities(account.platform);
-  if (!caps?.commentsRead) return { mode: 'manual', reason: 'platform.capability_unsupported' };
-  if (!(await isConfigured(account.platform))) return { mode: 'manual', reason: 'platform.not_configured' };
-  const conn = await connectionFor(account.id);
-  if (!conn) return { mode: 'manual', reason: 'platform.not_connected' };
-  if (conn.status === 'expired' || conn.status === 'revoked') return { mode: 'manual', reason: 'platform.auth_expired' };
-  return { mode: 'api', reason: null };
-}
-
-/** How a reply to `comment` would be sent now. Manual-entry comments have no platform id to reply to. */
-export async function replyMode(account: SocialAccount, comment: Pick<Comment, 'source'>): Promise<ReplyMode> {
-  const caps = await platformCapabilities(account.platform);
-  if (!caps?.commentsReply) return { mode: 'manual', reason: 'platform.capability_unsupported' };
-  if (comment.source !== 'api') return { mode: 'manual', reason: 'comment.manual_source' };
-  if (!(await isConfigured(account.platform))) return { mode: 'manual', reason: 'platform.not_configured' };
-  const conn = await connectionFor(account.id);
-  if (!conn) return { mode: 'manual', reason: 'platform.not_connected' };
-  if (conn.status !== 'connected') return { mode: 'manual', reason: conn.status === 'error' ? 'comment.connection_error' : 'platform.auth_expired' };
-  return { mode: 'api', reason: null };
-}
-
 // ---------------------------------------------------------------- comments
 
 export const normalizeText = (s: string) => s.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
@@ -222,104 +188,6 @@ export async function deleteManualComment(user: AuthUser, c: Comment): Promise<v
   if (busy) throw conflict('该评论有正在发送的回复，请先取消', 'comment.reply_in_progress');
   await db.delete(C).where(eq(C.id, c.id));
 }
-
-// ---------------------------------------------------------------- sync
-
-/** Starts (or returns the running) comment-sync task of the account. */
-export async function startSync(user: AuthUser, account: SocialAccount): Promise<{ task: Task; created: boolean }> {
-  assertPlatformEnabled(account.platform);
-  const caps = await platformCapabilities(account.platform);
-  if (!caps?.commentsRead) throw conflict('该平台没有读取评论的官方接口，请人工录入评论', 'comment.sync_unsupported', { platform: account.platform });
-  const mode = await readMode(account);
-  if (mode.mode !== 'api') throw conflict('该账号无法通过官方接口同步评论', mode.reason!, { platform: account.platform });
-  const [running] = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, SYNC_TYPE), eq(schema.tasks.refId, account.id), inArray(schema.tasks.status, ['pending', 'scheduled', 'running'])));
-  if (running) return { task: running, created: false };
-  const r = await createTask({
-    type: SYNC_TYPE, userId: account.userId, label: `${account.platform} @${account.handle}`.slice(0, 200),
-    refType: SYNC_REF, refId: account.id, payload: { socialAccountId: account.id },
-  });
-  await db.insert(schema.commentSyncStates).values({ accountId: account.id, lastTaskId: r.task.id })
-    .onConflictDoUpdate({ target: schema.commentSyncStates.accountId, set: { lastTaskId: r.task.id } });
-  await commentLog({ accountId: account.id, action: 'sync_requested', taskId: r.task.id, actor: user });
-  return r;
-}
-
-/** YouTube's cursor is a page token (newest first), Instagram's the newest time seen. */
-const SINCE_CURSOR = new Set(['instagram']);
-const MAX_PAGES = 5;
-
-async function runSync(ctx: TaskContext<{ socialAccountId: string }>): Promise<unknown> {
-  const id = ctx.payload.socialAccountId ?? ctx.task.refId!;
-  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
-  if (!acc) throw new UnrecoverableError('the social account no longer exists');
-  const [state] = await db.select().from(schema.commentSyncStates).where(eq(schema.commentSyncStates.accountId, acc.id));
-  const since = SINCE_CURSOR.has(acc.platform);
-  let cursor: string | null = since ? state?.cursor ?? null : null;
-  let fetched = 0; let inserted = 0; let updated = 0; let pages = 0;
-  const opts = { signal: ctx.signal, log: (m: string, d?: Record<string, unknown>) => ctx.log('info', m, d) };
-  try {
-    for (;;) {
-      if (ctx.signal.aborted) throw ctx.signal.reason;
-      const page = await apiListComments(acc, cursor, opts);
-      pages++;
-      fetched += page.comments.length;
-      const { inserted: fresh, updated: changed } = await storeSyncedComments(acc, page.comments);
-      inserted += fresh;
-      updated += changed;
-      cursor = page.nextCursor;
-      await ctx.log('info', `page ${pages}: ${page.comments.length} comments, ${fresh} new, ${changed} updated`, page.info);
-      // Page tokens: stop at the first page with nothing new (older pages were seen before) or the page cap.
-      if (since || !cursor || fresh === 0 || pages >= MAX_PAGES) break;
-    }
-  } catch (err) {
-    const e = err as { code?: string; message?: string };
-    await db.insert(schema.commentSyncStates).values({ accountId: acc.id, lastTaskId: ctx.task.id, lastError: (e.message ?? String(err)).slice(0, 500), lastErrorCode: e.code ?? 'comment.sync_failed' })
-      .onConflictDoUpdate({ target: schema.commentSyncStates.accountId, set: { lastTaskId: ctx.task.id, lastError: (e.message ?? String(err)).slice(0, 500), lastErrorCode: e.code ?? 'comment.sync_failed' } });
-    await commentLog({ accountId: acc.id, level: 'error', action: 'sync_failed', code: e.code ?? 'comment.sync_failed', message: e.message ?? String(err), taskId: ctx.task.id });
-    throw err;
-  }
-  await linkPublishTasks(acc.id);
-  const set = { cursor, lastTaskId: ctx.task.id, lastSyncedAt: new Date(), lastFetched: fetched, lastNew: inserted, lastError: null, lastErrorCode: null };
-  await db.insert(schema.commentSyncStates).values({ accountId: acc.id, ...set }).onConflictDoUpdate({ target: schema.commentSyncStates.accountId, set });
-  await commentLog({ accountId: acc.id, action: 'synced', message: `${fetched} fetched, ${inserted} new, ${updated} updated`, data: { pages, fetched, inserted, updated }, taskId: ctx.task.id });
-  return { pages, fetched, inserted, updated };
-}
-
-/**
- * Stores synced API comments of `acc`: new ones are inserted; for ones already stored, the mutable fields
- * (text, like and reply counts) are updated only when they changed (then fetched_at moves too). Idempotent:
- * the same comments twice → { inserted: 0, updated: 0 }.
- */
-export async function storeSyncedComments(acc: SocialAccount, comments: PlatformComment[]): Promise<{ inserted: number; updated: number }> {
-  let inserted = 0; let updated = 0;
-  for (const c of comments) {
-    const [row] = await db.insert(C).values({
-      userId: acc.userId, accountId: acc.id, platform: acc.platform, source: 'api', externalId: c.id, parentExternalId: c.parentId,
-      externalPostId: c.postId, authorName: c.authorName, text: c.text, likeCount: c.likeCount, replyCount: c.replyCount,
-      publishedAt: c.publishedAt ? new Date(c.publishedAt) : null, postUrl: postUrlOf(acc.platform, c.postId),
-    }).onConflictDoUpdate({
-      target: [C.accountId, C.externalId],
-      set: { text: sql`excluded.text`, likeCount: sql`excluded.like_count`, replyCount: sql`excluded.reply_count`, fetchedAt: sql`now()` },
-      setWhere: sql`(${C.text}, ${C.likeCount}, ${C.replyCount}) is distinct from (excluded.text, excluded.like_count, excluded.reply_count)`,
-    }).returning({ inserted: sql<boolean>`xmax = 0` });
-    if (!row) continue;
-    if (row.inserted) inserted++; else updated++;
-  }
-  return { inserted, updated };
-}
-
-function postUrlOf(platform: string, postId: string | null): string | null {
-  if (!postId) return null;
-  if (platform === 'youtube') return `https://www.youtube.com/watch?v=${encodeURIComponent(postId)}`;
-  return null;
-}
-
-registerTaskHandler<{ socialAccountId: string }>(SYNC_TYPE, {
-  queue: 'task-ops',
-  timeoutMs: 5 * 60_000,
-  maxAttempts: 1,
-  run: runSync,
-});
 
 // ---------------------------------------------------------------- replies: compose / review
 
@@ -519,12 +387,6 @@ export async function recordReplyOutcome(user: AuthUser, r: CommentTask, o: { re
 class ReplyCheckError extends UnrecoverableError {
   constructor(readonly code: string, message: string) { super(message); }
 }
-/**
- * Only errors that certainly happened before the platform accepted the reply are retried (429): a
- * timeout or network failure may have posted it already, and a second post would be a duplicate.
- */
-const RETRYABLE = new Set(['platform.rate_limited']);
-
 type ReplyPayload = { commentTaskId: string; round?: number };
 
 async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
@@ -534,15 +396,8 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
   const claim = await db.transaction(async (tx) => {
     const [r] = await tx.select().from(R).where(eq(R.id, id)).for('update');
     if (!r) return { kind: 'gone' as const };
-    if (r.taskId === ctx.task.id && r.status === 'sending') {
-      // An earlier attempt of this task was cut off while sending (timeout / crash): the platform may have
-      // the reply already. Never send twice: fail and let a person check the platform.
-      const [n] = await tx.update(R).set({ status: 'failed', errorCode: 'comment.send_uncertain', error: 'a previous attempt was interrupted while sending; check the platform before writing a new reply' })
-        .where(eq(R.id, r.id)).returning();
-      await replyLog(n!, { level: 'error', action: 'failed', code: 'comment.send_uncertain', message: 'previous attempt interrupted while sending: not sent again', taskId: ctx.task.id }, tx);
-      return { kind: 'uncertain' as const };
-    }
-    if (r.taskId !== ctx.task.id || !['approved', 'scheduled'].includes(r.status)) return { kind: 'skip' as const, r };
+    // `sending` of this same task = an earlier attempt was cut off before the hand-over (nothing is ever sent automatically).
+    if (r.taskId !== ctx.task.id || !['approved', 'scheduled', 'sending'].includes(r.status)) return { kind: 'skip' as const, r };
     await lockKey(tx, `comment-send:${r.accountId}`);
     const hourAgo = new Date(Date.now() - 3600_000);
     const recent = await tx.select({ at: sql<Date>`coalesce(${R.sentAt}, ${R.handedAt}, ${R.updatedAt})` }).from(R).where(and(
@@ -561,7 +416,6 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     return { kind: 'claimed' as const, r: n! };
   });
   if (claim.kind === 'gone') throw new ReplyCheckError('comment.reply_gone', 'the reply task no longer exists');
-  if (claim.kind === 'uncertain') throw new ReplyCheckError('comment.send_uncertain', 'a previous attempt was interrupted while sending');
   if (claim.kind === 'skip') {
     await ctx.log('warn', 'not executed: the reply is no longer driven by this task', { status: claim.r.status, currentTaskId: claim.r.taskId });
     return { skipped: true, status: claim.r.status };
@@ -589,30 +443,20 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
       await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.already_replied', message: 'the comment was already replied to', data: { existing: sent.id }, taskId: ctx.task.id });
       throw new ReplyCheckError('comment.already_replied', 'the comment was already replied to');
     }
-    const mode = await replyMode(acc, comment);
-    await log('info', 'method', `method: ${mode.mode}`, { method: mode.mode, reason: mode.reason });
     if (ctx.signal.aborted) throw ctx.signal.reason;
-    if (mode.mode === 'manual') {
-      const [done] = await db.update(R).set({ status: 'awaiting_operator', method: 'manual', handedAt: new Date() })
-        .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending'))).returning();
-      await log('info', 'handed_over', 'handed over to an operator: reply by hand on the phone, then record the outcome', { reason: mode.reason, recorded: !!done });
-      return { state: 'awaiting_operator', method: 'manual', reason: mode.reason };
-    }
-    const res = await apiReplyToComment(acc, comment.externalId, r.text, { signal: ctx.signal, log: (m, d) => ctx.log('info', m, d) });
-    const [done] = await db.update(R).set({ status: 'sent', method: 'api', externalReplyId: res.id, sentAt: new Date(), senderId: null, senderName: null })
+    const [done] = await db.update(R).set({ status: 'awaiting_operator', method: 'manual', handedAt: new Date() })
       .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending'))).returning();
-    if (done) await markReplied(r.commentId);
-    await log('info', 'sent', 'sent via the official API', { externalReplyId: res.id, recorded: !!done });
-    return { state: 'sent', method: 'api', externalReplyId: res.id };
+    await log('info', 'handed_over', 'handed over to an operator: reply by hand on the phone, then record the outcome', { recorded: !!done });
+    return { state: 'awaiting_operator', method: 'manual' };
   } catch (err) {
     const e = err as { code?: string; message?: string };
     const code = typeof e.code === 'string' ? e.code : 'comment.failed';
     if (!ctx.signal.aborted) {
-      const final = err instanceof UnrecoverableError || !RETRYABLE.has(code) || ctx.attempt >= ctx.task.maxAttempts;
-      await db.update(R).set({ status: final ? 'failed' : 'approved', method: 'api', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
+      // Check failures are final; anything else (e.g. a database error) is retried while attempts remain.
+      const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
+      await db.update(R).set({ status: final ? 'failed' : 'approved', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
         .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
       await log(final ? 'error' : 'warn', final ? 'failed' : 'retry', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, undefined, code);
-      if (final && !(err instanceof UnrecoverableError)) throw new ReplyCheckError(code, e.message ?? String(err));
     }
     throw err;
   }

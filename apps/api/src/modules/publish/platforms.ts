@@ -25,8 +25,8 @@ export const PUBLISH_CAPABILITIES: Record<string, PublishCapability> = {
   // YouTube: one video per upload; title ≤ 100, description ≤ 5000.
   youtube: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: { required: true, max: 100 }, captionMax: 5000, hashtagsMax: 15, privacy: ['public', 'unlisted', 'private'] },
   // Instagram: a single image/video, or a carousel of up to 10 items; caption ≤ 2200, ≤ 30 hashtags.
-  // Reels: exactly one video. Stories (限动): one image or one video ≤ 60 s, no caption (the content publishing
-  // API has no caption for stories; in the app text is a sticker the operator adds by hand).
+  // Reels: exactly one video. Stories (限动): one image or one video ≤ 60 s, no caption (in the app, text on a
+  // story is a sticker the operator adds by hand).
   instagram: {
     media: { min: 1, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 2200, hashtagsMax: 30,
     postTypes: {

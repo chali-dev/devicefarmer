@@ -266,22 +266,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'POST /api/trending/refresh': { action: 'trending.refresh' },
   'POST /api/collection/run': { action: 'collection.run' },
-  // platform integrations (平台接入). Client secrets and tokens are never logged; the OAuth callback
-  // (a GET) is recorded explicitly by its route as platform.connect / platform.connect_failed.
-  'PUT /api/settings/platforms/:platform': {
-    action: 'platform.credentials_update', target: ({ params }) => String(params.platform),
-    detail: ({ body }) => ({
-      clientId: typeof body.clientId === 'string' ? body.clientId : body.clientId === null ? null : undefined,
-      confidential: typeof body.clientSecret === 'string' ? 'set' : body.clientSecret === null ? 'cleared' : undefined, options: body.options,
-    }),
-  },
-  'POST /api/platforms/:platform/connect': {
-    action: 'platform.connect_start', target: ({ body }) => socialAccountName(body.socialAccountId),
-    targetId: ({ body }) => (typeof body.socialAccountId === 'string' ? body.socialAccountId : null),
-    detail: ({ params }) => ({ platform: params.platform }),
-  },
-  'DELETE /api/platforms/accounts/:id/connection': { action: 'platform.disconnect' },
-  'POST /api/platforms/accounts/:id/check': { action: 'platform.account_check' },
   // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
   'POST /api/contents': {
     action: 'content.create', target: ({ body }) => body.title as string,
@@ -323,7 +307,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'comment.rules_update',
     detail: ({ body }) => ({ requireApproval: body.requireApproval, duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour }),
   },
-  'POST /api/comments/accounts/:id/sync': { action: 'comment.sync' },
   'POST /api/comments': {
     action: 'comment.manual_create', target: ({ body }) => socialAccountName(body.accountId),
     targetId: ({ body }) => (typeof body.accountId === 'string' ? body.accountId : null),
@@ -355,8 +338,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PATCH /api/content-categories/:id': { action: 'content_category.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/content-categories/:id': { action: 'content_category.delete' },
   'POST /api/content-categories/:id/merge': { action: 'content_category.merge' },
-  // account analytics (账号分析)
-  'POST /api/analytics/accounts/:id/refresh': { action: 'analytics.refresh' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
   'POST /api/tasks/:id/retry': { action: 'task.retry' },
@@ -372,7 +353,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // alerts (告警通知): rules
   'PUT /api/settings/alerts': {
     action: 'settings.alerts',
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), accountCheckHours: body.accountCheckHours, cooldownMinutes: body.cooldownMinutes }),
+    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), cooldownMinutes: body.cooldownMinutes }),
   },
   // alert channels (告警通道): config is summarised field by field; secrets only as set / replaced / unchanged
   'POST /api/alert-channels': {
@@ -435,7 +416,7 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
       .from(schema.proxies).where(eq(schema.proxies.id, id));
     return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
   }
-  if (pattern.startsWith('/api/social/accounts/:id') || pattern.startsWith('/api/platforms/accounts/:id') || pattern.startsWith('/api/analytics/accounts/:id')) {
+  if (pattern.startsWith('/api/social/accounts/:id')) {
     const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
     return r ? `${r.platform} @${r.handle}` : null;
   }

@@ -1,9 +1,15 @@
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { HttpError } from '../../lib/errors.js';
-import { scrub } from '../platforms/http.js';
 import { ChannelFinalError, type ChannelDriver } from './channel-driver.js';
 import type { AlertKind } from './rules.js';
+
+/** Replaces every secret (e.g. the bot token) in a text that may be stored or shown. */
+function scrub(text: string, secrets: (string | null | undefined)[]): string {
+  let out = text;
+  for (const s of secrets) if (s && s.length >= 6) out = out.split(s).join('***');
+  return out.slice(0, 300);
+}
 
 /**
  * Telegram alert channel type (告警通道 → Telegram bot): one driver for any number of channels
@@ -36,7 +42,6 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
     kinds: {
       'device.down': { problem: '设备 {name} 异常：{status}（{reason}）', recovered: '设备 {name} 已恢复运行' },
       'account.problem': { problem: '{platform} 账号 @{handle} 状态异常：{reason}', recovered: '{platform} 账号 @{handle} 已恢复正常' },
-      'connection.expired': { problem: '{platform} 账号 @{handle} 的官方接口授权失效：{status}', recovered: '{platform} 账号 @{handle} 的官方接口授权已恢复' },
       'publish.failed': { problem: '发布失败：{platform} @{handle}《{title}》' },
       'task.failed': { problem: '任务失败：{type}（{label}）' },
       'collector.blocked': { problem: '采集设备 {name} 遇到 {platform} 验证/限制页面，采集已停止，需人工处理', recovered: '采集设备 {name} 的 {platform} 采集已恢复' },
@@ -45,7 +50,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
     words: {
       error: '错误', stopped: '已停止', container_missing: '容器不存在', container_exited: '容器意外退出', sidecar_down: '网络边车未运行',
       powered_off: '手机在平台外关机', op_failed: '操作失败', logged_out: '已登出', needs_verification: '需要验证', limited: '受限',
-      suspended: '封禁', disabled: '停用', check_failed: '检查失败', expired: '已过期', revoked: '已撤销',
+      suspended: '封禁', disabled: '停用',
     },
     open: '查看',
     test: '云手机管理平台：Telegram 告警测试消息',
@@ -55,7 +60,6 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
     kinds: {
       'device.down': { problem: 'Device {name} is down: {status} ({reason})', recovered: 'Device {name} is running again' },
       'account.problem': { problem: '{platform} account @{handle} has a problem: {reason}', recovered: '{platform} account @{handle} is back to normal' },
-      'connection.expired': { problem: 'Official API authorisation of {platform} account @{handle} is no longer valid: {status}', recovered: 'Official API authorisation of {platform} account @{handle} works again' },
       'publish.failed': { problem: 'Publish failed: {platform} @{handle} "{title}"' },
       'task.failed': { problem: 'Task failed: {type} ({label})' },
       'collector.blocked': { problem: 'Collector device {name} hit a {platform} verification / limit screen: collection stopped, needs a person', recovered: '{platform} collection on device {name} works again' },
@@ -64,7 +68,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
     words: {
       error: 'error', stopped: 'stopped', container_missing: 'container missing', container_exited: 'container exited unexpectedly', sidecar_down: 'network sidecar not running',
       powered_off: 'phone powered off outside the platform', op_failed: 'operation failed', logged_out: 'logged out', needs_verification: 'needs verification', limited: 'limited',
-      suspended: 'suspended', disabled: 'disabled', check_failed: 'check failed', expired: 'expired', revoked: 'revoked',
+      suspended: 'suspended', disabled: 'disabled',
     },
     open: 'Open',
     test: 'Cloud phone platform: Telegram alert test message',

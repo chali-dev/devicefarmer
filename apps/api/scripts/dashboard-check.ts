@@ -1,7 +1,7 @@
 /**
  * Dashboard (概览) + Settings (设置) test through the public API against the real API, DB and Redis (no mocks).
  * - Seeds rows across modules directly in the DB (placeholder devices without containers, proxies, social
- *   accounts + connections, tracked accounts + snapshots, contents + publish runs, tasks, media rows) for the
+ *   accounts, tracked accounts + snapshots, contents + publish runs, tasks, media rows) for the
  *   admin, user A and user B, then checks that GET /api/dashboard returns exactly the seeded numbers per role
  *   (users never see others' rows; the admin sees the seeded delta on top of what was there before).
  * - Settings: admin-only routes, write-only secrets (YouTube key), validation, audit entries.
@@ -87,7 +87,7 @@ try {
   proxyIds.push(...pxs.map((p) => p.id));
   await db.update(schema.instances).set({ proxyId: pxs[0]!.id }).where(inArray(schema.instances.id, [D1.id]));
 
-  // ---------------------------------------------------------------- seed: social accounts + connections
+  // ---------------------------------------------------------------- seed: social accounts
   const acc = await db.insert(schema.socialAccounts).values([
     { userId: A, platform: 'youtube', handle: `dbc${tag}a1`, loginStatus: 'logged_in' as const, instanceId: D1.id },
     { userId: A, platform: 'instagram', handle: `dbc${tag}a2`, loginStatus: 'logged_out' as const },
@@ -96,11 +96,6 @@ try {
     { userId: B, platform: 'instagram', handle: `dbc${tag}b2`, loginStatus: 'logged_in' as const, accountStatus: 'limited' as const },
   ]).returning();
   const [SA1, SA2, , SB1, SB2] = acc as [typeof acc[0], typeof acc[0], typeof acc[0], typeof acc[0], typeof acc[0]];
-  await db.insert(schema.platformConnections).values([
-    { socialAccountId: SA1.id, userId: A, platform: 'youtube', accessTokenEnc: 'v1:test', status: 'connected' as const },
-    { socialAccountId: SA2.id, userId: A, platform: 'instagram', accessTokenEnc: 'v1:test', status: 'expired' as const },
-    { socialAccountId: SB1.id, userId: B, platform: 'youtube', accessTokenEnc: 'v1:test', status: 'revoked' as const },
-  ]);
 
   // ---------------------------------------------------------------- seed: tracked accounts + snapshots
   const tr = await db.insert(schema.trackedAccounts).values([
@@ -176,7 +171,7 @@ try {
   check('user A: devices = granted only (2: stopped 1, error 1, busy 0)', a.devices.total === 2 && a.devices.stopped === 1 && a.devices.error === 1 && a.devices.busy === 0 && a.devices.running === 0, j(a.devices));
   check('user A: social accounts 3, exceptions 2, linked 1', a.social.total === 3 && a.social.exceptions === 2 && a.social.linked === 1, j(a.social));
   check('user A: social by platform / login status', same(sortKeys(a.social.byPlatform), { instagram: 1, tiktok: 1, youtube: 1 }) && same(sortKeys(a.social.byLogin), { logged_in: 1, logged_out: 1, unknown: 1 }));
-  check('user A: API connections (connected 1, expired 1)', same(a.social.connections, { connected: 1, expired: 1, revoked: 0, error: 0 }), j(a.social.connections));
+  check('user A: social widget has no API connections any more', !('connections' in a.social), j(a.social));
   check('user A: tracked 4 by status (active 2, error 1, paused 1)', a.tracked.total === 4 && same(sortKeys(a.tracked.byStatus), { active: 2, error: 1, paused: 1 }), j(a.tracked.byStatus));
   check('user A: top gainers = [t1 +500, t2 +60]', same(a.tracked.topGainers.map((g: any) => [g.id, g.gain, g.followers]), [[T1.id, 500, 1500], [T2.id, 60, 260]]), j(a.tracked.topGainers));
   const ap = a.publishing;
@@ -200,7 +195,7 @@ try {
   // ---------------------------------------------------------------- user B
   const b = (await dash(TB)).body.widgets;
   check('user B: devices 2 (error 1, busy 1)', b.devices.total === 2 && b.devices.error === 1 && b.devices.busy === 1 && b.devices.stopped === 0, j(b.devices));
-  check('user B: social 2, exceptions 2, connections revoked 1', b.social.total === 2 && b.social.exceptions === 2 && same(b.social.connections, { connected: 0, expired: 0, revoked: 1, error: 0 }), j(b.social));
+  check('user B: social 2, exceptions 2, linked 0', b.social.total === 2 && b.social.exceptions === 2 && b.social.linked === 0 && !('connections' in b.social), j(b.social));
   check('user B: tracked 2, top gainers = [t6 +300] (loss excluded)', b.tracked.total === 2 && same(b.tracked.topGainers.map((g: any) => [g.id, g.gain]), [[T6.id, 300]]), j(b.tracked.topGainers));
   check('user B: publishing upcoming 1 / published 1 / failed 1 / awaiting 0; contents 1',
     b.publishing.upcoming7d === 1 && b.publishing.published7d === 1 && b.publishing.failed7d === 1 && b.publishing.awaitingOperator === 0 && b.publishing.contents.total === 1);
@@ -253,7 +248,7 @@ try {
 
   // ---------------------------------------------------------------- settings: admin-only, write-only secrets
   const adminOnly = [['GET', '/api/settings/storage'], ['GET', '/api/settings/youtube'], ['GET', '/api/settings/tasks'], ['GET', '/api/settings/config'], ['GET', '/api/settings/system'],
-    ['PUT', '/api/settings/tasks', { retentionDays: 5 }], ['POST', '/api/settings/tasks/cleanup'], ['GET', '/api/social/settings'], ['GET', '/api/settings/platforms']] as const;
+    ['PUT', '/api/settings/tasks', { retentionDays: 5 }], ['POST', '/api/settings/tasks/cleanup'], ['GET', '/api/social/settings']] as const;
   const codes = await Promise.all(adminOnly.map(([m, p, body]) => http(m, p, TA, body).then((x) => x.status)));
   check('every settings route is admin-only (403 for a user)', codes.every((c) => c === 403), codes.join(','));
   r = await http('GET', '/api/settings/config', T);

@@ -19,8 +19,6 @@ import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
-import ConnectionCell from '../components/social/ConnectionCell.vue'
-import { usePlatformConnections } from '../components/social/connections'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -30,7 +28,6 @@ const auth = useAuthStore()
 const store = useInstancesStore()
 const route = useRoute()
 const router = useRouter()
-const conns = usePlatformConnections()
 
 const platforms = ref<SocialPlatform[]>([])
 const allTags = ref<string[]>([])
@@ -86,7 +83,6 @@ async function load() {
     const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
     items.value = r.items
     total.value = r.total
-    void conns.load(r.items.map((x) => x.id))
     const ids = new Set(r.items.map((x) => x.id))
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) }
@@ -98,7 +94,7 @@ function reset() {
   if (route.query.instanceId) void router.replace({ query: {} })
   search()
 }
-onMounted(() => { void loadMeta(); void load(); void conns.loadPlatforms().then(conns.handleCallback) })
+onMounted(() => { void loadMeta(); void load() })
 watch(() => route.query.instanceId, (v) => { filters.instanceId = typeof v === 'string' ? v : undefined; search() })
 watch(() => route.query.q, (v) => { if (typeof v === 'string') { filters.q = v; search() } }) // alert links (/social?q=handle)
 
@@ -119,7 +115,6 @@ const columns = computed(() => [
   { title: t('social.colLogin'), key: 'login', width: 120 },
   { title: t('social.colAccount'), key: 'account', width: 120 },
   { title: t('social.colChecked'), key: 'checked', width: 160 },
-  { title: t('platforms.colConnection'), key: 'connection', width: 190 },
   actionColumn(210),
 ])
 
@@ -393,12 +388,6 @@ function personasChanged() { void loadMeta(); void load() }
             <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
           </template>
           <template v-else-if="column.key === 'checked'">{{ fmt(record.lastCheckedAt) }}</template>
-          <template v-else-if="column.key === 'connection'">
-            <ConnectionCell
-              :account-id="record.id" :label="`${platformName(record.platform)} @${record.handle}`" :platform="conns.platforms.value.find((p) => p.id === record.platform)"
-              :connection="conns.byAccount.value.get(record.id)" @changed="load"
-            />
-          </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">

@@ -6,7 +6,6 @@ import { db, schema } from '../../db/index.js';
 import { ALERT_CHANNEL_MIN_SEVERITIES } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { isUniqueViolation } from '../proxies/pool.js';
-import { scheduleAccountChecks } from '../platforms/check.js';
 import { markAllRead, markRead, scheduleNotifyCleanup, unreadCount } from './notify.js';
 import { CHANNEL_TYPES, getChannel, publicChannel, testChannel, validChannelConfig } from './channels.js';
 import { ALERT_KIND_IDS, ALERT_KINDS, CHANNEL_KIND_IDS, getRules, LIMITS, saveRules } from './rules.js';
@@ -68,7 +67,6 @@ export const notifyRoutes: FastifyPluginAsyncZod = async (app) => {
         notifyAdmins: z.boolean().optional(),
         recovered: z.boolean().optional(),
         retentionDays: z.number().int().min(1).max(LIMITS.retentionMax).optional(),
-        accountCheckHours: z.number().int().min(1).max(LIMITS.accountCheckMax).nullable().optional(),
       }).strict(),
     },
   }, async (req) => ({ rules: await saveRules(req.body as Parameters<typeof saveRules>[0]) }));
@@ -125,6 +123,4 @@ export const notifyRoutes: FastifyPluginAsyncZod = async (app) => {
 /** Hourly jobs of this module (called from main's hourly timer and once shortly after startup). */
 export function alertsHourly(log: FastifyBaseLogger): void {
   void scheduleNotifyCleanup().catch((err) => log.warn({ err }, 'notification cleanup scheduling failed'));
-  void scheduleAccountChecks().then((r) => { if (r.created) log.info(r, 'account checks scheduled'); })
-    .catch((err) => log.warn({ err }, 'account check scheduling failed'));
 }

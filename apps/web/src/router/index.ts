@@ -25,8 +25,8 @@ const router = createRouter({
         { path: 'trending', name: 'trending', component: () => import('../views/TrendingView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
         { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { admin: true } },
-        // Platform integrations moved into Settings; old links keep working.
-        { path: 'platforms', redirect: { path: '/settings', query: { tab: 'platforms' } } },
+        // Platform integrations (official APIs) were removed on 2026-11-18; old links land on Settings.
+        { path: 'platforms', redirect: '/settings' },
         { path: 'alert-channels', name: 'alert-channels', component: () => import('../views/AlertChannelsView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },

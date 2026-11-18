@@ -8,14 +8,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import {
-  taskStatusText,
   type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentRules, type CommentStatus, type CommentTemplate,
 } from '../api/types'
 import CommentDrawer from '../components/comments/CommentDrawer.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { statusColor } from '../components/common/status'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { platformName } from '../components/social/platformMeta'
@@ -122,18 +120,6 @@ function remove(c: CommentItem) {
     title: t('comments.deleteConfirm'),
     onOk: async () => { try { await api('DELETE', `/api/comments/${c.id}`); message.success(t('common.deleted')); await loadComments() } catch (e) { message.error(errorText(e)) } },
   })
-}
-
-// ---------------------------------------------------------------- sync
-const syncing = ref(false)
-async function syncNow() {
-  if (!account.value) return
-  syncing.value = true
-  try {
-    await api('POST', `/api/comments/accounts/${account.value.id}/sync`)
-    message.success(t('comments.syncStarted'))
-    await loadAccounts()
-  } catch (e) { message.error(errorText(e)) } finally { syncing.value = false }
 }
 
 // ---------------------------------------------------------------- manual entry
@@ -278,7 +264,7 @@ function changed() { void load(); void loadReviewCount(); void loadAccounts() }
 
 let timer: ReturnType<typeof setTimeout> | null = null
 const off = store.onTaskEvent((ev) => {
-  if (ev.type !== 'task.updated' || !['comment-sync', 'comment-reply'].includes(ev.task.type)) return
+  if (ev.type !== 'task.updated' || ev.task.type !== 'comment-reply') return
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
     void load(); void loadAccounts(); void loadReviewCount()
@@ -290,7 +276,6 @@ onMounted(() => {
   void load(); void loadAccounts(); void loadTemplates(); void loadRules(); void loadReviewCount()
   if (filters.accountId) void loadPosts()
 })
-const reason = (code: string | null, platform: string) => (code ? codeText(code, { platform }, code) : '')
 </script>
 
 <template>
@@ -338,30 +323,17 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
 
       <div v-if="account" class="acc-bar">
         <PlatformTag :platform="account.platform" /> <b>@{{ account.handle }}</b>
-        <a-tooltip :title="reason(account.readReason, account.platform) || undefined">
-          <a-tag :color="account.readMode === 'api' ? 'blue' : 'orange'">{{ account.readMode === 'api' ? t('comments.modeApi') : t('comments.modeManual') }}</a-tag>
-        </a-tooltip>
-        <a-tooltip :title="reason(account.replyReason, account.platform) || undefined">
-          <a-tag :color="account.replyMode === 'api' ? 'blue' : 'orange'">{{ account.replyMode === 'api' ? t('comments.replyApi') : t('comments.replyManual') }}</a-tag>
-        </a-tooltip>
-        <span v-if="account.readMode === 'manual' && account.readReason" class="muted small">{{ reason(account.readReason, account.platform) }}</span>
-        <span v-if="account.sync?.lastSyncedAt" class="muted small">{{ t('comments.lastSync', { time: fmt(account.sync.lastSyncedAt), fetched: account.sync.lastFetched ?? 0, new: account.sync.lastNew ?? 0 }) }}</span>
-        <span v-else-if="account.commentsRead" class="muted small">{{ t('comments.neverSynced') }}</span>
-        <template v-if="account.sync?.task">
-          <a-tag :color="statusColor('task', account.sync.task.status)" style="cursor: pointer" @click="router.push(`/tasks?task=${account.sync.task.id}`)">
-            {{ t('comments.syncTask', { status: taskStatusText(account.sync.task.status) }) }}
-          </a-tag>
-          <span v-if="account.sync.task.status === 'failed' && account.sync.lastErrorCode" class="err">{{ errText(account.sync.lastErrorCode, account.sync.lastError, account.platform) }}</span>
-        </template>
+        <span class="muted small">{{ t('comments.manualOnlyHint') }}</span>
         <a-space class="acc-actions" :size="8">
-          <a-button size="small" @click="openManual()">{{ t('comments.addManual') }}</a-button>
-          <a-button v-if="account.commentsRead" size="small" type="primary" :loading="syncing" :disabled="account.readMode !== 'api'" @click="syncNow">{{ t('comments.syncNow') }}</a-button>
+          <a-button size="small" type="primary" @click="openManual()">{{ t('comments.addManual') }}</a-button>
         </a-space>
       </div>
 
       <!-- comments -->
       <a-spin v-if="tab === 'comments'" :spinning="loading">
-        <a-empty v-if="!items.length && !loading" :description="filters.accountId ? t('comments.empty') : `${t('comments.empty')} · ${t('comments.selectAccount')}`" />
+        <a-empty v-if="!items.length && !loading" :description="filters.accountId ? t('comments.emptyManual') : `${t('comments.empty')} · ${t('comments.selectAccount')}`">
+          <a-button v-if="filters.accountId" type="primary" @click="openManual()">{{ t('comments.addManual') }}</a-button>
+        </a-empty>
         <div v-for="c in items" :key="c.id" class="thread">
           <div v-for="m in (expanded.has(c.id) ? [c, ...(c.children ?? [])] : [c])" :key="m.id" class="msg" :class="{ child: m.id !== c.id, hidden: m.status === 'hidden' || m.status === 'ignored' }">
             <div class="meta">
