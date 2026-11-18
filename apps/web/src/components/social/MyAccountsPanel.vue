@@ -5,14 +5,14 @@ import { ExclamationCircleOutlined, PlusOutlined, SyncOutlined } from '@ant-desi
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../../api/query'
-import { api, errorText } from '../../api/client'
+import { api, codeText, errorText } from '../../api/client'
 import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
-  type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
+  type ManagedUser, type Persona, type SocialAccount, type Task, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../../api/types'
 import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
 import BatchFormModal from '../common/BatchFormModal.vue'
@@ -221,19 +221,49 @@ function remove(a: SocialAccount) {
   })
 }
 
-// ---------------------------------------------------------------- 自动检测 (system-run; 立即检测 queues one now)
-const checking = ref<string | null>(null)
+// ---------------------------------------------------------------- 自动检测 (system-run) + 同步 (row action, replaces 立即检测)
+/** Account id → sync task being followed (POST /api/social/sync-from-device on its linked phone). */
+const syncing = ref<Record<string, string>>({})
 /** Translated result code of the last automatic check. */
 const checkText = (code: string | null) => (code ? (te(`social.checkResult.${code}`) ? t(`social.checkResult.${code}`) : code) : '')
 const CHECK_COLOR: Record<string, string> = { ok: 'success', logged_out: 'error', wrong_account: 'error', challenge: 'error', offline: 'default', timeout: 'warning', app_missing: 'warning' }
-async function checkNow(a: SocialAccount) {
-  checking.value = a.id
+/**
+ * 同步 (owner 2026-11-18: replaces 立即检测): 从云手机同步 on the account's linked phone (the owner follows the phone's
+ * assignment, derived by the API), followed through the task events (pace deferrals continue as a new task); the sync
+ * also writes the check result on the account, so the row is reloaded when it ends.
+ */
+const syncDisabled = (a: SocialAccount) => !a.instanceId || a.platform !== 'instagram'
+async function syncNow(a: SocialAccount) {
+  if (syncDisabled(a) || syncing.value[a.id]) return
   try {
-    await api('POST', `/api/social/accounts/${a.id}/check`)
-    message.success(t('social.checkQueued'))
+    const r = await api<{ task: { id: string } }>('POST', '/api/social/sync-from-device', { instanceId: a.instanceId })
+    syncing.value = { ...syncing.value, [a.id]: r.task.id }
+    message.info(t('social.syncQueued'))
   } catch (e) { message.error(errorText(e)) }
-  finally { checking.value = null }
 }
+async function syncFinished(accountId: string, taskId: string) {
+  try {
+    const { task } = await api<{ task: Task & { result: { outcome?: string; result?: string; code?: string; taskId?: string; handle?: string } | null } }>('GET', `/api/tasks/${taskId}`)
+    const res = task.result ?? {}
+    if (task.status === 'success' && res.outcome === 'deferred' && res.taskId) { syncing.value = { ...syncing.value, [accountId]: res.taskId }; return }
+    const { [accountId]: _done, ...rest } = syncing.value
+    syncing.value = rest
+    if (task.status !== 'success') message.error(t('social.sync.failed', { msg: codeText(task.errorCode ?? undefined, {}, task.error ?? task.status) }))
+    else if (res.outcome === 'skipped') message.info(t('social.sync.skipped', { msg: codeText(res.code, {}, res.code ?? '') }))
+    else {
+      const text = res.result && te(`social.sync.result.${res.result}`) ? t(`social.sync.result.${res.result}`) : res.result ?? ''
+      if (res.result === 'created' || res.result === 'updated') message.success(text)
+      else message.warning(text)
+    }
+  } catch (e) { message.error(errorText(e)) }
+  void load()
+}
+const offSync = store.onTaskEvent((ev) => {
+  if (ev.type !== 'task.updated' || !['success', 'failed', 'cancelled'].includes(ev.task.status)) return
+  const hit = Object.entries(syncing.value).find(([, id]) => id === ev.task.id)
+  if (hit) void syncFinished(hit[0], hit[1])
+})
+onBeforeUnmount(offSync)
 
 // ---------------------------------------------------------------- 从云手机同步 + empty-state guide
 const syncOpen = ref(false)
@@ -284,7 +314,7 @@ function logValue(l: SocialAccountLog, v: string | null) {
 const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue', connect: 'cyan', disconnect: 'gray' }
 const LOG_MSG: Record<string, string> = {
   'device deleted': 'social.msgDeviceDeleted', 'group deleted': 'social.msgGroupDeleted', 'persona deleted': 'social.msgPersonaDeleted', 'persona merged': 'social.msgPersonaMerged',
-  'synced from device': 'social.msgSynced',
+  'synced from device': 'social.msgSynced', 'phone assigned': 'social.msgPhoneAssigned',
 }
 /** Log message text; `group migrated: <name>` comes from the 分组 → 人设 data migration (older logs may mention groups). */
 function logMessage(m: string) {
@@ -292,6 +322,8 @@ function logMessage(m: string) {
   if (m === 'automatic check') return t('social.msgAutoCheckShort')
   const c = /^automatic check on (.+?)(?:: (.*))?$/s.exec(m)
   if (c) return c[2] ? t('social.msgAutoCheckDetail', { device: c[1], detail: c[2] }) : t('social.msgAutoCheck', { device: c[1] })
+  const sc = /^sync on (.+?)(?:: (.*))?$/s.exec(m)
+  if (sc) return sc[2] ? t('social.msgSyncCheckDetail', { device: sc[1], detail: sc[2] }) : t('social.msgSyncCheck', { device: sc[1] })
   const g = /^group migrated: (.*)$/s.exec(m)
   return g ? t('social.msgGroupMigrated', { name: g[1] }) : m
 }
@@ -502,8 +534,8 @@ async function submitBatchForm() {
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-tooltip :title="record.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.checkNowHint')">
-                <a-button type="link" size="small" :disabled="!!record.autoCheckUnsupported" :loading="checking === record.id" @click="checkNow(record as SocialAccount)">{{ t('social.checkNow') }}</a-button>
+              <a-tooltip :title="syncDisabled(record as SocialAccount) ? t('social.syncNoDevice') : t('social.syncNowHint')">
+                <a-button type="link" size="small" :disabled="syncDisabled(record as SocialAccount)" :loading="!!syncing[record.id]" @click="syncNow(record as SocialAccount)">{{ t('social.syncNow') }}</a-button>
               </a-tooltip>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('social.more') }}</a-button>
@@ -524,7 +556,7 @@ async function submitBatchForm() {
   </div>
 
   <SocialAccountFeedDrawer v-model:open="feedOpen" :account="feedFor" />
-  <SyncFromDeviceModal v-model:open="syncOpen" :users="users" :instance-id="filters.instanceId" @synced="onSynced" />
+  <SyncFromDeviceModal v-model:open="syncOpen" :instance-id="filters.instanceId" @synced="onSynced" />
 
   <!-- create / edit -->
   <a-drawer v-model:open="editOpen" :title="editing ? t('social.edit') : t('social.add')" :width="DRAWER_WIDTH.md" destroy-on-close>
@@ -581,7 +613,9 @@ async function submitBatchForm() {
           <a-tag v-if="editing.lastCheckCode" :color="CHECK_COLOR[editing.lastCheckCode]">{{ checkText(editing.lastCheckCode) }}</a-tag>
           <span class="muted small">{{ editing.lastCheckedAt ? fmt(editing.lastCheckedAt) : t('social.notChecked') }}</span>
           <span v-if="editing.lastCheckDetail" class="muted small">{{ editing.lastCheckDetail }}</span>
-          <a-button size="small" :disabled="!!editing.autoCheckUnsupported" :loading="checking === editing.id" @click="checkNow(editing)">{{ t('social.checkNow') }}</a-button>
+          <a-tooltip :title="syncDisabled(editing) ? t('social.syncNoDevice') : t('social.syncNowHint')">
+            <a-button size="small" :disabled="syncDisabled(editing)" :loading="!!syncing[editing.id]" @click="syncNow(editing!)">{{ t('social.syncNow') }}</a-button>
+          </a-tooltip>
         </a-space>
         <div class="muted small">{{ editing.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${editing.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.autoCheckHint') }}</div>
       </a-form-item>

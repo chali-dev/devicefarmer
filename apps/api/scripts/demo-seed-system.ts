@@ -479,7 +479,15 @@ async function verify() {
   const V = viewerPw ? await login('demo-viewer', viewerPw) : null;
   const UT = D ?? V; const UTname = D ? 'demo-user' : 'demo-viewer';
   check(`${UTname} can log in for RBAC checks`, !!UT, D ? '' : 'demo-user credentials not readable');
-  const dev = instances[0];
+  // A phone belongs to one user and assigning it moves its linked social accounts (2026-11-18): only borrow a device
+  // that nobody is assigned to and that hosts no social account, so the temporary grant changes nothing else.
+  let dev: any = null;
+  for (const i of instances) {
+    if (i.owners?.length) continue;
+    const linked = (await http('GET', `/api/social/accounts?instanceId=${i.id}`, T)).body.items ?? [];
+    if (!linked.length) { dev = i; break; }
+  }
+  if (!dev) info('no unassigned device without social accounts: grant/RBAC checks skipped');
   if (UT && dev) {
     const uid = U(UTname).id;
     const before = U(UTname).instanceIds as string[];

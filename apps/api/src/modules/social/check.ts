@@ -76,10 +76,15 @@ export async function requestAccountCheck(user: AuthUser, acc: SocialAccount) {
 
 const utcDay = (d: Date) => d.toISOString().slice(0, 10);
 
-interface Outcome { result: CheckResult; detail?: string | null; externalId?: string | null; counts?: { followers: number | null; following: number | null; posts: number | null; approx: string[] } }
+export interface CheckOutcome { result: CheckResult; detail?: string | null; externalId?: string | null; counts?: { followers: number | null; following: number | null; posts: number | null; approx: string[] } }
 
-/** Writes the result on the account (+ logs when something changed), stats on ok, risk event + alert. */
-async function recordResult(acc: SocialAccount, inst: Pick<Instance, 'id' | 'name'>, o: Outcome, userId: string | null): Promise<void> {
+/**
+ * Writes the result on the account (+ logs when something changed), stats on ok, risk event + alert. Also used by
+ * 从云手机同步 (`via: 'sync'`, sync.ts: the 同步 row action replaced 立即检测 in the UI, 2026-11-18): a synced account
+ * gets ok, the phone's linked accounts get logged_out when no Instagram account is logged in; only the log texts differ.
+ */
+export async function recordCheckResult(acc: SocialAccount, inst: Pick<Instance, 'id' | 'name'>, o: CheckOutcome, userId: string | null, via: 'check' | 'sync' = 'check'): Promise<void> {
+  const msg = via === 'sync' ? 'synced from device' : 'automatic check';
   const now = new Date();
   const login = LOGIN_BY_RESULT[o.result];
   let after: SocialAccount | undefined;
@@ -90,20 +95,20 @@ async function recordResult(acc: SocialAccount, inst: Pick<Instance, 'id' | 'nam
     const logs: LogEntry[] = [];
     if (login && login !== cur.loginStatus) {
       set.loginStatus = login;
-      logs.push({ accountId: cur.id, action: 'status', field: 'loginStatus', fromValue: cur.loginStatus, toValue: login, message: 'automatic check' });
+      logs.push({ accountId: cur.id, action: 'status', field: 'loginStatus', fromValue: cur.loginStatus, toValue: login, message: msg });
     }
     // The recorded error follows the definite results (ok clears an old manual one).
     const err = o.result === 'ok' ? null : o.result === 'wrong_account' ? `wrong account on device: ${o.detail ?? '?'}`.slice(0, 500) : undefined;
     if (err !== undefined && err !== cur.lastError) {
       set.lastError = err;
-      logs.push({ accountId: cur.id, action: 'status', field: 'lastError', fromValue: cur.lastError, toValue: err, message: 'automatic check' });
+      logs.push({ accountId: cur.id, action: 'status', field: 'lastError', fromValue: cur.lastError, toValue: err, message: msg });
     }
     if (o.externalId && !cur.externalId) {
       set.externalId = o.externalId;
-      logs.push({ accountId: cur.id, action: 'update', field: 'externalId', fromValue: null, toValue: o.externalId, message: 'automatic check' });
+      logs.push({ accountId: cur.id, action: 'update', field: 'externalId', fromValue: null, toValue: o.externalId, message: msg });
     }
     if (o.result !== cur.lastCheckCode || logs.length) {
-      logs.unshift({ accountId: cur.id, action: 'checked', field: null, fromValue: cur.lastCheckCode, toValue: o.result, message: `automatic check on ${inst.name}${o.detail ? `: ${o.detail}` : ''}` });
+      logs.unshift({ accountId: cur.id, action: 'checked', field: null, fromValue: cur.lastCheckCode, toValue: o.result, message: `${via === 'sync' ? 'sync' : 'automatic check'} on ${inst.name}${o.detail ? `: ${o.detail}` : ''}` });
     }
     [after] = await tx.update(sa).set(set).where(eq(sa.id, cur.id)).returning();
     await writeLogs(tx, null, logs);
@@ -121,7 +126,7 @@ async function recordResult(acc: SocialAccount, inst: Pick<Instance, 'id' | 'nam
 }
 
 /** The device part of one check (inside withDevice: lock + pace held). */
-async function checkOnDevice(acc: SocialAccount, dev: { inst: Instance; adbPort: number }, ctx: Pick<TaskContext, 'log' | 'signal'>): Promise<Outcome> {
+async function checkOnDevice(acc: SocialAccount, dev: { inst: Instance; adbPort: number }, ctx: Pick<TaskContext, 'log' | 'signal'>): Promise<CheckOutcome> {
   const ids = await igDeviceAccounts(dev);
   await ctx.log('info', 'account check: device accounts read', { count: ids.length });
   if (!ids.length) return { result: 'logged_out', detail: 'no Instagram account on the device' };
@@ -172,7 +177,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const inst = await getInstance(acc.instanceId!);
   if (!inst) return skip('account_check.no_device');
   const offline = () => new HttpError(503, `设备 ${inst.name} 不在线`, 'account_check.offline', { name: inst.name });
-  let o: Outcome;
+  let o: CheckOutcome;
   try {
     o = await withDevice(inst, ctx.log, offline, (dev) => checkOnDevice(acc, dev, ctx), { what: 'check' });
   } catch (err) {
@@ -189,7 +194,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
     if ((err as { code?: string }).code !== 'account_check.offline') throw err;
     o = { result: 'offline', detail: inst.name };
   }
-  await recordResult(acc, inst, o, ctx.task.createdBy);
+  await recordCheckResult(acc, inst, o, ctx.task.createdBy);
   await ctx.log(o.result === 'ok' ? 'info' : 'warn', `account check result: ${o.result}`, { result: o.result, ...(o.detail ? { detail: o.detail } : {}), ...(o.counts ? { counts: o.counts } : {}) });
   return { outcome: 'checked', result: o.result, detail: o.detail ?? null, ...(o.counts ? { counts: o.counts } : {}) };
 }

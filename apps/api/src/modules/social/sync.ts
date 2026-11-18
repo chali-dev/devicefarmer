@@ -14,6 +14,7 @@ import { getRiskSettings } from '../risk/settings.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
+import { recordCheckResult } from './check.js';
 import { platformById } from './platforms.js';
 import { assertDeviceRoom, linkLogs, platformAllowed, writeLogs, type LogEntry } from './social.js';
 
@@ -34,9 +35,11 @@ import { assertDeviceRoom, linkLogs, platformAllowed, writeLogs, type LogEntry }
  * Which id is the profile's when the phone has several Instagram accounts (the app's account switcher): the matched
  * account's own externalId if among them, else the only id no social account records yet, else none.
  * 自动发现 (`discoverDeviceAccounts`, hourly, 风控 accountDiscovery, default on): `dumpsys account` only on each
- * running, not halted phone that allows Instagram; ids no social account records → the phone's only assigned user
- * gets a sync task (auto, key per phone + ids + UTC day, so at most one app visit a day for the same ids); several
- * or no assigned users → in-app notice `account.discovered` (admins + the phone's users), once a day.
+ * running, not halted phone that allows Instagram; ids no social account records → the phone's assigned user (an
+ * unassigned phone: the builtin admin) gets a sync task (auto, key per phone + ids + UTC day, so at most one app
+ * visit a day for the same ids); legacy several users / a disabled assigned user / no builtin admin → in-app notice
+ * `account.discovered` (admins + the phone's users), once a day.
+ * Account owner of a manual sync: the phone's assigned user, else the admin who runs it (syncOwner).
  */
 export const ACCOUNT_SYNC_TYPE = 'account-device-sync';
 export const ACCOUNT_SYNC_REF = 'instance';
@@ -56,13 +59,36 @@ const unfinishedSync = async (instanceId: string) => {
   return t ?? null;
 };
 
-/** Account owner for a sync: self, or (admin) any existing user. */
-async function syncOwner(user: AuthUser, ownerId?: string): Promise<string> {
-  if (!ownerId || ownerId === user.id) return user.id;
-  if (!isAdmin(user)) throw forbidden('仅管理员可以为其他用户同步账号', 'social.admin_only');
-  const [u] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, ownerId));
-  if (!u) throw badRequest('用户不存在', 'users.not_found');
-  return u.id;
+/** Users assigned to a phone (instance_grants; one by the owner's rule since 2026-11-18, older data may have several). */
+export async function phoneUsers(instanceId: string): Promise<{ id: string; disabled: boolean }[]> {
+  return db.select({ id: schema.users.id, disabled: schema.users.disabled }).from(schema.instanceGrants)
+    .innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
+    .where(eq(schema.instanceGrants.instanceId, instanceId)).orderBy(schema.users.username);
+}
+
+/**
+ * Account owner for a sync (owner decision 2026-11-18: phone → user binding): the user the phone is assigned to,
+ * else the caller (an admin; a user passed RBAC, so they are the assigned one, or one of them on legacy data). An
+ * explicit ownerId must be that owner, else 400 account_sync.owner_mismatch; a legacy phone with several users needs
+ * an admin to pick one of them (account_sync.owner_required).
+ */
+async function syncOwner(user: AuthUser, inst: Pick<Instance, 'id' | 'name'>, ownerId?: string): Promise<string> {
+  if (ownerId && ownerId !== user.id) {
+    if (!isAdmin(user)) throw forbidden('仅管理员可以为其他用户同步账号', 'social.admin_only');
+    const [u] = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, ownerId));
+    if (!u) throw badRequest('用户不存在', 'users.not_found');
+  }
+  if (!isAdmin(user)) return user.id;
+  const assigned = (await phoneUsers(inst.id)).map((u) => u.id);
+  const mismatch = () => badRequest(`账号归属必须是云手机 ${inst.name} 分配的用户（未分配时为执行同步的管理员）`, 'account_sync.owner_mismatch', { device: inst.name });
+  if (assigned.length > 1) {
+    if (!ownerId) throw badRequest(`云手机 ${inst.name} 分配给了多个用户，请选择账号归属`, 'account_sync.owner_required', { device: inst.name });
+    if (!assigned.includes(ownerId)) throw mismatch();
+    return ownerId;
+  }
+  const derived = assigned[0] ?? user.id;
+  if (ownerId && ownerId !== derived) throw mismatch();
+  return derived;
 }
 
 /** 从云手机同步: queues a sync of the phone's logged-in Instagram account (refused with a code when it can't run). */
@@ -71,7 +97,7 @@ export async function requestAccountSync(user: AuthUser, instanceId: string, own
   const inst = await getInstance(instanceId);
   if (!inst) throw notFound('设备不存在', 'instances.not_found');
   await assertInstanceAccess(user, inst.id, 'operate');
-  const owner = await syncOwner(user, ownerId);
+  const owner = await syncOwner(user, inst, ownerId);
   if (!platformAllowed(inst.allowedPlatforms, PLATFORM)) {
     throw conflict(`设备 ${inst.name} 未开启 Instagram`, 'social.platform_disabled', { device: inst.name, platform: 'Instagram' });
   }
@@ -266,12 +292,14 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
       await recordRiskEvent({ instance: inst, source: 'account_check', code: `account_sync.${read.result}`, detail: 'detail' in read ? read.detail ?? null : null, userId: ctx.task.createdBy });
     }
     await ctx.log('warn', `account sync result: ${read.result}`, { result: read.result });
+    if (read.result === 'not_logged_in') await recordSyncCheck(inst, { result: 'not_logged_in', detail: read.detail ?? null }, ctx.task.createdBy);
     return { outcome: 'synced', result: read.result };
   }
   const actor = ctx.task.createdBy ? (await db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role }).from(schema.users).where(eq(schema.users.id, ctx.task.createdBy)))[0] ?? null : null;
   const o = await applySync({ inst, ownerId: p.ownerId, actor, handle: read.handle, displayName: read.displayName, deviceIds: read.ids, counts: read.counts });
   const ok = o.result === 'created' || o.result === 'updated';
   await ctx.log(ok ? 'info' : 'warn', `account sync result: ${o.result}`, { result: o.result, handle: read.handle, ...(o.changed ? { changed: o.changed } : {}) });
+  if (o.result === 'updated' && o.accountId) await recordSyncCheck(inst, { result: 'ok', accountId: o.accountId }, ctx.task.createdBy);
   // `taken`: the handle only (the caller saw it on their own phone), never whose account it is.
   return {
     outcome: 'synced', result: o.result, handle: read.handle, ...(ok ? { accountId: o.accountId, displayName: read.displayName, externalId: o.externalId ?? null, counts: read.counts } : {}),
@@ -279,28 +307,60 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   };
 }
 
+/**
+ * The sync replaces 立即检测 in the UI (owner 2026-11-18), so it writes what the check writes (check.ts
+ * recordCheckResult, via 'sync'): the synced (updated) account → ok (logged_in, last_checked_at, last_check_code ok,
+ * last_error cleared, account.problem recovered); no Instagram account logged in on the phone → every Instagram
+ * account linked to it → logged_out (+ risk record / alert like the check). A created account already starts ok.
+ * Exported for the no-phone check script.
+ */
+export async function recordSyncCheck(inst: Pick<Instance, 'id' | 'name'>, r: { result: 'ok'; accountId: string } | { result: 'not_logged_in'; detail: string | null }, userId: string | null): Promise<number> {
+  const accounts = r.result === 'ok'
+    ? await db.select().from(sa).where(eq(sa.id, r.accountId))
+    : await db.select().from(sa).where(and(eq(sa.instanceId, inst.id), eq(sa.platform, PLATFORM)));
+  for (const acc of accounts) {
+    await recordCheckResult(acc, inst, r.result === 'ok' ? { result: 'ok' } : { result: 'logged_out', detail: r.detail }, userId, 'sync');
+  }
+  return accounts.length;
+}
+
 // New type on its own queue (a draining old leader never sees it). One attempt, like the account check.
 registerTaskHandler<Payload>(ACCOUNT_SYNC_TYPE, { queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run });
 
 // ---------------------------------------------------------------- 自动发现
 
-export type DiscoveryAction = { kind: 'sync'; ownerId: string } | { kind: 'notify'; reason: 'multiple_users' | 'no_user' } | null;
+export type DiscoveryAction = { kind: 'sync'; ownerId: string; via: 'assigned' | 'builtin_admin' }
+  | { kind: 'notify'; reason: 'multiple_users' | 'user_disabled' | 'no_user' } | null;
 
-/** What 自动发现 does for a phone with these unrecorded ids and these assigned (enabled) users. */
-export const discoveryAction = (unknownIds: string[], grantees: string[]): DiscoveryAction =>
-  !unknownIds.length ? null : grantees.length === 1 ? { kind: 'sync', ownerId: grantees[0]! } : { kind: 'notify', reason: grantees.length ? 'multiple_users' : 'no_user' };
+/**
+ * What 自动发现 does for a phone with these unrecorded ids, its assigned users and the builtin admin (null when
+ * missing/disabled), owner decision 2026-11-18: the assigned (enabled) user gets the account; an unassigned phone
+ * gives it to the builtin admin (as a manual sync by an admin would); a notice only when neither is possible
+ * (legacy phone with several users, the assigned user disabled, no builtin admin).
+ */
+export const discoveryAction = (unknownIds: string[], assigned: { id: string; disabled: boolean }[], builtinAdminId: string | null): DiscoveryAction => {
+  if (!unknownIds.length) return null;
+  if (assigned.length > 1) return { kind: 'notify', reason: 'multiple_users' };
+  if (assigned.length === 1) return assigned[0]!.disabled ? { kind: 'notify', reason: 'user_disabled' } : { kind: 'sync', ownerId: assigned[0]!.id, via: 'assigned' };
+  return builtinAdminId ? { kind: 'sync', ownerId: builtinAdminId, via: 'builtin_admin' } : { kind: 'notify', reason: 'no_user' };
+};
+
+/** The builtin admin (ADMIN_USERNAME, flagged by the seed) when it exists and is enabled. */
+async function builtinAdmin(): Promise<string | null> {
+  const [u] = await db.select({ id: schema.users.id }).from(schema.users)
+    .where(and(eq(schema.users.builtin, true), eq(schema.users.role, 'admin'), eq(schema.users.disabled, false))).limit(1);
+  return u?.id ?? null;
+}
 
 /**
  * One phone, given the Instagram ids `dumpsys account` listed on it: compares them with the recorded externalIds and
- * acts (sync task for the only assigned user, or the notice). Exported for the no-phone check script.
+ * acts (sync task for the assigned user / the builtin admin, or the notice). Exported for the no-phone check script.
  */
 export async function discoverOnDevice(inst: Pick<Instance, 'id' | 'name'>, ids: string[], now = new Date()): Promise<{ unknown: string[]; action: DiscoveryAction; taskId?: string; created?: boolean; notified?: boolean }> {
   const known = ids.length ? await db.select({ externalId: sa.externalId }).from(sa).where(and(eq(sa.platform, PLATFORM), inArray(sa.externalId, ids))) : [];
   const unknown = ids.filter((x) => !known.some((k) => k.externalId === x)).sort();
-  const grantees = (await db.select({ id: schema.users.id }).from(schema.instanceGrants)
-    .innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId))
-    .where(and(eq(schema.instanceGrants.instanceId, inst.id), eq(schema.users.disabled, false)))).map((r) => r.id);
-  const action = discoveryAction(unknown, grantees);
+  if (!unknown.length) return { unknown, action: null };
+  const action = discoveryAction(unknown, await phoneUsers(inst.id), await builtinAdmin());
   if (!action) return { unknown, action };
   const day = utcDay(now);
   const idsKey = createHash('sha256').update(unknown.join(',')).digest('hex').slice(0, 16);
