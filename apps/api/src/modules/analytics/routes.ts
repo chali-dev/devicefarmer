@@ -7,8 +7,8 @@ import { accountPosts, accountRows, accountScope, dailyRows, POST_SORTS, dayRang
 const Id = z.object({ id: z.string().uuid() });
 const Range = z.coerce.number().int().min(1).max(MAX_RANGE_DAYS).default(7);
 /**
- * Account analytics (账号分析) of own social accounts, read only: there is no data source any more (the
- * official-API task was removed on 2026-11-18, manual entry before); previously collected rows stay
+ * Account analytics (账号分析) of own social accounts, read only. Rows come from the automatic account check
+ * on the account's cloud phone (social/check.ts, source `device`); api/manual rows collected earlier stay
  * readable. Users see their own accounts (others 404), admins all, optionally filtered by owner. Days are UTC.
  */
 export const analyticsRoutes: FastifyPluginAsyncZod = async (app) => {

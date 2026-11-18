@@ -4,6 +4,7 @@ import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, assertInstanceAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
+import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { enabledPlatforms, PLATFORMS, platformById } from './platforms.js';
 
 /**
@@ -182,6 +183,8 @@ export interface SocialAccountItem extends Omit<SocialAccount, 'groupId'> {
   /** Measured egress of the linked device (country/region/city/IP from its proxy status); viewers with a grant only. */
   egress: { ip: string | null; country: string | null; region: string | null; city: string | null; checkedAt: string } | null;
   exception: boolean;
+  /** Why 自动检测 can't run for this account (account_check.unsupported_platform | no_device), null = it can. */
+  autoCheckUnsupported: string | null;
 }
 
 const NONE = '00000000-0000-0000-0000-000000000000';
@@ -212,6 +215,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
         ? { ip: inst.proxyStatus.egressIp, country: inst.proxyStatus.country ?? null, region: inst.proxyStatus.region ?? null, city: inst.proxyStatus.city ?? null, checkedAt: inst.proxyStatus.checkedAt }
         : null,
       exception: isException(r),
+      autoCheckUnsupported: !platformById(r.platform)?.deviceCheck || !isPlatformEnabled(r.platform) ? 'account_check.unsupported_platform' : !r.instanceId ? 'account_check.no_device' : null,
     };
   });
 }

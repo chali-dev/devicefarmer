@@ -69,6 +69,15 @@ const EXACT: Record<string, string> = {
   'collector: profile not available': 'collectorUnavailable',
   'collector: profile did not show in time': 'collectorTimeout',
   'drafts: skipped (switched off)': 'draftsSkipped',
+  // comment replies (no approval step since 2026-11-18)
+  submitted: 'replySubmitted',
+  'approval removed': 'approvalRemoved',
+  // 社交号自动检测 (task account-device-check)
+  'account check: own profile read': 'acctProfileRead',
+  'account check: username not readable': 'acctNoUsername',
+  'account check: login screen': 'acctLoginScreen',
+  'account check: challenge screen, device halted': 'acctChallenge',
+  'account check: profile did not show in time': 'acctTimeout',
 }
 
 const RULES: Rule[] = [
@@ -92,6 +101,9 @@ const RULES: Rule[] = [
   [/^scheduled refresh skipped: (\S+)$/, 'scheduledSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^deferred: (\S+)$/, 'deferred', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^collector: visit started$/, 'collectorVisit', (_m, d) => ({ device: typeof d?.device === 'string' ? d.device : '' })],
+  [/^account check: device accounts read$/, 'acctDeviceAccounts', (_m, d) => ({ count: String(d?.count ?? '?') })],
+  [/^account check result: (\w+)$/, 'acctResult', (m) => ({ result: te(`social.checkResult.${m[1]}`) ? t(`social.checkResult.${m[1]}`) : m[1]! })],
+  [/^account check skipped: (\S+)$/, 'acctSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^stored (\d+) trending videos for (\w+)$/, 'trendingStored', (m) => ({ n: m[1]!, region: m[2]! })],
   [/^collection: (\d+) tracked refreshes queued, (\d+) skipped; (\d+) trending refreshes queued; (\d+) old trending snapshots deleted$/, 'collectionTick',
     (m) => ({ queued: m[1]!, skipped: m[2]!, trending: m[3]!, purged: m[4]! })],

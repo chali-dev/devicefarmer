@@ -1,0 +1,85 @@
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref } from 'vue'
+import { message } from 'ant-design-vue'
+import { useI18n } from 'vue-i18n'
+import { api, errorText } from '../../api/client'
+import type { RiskSettings } from '../../api/types'
+
+/**
+ * 风控 → 云手机节奏: one pace for every automatic operation on a phone (tracked-account collection and the
+ * automatic account checks share it), plus the interval of the automatic account checks. Saved values take
+ * effect at once; the TRACKED_DEVICE_* env values are the defaults.
+ */
+const { t } = useI18n()
+const state = ref<RiskSettings | null>(null)
+const form = reactive({ minIntervalSec: 30, maxPerHour: 60, busyRetrySec: 300, checkOn: true, accountCheckHours: 6 })
+const saving = ref(false)
+
+function fill(s: RiskSettings) {
+  state.value = s
+  Object.assign(form, {
+    minIntervalSec: s.device.minIntervalSec, maxPerHour: s.device.maxPerHour, busyRetrySec: s.device.busyRetrySec,
+    checkOn: s.device.accountCheckHours !== null, accountCheckHours: s.device.accountCheckHours ?? s.defaults.accountCheckHours ?? 6,
+  })
+}
+onMounted(async () => { try { fill(await api<RiskSettings>('GET', '/api/risk/settings')) } catch (e) { message.error(errorText(e)) } })
+/** Visits per hour one phone can do with the values in the form (same formula as the API). */
+const capacity = computed(() => Math.min(form.maxPerHour || 0, Math.floor(3600 / (form.minIntervalSec || 1))))
+
+async function save() {
+  saving.value = true
+  try {
+    fill(await api<RiskSettings>('PUT', '/api/risk/settings', {
+      minIntervalSec: form.minIntervalSec, maxPerHour: form.maxPerHour, busyRetrySec: form.busyRetrySec,
+      accountCheckHours: form.checkOn ? form.accountCheckHours : null,
+    }))
+    message.success(t('common.saved'))
+  } catch (e) { message.error(errorText(e)) }
+  finally { saving.value = false }
+}
+</script>
+
+<template>
+  <div class="settings-pane">
+    <a-spin :spinning="!state">
+      <a-typography-title :level="5">{{ t('risk.pace.title') }}</a-typography-title>
+      <a-typography-paragraph type="secondary">{{ t('risk.pace.hint') }}</a-typography-paragraph>
+      <a-form layout="vertical">
+        <a-row :gutter="12">
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('risk.pace.minInterval')" :extra="state ? t('risk.pace.defaultSec', { n: state.defaults.minIntervalSec }) : undefined">
+              <a-input-number v-model:value="form.minIntervalSec" :min="5" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('risk.pace.maxPerHour')" :extra="state ? t('risk.pace.default', { n: state.defaults.maxPerHour }) : undefined">
+              <a-input-number v-model:value="form.maxPerHour" :min="1" :max="600" :precision="0" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="8">
+            <a-form-item :label="t('risk.pace.busyRetry')" :extra="state ? t('risk.pace.defaultSec', { n: state.defaults.busyRetrySec }) : undefined">
+              <a-input-number v-model:value="form.busyRetrySec" :min="5" :max="86400" :precision="0" addon-after="s" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-alert type="info" show-icon class="block" :message="t('risk.pace.capacity', { n: capacity })" />
+
+        <a-typography-title :level="5">{{ t('risk.check.title') }}</a-typography-title>
+        <a-typography-paragraph type="secondary">{{ t('risk.check.hint') }}</a-typography-paragraph>
+        <a-form-item>
+          <a-space wrap>
+            <a-switch v-model:checked="form.checkOn" />
+            <span>{{ t('risk.check.every') }}</span>
+            <a-input-number v-model:value="form.accountCheckHours" :min="1" :max="168" :precision="0" :disabled="!form.checkOn" addon-after="h" style="width: 140px" />
+          </a-space>
+        </a-form-item>
+        <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
+      </a-form>
+    </a-spin>
+  </div>
+</template>
+
+<style scoped>
+.settings-pane { max-width: 720px; }
+.block { margin-bottom: 16px; }
+</style>

@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HttpError } from '../../lib/errors.js';
 import { adb } from '../../services.js';
-import { collectorEntry, collectorWorked, haltCollector, requireCollector, withCollector } from './collector.js';
+import { recordRiskEvent } from '../risk/events.js';
+import { collectorEntry, collectorWorked, deviceHalt, haltCollector, requireCollector, withCollector, type CollectorDevice } from './collector.js';
 import type { Metric, ProfileData, SourceContext, TrackedSource } from './platforms.js';
 
 /**
@@ -84,8 +85,11 @@ const NOT_FOUND = /sorry, this page isn'?t available|user not found|page isn'?t 
 const LOGIN_TEXT = /^(log ?in|登录|登入|create new account|创建新账户|创建新帐户|forgot password\??|忘记密码[？?]?|password|密码)$/i;
 const PRIVATE = /this account is private|私密账户|私密帐户|私密账号|帐户为私密|账户为私密/i;
 
-/** What the current Instagram screen is, for the profile of `handle`. */
-export function classifyIgDump(nodes: UiNode[], handle: string): IgScreen {
+/**
+ * What the current Instagram screen is, for the profile of `handle`; `handle` null = the logged-in account's
+ * own profile (instagram://profile), whatever its username (the caller compares it).
+ */
+export function classifyIgDump(nodes: UiNode[], handle: string | null): IgScreen {
   if (!nodes.length) return { kind: 'empty' };
   if (!nodes.some((n) => n.pkg === PKG)) return { kind: 'other' };
   const byId = (suffix: string) => nodes.find((n) => n.rid === ID + suffix);
@@ -99,7 +103,7 @@ export function classifyIgDump(nodes: UiNode[], handle: string): IgScreen {
   }
   const title = byId('action_bar_title')?.text.trim() || null;
   // A different profile still on screen (the previous one while the new one loads): keep polling.
-  if (title && title.toLowerCase() !== handle.toLowerCase()) return { kind: 'other' };
+  if (title && handle !== null && title.toLowerCase() !== handle.toLowerCase()) return { kind: 'other' };
   /** Value node text, else the stacked container's content-desc without its label ("2.6亿粉丝"). */
   const raw: Record<string, string> = {};
   const count = (metric: 'followers' | 'following' | 'posts', value: string, stacked: string) => {
@@ -140,18 +144,26 @@ export function dumpExcerpt(nodes: UiNode[], max = 300): string {
 
 const coded = (status: number, message: string, code: string, params?: Record<string, string>) => new HttpError(status, message, code, params);
 
-async function readProfile(dev: { inst: { id: string; name: string }; adbPort: number }, handle: string, ctx: SourceContext): Promise<ProfileData> {
+/** The app must be installed on the device (coded error otherwise). */
+async function requireApp(dev: CollectorDevice, code = 'tracked.collector_app_missing'): Promise<void> {
+  if (!(await adb.shell(dev.adbPort, `pm path ${PKG}`, 15_000)).includes('package:')) {
+    throw coded(409, `设备 ${dev.inst.name} 未安装 Instagram`, code, { name: dev.inst.name });
+  }
+}
+
+/**
+ * One visit: opens `url` in the Instagram app (`am start -p`), polls `uiautomator dump` (≤ PROFILE_WAIT_MS)
+ * until a known screen shows (profile header, login, challenge, not found) and returns it. Always back to the
+ * launcher (HOME) and no dump file left behind, also after a failure or cancel. Navigation + screen reads only.
+ */
+export async function visitIgScreen(dev: CollectorDevice, url: string, handle: string | null, ctx: SourceContext): Promise<{ screen: IgScreen; nodes: UiNode[] }> {
   const log = ctx.log ?? (async () => undefined);
   const port = dev.adbPort;
-  if (!(await adb.shell(port, `pm path ${PKG}`, 15_000)).includes('package:')) {
-    throw coded(409, `采集设备 ${dev.inst.name} 未安装 Instagram`, 'tracked.collector_app_missing', { name: dev.inst.name });
-  }
   const file = `/data/local/tmp/cp-ig-${randomBytes(6).toString('hex')}.xml`;
-  const url = `https://www.instagram.com/${handle}/`;
   try {
     const started = await adb.shell(port, `am start -a android.intent.action.VIEW -d '${url}' -p ${PKG}`, 20_000);
-    if (/Error:|Exception/.test(started)) throw coded(502, `无法在采集设备上打开主页：${started.trim().slice(0, 150)}`, 'tracked.collector_open_failed', { error: started.trim().slice(0, 150) });
-    await log('info', 'collector: profile link opened', { handle });
+    if (/Error:|Exception/.test(started)) throw coded(502, `无法在设备上打开 Instagram：${started.trim().slice(0, 150)}`, 'tracked.collector_open_failed', { error: started.trim().slice(0, 150) });
+    await log('info', 'collector: profile link opened', { url: handle ? url : 'instagram://profile' });
     const deadline = Date.now() + PROFILE_WAIT_MS;
     await sleep(FIRST_DUMP_DELAY_MS, undefined, { signal: ctx.signal });
     let nodes: UiNode[] = [];
@@ -164,49 +176,80 @@ async function readProfile(dev: { inst: { id: string; name: string }; adbPort: n
       if (Date.now() >= deadline) break;
       await sleep(POLL_GAP_MS, undefined, { signal: ctx.signal });
     }
-    switch (screen.kind) {
-      case 'profile': {
-        const missing = (['followers', 'following', 'posts'] as const).filter((k) => !screen.counts[k]);
-        if (screen.counts.followers === null) {
-          await log('warn', 'collector: profile header could not be parsed', { excerpt: dumpExcerpt(nodes), raw: screen.raw });
-          throw coded(502, '主页数据解析失败', 'tracked.collector_parse_failed');
-        }
-        const approx: Metric[] = (['followers', 'following', 'posts'] as const).filter((k) => screen.counts[k]?.approx);
-        await log('info', 'collector: profile read', {
-          raw: screen.raw, approx, verified: screen.verified, private: screen.private, ...(missing.length ? { missing } : {}),
-        });
-        await collectorWorked('instagram', dev.inst);
-        return {
-          externalId: handle, displayName: screen.displayName, avatarUrl: null, bio: screen.bio,
-          followers: screen.counts.followers?.value ?? null, following: screen.counts.following?.value ?? null,
-          posts: screen.counts.posts?.value ?? null, views: null, approx, verified: screen.verified, private: screen.private,
-        };
-      }
-      case 'challenge':
-        await log('error', 'collector: challenge screen, collection halted', { excerpt: dumpExcerpt(nodes) });
-        await haltCollector('instagram', dev.inst, 'tracked.collector_challenge');
-        throw coded(409, 'Instagram 显示了验证/限制页面：采集已停止，需人工处理', 'tracked.collector_challenge');
-      case 'login':
-        await log('warn', 'collector: Instagram is not logged in', { excerpt: dumpExcerpt(nodes) });
-        throw coded(409, '采集设备上的 Instagram 未登录', 'tracked.collector_logged_out');
-      case 'not_found':
-      case 'shell':
-        await log('warn', 'collector: profile not available', { excerpt: dumpExcerpt(nodes) });
-        throw coded(404, `Instagram 主页 @${handle} 无法显示（账号不存在、已停用或无法加载）`, 'tracked.collector_profile_unavailable', { handle });
-      default:
-        await log('warn', 'collector: profile did not show in time', { excerpt: dumpExcerpt(nodes) });
-        throw coded(504, '等待主页超时', 'tracked.collector_timeout');
-    }
+    return { screen, nodes };
   } finally {
     // Back to the launcher, and no dump left behind (even after a failure or cancel).
     await adb.shell(port, `input keyevent 3; rm -f ${file}`, 10_000).catch(() => undefined);
   }
 }
 
+const COUNT_KEYS = ['followers', 'following', 'posts'] as const;
+/** Metrics the app abbreviated on this profile screen. */
+export const approxOf = (screen: Extract<IgScreen, { kind: 'profile' }>): Metric[] => COUNT_KEYS.filter((k) => screen.counts[k]?.approx);
+
+async function readProfile(dev: CollectorDevice, handle: string, ctx: SourceContext): Promise<ProfileData> {
+  const log = ctx.log ?? (async () => undefined);
+  const risk = (code: string, detail?: string) => recordRiskEvent({ instance: dev.inst, trackedAccountId: ctx.trackedAccountId ?? null, userId: ctx.userId ?? null, source: 'collector', code, detail: detail ?? `@${handle}` });
+  try { await requireApp(dev); } catch (err) { await risk('tracked.collector_app_missing'); throw err; }
+  const { screen, nodes } = await visitIgScreen(dev, `https://www.instagram.com/${handle}/`, handle, ctx);
+  switch (screen.kind) {
+    case 'profile': {
+      const missing = COUNT_KEYS.filter((k) => !screen.counts[k]);
+      if (screen.counts.followers === null) {
+        await log('warn', 'collector: profile header could not be parsed', { excerpt: dumpExcerpt(nodes), raw: screen.raw });
+        await risk('tracked.collector_parse_failed');
+        throw coded(502, '主页数据解析失败', 'tracked.collector_parse_failed');
+      }
+      const approx = approxOf(screen);
+      await log('info', 'collector: profile read', {
+        raw: screen.raw, approx, verified: screen.verified, private: screen.private, ...(missing.length ? { missing } : {}),
+      });
+      await collectorWorked('instagram', dev.inst);
+      return {
+        externalId: handle, displayName: screen.displayName, avatarUrl: null, bio: screen.bio,
+        followers: screen.counts.followers?.value ?? null, following: screen.counts.following?.value ?? null,
+        posts: screen.counts.posts?.value ?? null, views: null, approx, verified: screen.verified, private: screen.private,
+      };
+    }
+    case 'challenge':
+      await log('error', 'collector: challenge screen, collection halted', { excerpt: dumpExcerpt(nodes) });
+      await risk('tracked.collector_challenge');
+      await haltCollector('instagram', dev.inst, 'tracked.collector_challenge', ctx.trackedAccountId ?? null);
+      throw coded(409, 'Instagram 显示了验证/限制页面：采集已停止，需人工处理', 'tracked.collector_challenge');
+    case 'login':
+      await log('warn', 'collector: Instagram is not logged in', { excerpt: dumpExcerpt(nodes) });
+      await risk('tracked.collector_logged_out');
+      throw coded(409, '采集设备上的 Instagram 未登录', 'tracked.collector_logged_out');
+    case 'not_found':
+    case 'shell':
+      await log('warn', 'collector: profile not available', { excerpt: dumpExcerpt(nodes) });
+      throw coded(404, `Instagram 主页 @${handle} 无法显示（账号不存在、已停用或无法加载）`, 'tracked.collector_profile_unavailable', { handle });
+    default:
+      await log('warn', 'collector: profile did not show in time', { excerpt: dumpExcerpt(nodes) });
+      await risk('tracked.collector_timeout');
+      throw coded(504, '等待主页超时', 'tracked.collector_timeout');
+  }
+}
+
+/**
+ * The logged-in account's own profile (account check, modules/social/check.ts): app check, then
+ * `instagram://profile` (opens the own profile of whoever is logged in). Returns the classified screen.
+ */
+export async function readOwnIgProfile(dev: CollectorDevice, ctx: SourceContext): Promise<{ screen: IgScreen; nodes: UiNode[] }> {
+  await requireApp(dev, 'account_check.app_missing');
+  return visitIgScreen(dev, 'instagram://profile', null, ctx);
+}
+
+/** Instagram accounts registered in Android's AccountManager (`dumpsys account`): their numeric ids. */
+export async function igDeviceAccounts(dev: CollectorDevice): Promise<string[]> {
+  const out = await adb.shell(dev.adbPort, 'dumpsys account', 20_000);
+  return [...new Set([...out.matchAll(/Account \{name=([^,]+), type=www\.instagram\.com\}/g)].map((m) => m[1]!.trim()))];
+}
+
 export const instagramDeviceSource: TrackedSource = {
   kind: 'device',
   capabilities: { profile: true, recentPosts: false, metrics: ['followers', 'following', 'posts'] },
-  isConfigured: async () => { const e = await collectorEntry('instagram'); return !!e && !e.haltedAt; },
+  isConfigured: async () => { const e = await collectorEntry('instagram'); return !!e && !(await deviceHalt(e.instanceId)); },
   requireConfigured: async () => { await requireCollector('instagram'); },
   async fetchProfile(account, ctx = {}) {
     if (!IG_HANDLE.test(account.handle)) throw coded(400, 'Instagram 账号格式不正确', 'tracked.bad_handle', { platform: 'Instagram' });

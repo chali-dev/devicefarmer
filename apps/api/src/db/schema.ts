@@ -455,6 +455,13 @@ export const socialAccounts = pgTable('social_accounts', {
   notes: text('notes'),
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastError: text('last_error'),
+  /**
+   * Result of the last automatic check on the account's cloud phone (modules/social/check.ts, task
+   * account-device-check): ok | logged_out | wrong_account | challenge | offline | timeout | app_missing.
+   * `last_check_detail` = what was seen (e.g. the other username), short, never a screen dump.
+   */
+  lastCheckCode: text('last_check_code'),
+  lastCheckDetail: text('last_check_detail'),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -536,17 +543,21 @@ export const platformConnections = pgTable('platform_connections', {
  * Per-day gains are differences between readings (lib/counter-deltas.ts, shared with tracked accounts);
  * views/likes per day fall back to the difference of the lifetime totals. `missing` lists metrics the
  * API could not provide because the connection lacks a scope. source api|manual like tracked snapshots.
- * Read only since 2026-11-18: neither source exists any more (official APIs removed); old rows stay readable.
+ * Since 2026-11-18 the only writer is the automatic account check on the account's cloud phone (source
+ * `device`: followers/following/posts as the Instagram app shows them, `approx` = abbreviated); api/manual rows are history.
  */
 export const socialAccountStats = pgTable('social_account_stats', {
   id: uuid('id').primaryKey().defaultRandom(),
   socialAccountId: uuid('social_account_id').notNull().references(() => socialAccounts.id, { onDelete: 'cascade' }),
   day: date('day', { mode: 'string' }).notNull(),
   capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
-  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  /** api | manual (historical) | device (the account's own profile read by the automatic check on its cloud phone). */
+  source: text('source', { enum: ['api', 'manual', 'device'] }).notNull(),
   followers: bigint('followers', { mode: 'number' }),
   following: bigint('following', { mode: 'number' }),
   posts: bigint('posts', { mode: 'number' }),
+  /** Metrics the app abbreviated (device source; same rule as tracked snapshots). */
+  approx: text('approx').array(),
   totalViews: bigint('total_views', { mode: 'number' }),
   totalLikes: bigint('total_likes', { mode: 'number' }),
   views: bigint('views', { mode: 'number' }),
@@ -1110,6 +1121,32 @@ export const instanceStatusEvents = pgTable('instance_status_events', {
   at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('instance_status_events_instance_at_idx').on(t.instanceId, t.at), index('instance_status_events_at_idx').on(t.at)]);
 export type InstanceStatusEvent = typeof instanceStatusEvents.$inferSelect;
+
+/**
+ * 风控记录 (modules/risk): what the automatic device work ran into (collector visits, account checks):
+ * challenge / logged out / wrong account / unreadable screens. Short coded rows (detail ≤ 300 chars, never a
+ * screen dump), purged after 90 days by the hourly system maintenance.
+ */
+export const riskEvents = pgTable('risk_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
+  /** Denormalised so the row stays readable after the device is deleted. */
+  instanceName: text('instance_name'),
+  socialAccountId: uuid('social_account_id').references(() => socialAccounts.id, { onDelete: 'set null' }),
+  trackedAccountId: uuid('tracked_account_id').references(() => trackedAccounts.id, { onDelete: 'set null' }),
+  /** collector | account_check | … */
+  source: text('source').notNull(),
+  code: text('code').notNull(),
+  detail: text('detail'),
+  /** Who started it (task creator), null = scheduler. */
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+}, (t) => [
+  index('risk_events_at_idx').on(t.at),
+  index('risk_events_instance_at_idx').on(t.instanceId, t.at),
+  index('risk_events_code_at_idx').on(t.code, t.at),
+]);
+export type RiskEvent = typeof riskEvents.$inferSelect;
 
 /**
  * Alerts (告警通知, modules/notify). One in-app notification row per recipient. `kind` + `params` are

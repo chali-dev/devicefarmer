@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { SocialPlatform } from '../../api/types'
 
-/** Settings → Social accounts (admin): max accounts per (device, platform). */
+/** 风控 → 账号上限 (admin): max accounts per (device, platform). Was a tab of the settings page before 2026-11-18. */
 const { t } = useI18n()
 const platforms = ref<SocialPlatform[]>([])
 const limits = reactive<Record<string, number>>({})

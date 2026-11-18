@@ -23,7 +23,7 @@ import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const auth = useAuthStore()
 const store = useInstancesStore()
 const route = useRoute()
@@ -135,8 +135,7 @@ const editing = ref<SocialAccount | null>(null)
 const formRef = ref<FormInstance>()
 const blank = () => ({
   platform: undefined as string | undefined, ownerId: undefined as string | undefined, handle: '', displayName: '', profileUrl: '', externalId: '',
-  personaId: undefined as string | undefined, tags: [] as string[], instanceId: undefined as string | undefined,
-  loginStatus: 'unknown' as SocialLoginStatus, accountStatus: 'active' as SocialAccountStatus, lastError: '', notes: '',
+  personaId: undefined as string | undefined, tags: [] as string[], instanceId: undefined as string | undefined, notes: '',
 })
 const form = reactive(blank())
 const HANDLE_RE = /^@?[\p{L}\p{N}._-]{1,100}$/u
@@ -161,8 +160,7 @@ function openEdit(a: SocialAccount) {
   editing.value = a
   Object.assign(form, {
     ...blank(), platform: a.platform, handle: a.handle, displayName: a.displayName ?? '', profileUrl: a.profileUrl ?? '', externalId: a.externalId ?? '',
-    personaId: a.personaId ?? undefined, tags: [...a.tags], instanceId: a.instanceId ?? undefined,
-    loginStatus: a.loginStatus, accountStatus: a.accountStatus, lastError: a.lastError ?? '', notes: a.notes ?? '',
+    personaId: a.personaId ?? undefined, tags: [...a.tags], instanceId: a.instanceId ?? undefined, notes: a.notes ?? '',
   })
   formRef.value?.clearValidate()
   editOpen.value = true
@@ -177,8 +175,7 @@ async function save() {
   saving.value = true
   const body: Record<string, unknown> = {
     handle: form.handle.trim(), displayName: form.displayName, profileUrl: form.profileUrl, externalId: form.externalId,
-    personaId: form.personaId ?? null, tags: form.tags, instanceId: form.instanceId ?? null,
-    loginStatus: form.loginStatus, accountStatus: form.accountStatus, lastError: form.lastError, notes: form.notes,
+    personaId: form.personaId ?? null, tags: form.tags, instanceId: form.instanceId ?? null, notes: form.notes,
   }
   try {
     if (editing.value) {
@@ -204,25 +201,18 @@ function remove(a: SocialAccount) {
   })
 }
 
-// ---------------------------------------------------------------- mark checked
-const checkOpen = ref(false)
-const checkFor = ref<SocialAccount | null>(null)
-const checkForm = reactive({ loginStatus: 'unknown' as SocialLoginStatus, accountStatus: 'active' as SocialAccountStatus, lastError: '', message: '' })
-function openCheck(a: SocialAccount) {
-  checkFor.value = a
-  Object.assign(checkForm, { loginStatus: a.loginStatus, accountStatus: a.accountStatus, lastError: a.lastError ?? '', message: '' })
-  checkOpen.value = true
-}
-async function submitCheck() {
-  if (!checkFor.value) return
-  saving.value = true
+// ---------------------------------------------------------------- 自动检测 (system-run; 立即检测 queues one now)
+const checking = ref<string | null>(null)
+/** Translated result code of the last automatic check. */
+const checkText = (code: string | null) => (code ? (te(`social.checkResult.${code}`) ? t(`social.checkResult.${code}`) : code) : '')
+const CHECK_COLOR: Record<string, string> = { ok: 'success', logged_out: 'error', wrong_account: 'error', challenge: 'error', offline: 'default', timeout: 'warning', app_missing: 'warning' }
+async function checkNow(a: SocialAccount) {
+  checking.value = a.id
   try {
-    await api('POST', `/api/social/accounts/${checkFor.value.id}/checked`, { ...checkForm })
-    message.success(t('social.checkedDone'))
-    checkOpen.value = false
-    void load()
+    await api('POST', `/api/social/accounts/${a.id}/check`)
+    message.success(t('social.checkQueued'))
   } catch (e) { message.error(errorText(e)) }
-  finally { saving.value = false }
+  finally { checking.value = null }
 }
 
 // ---------------------------------------------------------------- logs
@@ -239,6 +229,7 @@ function logValue(l: SocialAccountLog, v: string | null) {
   if (v === null || v === '') return t('common.none')
   if (l.field === 'loginStatus') return loginText(v as SocialLoginStatus)
   if (l.field === 'accountStatus') return accountText(v as SocialAccountStatus)
+  if (l.action === 'checked') return checkText(v)
   return v
 }
 const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green', link: 'blue', unlink: 'gray', status: 'orange', checked: 'green', update: 'blue', connect: 'cyan', disconnect: 'gray' }
@@ -248,6 +239,9 @@ const LOG_MSG: Record<string, string> = {
 /** Log message text; `group migrated: <name>` comes from the 分组 → 人设 data migration (older logs may mention groups). */
 function logMessage(m: string) {
   if (LOG_MSG[m]) return t(LOG_MSG[m]!)
+  if (m === 'automatic check') return t('social.msgAutoCheckShort')
+  const c = /^automatic check on (.+?)(?:: (.*))?$/s.exec(m)
+  if (c) return c[2] ? t('social.msgAutoCheckDetail', { device: c[1], detail: c[2] }) : t('social.msgAutoCheck', { device: c[1] })
   const g = /^group migrated: (.*)$/s.exec(m)
   return g ? t('social.msgGroupMigrated', { name: g[1] }) : m
 }
@@ -387,13 +381,22 @@ function personasChanged() { void loadMeta(); void load() }
             <StatusTag kind="socialAccount" :status="record.accountStatus" />
             <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
           </template>
-          <template v-else-if="column.key === 'checked'">{{ fmt(record.lastCheckedAt) }}</template>
+          <template v-else-if="column.key === 'checked'">
+            <template v-if="record.lastCheckCode">
+              <a-tooltip :title="record.lastCheckDetail ?? undefined"><a-tag :color="CHECK_COLOR[record.lastCheckCode]">{{ checkText(record.lastCheckCode) }}</a-tag></a-tooltip>
+              <div class="muted small">{{ fmt(record.lastCheckedAt) }}</div>
+            </template>
+            <span v-else-if="record.autoCheckUnsupported" class="muted small">{{ t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) }}</span>
+            <span v-else class="muted small">{{ record.lastCheckedAt ? fmt(record.lastCheckedAt) : t('social.notChecked') }}</span>
+          </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-tooltip :title="record.instance?.accessible ? t('social.openDeviceHint') : t('social.openDeviceNone')">
                 <a-button type="link" size="small" :disabled="!record.instance?.accessible" @click="router.push(`/instances/${record.instance.id}`)">{{ t('social.openDevice') }}</a-button>
               </a-tooltip>
-              <a-button type="link" size="small" @click="openCheck(record as SocialAccount)">{{ t('social.check') }}</a-button>
+              <a-tooltip :title="record.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.checkNowHint')">
+                <a-button type="link" size="small" :disabled="!!record.autoCheckUnsupported" :loading="checking === record.id" @click="checkNow(record as SocialAccount)">{{ t('social.checkNow') }}</a-button>
+              </a-tooltip>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('social.more') }}</a-button>
                 <template #overlay>
@@ -448,19 +451,16 @@ function personasChanged() { void loadMeta(); void load() }
       <a-form-item :label="t('social.colDevice')" name="instanceId" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
         <a-select v-model:value="form.instanceId" allow-clear show-search option-filter-prop="label" :options="deviceOptions" :placeholder="t('social.notLinked')" />
       </a-form-item>
-      <a-row :gutter="12">
-        <a-col :span="12">
-          <a-form-item :label="t('social.colLogin')" name="loginStatus">
-            <a-select v-model:value="form.loginStatus" :options="SOCIAL_LOGIN_STATUSES.map((s) => ({ value: s, label: loginText(s) }))" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="12">
-          <a-form-item :label="t('social.colAccount')" name="accountStatus">
-            <a-select v-model:value="form.accountStatus" :options="SOCIAL_ACCOUNT_STATUSES.map((s) => ({ value: s, label: accountText(s) }))" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-      <a-form-item :label="t('social.lastError')" name="lastError"><a-input v-model:value="form.lastError" allow-clear :maxlength="500" /></a-form-item>
+      <a-form-item v-if="editing" :label="t('social.lastCheck')">
+        <a-space wrap>
+          <StatusTag kind="socialLogin" :status="editing.loginStatus" />
+          <a-tag v-if="editing.lastCheckCode" :color="CHECK_COLOR[editing.lastCheckCode]">{{ checkText(editing.lastCheckCode) }}</a-tag>
+          <span class="muted small">{{ editing.lastCheckedAt ? fmt(editing.lastCheckedAt) : t('social.notChecked') }}</span>
+          <span v-if="editing.lastCheckDetail" class="muted small">{{ editing.lastCheckDetail }}</span>
+          <a-button size="small" :disabled="!!editing.autoCheckUnsupported" :loading="checking === editing.id" @click="checkNow(editing)">{{ t('social.checkNow') }}</a-button>
+        </a-space>
+        <div class="muted small">{{ editing.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${editing.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.autoCheckHint') }}</div>
+      </a-form-item>
       <a-form-item :label="t('social.notes')" name="notes"><a-textarea v-model:value="form.notes" :rows="3" :maxlength="2000" /></a-form-item>
       <div class="muted small">{{ t('social.noPasswords') }}</div>
     </a-form>
@@ -469,27 +469,6 @@ function personasChanged() { void loadMeta(); void load() }
       <a-button type="primary" :loading="saving" @click="save">{{ t('common.save') }}</a-button>
     </template>
   </a-drawer>
-
-  <!-- mark checked -->
-  <a-modal v-model:open="checkOpen" :title="t('social.checkTitle', { name: checkFor ? `@${checkFor.handle}` : '' })" :confirm-loading="saving" :ok-text="t('social.check')" :cancel-text="t('common.cancel')" @ok="submitCheck">
-    <p class="muted">{{ t('social.checkHint') }}</p>
-    <a-form layout="vertical">
-      <a-row :gutter="12">
-        <a-col :span="12">
-          <a-form-item :label="t('social.colLogin')">
-            <a-select v-model:value="checkForm.loginStatus" :options="SOCIAL_LOGIN_STATUSES.map((s) => ({ value: s, label: loginText(s) }))" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="12">
-          <a-form-item :label="t('social.colAccount')">
-            <a-select v-model:value="checkForm.accountStatus" :options="SOCIAL_ACCOUNT_STATUSES.map((s) => ({ value: s, label: accountText(s) }))" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-      <a-form-item :label="t('social.lastError')"><a-input v-model:value="checkForm.lastError" allow-clear :maxlength="500" /></a-form-item>
-      <a-form-item :label="t('social.checkMessage')"><a-input v-model:value="checkForm.message" :maxlength="300" /></a-form-item>
-    </a-form>
-  </a-modal>
 
   <!-- logs -->
   <a-drawer v-model:open="logOpen" :title="t('social.logsTitle', { name: logFor ? `${platformName(logFor.platform)} @${logFor.handle}` : '' })" :width="DRAWER_WIDTH.md">

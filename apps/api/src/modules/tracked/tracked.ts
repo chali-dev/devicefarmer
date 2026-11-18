@@ -148,7 +148,7 @@ export async function refreshTrackedAccount(id: string, ctx: SourceContext = {})
   if (!source) return { outcome: 'manual_only' };
   const now = new Date();
   try {
-    const profile = await source.fetchProfile(acc, ctx);
+    const profile = await source.fetchProfile(acc, { ...ctx, trackedAccountId: acc.id });
     const posts = source.capabilities.recentPosts ? await source.fetchRecentPosts(acc, profile, RECENT_POSTS) : [];
     let newPosts = 0;
     await db.transaction(async (tx) => {
@@ -232,7 +232,7 @@ registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; deferrals?:
       }
     }
     try {
-      return await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal });
+      return await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal, userId: ctx.task.createdBy });
     } catch (err) {
       if (!(err instanceof CollectorDefer)) throw err;
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

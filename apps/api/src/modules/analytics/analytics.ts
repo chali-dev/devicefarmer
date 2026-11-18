@@ -6,9 +6,10 @@ import { registerDashboardWidget } from '../dashboard/registry.js';
 /**
  * Account analytics (账号分析) of the operator's OWN social accounts: daily stats rows
  * (`social_account_stats`, one per account and UTC day) and own posts (`social_account_posts`).
- * READ ONLY: the data source (official-API task `account-stats`, its daily schedule and "refresh now")
- * was removed on 2026-11-18 by owner decision, and manual entry was removed before; rows collected
- * earlier stay readable. RBAC = social accounts: users see their own accounts, admins all.
+ * Read only here. The writer is the automatic account check on the account's cloud phone (social/check.ts:
+ * followers/following/posts of today's row, source `device`, `approx` = abbreviated by the app); the
+ * official-API task `account-stats` and manual entry were removed on 2026-11-18, their rows stay readable.
+ * RBAC = social accounts: users see their own accounts, admins all.
  */
 export const MAX_RANGE_DAYS = 90;
 const DAY_MS = 86_400_000;
@@ -67,7 +68,9 @@ export function accountScope(o: { admin: boolean; userId: string; ownerId?: stri
 }
 
 export interface DayRow {
-  id: string; day: string; source: 'api' | 'manual';
+  id: string; day: string; source: 'api' | 'manual' | 'device';
+  /** Metrics the app abbreviated (device source). */
+  approx: string[];
   followers: number | null; following: number | null; posts: number | null; totalViews: number | null; totalLikes: number | null;
   followersGained: number | null; views: number | null; likes: number | null; shares: number | null; comments: number | null;
 }
@@ -87,7 +90,7 @@ export async function dailyRows(scope: SQL, from: string, to: string): Promise<D
   const rows = await db.execute<Record<string, unknown>>(sql`
     with acc as (select sa.id from social_accounts sa where ${scope}),
     f as ${deltas('followers')}, tv as ${deltas('total_views')}, tl as ${deltas('total_likes')}
-    select s.social_account_id as id, to_char(s.day, 'YYYY-MM-DD') as day, s.source,
+    select s.social_account_id as id, to_char(s.day, 'YYYY-MM-DD') as day, s.source, coalesce(s.approx, '{}') as approx,
       s.followers, s.following, s.posts, s.total_views, s.total_likes, f.delta as followers_gained,
       coalesce(s.views::float8, tv.delta) as views, coalesce(s.likes::float8, tl.delta) as likes, s.shares, s.comments
     from social_account_stats s
@@ -97,7 +100,7 @@ export async function dailyRows(scope: SQL, from: string, to: string): Promise<D
     where s.social_account_id in (select id from acc) and s.day between ${from}::date and ${to}::date
     order by s.day, s.social_account_id`);
   return [...rows].map((r) => ({
-    id: String(r.id), day: String(r.day), source: r.source as DayRow['source'],
+    id: String(r.id), day: String(r.day), source: r.source as DayRow['source'], approx: (r.approx as string[] | null) ?? [],
     followers: numOrNull(r.followers), following: numOrNull(r.following), posts: numOrNull(r.posts),
     totalViews: numOrNull(r.total_views), totalLikes: numOrNull(r.total_likes), followersGained: numOrNull(r.followers_gained),
     views: numOrNull(r.views), likes: numOrNull(r.likes), shares: numOrNull(r.shares), comments: numOrNull(r.comments),
@@ -106,7 +109,7 @@ export async function dailyRows(scope: SQL, from: string, to: string): Promise<D
 
 export interface AccountRow {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; displayName: string | null;
-  latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: string } | null;
+  latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: string; approx: string[] } | null;
   /** Metrics the last stored day lacked (historical API rows). */
   missing: string[];
 }
@@ -119,7 +122,7 @@ export async function accountRows(scope: SQL): Promise<AccountRow[]> {
     from social_accounts sa
     left join users u on u.id = sa.user_id
     left join lateral (select json_build_object('day', to_char(x.day, 'YYYY-MM-DD'), 'followers', x.followers, 'following', x.following,
-        'posts', x.posts, 'capturedAt', x.captured_at, 'source', x.source) as latest
+        'posts', x.posts, 'capturedAt', x.captured_at, 'source', x.source, 'approx', coalesce(x.approx, '{}')) as latest
       from social_account_stats x where x.social_account_id = sa.id and x.followers is not null order by x.day desc limit 1) l on true
     left join lateral (select x.missing from social_account_stats x where x.social_account_id = sa.id order by x.day desc limit 1) m on true
     where ${scope}

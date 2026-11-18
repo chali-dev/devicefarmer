@@ -8,8 +8,8 @@ import { dateLocale } from '../../i18n'
 import { pagination } from '../common/ui'
 
 /**
- * 帖子 tab of the analytics drawer: the account's own posts with per-post likes/comments as the last
- * official-API refresh stored them before the APIs were removed (history only). Links go to the post's permalink.
+ * 帖子 tab of the analytics drawer: the account's own posts with per-post likes/comments as stored earlier
+ * (history; the automatic account check reads only the profile counters). Links go to the post's permalink.
  */
 const props = defineProps<{ accountId: string }>()
 const { t, te } = useI18n()

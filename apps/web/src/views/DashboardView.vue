@@ -256,7 +256,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             <template #extra><router-link to="/comments">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
               <StatLink :label="t('dashboard.commentsUnread')" :value="w.comments.unread" :to="{ path: '/comments', query: { status: 'new' } }" />
-              <StatLink :label="t('dashboard.commentsReview')" :value="w.comments.pendingReview" :to="{ path: '/comments', query: { tab: 'review' } }" />
+              <StatLink :label="t('dashboard.commentsDrafts')" :value="w.comments.drafts" :to="{ path: '/comments', query: { tab: 'queue' } }" />
               <StatLink :label="t('dashboard.commentsOperator')" :value="w.comments.awaitingOperator" :to="{ path: '/comments', query: { tab: 'queue' } }" />
               <StatLink :label="t('dashboard.commentsQueued')" :value="w.comments.queued" :to="{ path: '/comments', query: { tab: 'queue' } }" />
             </div>

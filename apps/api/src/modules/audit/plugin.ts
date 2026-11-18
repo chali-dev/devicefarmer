@@ -231,18 +231,16 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
-    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId, loginStatus: body.loginStatus, accountStatus: body.accountStatus }),
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId }),
   },
   'PUT /api/social/accounts/:id': {
     action: 'social.account_update',
     detail: ({ body }) => ({
       fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, personaId: body.personaId,
-      loginStatus: body.loginStatus, accountStatus: body.accountStatus,
     }),
   },
-  'POST /api/social/accounts/:id/checked': {
-    action: 'social.account_checked', detail: ({ body }) => ({ loginStatus: body.loginStatus, accountStatus: body.accountStatus, error: body.lastError ? true : undefined }),
-  },
+  // 立即检测 (automatic check on the cloud phone, queued; the manual "mark checked" was removed)
+  'POST /api/social/accounts/:id/check': { action: 'social.account_check' },
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
@@ -313,7 +311,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // comments & engagement (评论互动). Comment and reply texts are not copied into the audit log.
   'PUT /api/comments/settings': {
     action: 'comment.rules_update',
-    detail: ({ body }) => ({ requireApproval: body.requireApproval, duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour }),
+    detail: ({ body }) => ({ duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour }),
   },
   'POST /api/comments': {
     action: 'comment.manual_create', target: ({ body }) => socialAccountName(body.accountId),
@@ -325,9 +323,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/comments/:id/replies': { action: 'comment.reply_create', detail: ({ body }) => ({ templateId: body.templateId, submit: body.submit, scheduledAt: body.scheduledAt }) },
   'PATCH /api/comment-replies/:id': { action: 'comment.reply_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'POST /api/comment-replies/:id/submit': { action: 'comment.reply_submit' },
-  'POST /api/comment-replies/:id/approve': { action: 'comment.reply_approve' },
-  'POST /api/comment-replies/approve': { action: 'comment.reply_approve_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
-  'POST /api/comment-replies/:id/reject': { action: 'comment.reply_reject', detail: ({ body }) => ({ reason: typeof body.reason === 'string' ? body.reason.slice(0, 200) : undefined }) },
   'POST /api/comment-replies/:id/cancel': { action: 'comment.reply_cancel' },
   'POST /api/comment-replies/:id/outcome': {
     action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),
@@ -365,6 +360,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'settings.ai',
     detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, model: body.model, hour: body.hour, enabled: body.enabled }),
   },
+  // 风控 (risk control)
+  'PUT /api/risk/settings': {
+    action: 'risk.settings',
+    detail: ({ body }) => ({ minIntervalSec: body.minIntervalSec, maxPerHour: body.maxPerHour, busyRetrySec: body.busyRetrySec, accountCheckHours: body.accountCheckHours }),
+  },
+  'POST /api/risk/devices/:id/resume': { action: 'risk.device_resume', targetId: ({ params }) => (typeof params.id === 'string' ? params.id : null) },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   // alerts (告警通知): rules
   'PUT /api/settings/alerts': {
