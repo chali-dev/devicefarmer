@@ -124,7 +124,6 @@ registerPublishMethod({
   id: DEVICE_METHOD,
   priority: 10,
   async unavailable(input) {
-    if (!(await getDevicePublishRules()).enabled) return 'publish.device_disabled';
     if (!platformById(input.platform)?.deviceCheck || !isPlatformEnabled(input.platform)) return 'publish.device_unsupported_platform';
     if (!input.account.instanceId) return 'publish.device_no_device';
     if (!input.media.length) return 'publish.device_no_media';
