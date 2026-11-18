@@ -16,6 +16,8 @@ export interface OpJob {
   appIds?: string[];
   /** install-apk: one app = base + splits */
   apkPaths?: string[]; sizes?: number[];
+  /** install-apk from the app library (manual or preinstall): which app version, for the library's install log */
+  library?: { package: string; versionCode: string; versionName: string | null; preinstall: boolean };
   /** uninstall-app, import-app */
   package?: string;
   /** push-asset, media-process: media_assets.id */

@@ -55,6 +55,24 @@ export interface LibraryApp {
   id: string; package: string; versionName: string | null; versionCode: string
   files: { name: string; size: number; sha256: string }[]; preinstall: boolean; sourceInstance: string | null; createdAt: string
 }
+/** GET /api/library/:id/targets: only installable/update can be picked; installed ones are hidden. */
+export type LibraryTargetState = 'installable' | 'update' | 'installed' | 'installing' | 'offline' | 'busy'
+export interface LibraryInstallTarget {
+  id: string; name: string; status: InstanceStatus; engine: string; external: boolean
+  /** Granted usernames (admins only). */
+  users?: string[]
+  installed: { versionCode: string; versionName: string | null } | null
+  state: LibraryTargetState
+  /** Instance status, `adb` or `probe`. */
+  reason?: string
+}
+/** GET /api/library/:id/logs: install-apk tasks of the package (all versions). */
+export interface LibraryInstallLog {
+  taskId: string; status: TaskStatus; errorCode: string | null; error: string | null
+  createdAt: string; finishedAt: string | null
+  instanceId: string | null; instanceName: string; deviceExists: boolean; operator: string | null
+  versionCode: string | null; versionName: string | null; preinstall: boolean
+}
 
 export type ProxyType = 'socks5' | 'http'
 export type ProxyStatus = 'unchecked' | 'ok' | 'failed'

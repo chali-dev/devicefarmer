@@ -2,13 +2,14 @@
  * App library test (real devices, no mocks): upload an APK into the library (admin only, package and
  * version read from the manifest), then import an installed app from instance A, flag it for preinstall,
  * create instance B and verify it was installed automatically.
- * Usage: npx tsx --env-file=../../.env scripts/library-check.ts <test.apk>
+ * The preinstall task is in the library's install log (refType library_app, flagged as preinstall).
+ * Usage: npx tsx --env-file=../../.env scripts/library-check.ts <test.apk>   (E2E_API / API_PORT for another API)
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { withCaptcha } from './lib/login.js';
 
-const API = 'http://127.0.0.1:3000';
+const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const apk = process.argv[2];
 if (!apk) throw new Error('usage: library-check.ts <test.apk>');
 const PKG = 'org.fdroid.fdroid';
@@ -104,6 +105,8 @@ try {
   }, 120_000);
   check('new instance got a preinstall task', pre.status === 'success', pre.instanceName);
   const onB = (await apps(b)).find((x) => x.package === PKG);
+  const plog = (await http('GET', `/api/library/${libId}/logs`, T)).body.items.find((x: any) => x.taskId === pre.id);
+  check('preinstall task carries the library ref and is in the install log as preinstall', pre.refType === 'library_app' && pre.refId === libId && plog?.preinstall === true && plog.status === 'success');
   check('preinstalled app present on B with the same version', !!onB && onB.versionCode === verA.versionCode, onB?.versionName ?? 'missing');
 
   r = await http('POST', `/api/library/${libId}/install`, T, { instanceIds: [b] });

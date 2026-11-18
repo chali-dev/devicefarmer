@@ -272,8 +272,9 @@ export class AdbAdapter {
   }
 
   /** Version of an installed package. */
-  async packageVersion(adbPort: number, pkg: string): Promise<{ versionName: string | null; versionCode: string } | null> {
-    const out = await this.shell(adbPort, `dumpsys package ${pkg} | grep -m2 -E "versionCode=|versionName="`);
+  async packageVersion(adbPort: number, pkg: string, timeoutMs?: number): Promise<{ versionName: string | null; versionCode: string } | null> {
+    if (!/^[a-zA-Z0-9_.]{3,150}$/.test(pkg)) throw new Error('invalid package name');
+    const out = await this.shell(adbPort, `dumpsys package ${pkg} | grep -m2 -E "versionCode=|versionName="`, timeoutMs);
     const code = /versionCode=(\d+)/.exec(out)?.[1];
     if (!code) return null;
     return { versionCode: code, versionName: /versionName=(\S+)/.exec(out)?.[1] ?? null };

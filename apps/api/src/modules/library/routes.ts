@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -7,13 +7,20 @@ import { assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rb
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from '../apps/package.js';
-import { addUploadToLibrary, libraryApks, removeLibraryApp } from './library.js';
+import { installLog, installTargets } from './install.js';
+import { addUploadToLibrary, LIBRARY_TASK_REF, libraryInstallJob, libraryTaskRef, removeLibraryApp } from './library.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const Pkg = z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/);
 
 /** App library: import from a device or upload (admin), install to instances, preinstall on new instances. */
+async function libraryApp(id: string) {
+  const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, id));
+  if (!lib) throw notFound('library app not found', 'library.not_found');
+  return lib;
+}
+
 export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -61,19 +68,44 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
     return { app: updated };
   });
 
+  /** Devices the caller may install this entry on, with the installed version (live read over adb) and a state. */
+  app.get('/api/library/:id/targets', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
+    const lib = await libraryApp(req.params.id);
+    return installTargets(req.user, lib);
+  });
+
+  /** Install log of this entry's package (all versions), task-centre visibility. */
+  app.get('/api/library/:id/logs', {
+    schema: { params: z.object({ id: z.string().uuid() }), querystring: z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) }) },
+  }, async (req) => {
+    const lib = await libraryApp(req.params.id);
+    return installLog(req.user, lib.package, req.query.limit, req.query.offset);
+  });
+
+  /** One request for a batch of devices: one install-apk task per device (refType library_app). */
   app.post('/api/library/:id/install', {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(100) }) },
   }, async (req, reply) => {
-    const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
-    if (!lib) throw notFound('library app not found', 'library.not_found');
-    await assertInstancesAccess(req.user, req.body.instanceIds, 'operate');
-    const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
+    const lib = await libraryApp(req.params.id);
+    const ids = [...new Set(req.body.instanceIds)];
+    await assertInstancesAccess(req.user, ids, 'operate');
+    const T = schema.tasks;
+    const [rows, pending] = await Promise.all([
+      db.select().from(schema.instances).where(inArray(schema.instances.id, ids)),
+      db.select({ instanceId: T.instanceId }).from(T).where(and(eq(T.type, 'install-apk'), eq(T.refType, LIBRARY_TASK_REF), eq(T.refId, lib.id), inArray(T.status, ['pending', 'scheduled', 'running']), inArray(T.instanceId, ids))),
+    ]);
+    const busy = new Set(pending.map((p) => p.instanceId));
+    const byId = new Map(rows.map((r) => [r.id, r]));
     const accepted: { instanceId: string; taskId: string }[] = [];
-    const skipped: { instanceId: string; reason: string }[] = [];
-    for (const r of rows) {
-      if (r.status !== 'running') { skipped.push({ instanceId: r.id, reason: `not running (${r.status})` }); continue; }
-      accepted.push({ instanceId: r.id, taskId: await enqueue('install-apk', r, req.user.id, libraryApks(lib), `${lib.package} ${lib.versionName ?? lib.versionCode}`) });
+    const skipped: { instanceId: string; reason: string; code: string }[] = [];
+    for (const id of ids) {
+      const r = byId.get(id);
+      if (!r) { skipped.push({ instanceId: id, reason: 'not found', code: 'instances.not_found' }); continue; }
+      if (r.status !== 'running') { skipped.push({ instanceId: id, reason: `not running (${r.status})`, code: 'instances.not_running' }); continue; }
+      if (busy.has(id)) { skipped.push({ instanceId: id, reason: 'install already queued', code: 'library.install_pending' }); continue; }
+      accepted.push({ instanceId: id, taskId: await enqueue('install-apk', r, req.user.id, libraryInstallJob(lib), `${lib.package} ${lib.versionName ?? lib.versionCode}`, libraryTaskRef(lib)) });
     }
+    if (req.audit) { req.audit.target = `${lib.package} ${lib.versionName ?? lib.versionCode}`; req.audit.extra = { id: lib.id, accepted: accepted.length, skipped: skipped.length }; }
     reply.code(202);
     return { accepted, skipped };
   });

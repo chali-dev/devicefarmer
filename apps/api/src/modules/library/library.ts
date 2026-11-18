@@ -19,6 +19,15 @@ export function libraryApks(app: LibraryApp): { apkPaths: string[]; sizes: numbe
   return { apkPaths: app.files.map((f) => path.join(dir, f.name)), sizes: app.files.map((f) => f.size) };
 }
 
+/** refType of install-apk tasks created from the library (refId = library_apps.id). */
+export const LIBRARY_TASK_REF = 'library_app';
+
+/** install-apk payload for a library app: APKs + which app version (kept in the task even if the entry is deleted). */
+export function libraryInstallJob(app: LibraryApp, preinstall = false) {
+  return { ...libraryApks(app), library: { package: app.package, versionCode: app.versionCode, versionName: app.versionName, preinstall } };
+}
+export const libraryTaskRef = (app: Pick<LibraryApp, 'id'>) => ({ refType: LIBRARY_TASK_REF, refId: app.id });
+
 type LibraryFile = LibraryApp['files'][number];
 
 /**
