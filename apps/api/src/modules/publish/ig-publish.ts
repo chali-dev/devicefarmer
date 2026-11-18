@@ -33,8 +33,8 @@ import { classifyIgDump, dumpExcerpt, ID, igDeviceAccounts, PKG, requireApp, scr
  *
  * The caption is pasted through STF's clipboard.paste (any script / emoji) and read back by copying the field
  * (select all + copy) into the cleared clipboard (`service call clipboard`), then the clipboard is cleared again.
- * Test mode stops before 分享 (screenshot, field cleared, draft discarded). Taps: only the creation flow's own
- * buttons, the caption field and (live only) the share button. Every dump is deleted, HOME at the end.
+ * There is no test mode (removed 2026-11-18): screenshot, then 分享. Taps: only the creation flow's own buttons, the
+ * caption field and the share button. Every dump is deleted, HOME at the end.
  */
 const SHARE: Record<PostType, string> = {
   feed: 'com.instagram.share.handleractivity.ShareHandlerActivity',
@@ -179,12 +179,11 @@ export interface PublishFlowInput {
   media: MediaAsset[];
   /** Caption + hashtags ('' = none; stories have none). */
   text: string;
-  testMode: boolean;
   log: Log;
   signal?: AbortSignal;
 }
 export interface PublishFlowResult {
-  outcome: 'published' | 'dry_run';
+  outcome: 'published';
   inputText: string;
   excerpt: string;
   screenshot: Buffer | null;
@@ -225,7 +224,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
       if (ok(r.nodes) && !nux) return r.nodes;
       if (nux && Date.now() < deadline) { await log('info', 'publish: one-time notice acknowledged', { excerpt: dumpExcerpt(r.nodes, 160) }); await s.tap(nux); continue; }
       const p = screenProblem(r.nodes);
-      if (p === 'challenge') throw fail('publish.device_challenge', 'Instagram 显示了验证/限制页面：设备的自动操作已暂停，需管理员在风控页恢复', { challenge: true, excerpt: dumpExcerpt(r.nodes) });
+      if (p === 'challenge') throw fail('publish.device_challenge', 'Instagram 显示了验证/限制页面：设备的自动操作已暂停，需管理员在云机管理的设备卡片上恢复', { challenge: true, excerpt: dumpExcerpt(r.nodes) });
       if (p === 'login') throw fail('publish.device_logged_out', '设备上的 Instagram 未登录');
       throw fail('publish.device_timeout', `等待「${what}」页面超时`, { retry: true, excerpt: dumpExcerpt(r.nodes) });
     }
@@ -372,15 +371,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     const screenshot = shot ?? await s.screenshot().catch(() => null);
     const excerpt = `${publishScreen(await s.dump()) ?? '?'} · media ${pushed.length}${inputText ? ` · caption: ${inputText}` : ''}`.slice(0, 300);
 
-    if (input.testMode) {
-      // ---- 5a. test mode: clear the caption, discard the draft (重拍 / 放弃), never 分享
-      if (inputText) { await s.sh('input keycombination 113 29; sleep 0.3; input keyevent 67'); await sleep(600, undefined, { signal: input.signal }); }
-      await discard(s, log);
-      await log('info', 'publish: test mode, not shared; draft discarded');
-      return { outcome: 'dry_run', inputText, excerpt, screenshot, screens: s.screens, keptFiles: [] };
-    }
-
-    // ---- 5b. live: 分享
+    // ---- 5. 分享
     if (inputText) { await s.keys(4); await sleep(1000, undefined, { signal: input.signal }); } // hide the keyboard over the share button
     const now = await s.dump();
     const shareAt = shareButton(input.postType, now);

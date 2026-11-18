@@ -8,15 +8,19 @@
  *   comment paging, threads, activity (counter changes, new posts, collection runs, replies), RBAC (others 404);
  * - 立即采集: coded refusals (no device, in progress, device halted), the task on its own queue, offline result;
  *   the hourly schedule (key feed:<kind>:<id>:<slot>, idempotent, halted/stopped devices skipped, off = nothing);
- * - replies without approval: submit → scheduled → (offline phone) awaiting_operator with the reason; a reply in
+ * - draft first, no test mode (owner decision 2026-11-18): every reply / post comment / tracked comment is created as a
+ *   draft without a task (also with `submit: true` from an older page); 排程 (POST …/submit) queues it; a draft can be
+ *   deleted; 回复记录 filters by status (draft / scheduled);
+ * - replies without approval: 排程 → scheduled → (offline phone) awaiting_operator with the reason; a reply in
  *   the future keeps its time; a comment directly under a post (no parent comment) is scheduled the same way;
  * - 风控: device halted → the reply stays scheduled without a task (comment.device_halted), the feed says
  *   halted; 恢复 re-queues it; device rate rules (minimum gap, per day) defer to a new round (never dropped);
- *   settings validation + RBAC; test mode on by default; a dry_run reply does not block a real one;
+ *   settings validation + RBAC (no testMode in the rules; an older page's testMode is ignored); a legacy dry_run row
+ *   does not block a real reply and no longer counts for the device pace;
  * - 评论追踪账号的帖子 (own account on a tracked post): account choice (own, same platform, on a phone; admins anyone's
  *   with the owner), RBAC (others' account / tracked account 404, no phone / wrong platform 400), comment + reply
  *   scheduled and handed over like the account's own posts (offline phone, unknown link, unknown author), one active
- *   reply per tracked comment (dry_run doesn't block), minimum gap defers, 回复记录 on both sides (each filtered),
+ *   reply per tracked comment (legacy dry_run doesn't block), minimum gap defers, 回复记录 on both sides (each filtered),
  *   tracked post deleted → the record stays; migration 0036 shape;
  * - evidence screenshot endpoint (owner 200 PNG, others 404); migration 0035 shape + db:migrate twice; audit;
  * - 人设禁用词: a post comment containing a word banned by the account's persona → 400 persona.banned_word.
@@ -60,6 +64,19 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
 const R = schema.commentTasks;
 const reply = async (id: string) => (await db.select().from(R).where(eq(R.id, id)))[0]!;
 const taskOf = async (id: string | null) => (id ? (await db.select().from(schema.tasks).where(eq(schema.tasks.id, id)))[0] : undefined);
+/**
+ * Draft first: `created` is the response of a create call (reply / post comment / tracked comment). A created row must be
+ * a draft without a task (counted in `notDrafts`); it is then scheduled (排程, POST …/submit, `at` = time or now) and the
+ * create response is returned with the scheduled reply. Refused creates are returned as they are.
+ */
+let notDrafts = 0;
+async function sch(created: Awaited<ReturnType<typeof http<any>>>, token: string, at: string | null = null): Promise<Awaited<ReturnType<typeof http<any>>>> {
+  if (created.status !== 201) return created;
+  const row = await reply(created.body.reply.id);
+  if (row.status !== 'draft' || row.taskId) notDrafts++;
+  const s = await http('POST', `/api/comment-replies/${row.id}/submit`, token, { scheduledAt: at });
+  return { ...created, body: { reply: s.body?.reply ?? s.body, submitStatus: s.status }, text: s.text };
+}
 
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const tag = randomBytes(3).toString('hex');
@@ -81,7 +98,7 @@ try {
   r = await http('PUT', '/api/risk/settings', T, { feedCollectHours: null, feedCommentsPerPost: 20 });
   check('feed schedule off for the run, 20 comments per post stored', r.status === 200 && r.body.device.feedCollectHours === null && r.body.device.feedCommentsPerPost === 20 && r.body.device.feedPosts === 3, r.text);
   r = await http('GET', '/api/comments/settings', T);
-  check('云手机发评论 defaults: test mode ON, 50/day, 60 s gap', r.body.rules.testMode === true && r.body.rules.sendsPerDay === 50 && r.body.rules.minGapSec === 60, r.text);
+  check('云手机发评论 defaults: 50/day, 60 s gap, no test mode any more', !('testMode' in r.body.rules) && r.body.rules.sendsPerDay === 50 && r.body.rules.minGapSec === 60, r.text);
   const badRules = await Promise.all([{ sendsPerDay: 0 }, { minGapSec: -1 }, { testMode: 'no' }].map((b) => http('PUT', '/api/comments/settings', T, b)));
   check('comment rule validation → 400', badRules.every((x) => x.status === 400), badRules.map((x) => x.status).join(','));
 
@@ -93,7 +110,7 @@ try {
   const A = await login(`fda${tag}`, pw);
   const B = await login(`fdb${tag}`, pw);
   r = await http('PUT', '/api/comments/settings', A, { testMode: false });
-  check('user cannot switch test mode (403)', r.status === 403);
+  check('user cannot change comment rules (403)', r.status === 403);
 
   const devs = await db.insert(schema.instances).values([1, 2, 3].map((n) => ({
     name: `feedchk-${tag}-${n}`, image: 'none', adbPort: 5590 + n, status: (n === 3 ? 'stopped' : 'running') as 'running' | 'stopped', adbState: n === 3 ? null : 'device',
@@ -160,7 +177,7 @@ try {
     && stats[1].delta.followers === 10 && stats[2].delta.followers === null, JSON.stringify(stats));
   check('activity: new posts + the collection run (2 new posts, 15 new comments)', f.activity.filter((a: any) => a.type === 'post').length === 12
     && f.activity.some((a: any) => a.type === 'collect' && a.newPosts === 2 && a.newComments === 15), JSON.stringify(f.activity.filter((a: any) => a.type === 'collect')));
-  check('collect state: last run, device not halted, settings, test mode on', f.collect.last?.taskId === run1!.id && f.collect.halted === false && f.collect.settings.posts === 3 && f.collect.settings.commentsPerPost === 20 && f.send.testMode === true && f.collect.unsupported === null);
+  check('collect state: last run, device not halted, settings, test mode on', f.collect.last?.taskId === run1!.id && f.collect.halted === false && f.collect.settings.posts === 3 && f.collect.settings.commentsPerPost === 20 && !('testMode' in f.send) && f.send.deviceCapable === true && f.collect.unsupported === null);
   r = await http('GET', `/api/social/accounts/${accA.id}/feed?offset=10&limit=10&comments=0`, A);
   check('page 2: 2 posts, no comment rows but the total', r.body.posts.items.length === 2 && r.body.posts.items[0].externalId === pks[10] && r.body.posts.items.every((p: any) => p.commentRows.length === 0), r.text.slice(0, 200));
   r = await http('GET', `/api/social/accounts/${accA.id}/posts/${p0.id}/comments?limit=5&offset=10`, A);
@@ -177,9 +194,9 @@ try {
   r = await http('GET', `/api/social/accounts/${accA.id}/feed`, T);
   check('admin sees the feed', r.status === 200 && r.body.posts.total === 12);
   r = await http('GET', `/api/tracked-accounts/${tacc!.id}/feed`, A);
-  check('tracked feed: 2 posts, comments in the app order (position), +500 followers, send block (Instagram: own accounts can comment, test mode on)',
+  check('tracked feed: 2 posts, comments in the app order (position), +500 followers, send block (Instagram: own accounts can comment, no test mode)',
     r.status === 200 && r.body.posts.total === 2 && r.body.posts.items[0].commentRows.map((c: any) => c.authorHandle).join() === 't4,t3,t2,t1,t0' && r.body.posts.items[0].commentsTotal === 5
-    && r.body.activity.find((a: any) => a.type === 'stats').delta.followers === 500 && r.body.send?.deviceCapable === true && r.body.send?.testMode === true, r.text.slice(0, 300));
+    && r.body.activity.find((a: any) => a.type === 'stats').delta.followers === 500 && r.body.send?.deviceCapable === true && !('testMode' in r.body.send), r.text.slice(0, 300));
   r = await http('GET', `/api/tracked-accounts/${tacc!.id}/posts/${tposts[0]!.id}/comments?limit=2&offset=1`, A);
   check('tracked comment paging', r.body.total === 5 && r.body.items.map((c: any) => c.authorHandle).join() === 't3,t2', r.text);
 
@@ -198,13 +215,21 @@ try {
 
   // ---------------------------------------------------------------- replies without approval (offline phone → operator)
   r = await http('POST', `/api/comments/${c0.id}/replies`, A, { text: `Thanks ${tag}`, submit: true });
+  const draft1 = r.body.reply;
+  check('draft first: a reply (even with submit: true) is a draft, no task', r.status === 201 && draft1.status === 'draft' && !draft1.taskId
+    && !(await db.select().from(schema.tasks).where(and(eq(schema.tasks.refType, 'comment_reply'), eq(schema.tasks.refId, draft1.id)))).length, r.text.slice(0, 200));
+  r = await http('GET', `/api/comment-replies?accountId=${accA.id}&status=draft`, A);
+  check('回复记录 status filter: the draft is listed under draft', r.status === 200 && r.body.items.some((x: any) => x.id === draft1.id) && r.body.items.every((x: any) => x.status === 'draft'), r.text.slice(0, 200));
+  r = await http('POST', `/api/comment-replies/${draft1.id}/submit`, A, { scheduledAt: null });
   const rep1 = r.body.reply;
-  check('reply submitted → scheduled at once with a send task (no approval)', r.status === 201 && rep1.status === 'scheduled' && !!rep1.taskId, r.text.slice(0, 200));
+  check('排程 now → scheduled at once with a send task (no approval)', r.status === 200 && rep1.status === 'scheduled' && !!rep1.taskId, r.text.slice(0, 200));
+  r = await http('GET', `/api/comment-replies?accountId=${accA.id}&status=scheduled,sending`, A);
+  check('…listed under scheduled, no longer under draft', r.body.items.some((x: any) => x.id === rep1.id) || (await reply(rep1.id)).status !== 'scheduled', r.text.slice(0, 200));
   const done1 = await waitFor('reply handed over', async () => { const x = await reply(rep1.id); return x.status === 'awaiting_operator' ? x : null; });
   const l1 = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, rep1.id), eq(schema.commentLogs.action, 'handed_over')));
   check('phone offline → handed to an operator (method manual, reason comment.device_offline)', done1.method === 'manual' && l1[0]?.code === 'comment.device_offline', JSON.stringify(l1[0]));
   const later = new Date(Date.now() + 3600_000);
-  r = await http('POST', `/api/comments/${comments[1]!.id}/replies`, A, { text: `Later ${tag}`, submit: true, scheduledAt: later.toISOString() });
+  r = await sch(await http('POST', `/api/comments/${comments[1]!.id}/replies`, A, { text: `Later ${tag}` }), A, later.toISOString());
   const rep2 = r.body.reply;
   const t2 = await taskOf(rep2.taskId);
   check('reply at a chosen time: scheduled, task runAt = that time', rep2.status === 'scheduled' && t2?.status === 'scheduled' && t2.runAt?.getTime() === later.getTime(), JSON.stringify(t2?.runAt));
@@ -224,10 +249,21 @@ try {
       r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '私信' && before === after, `${r.status} ${r.text.slice(0, 200)}`);
     await http('DELETE', `/api/personas/${pid}`, A);
   }
-  r = await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[2]!.id}/comments`, A, { text: `Post note ${tag}` });
+  r = await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[2]!.id}/comments`, A, { text: `Post note ${tag}`, scheduledAt: new Date().toISOString() });
+  const pcDraft = await reply(r.body.reply?.id);
+  check('comment directly under a post: 201 draft, no task (also with a time from an older page)', r.status === 201 && r.body.reply.status === 'draft' && pcDraft.taskId === null && pcDraft.status === 'draft', r.text);
+  {
+    const del = await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[3]!.id}/comments`, A, { text: `Drop me ${tag}` });
+    const dOther = await http('DELETE', `/api/comment-replies/${del.body.reply.id}`, B);
+    const dOwn = await http('DELETE', `/api/comment-replies/${del.body.reply.id}`, A);
+    const dl = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.accountId, accA.id), eq(schema.commentLogs.action, 'draft_deleted')));
+    check('删除 a post-comment draft: another user 404, owner 204, row gone, logged on the account', dOther.status === 404 && dOwn.status === 204
+      && !(await db.select().from(R).where(eq(R.id, del.body.reply.id))).length && dl.some((l) => (l.data as any)?.replyId === del.body.reply.id), `${dOther.status} ${dOwn.status}`);
+  }
+  r = await sch(r, A);
   const pc = r.body.reply;
   const pcRow = await reply(pc.id);
-  check('comment directly under a post: 201, scheduled now, no comment id, post linked', r.status === 201 && pc.status === 'scheduled' && pcRow.commentId === null && pcRow.postId === posts[2]!.id, r.text);
+  check('…排程: scheduled now, no comment id, post linked', r.status === 201 && pc.status === 'scheduled' && pcRow.commentId === null && pcRow.postId === posts[2]!.id, r.text);
   await waitFor('post comment handed over', async () => (await reply(pc.id)).status === 'awaiting_operator');
   r = await http('GET', `/api/comment-replies?accountId=${accA.id}`, A);
   const pci = r.body.items.find((x: any) => x.id === pc.id);
@@ -270,6 +306,8 @@ try {
   check('wrong platform: 400 comment.account_platform_mismatch; no account offered for a YouTube tracked account', r.status === 400 && r.body.code === 'comment.account_platform_mismatch' && ytList.body.items?.length === 0, `${r.text} ${ytList.text}`);
 
   r = await http('POST', tpath, A, { accountId: accA.id, text: `Tracked note ${tag}` });
+  check('comment on a tracked post: a draft first (no task)', r.status === 201 && r.body.reply.status === 'draft' && (await reply(r.body.reply.id)).taskId === null, r.text);
+  r = await sch(r, A);
   const tq = r.body.reply;
   const tqRow = tq ? await reply(tq.id) : null;
   check('comment on a tracked post: 201, scheduled at once, tracked post linked (no own post / comment), owner = the account\'s owner',
@@ -277,7 +315,7 @@ try {
   const tqDone = await waitFor('tracked comment handed over', async () => { const x = await reply(tq.id); return x.status === 'awaiting_operator' ? x : null; });
   const tql = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, tq.id), eq(schema.commentLogs.action, 'handed_over')));
   check('…phone offline → operator (comment.device_offline): the device path was planned (link from the media pk)', tqDone.method === 'manual' && tql[0]?.code === 'comment.device_offline', JSON.stringify(tql[0]));
-  r = await http('POST', `${tpath}/${tc('t0').id}/replies`, A, { accountId: accA.id, text: `Tracked reply ${tag}` });
+  r = await sch(await http('POST', `${tpath}/${tc('t0').id}/replies`, A, { accountId: accA.id, text: `Tracked reply ${tag}` }), A);
   const tr = r.body.reply;
   const trRow = tr ? await reply(tr.id) : null;
   const again = await http('POST', `${tpath}/${tc('t0').id}/replies`, A, { accountId: accS.id, text: `Second ${tag}` });
@@ -289,21 +327,23 @@ try {
   // unknown link / unknown author → operator with the reason
   const [noLink] = await db.insert(schema.trackedPosts).values({ trackedAccountId: tacc!.id, externalId: `nolink${tag}`, source: 'manual', url: null, title: 'old manual row' }).returning();
   const [noAuthor] = await db.insert(schema.trackedPostComments).values({ trackedPostId: tp0.id, trackedAccountId: tacc!.id, externalId: `noauthor${tag}`, authorHandle: null, text: 'who', position: 9 }).returning();
-  const nl = await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${noLink!.id}/comments`, A, { accountId: accA.id, text: `No link ${tag}` });
-  const na = await http('POST', `${tpath}/${noAuthor!.id}/replies`, A, { accountId: accA.id, text: `No author ${tag}` });
+  const nl = await sch(await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${noLink!.id}/comments`, A, { accountId: accA.id, text: `No link ${tag}` }), A);
+  const na = await sch(await http('POST', `${tpath}/${noAuthor!.id}/replies`, A, { accountId: accA.id, text: `No author ${tag}` }), A);
   await waitFor('no-link / no-author handed over', async () => (await reply(nl.body.reply.id)).status === 'awaiting_operator' && (await reply(na.body.reply.id)).status === 'awaiting_operator');
   const reasons = await db.select({ id: schema.commentLogs.commentTaskId, code: schema.commentLogs.code }).from(schema.commentLogs)
     .where(and(inArray(schema.commentLogs.commentTaskId, [nl.body.reply.id, na.body.reply.id]), eq(schema.commentLogs.action, 'handed_over')));
   check('post link unknown → operator (comment.device_no_post_link); comment author unknown → operator (comment.device_no_author)',
     reasons.find((x) => x.id === nl.body.reply.id)?.code === 'comment.device_no_post_link' && reasons.find((x) => x.id === na.body.reply.id)?.code === 'comment.device_no_author', JSON.stringify(reasons));
-  // dry_run (as the phone writes it in test mode) doesn't block a real reply; the minimum gap applies to tracked targets too
-  await db.insert(R).values({ userId: uA, accountId: accA.id, trackedPostId: tp0.id, trackedCommentId: tc('t1').id, platform: 'instagram', text: 'dry', textHash: 'td', status: 'dry_run', method: 'device', handedAt: new Date(Date.now() - 10_000), submittedAt: new Date() });
+  // a legacy dry_run (old colour's test mode) doesn't block a real reply and no longer counts for the pace; a device send
+  // under the post 10 s ago does: the minimum gap applies to tracked targets too
+  await db.insert(R).values({ userId: uA, accountId: accA.id, trackedPostId: tp0.id, trackedCommentId: tc('t1').id, platform: 'instagram', text: 'dry', textHash: 'td', status: 'dry_run', method: 'device', handedAt: new Date(Date.now() - 2_000), submittedAt: new Date() });
+  await db.insert(R).values({ userId: uA, accountId: accA.id, trackedPostId: tp0.id, platform: 'instagram', text: 'sent under the post', textHash: 'ts', status: 'sent', method: 'device', sentAt: new Date(Date.now() - 10_000), submittedAt: new Date() });
   await http('PUT', '/api/comments/settings', T, { minGapSec: 120 });
-  r = await http('POST', `${tpath}/${tc('t1').id}/replies`, A, { accountId: accA.id, text: `After dry tracked ${tag}` });
+  r = await sch(await http('POST', `${tpath}/${tc('t1').id}/replies`, A, { accountId: accA.id, text: `After dry tracked ${tag}` }), A);
   const tg = r.body.reply;
   const tgDef = tg ? await waitFor('tracked reply deferred by gap', async () => { const x = await reply(tg.id); return x.round === 2 ? x : null; }) : null;
   const tgt = await taskOf(tgDef?.taskId ?? null);
-  check('test mode: a dry_run on a tracked comment does not block a real reply; minimum gap (120 s, the dry run counts) defers it to a new round',
+  check('a legacy dry_run on a tracked comment does not block a real reply; minimum gap (120 s from the device send, not the dry run) defers it to a new round',
     r.status === 201 && tgDef?.status === 'scheduled' && !!tgt && Math.abs(tgt.runAt!.getTime() - (Date.now() - 10_000 + 121_000)) < 15_000
     && (await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, tg.id), eq(schema.commentLogs.code, 'comment.min_gap')))).length === 1, `${r.text} ${JSON.stringify(tgt?.runAt)}`);
   await http('POST', `/api/comment-replies/${tg.id}/cancel`, A);
@@ -341,7 +381,7 @@ try {
   const [tp1] = [tposts[1]!];
   const [tc1] = await db.insert(schema.trackedPostComments).values({ trackedPostId: tp1.id, trackedAccountId: tacc!.id, externalId: commentKey(pks[1]!, 'z', 'zz'), authorHandle: 'z', text: 'zz', position: 0 }).returning();
   await haltDevice(d1, { code: 'comment.device_challenge', source: 'reply', platform: 'instagram', socialAccountId: accA.id });
-  const del1 = await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${tp1.id}/comments/${tc1!.id}/replies`, A, { accountId: accA.id, text: `Gone ${tag}` });
+  const del1 = await sch(await http('POST', `/api/tracked-accounts/${tacc!.id}/posts/${tp1.id}/comments/${tc1!.id}/replies`, A, { accountId: accA.id, text: `Gone ${tag}` }), A);
   const parkedT = await waitFor('tracked reply parked on the halted phone', async () => { const x = await reply(del1.body.reply.id); return x.status === 'scheduled' && x.taskId === null && x.errorCode === 'comment.device_halted' ? x : null; });
   check('halted phone: a tracked reply is parked like any other (scheduled, no task, comment.device_halted)', !!parkedT);
   r = await http('DELETE', `/api/tracked-accounts/${tacc!.id}/posts/${tp1.id}`, A);
@@ -363,7 +403,7 @@ try {
   check('feed says the phone is halted (UI: 风控暂停中，恢复后发出)', r.body.collect.halted === true);
   r = await http('POST', `/api/social/accounts/${accA.id}/collect`, A);
   check('collect on a halted phone → 409 feed.device_halted', r.status === 409 && r.body.code === 'feed.device_halted', r.text);
-  r = await http('POST', `/api/comments/${comments[2]!.id}/replies`, A, { text: `Halted ${tag}`, submit: true });
+  r = await sch(await http('POST', `/api/comments/${comments[2]!.id}/replies`, A, { text: `Halted ${tag}` }), A);
   const rep3 = r.body.reply;
   const parked = await waitFor('parked', async () => { const x = await reply(rep3.id); return x.status === 'scheduled' && x.taskId === null && x.errorCode === 'comment.device_halted' ? x : null; });
   check('halted phone: reply stays scheduled, no task, code comment.device_halted (not sent, not dropped)', parked.round === 1);
@@ -377,7 +417,7 @@ try {
   // A device send of this account 10 s ago (as the phone writes it): the next device send must wait minGapSec.
   await db.insert(R).values({ userId: uA, accountId: accA.id, commentId: comments[3]!.id, platform: 'instagram', text: 'earlier', textHash: 'x', status: 'sent', method: 'device', sentAt: new Date(Date.now() - 10_000), submittedAt: new Date() });
   await http('PUT', '/api/comments/settings', T, { minGapSec: 120 });
-  r = await http('POST', `/api/comments/${comments[4]!.id}/replies`, A, { text: `Gap ${tag}`, submit: true });
+  r = await sch(await http('POST', `/api/comments/${comments[4]!.id}/replies`, A, { text: `Gap ${tag}` }), A);
   const rep4 = r.body.reply;
   const def4 = await waitFor('deferred by gap', async () => { const x = await reply(rep4.id); return x.round === 2 ? x : null; });
   const lg = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, rep4.id), eq(schema.commentLogs.code, 'comment.min_gap')));
@@ -385,19 +425,21 @@ try {
   check('minimum gap (120 s): deferred to a new round ≈ last send + 120 s, still scheduled', def4.status === 'scheduled' && lg.length === 1 && !!t4 && Math.abs(t4.runAt!.getTime() - (Date.now() - 10_000 + 121_000)) < 15_000, JSON.stringify({ runAt: t4?.runAt, st: def4.status }));
   await http('POST', `/api/comment-replies/${rep4.id}/cancel`, A);
   await http('PUT', '/api/comments/settings', T, { minGapSec: 0, sendsPerDay: 2 });
-  await db.insert(R).values({ userId: uA, accountId: accA.id, commentId: comments[5]!.id, platform: 'instagram', text: 'earlier2', textHash: 'y', status: 'dry_run', method: 'device', handedAt: new Date(Date.now() - 5 * 3600_000), submittedAt: new Date() });
-  r = await http('POST', `/api/comments/${comments[6]!.id}/replies`, A, { text: `Day ${tag}`, submit: true });
+  const [dayRow] = await db.insert(R).values({ userId: uA, accountId: accA.id, commentId: comments[5]!.id, platform: 'instagram', text: 'earlier2', textHash: 'y', status: 'sent', method: 'device', sentAt: new Date(Date.now() - 5 * 3600_000), submittedAt: new Date() }).returning();
+  // a legacy dry_run inside the 24 h doesn't count any more (else the cap would be reached at the 5 h old send)
+  await db.insert(R).values({ userId: uA, accountId: accA.id, commentId: comments[7]!.id, platform: 'instagram', text: 'dry2', textHash: 'z', status: 'dry_run', method: 'device', handedAt: new Date(Date.now() - 6 * 3600_000), submittedAt: new Date() });
+  r = await sch(await http('POST', `/api/comments/${comments[6]!.id}/replies`, A, { text: `Day ${tag}` }), A);
   const rep5 = r.body.reply;
   const def5 = await waitFor('deferred by day cap', async () => { const x = await reply(rep5.id); return x.round === 2 ? x : null; });
   const t5 = await taskOf(def5.taskId);
-  check('per-day cap (2, test runs count too): deferred to oldest + 24 h', !!t5 && Math.abs(t5.runAt!.getTime() - (Date.now() - 5 * 3600_000 + 86_400_000)) < 15_000
+  check('per-day cap (2 device sends, legacy dry runs not counted): deferred to the oldest send + 24 h', !!t5 && Math.abs(t5.runAt!.getTime() - (Date.now() - 5 * 3600_000 + 86_400_000)) < 15_000
     && (await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, rep5.id), eq(schema.commentLogs.code, 'comment.daily_limited')))).length === 1, JSON.stringify(t5?.runAt));
   await http('POST', `/api/comment-replies/${rep5.id}/cancel`, A);
   await http('PUT', '/api/comments/settings', T, { minGapSec: 60, sendsPerDay: 50 });
 
-  // dry_run does not block a real reply to the same comment
-  r = await http('POST', `/api/comments/${comments[5]!.id}/replies`, A, { text: `After dry ${tag}`, submit: false });
-  check('a dry_run (test mode) reply does not block a real reply to the same comment', r.status === 201 && r.body.reply.status === 'draft', r.text);
+  // a legacy dry_run does not block a real reply to the same comment
+  r = await http('POST', `/api/comments/${comments[7]!.id}/replies`, A, { text: `After dry ${tag}` });
+  check('a legacy dry_run (former test mode) reply does not block a real reply (draft) to the same comment', r.status === 201 && r.body.reply.status === 'draft', r.text);
 
   // ---------------------------------------------------------------- evidence screenshot
   const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
@@ -405,7 +447,7 @@ try {
   const ekey = `evidence/replies/feedchk-${tag}.png`;
   await storage.put(ekey, Readable.from([png]), png.length, 'image/png');
   evidenceKeys.push(ekey);
-  const [dr] = await db.select().from(R).where(and(eq(R.commentId, comments[5]!.id), eq(R.status, 'dry_run')));
+  const dr = dayRow; // a device send keeps its screenshot (taken before 发布) as evidence
   await db.update(R).set({ evidence: { at: new Date().toISOString(), storage: storage.kind, key: ekey, inputText: 'earlier2', excerpt: 'input: earlier2' } }).where(eq(R.id, dr!.id));
   const ev = await http('GET', `/api/comment-replies/${dr!.id}/evidence`, A);
   const evB = await http('GET', `/api/comment-replies/${dr!.id}/evidence`, B);
@@ -445,10 +487,11 @@ try {
   // ---------------------------------------------------------------- audit
   await new Promise((res) => setTimeout(res, 500));
   const audits = (await db.select().from(schema.auditLogs).where(sql`${schema.auditLogs.at} >= ${t0.toISOString()}::timestamptz`));
-  check('audit: feed.collect (202 + 409 + 404), comment.post_comment_create without the text, test-mode switch refused 403',
+  check('audit: feed.collect (202 + 409 + 404), comment.post_comment_create without the text, rules change refused 403, draft delete',
     audits.some((a) => a.action === 'feed.collect' && a.status === 202) && audits.some((a) => a.action === 'feed.collect' && a.status === 409)
     && audits.some((a) => a.action === 'comment.post_comment_create' && a.status === 201 && !JSON.stringify(a.detail ?? {}).includes('Post note'))
-    && audits.some((a) => a.action === 'comment.rules_update' && a.status === 403 && (a.detail as any)?.testMode === false)
+    && audits.some((a) => a.action === 'comment.rules_update' && a.status === 403 && !('testMode' in ((a.detail as object | null) ?? {})))
+    && audits.some((a) => a.action === 'comment.reply_draft_delete' && a.status === 204) && audits.some((a) => a.action === 'comment.reply_submit' && a.status === 200)
     && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 201 && !!(a.detail as any)?.accountId && !JSON.stringify(a.detail ?? {}).includes('Tracked note'))
     && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 404)
     && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 201 && !!(a.detail as any)?.commentId && !JSON.stringify(a.detail ?? {}).includes('Tracked reply'))
@@ -467,6 +510,7 @@ try {
   }
   await db.delete(schema.settings).where(inArray(schema.settings.key, settingKeys));
   if (savedSettings.length) await db.insert(schema.settings).values(savedSettings);
+  check('every created reply / comment started as a draft without a task', notDrafts === 0, String(notDrafts));
   const failed = results.filter(([, ok]) => !ok).length;
   console.log(`\n${results.length - failed}/${results.length} passed`);
   await sqlClient.end();

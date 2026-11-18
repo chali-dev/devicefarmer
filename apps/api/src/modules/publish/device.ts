@@ -20,11 +20,12 @@ import { DEVICE_METHOD, PublishCheckError, registerPublishMethod, type PublishIn
  * Available for an Instagram account linked to a phone, with media, as 帖子 (images; a carousel adds items 2..N in
  * the app's gallery), Reels (1 video) or 快拍 (1 image / video). Else the run goes to the operator with the reason
  * (`publish.device_*`). Rules (风控 → 云手机发帖, device-rules.ts): per account ≤ postsPerDay device runs per rolling
- * 24 h and ≥ minGapMin between two (test-mode runs count too); over them → a new round at the allowed time. The
+ * 24 h and ≥ minGapMin between two; over them → a new round at the allowed time. The
  * phone work runs under `withDevice` (one operation per phone, shared pace with collection / checks / comments,
  * nobody watching); busy / paced → a new round. A halted phone (风控) parks the run (scheduled, no task) until an
- * admin resumes it; a verification / rate-limit screen halts it (alert + 风控记录). Test mode (default ON): up to the
- * step before 分享, screenshot, draft discarded → `dry_run`. After 分享 without confirmation →
+ * admin resumes it; a verification / rate-limit screen halts it (alert + 风控记录). No test mode (removed
+ * 2026-11-18): a run exists only because a person distributed the content, so it shares for real; the screenshot
+ * before 分享 stays on the task as evidence. After 分享 without confirmation →
  * `publish.send_uncertain`, handed to the operator, never re-sent automatically.
  */
 const pt = schema.publishTasks;
@@ -81,7 +82,7 @@ async function run(input: PublishInput, ctx: PublishRunContext): Promise<Publish
   const rules = await getDevicePublishRules();
   const r = await reserve(row, rules);
   if (!r.ok) return { state: 'deferred', at: r.at, code: r.code, message: r.message, data: r.data };
-  await log('info', rules.testMode ? 'cloud phone: test mode (stops before sharing)' : 'cloud phone: live (shares the post)', { device: inst.name, testMode: rules.testMode });
+  await log('info', 'cloud phone: live (shares the post)', { device: inst.name });
   const offline = () => new TaskError('publish.device_offline', `device ${inst.name} is offline`);
   let started = false;
   try {
@@ -89,11 +90,10 @@ async function run(input: PublishInput, ctx: PublishRunContext): Promise<Publish
       started = true;
       return publishOnIg(dev, {
         publishTaskId: row.id, round: row.attemptNo, postType: input.postType, handle: acc.handle, externalId: acc.externalId,
-        media: input.media, text: input.postType === 'story' ? '' : input.text, testMode: rules.testMode, log: ctx.task.log, signal: ctx.task.signal,
+        media: input.media, text: input.postType === 'story' ? '' : input.text, log: ctx.task.log, signal: ctx.task.signal,
       });
-    }, { lockMs: 12 * 60_000, weight: rules.testMode ? 3 : 6 });
+    }, { lockMs: 12 * 60_000, weight: 6, what: 'publish' });
     const evidence = await storeEvidence(row, res.screenshot, res.inputText, res.excerpt);
-    if (res.outcome === 'dry_run') return { state: 'dry_run', evidence, data: { device: inst.name, screens: res.screens, screenshot: !!evidence.key } };
     return { state: 'published', externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: res.publishedAt ?? null, evidence, data: { device: inst.name, screens: res.screens } };
   } catch (err) {
     if (!started) await unreserve(row, r.prev);

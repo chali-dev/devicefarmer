@@ -1,9 +1,10 @@
 /**
  * 帖子与评论 + 云手机发评论 on a real cloud phone (owner decision 2026-11-18): real API, DB, BullMQ, adb, STF and the
- * real Instagram app on the BitBrowser phone bit-ins-02 (no mocks). TEST MODE ONLY: the script refuses to start
- * when the comment rules say testMode=false, and nothing is ever posted (the flow stops after paste + read back,
- * clears the field and goes back). Navigation, screen reads, the taps/scrolls to open posts / comments / the
- * reply field, and the paste only: no likes, follows, DMs, profile edits, no power on/off, no installs.
+ * real Instagram app on the BitBrowser phone bit-ins-02 (no mocks). Since 2026-11-18 there is no test mode (draft
+ * first): a scheduled reply is really posted, so this script only collects (read only) and saves the reply / post
+ * comment as DRAFTS (checked before 排程, then deleted); it never schedules, pastes or posts. Navigation, screen reads
+ * and the taps/scrolls to open posts / comments only: no likes, follows, DMs, profile edits, no power on/off, no
+ * installs. Live sending is tested by the owner himself, by hand.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> [MAIN_LOCK_DEVICE=<id of bit-ins-02 in the main API>] \
  *     npx tsx --env-file=../../.env scripts/feed-device-check.ts
@@ -14,15 +15,13 @@
  * MAIN_REDIS_URL, default REDIS_URL with db 0) for the run, so the main API's scheduled collector / checks defer
  * instead of opening screens in between. A scrcpy viewer on the phone (someone watching) stops the script.
  *
- * Screen budget: ≤ 12 Instagram screens (MAX_SCREENS; a screen = a deep link or a grid tap):
+ * Screen budget: ≤ 10 Instagram screens (MAX_SCREENS; a screen = a deep link or a grid tap):
  *   1. natgeo as a tracked account, newest 3 posts + ≤ 30 comments each (5 screens): ids = media pks, permalinks,
  *      counts > 0, comments > 0, no duplicate comment per post;
  *   2. again with 1 post / 10 comments (3 screens): no new post row, no duplicate comments, first_seen kept;
  *   3. social account conchadoroperto650 on the phone (0 posts): profile only (1 screen), empty result;
- *   4. reply rehearsal in test mode on a natgeo comment just collected (1 screen): post → comments → the comment's
- *      回复 → paste (zh + emoji) → read back equal → screenshot → clear → back; reply ends dry_run;
- *   5. direct comment rehearsal in test mode on a natgeo post (1 screen): post → comments → field → paste → read
- *      back → clear → back; dry_run.
+ *   4. a reply to a natgeo comment just collected and 5. a comment under the post, both saved as drafts (no screen):
+ *      no send task, the preview data (account, phone, target, text), deleted.
  * End: launcher, no dump left in /data/local/tmp.
  */
 import { randomBytes } from 'node:crypto';
@@ -39,7 +38,7 @@ const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
 const OWN_HANDLE = process.env.OWN_HANDLE ?? 'conchadoroperto650';
 const OWN_ID = process.env.OWN_EXTERNAL_ID ?? '78090361572';
 const TRACKED = process.env.TRACKED_HANDLE ?? 'natgeo';
-const MAX_SCREENS = 12;
+const MAX_SCREENS = 10;
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
 async function http<T = any>(method: string, path: string, token: string | null, body?: unknown) {
@@ -89,9 +88,6 @@ try {
   // ---------------------------------------------------------------- preconditions (read only)
   const serial = adb.serialFor(BIT_PORT);
   if ((await adb.states()).get(serial) !== 'device') throw new Error(`${serial} is not attached: bit-ins-02 is off or the main API's tunnel is down — stopping before anything touches it`);
-  const rules = (await http('GET', '/api/comments/settings', admin)).body.rules;
-  if (rules?.testMode !== true) throw new Error('comment rules say testMode=false: this script only runs in test mode');
-  check('test mode is ON (nothing will be posted)', true);
   if (process.env.MAIN_LOCK_DEVICE) {
     const redis = new Redis(process.env.MAIN_REDIS_URL ?? process.env.REDIS_URL!.replace(/\/\d+$/, '/0'), { maxRetriesPerRequest: 2 });
     const key = `tracked:collector:lock:${process.env.MAIN_LOCK_DEVICE}`;
@@ -184,7 +180,7 @@ try {
   const ownPosts = await db.select().from(schema.socialAccountPosts).where(eq(schema.socialAccountPosts.socialAccountId, own.id));
   check(`@${OWN_HANDLE} (0 posts): success, postsOnProfile 0, no rows, only the profile opened`, run3.final.status === 'success' && res3.postsOnProfile === 0 && res3.posts === 0 && ownPosts.length === 0 && res3.screens === 1, JSON.stringify(res3));
 
-  // ---------------------------------------------------------------- 4. reply rehearsal on a natgeo comment (test mode, 1 screen)
+  // ---------------------------------------------------------------- 4 + 5. reply / post comment as drafts (no screen)
   // Fixture: the natgeo post + one of its comments as if they were under the own account (the device flow only needs
   // the post link and the comment's author + text); a top one so no long scrolling is needed.
   const target = comments2.filter((c) => c.trackedPostId === newest.id).sort((a, b) => (a.position ?? 99) - (b.position ?? 99))[0]!;
@@ -193,38 +189,25 @@ try {
     userId: userIds[0]!, accountId: own.id, platform: 'instagram', source: 'device', externalId: target.externalId, externalPostId: newest.externalId, postUrl: newest.url,
     authorName: target.authorHandle, authorHandle: target.authorHandle, text: target.text,
   }).returning();
-  const text = `测试回复 rehearsal 🙂 ${tag}`;
-  since = new Date(Date.now() - 2000);
+  // Draft first, no test mode (2026-11-18): a scheduled reply would really be posted, so this script never schedules
+  // (POST …/submit). It saves the reply and the post comment as drafts, checks what is shown before 排程, deletes them.
+  const text = `测试回复 draft 🙂 ${tag}`;
   r = await http('POST', `/api/comments/${fixComment!.id}/replies`, U, { text, submit: true });
-  check('reply submitted → scheduled (no approval)', r.status === 201 && r.body.reply.status === 'scheduled', r.text);
-  const rid = r.body.reply.id;
-  const run4 = await waitTask('comment-reply', rid, since);
-  const [rep] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, rid));
-  const l4 = await logsOf(run4.all.map((x) => x.id));
-  screens += l4.filter((l) => l.message === 'reply: post opened').length;
-  console.log(`   reply: ${rep?.status} ${rep?.errorCode ?? ''} ${JSON.stringify(rep?.evidence)}`);
-  for (const l of l4) console.log(`     · ${l.level} ${l.message}`);
-  check('reply → dry_run (test mode, method device, not sent)', rep?.status === 'dry_run' && rep.method === 'device' && rep.sentAt === null, `${rep?.status} ${rep?.errorCode} ${rep?.error}`);
-  check('field read back = "@author " + the text (zh + emoji intact)', (rep?.evidence?.inputText ?? '').endsWith(text) && (rep?.evidence?.inputText ?? '').toLowerCase().startsWith(`@${target.authorHandle!.toLowerCase()}`), rep?.evidence?.inputText ?? '');
-  check('logged: comments opened → replying to the comment → pasted + read back → field cleared', ['reply: comments opened', 'reply: replying to the comment', 'reply: text pasted and read back', 'reply: test mode, not sent; field cleared'].every((m) => l4.some((l) => l.message === m)));
-  if (rep?.status !== 'dry_run') throw new Error('reply rehearsal failed: stopping before more screens');
-  const ev = await http('GET', `/api/comment-replies/${rid}/evidence`, U);
-  if (rep?.evidence?.key) evidenceKeys.push(rep.evidence.key);
-  check('screenshot evidence stored (PNG)', ev.status === 200 && ev.type.startsWith('image/png') && ev.buf.subarray(1, 4).toString() === 'PNG', `${ev.status} ${ev.buf.length} bytes`);
-
-  // ---------------------------------------------------------------- 5. direct comment rehearsal on the post (test mode, 1 screen)
-  const text2 = `测试评论 rehearsal ✨ ${tag}`;
-  since = new Date(Date.now() - 2000);
+  const rid = r.body.reply?.id;
+  check('reply saved as a draft even with submit: true (nothing scheduled)', r.status === 201 && r.body.reply.status === 'draft' && !r.body.reply.taskId, r.text);
+  const text2 = `测试评论 draft ✨ ${tag}`;
   r = await http('POST', `/api/social/accounts/${own.id}/posts/${fixPost!.id}/comments`, U, { text: text2 });
   const pid = r.body.reply?.id;
-  check('post comment submitted → scheduled', r.status === 201 && r.body.reply.status === 'scheduled', r.text);
-  const run5 = await waitTask('comment-reply', pid, since);
-  const [rep5] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, pid));
-  const l5 = await logsOf(run5.all.map((x) => x.id));
-  screens += l5.filter((l) => l.message === 'reply: post opened').length;
-  if (rep5?.evidence?.key) evidenceKeys.push(rep5.evidence.key);
-  console.log(`   post comment: ${rep5?.status} ${rep5?.errorCode ?? ''} input="${rep5?.evidence?.inputText ?? ''}"`);
-  check('post comment → dry_run, field read back = the text exactly, cleared', rep5?.status === 'dry_run' && rep5.evidence?.inputText === text2 && l5.some((l) => l.message === 'reply: test mode, not sent; field cleared'), `${rep5?.status} ${rep5?.errorCode} ${rep5?.error}`);
+  check('post comment saved as a draft', r.status === 201 && r.body.reply.status === 'draft', r.text);
+  const sendTasks = await db.select().from(T).where(and(eq(T.type, 'comment-reply'), inArray(T.refId, [rid, pid].filter(Boolean))));
+  check('no send task for either draft (the phone is not touched for them)', sendTasks.length === 0, String(sendTasks.length));
+  const [p1, p2] = await Promise.all([http('GET', `/api/comment-replies/${rid}`, U), http('GET', `/api/comment-replies/${pid}`, U)]);
+  check('preview before 排程: own account, its phone (online), the comment replied to (author + text) / the post, the text',
+    p1.body.reply?.account?.handle === OWN_HANDLE && p1.body.reply.instance?.id === phone!.id && p1.body.reply.instance.online === true
+    && p1.body.reply.comment?.authorHandle === target.authorHandle && p1.body.reply.text === text
+    && p2.body.reply?.post?.permalink === newest.url && p2.body.reply.text === text2, `${p1.text.slice(0, 200)} ${p2.text.slice(0, 200)}`);
+  const del = await Promise.all([http('DELETE', `/api/comment-replies/${rid}`, U), http('DELETE', `/api/comment-replies/${pid}`, U)]);
+  check('both drafts deleted (204), never scheduled', del.every((x) => x.status === 204), del.map((x) => x.status).join(','));
 
   // ---------------------------------------------------------------- the phone afterwards, budget
   check(`Instagram screens opened by this run: ${screens} (≤ ${MAX_SCREENS})`, screens >= 1 && screens <= MAX_SCREENS);

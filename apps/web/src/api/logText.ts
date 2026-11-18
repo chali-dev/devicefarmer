@@ -74,6 +74,10 @@ const EXACT: Record<string, string> = {
   // comment replies (no approval step since 2026-11-18)
   submitted: 'replySubmitted',
   'approval removed': 'approvalRemoved',
+  'test mode removed: rehearsal turned back into a draft': 'testModeDraft',
+  'test mode removed: rehearsal cancelled (the comment already has another reply)': 'testModeCancelled',
+  'test mode removed: rehearsal kept as cancelled, schedule it again with retry': 'testModePublish',
+  'draft deleted': 'draftDeleted',
   // 社交号自动检测 (task account-device-check)
   'account check: own profile read': 'acctProfileRead',
   'account check: username not readable': 'acctNoUsername',

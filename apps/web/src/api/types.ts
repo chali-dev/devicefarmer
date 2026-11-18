@@ -169,6 +169,11 @@ export type PlatformEvent =
   | { type: 'notification.created'; userId: string; notification: AppNotification }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
+/**
+ * Start / stop / restart allowed in the UI (same rule as the API, instances.external_power_admin_only): external phones
+ * (BitBrowser, `sourceId` set, power-on billed) only for admins; local containers for everyone with access.
+ */
+export const canPower = (i: Pick<Instance, 'sourceId'>, admin: boolean) => admin || !i.sourceId
 
 export type MediaScope = 'public' | 'mine' | 'favorites' | 'all-users'
 export type MediaStatus = 'processing' | 'ready' | 'failed' | 'disabled'
@@ -509,17 +514,17 @@ export interface TaskRetentionSettings {
 
 // ---------------------------------------------------------------- comments & engagement (评论互动)
 export type CommentStatus = 'new' | 'read' | 'replied' | 'hidden' | 'ignored'
-/** dry_run = test mode on the cloud phone: pasted and checked, not sent. */
+/** dry_run = LEGACY test mode (removed 2026-11-18, old rows became drafts); never produced any more. */
 export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'rejected' | 'cancelled' | 'dry_run'
 export const COMMENT_STATUS_COLOR: Record<CommentStatus, string> = { new: 'blue', read: 'default', replied: 'success', hidden: 'default', ignored: 'default' }
 export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
   sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default', dry_run: 'cyan',
 }
-/** comments.rules; sendsPerDay / minGapSec / testMode = 云手机发评论 (device sends). */
 /** 风控 → 云手机发帖 (GET/PUT /api/publish/device-settings). */
-export interface DevicePublishRules { enabled: boolean; postsPerDay: number; minGapMin: number; testMode: boolean }
-export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number; sendsPerDay: number; minGapSec: number; testMode: boolean }
+export interface DevicePublishRules { enabled: boolean; postsPerDay: number; minGapMin: number }
+/** comments.rules (风控 → 评论回复); sendsPerDay / minGapSec = sends from the cloud phones. */
+export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number; sendsPerDay: number; minGapSec: number }
 export interface CommentAccount {
   id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
   newCount: number
@@ -592,7 +597,7 @@ export interface ReplyAccountOption {
 export interface FeedResponse {
   account: { id: string; platform: string; handle: string; instanceId?: string | null; userId: string }
   collect: FeedCollectState
-  send?: { testMode: boolean; deviceCapable: boolean }
+  send?: { deviceCapable: boolean }
   activity: FeedActivity[]
   posts: { items: FeedPost[]; total: number }
 }
@@ -729,6 +734,12 @@ export interface RiskDeviceSettings {
   feedCollectHours: number | null; feedPosts: number; feedCommentsPerPost: number
 }
 export interface RiskSettings { device: RiskDeviceSettings; defaults: RiskDeviceSettings; capacityPerHour: number; eventRetentionDays: number }
+/** GET /api/instances/automation: 风控暂停 / busy (an automatic operation holds the device lock), per device id. */
+export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish' | 'auto'
+export interface DeviceAutomation {
+  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; platform: string } | null
+  busy: { what: DeviceOpKind; since: string | null } | null
+}
 export interface RiskDevice {
   id: string; name: string; status: string; adbState: string | null; external: boolean; online: boolean
   /** Platforms this phone collects tracked accounts for. */

@@ -1,10 +1,16 @@
 /**
- * 云手机发帖 on a real cloud phone (owner decision 2026-11-18): real API, DB, task centre, adb, STF and the real
- * Instagram app on the BitBrowser phone bit-ins-02 (no mocks). TEST MODE ONLY: the script sets 风控 → 云手机发帖 to
- * test mode and refuses to continue otherwise, so 分享 is never tapped: every run stops on the last screen before
- * sharing (caption pasted + read back, screenshot), clears the caption, discards the draft (重拍 / 放弃) and goes
- * back to the launcher. Navigation, the creation flow's own buttons, the caption field and the paste only: no
- * likes, follows, DMs, profile edits, no power on/off, no installs.
+ * 云手机发帖 on a real cloud phone: real API, DB, task centre, adb, STF and the real Instagram app on the BitBrowser
+ * phone bit-ins-02 (no mocks).
+ *
+ * !!! THIS SCRIPT NOW REALLY PUBLISHES. Test mode was removed on 2026-11-18 (owner decision: draft first, the owner
+ * schedules after looking at it), so there is no way left to stop before 分享: every run shares a real post / Reel /
+ * story on the account. ONLY THE OWNER RUNS IT, by hand, and deletes the test posts on the phone afterwards. Agents and
+ * tests never run it (it refuses to start without OWNER_LIVE_PUBLISH=yes; start with `--only feed1` = one post).
+ * Without a phone the same API path (distribute → device method → offline → operator) is covered by
+ * device-publish-check.ts; what is shown before scheduling (phone preview) is the web's DistributeModal.
+ *
+ * Navigation, the creation flow's own buttons, the caption field, the paste and 分享 only: no likes, follows, DMs,
+ * profile edits, no power on/off, no installs.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> [MAIN_DEVICE_ID=<bit-ins-02 id in the main DB>] \
  *     npx tsx --env-file=../../.env scripts/device-publish-device-check.ts [--only feed1,feed2,reel,story]
@@ -19,8 +25,8 @@
  *   feed1  帖子, 1 image   feed2  帖子, 2 images (carousel, item 2 picked in the app's gallery)
  *   reel   Reels, 1 video  story  快拍, 1 image
  * Each: media pushed (is_pending=0) → share target → … → caption pasted + read back (story: none) → screenshot →
- * draft discarded → status dry_run with PNG evidence; afterwards no cppub-* file / MediaStore row, no test text in
- * the clipboard, launcher, no dump file.
+ * 分享 → the new post seen on the profile → status published with PNG evidence; afterwards no cppub-* file /
+ * MediaStore row, no test text in the clipboard, launcher, no dump file.
  */
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -39,6 +45,10 @@ import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
+if (process.env.OWNER_LIVE_PUBLISH !== 'yes') {
+  console.error('device-publish-device-check REALLY PUBLISHES on bit-ins-02 (no test mode since 2026-11-18). Only the owner runs it, by hand: OWNER_LIVE_PUBLISH=yes … --only feed1');
+  process.exit(2);
+}
 const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
 const OWN_HANDLE = process.env.OWN_HANDLE ?? 'conchadoroperto650';
 const OWN_ID = process.env.OWN_EXTERNAL_ID ?? '78090361572';
@@ -113,9 +123,9 @@ try {
   const serial = adb.serialFor(BIT_PORT);
   if ((await adb.states()).get(serial) !== 'device') throw new Error(`${serial} is not attached: bit-ins-02 is off or the main API's tunnel is down — stopping before anything touches it`);
   await phone();
-  let r = await http('PUT', '/api/publish/device-settings', admin, { enabled: true, testMode: true, postsPerDay: 10, minGapMin: 0 });
-  if (r.status !== 200 || r.body.rules?.testMode !== true) throw new Error(`could not switch 云手机发帖 to test mode: ${r.text}`);
-  check('云手机发帖 test mode ON (nothing will be shared), limits relaxed for the run', true);
+  let r = await http('PUT', '/api/publish/device-settings', admin, { enabled: true, postsPerDay: 10, minGapMin: 0 });
+  if (r.status !== 200 || r.body.rules?.enabled !== true) throw new Error(`could not enable 云手机发帖: ${r.text}`);
+  check('云手机发帖 enabled (LIVE: every run shares a real post), limits relaxed for the run', true);
   r = await http('PUT', '/api/risk/settings', admin, { minIntervalSec: 10, maxPerHour: 60, accountCheckHours: null, feedCollectHours: null });
   check('pace 10 s, account checks + feed collection off for the run (no other screens from this API)', r.status === 200, r.text);
 
@@ -164,7 +174,7 @@ try {
     const pid: string = d.body.created[0].id;
     const done = await waitFor(`${key} finished`, async () => {
       const x = (await http('GET', `/api/publish/tasks/${pid}`, U)).body;
-      return ['dry_run', 'failed', 'awaiting_operator', 'published', 'cancelled'].includes(x?.task?.status) && x.runs.every((t: any) => ['success', 'failed', 'cancelled'].includes(t.status)) ? x : null;
+      return ['failed', 'awaiting_operator', 'published', 'cancelled'].includes(x?.task?.status) && x.runs.every((t: any) => ['success', 'failed', 'cancelled'].includes(t.status)) ? x : null;
     }, 10 * 60_000);
     const task = done.task;
     const runIds = (await db.select({ id: T.id }).from(T).where(eq(T.refId, pid))).map((x) => x.id);
@@ -174,12 +184,12 @@ try {
     const [row] = await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.id, pid));
     if (row?.evidence?.key) evidenceKeys.push(row.evidence.key);
     console.log(`   ${key}: ${task.status} ${task.method} ${task.errorCode ?? ''} ${task.error ?? ''} input="${row?.evidence?.inputText ?? ''}"`);
-    check(`${key}: dry_run via method device (test mode, nothing shared)`, task.status === 'dry_run' && task.method === 'device' && !task.publishedAt && !task.externalId, `${task.status} ${task.method} ${task.errorCode} ${task.error}`);
+    check(`${key}: published via method device (seen on the profile)`, task.status === 'published' && task.method === 'device' && !!task.publishedAt && (run.postType === 'story' || !!task.externalId), `${task.status} ${task.method} ${task.errorCode} ${task.error}`);
     const want = run.postType === 'story' ? '' : run.body;
     check(`${key}: caption read back from the field = the text (zh/emoji/newline intact)${run.postType === 'story' ? ' (story: none)' : ''}`,
       (row?.evidence?.inputText ?? '').replace(/\s+/g, ' ').trim() === want.replace(/\s+/g, ' ').trim(), JSON.stringify(row?.evidence?.inputText));
-    check(`${key}: logged media pushed → share screen → last screen before sharing → not shared, draft discarded`,
-      ['publish: media pushed to the phone gallery', 'publish: share screen opened', 'publish: last screen before sharing reached', 'publish: test mode, not shared; draft discarded'].every((m) => tl.some((l) => l.message === m))
+    check(`${key}: logged media pushed → share screen → last screen before sharing → share tapped → seen on the profile`,
+      ['publish: media pushed to the phone gallery', 'publish: share screen opened', 'publish: last screen before sharing reached', 'publish: share tapped', 'publish: post seen on the profile'].every((m) => tl.some((l) => l.message === m))
       && (run.media.length < 2 || tl.some((l) => l.message === 'publish: carousel items added in order')));
     const ev = await http('GET', `/api/publish/tasks/${pid}/evidence`, U);
     check(`${key}: screenshot evidence (PNG) served to the owner`, ev.status === 200 && ev.type.startsWith('image/png') && ev.buf.subarray(1, 4).toString() === 'PNG', `${ev.status} ${ev.buf.length} bytes`);
@@ -190,7 +200,7 @@ try {
     const clipOut = await adb.shell(BIT_PORT, 'service call clipboard 4 s16 com.android.shell i32 -1 i32 0 i32 0');
     const clipText = parseClipParcel(clipOut);
     check(`${key}: no test text left in the clipboard`, !clipText || !clipText.includes(tag), JSON.stringify(clipText));
-    if (task.status !== 'dry_run') throw new Error(`${key} did not end dry_run: stopping before more flows`);
+    if (task.status !== 'published') throw new Error(`${key} did not end published: stopping before more flows`);
     await sleep(12_000);
   }
   check(`Instagram creation flows run by this script: ${flows} (one per run, no retries)`, flows === ONLY.length);

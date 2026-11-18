@@ -6,6 +6,7 @@ import {
   ScheduleOutlined, SecurityScanOutlined, SettingOutlined, ShareAltOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
 import { t } from '../../i18n'
+import { useAuthStore } from '../../stores/auth'
 
 export type MenuGroupKey = 'devices' | 'matrix' | 'content' | 'system'
 /** `feature`: shown only while the platform scope offers it (GET /api/platforms → features, stores/platforms.ts). */
@@ -41,12 +42,21 @@ export const MENU_KEYS = ['dashboard', ...MENU_GROUPS.flatMap((g) => g.items.map
 /** Pages outside the sidebar (opened from the header, e.g. the user menu's 通知中心): own title, no group. */
 const PAGE_KEYS = [...MENU_KEYS, 'notifications']
 
+/**
+ * Label of a menu item. 云机管理 is 「我的云手机」 for non-admins (same route /instances, owner decision 2026-11-18): the
+ * sidebar, the breadcrumb and the page title use this.
+ */
+export function navLabel(key: string, admin: boolean): string {
+  return key === 'instances' && !admin ? t('nav.myInstances') : t(`nav.${key}`)
+}
+
 /** Menu position of the current route: `/instances/abc` → group devices, item instances (null = dashboard / unknown). */
 export function useMenuLocation() {
   const route = useRoute()
+  const auth = useAuthStore()
   const itemKey = computed(() => PAGE_KEYS.find((k) => route.path === `/${k}` || route.path.startsWith(`/${k}/`)) ?? 'dashboard')
   const group = computed(() => MENU_GROUPS.find((g) => g.items.some((it) => it.key === itemKey.value)) ?? null)
   /** Default page title: the menu label of the current item. */
-  const title = computed(() => t(`nav.${itemKey.value}`))
+  const title = computed(() => navLabel(itemKey.value, auth.isAdmin))
   return { itemKey, group, title }
 }

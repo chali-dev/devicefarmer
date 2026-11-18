@@ -6,6 +6,9 @@
  * - Manual comment entry (threads), list/detail/status/delete, publish-task link by external post id.
  * - Reply workflow end to end on the manual path, without approval (removed 2026-11-18): draft → scheduled →
  *   awaiting_operator → sent / failed; approve / reject / batch-approve endpoints 404, scheduled send + cancel, edit rules.
+ * - Draft first (owner decision 2026-11-18): every new reply is a draft without a task even when an older page sends
+ *   `submit: true`; only POST …/submit (排程) queues it; a draft can be deleted (DELETE, drafts only, logged), a
+ *   scheduled reply can't (409); `testMode` in PUT /api/comments/settings is accepted and ignored, never returned.
  * - Anti-abuse: one reply per comment (again allowed after failed / rejected / cancelled), duplicate-text
  *   limit (normalized), per-account send rate limit (deferred, not dropped), every block logged with its code.
  * - Idempotency of the reply job (same key → same task), RBAC/isolation (admin, user A, user B), templates, audit.
@@ -47,6 +50,14 @@ async function waitFor<T>(label: string, fn: () => Promise<T | null | false | un
 const replyRow = async (id: string) => (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, id)))[0]!;
 const waitReply = (id: string, statuses: string[]) => waitFor(`reply ${statuses.join('/')}`, async () => { const r = await replyRow(id); return statuses.includes(r.status) ? r : null; });
 const taskRow = async (id: string) => (await db.select().from(schema.tasks).where(eq(schema.tasks.id, id)))[0]!;
+/** Draft first: write the draft (201, draft, no task), then 排程 it (POST …/submit). A refused draft is returned as is. */
+let draftsWithTask = 0;
+async function replyAndSchedule(commentId: string, token: string, b: { text: string; scheduledAt?: string | null }) {
+  const d = await http('POST', `/api/comments/${commentId}/replies`, token, { text: b.text });
+  if (d.status !== 201) return d;
+  if (d.body.reply.status !== 'draft' || d.body.reply.taskId) draftsWithTask++;
+  return http('POST', `/api/comment-replies/${d.body.reply.id}/submit`, token, { scheduledAt: b.scheduledAt ?? null });
+}
 const waitTask = (id: string) => waitFor('task final', async () => { const t = await taskRow(id); return ['success', 'failed', 'cancelled'].includes(t.status) ? t : null; });
 
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
@@ -80,16 +91,20 @@ try {
 
   // ---------------------------------------------------------------- rules
   let r = await http('GET', '/api/comments/settings', A);
-  check('rules default: same text ≤ 3 / 24 h, 20 sends / h, no approval rule',
-    r.status === 200 && !('requireApproval' in r.body.rules) && r.body.rules.duplicateMax === 3 && r.body.rules.duplicateWindowHours === 24 && r.body.rules.sendsPerHour === 20, r.text);
+  check('rules default: same text ≤ 3 / 24 h, 20 sends / h, no approval rule, no test mode',
+    r.status === 200 && !('requireApproval' in r.body.rules) && !('testMode' in r.body.rules) && r.body.rules.duplicateMax === 3 && r.body.rules.duplicateWindowHours === 24 && r.body.rules.sendsPerHour === 20, r.text);
   r = await http('PUT', '/api/comments/settings', A, { sendsPerHour: 100 });
   check('user: PUT rules → 403 comment.admin_only', r.status === 403 && r.body.code === 'comment.admin_only', r.text);
   r = await http('PUT', '/api/comments/settings', T, { sendsPerHour: 0 });
   check('admin: invalid rule (0 sends/h) → 400', r.status === 400);
   r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, requireApproval: true });
   check('admin: the removed requireApproval rule → 400', r.status === 400);
-  r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20 });
-  check('admin: PUT rules', r.status === 200 && r.body.rules.sendsPerHour === 20);
+  r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, testMode: true });
+  const [stored] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'comments.rules'));
+  check('admin: PUT rules; the removed testMode of an older page is accepted, ignored, not stored or returned',
+    r.status === 200 && r.body.rules.sendsPerHour === 20 && !('testMode' in r.body.rules) && !('testMode' in (stored?.value as object)), r.text);
+  r = await http('PUT', '/api/comments/settings', T, { testMode: 'no' });
+  check('admin: a non-boolean testMode is still a 400 (strict body)', r.status === 400, r.text);
 
   // ---------------------------------------------------------------- accounts (no modes / sync any more)
   r = await http('GET', '/api/comments/accounts', A);
@@ -168,9 +183,14 @@ try {
   check('empty reply → 400 comment.text_empty', r.status === 400 && r.body.code === 'comment.text_empty', r.text);
   r = await http('POST', `/api/comments/${c[0]}/replies`, B, { text: 'hi' });
   check('user B: reply to A\'s comment → 404', r.status === 404);
-  r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: `Thank you, Viewer 0! ${tag}`, submit: true });
+  r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: `Thank you, Viewer 0! ${tag}`, submit: true, scheduledAt: new Date().toISOString() });
   const r1 = r.body.reply?.id as string;
-  check('A: reply submitted → scheduled at once (no approval), send task created', r.status === 201 && r.body.reply.status === 'scheduled' && !!r.body.reply.taskId && r.body.reply.authorName === `cca${tag}`, r.text);
+  check('draft first: a new reply is a draft without a task, also with submit: true from an older page', r.status === 201 && r.body.reply.status === 'draft' && !r.body.reply.taskId
+    && (await db.select().from(schema.tasks).where(and(eq(schema.tasks.refType, 'comment_reply'), eq(schema.tasks.refId, r1)))).length === 0, r.text);
+  r = await http('POST', `/api/comment-replies/${r1}/submit`, A, { scheduledAt: null });
+  check('A: 排程 (submit) → scheduled at once (no approval), send task created', r.status === 200 && r.body.reply.status === 'scheduled' && !!r.body.reply.taskId && r.body.reply.authorName === `cca${tag}`, r.text);
+  r = await http('DELETE', `/api/comment-replies/${r1}`, A);
+  check('a scheduled reply cannot be deleted (409 comment.bad_status; cancel it instead)', r.status === 409 && r.body.code === 'comment.bad_status', r.text);
   r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: 'second reply' });
   check('second reply to the same comment → 409 comment.already_replied', r.status === 409 && r.body.code === 'comment.already_replied', r.text);
   r = await http('POST', `/api/comment-replies/${r1}/approve`, T);
@@ -200,7 +220,7 @@ try {
   check('edit a sent reply → 409', r.status === 409);
 
   // failed → new reply allowed; cancelled → new reply allowed
-  r = await http('POST', `/api/comments/${c[1]}/replies`, A, { text: `Reply one ${tag}`, submit: true });
+  r = await replyAndSchedule(c[1]!, A, { text: `Reply one ${tag}` });
   const r2 = r.body.reply.id as string;
   await waitReply(r2, ['awaiting_operator']);
   r = await http('POST', `/api/comment-replies/${r2}/outcome`, A, { result: 'failed', reason: 'comments are closed on this video' });
@@ -215,7 +235,16 @@ try {
   r = await http('POST', `/api/comment-replies/${r3}/cancel`, A);
   check('cancel draft → cancelled', r.status === 200 && r.body.reply.status === 'cancelled');
   r = await http('POST', `/api/comments/${c[1]}/replies`, A, { text: `Reply three ${tag}` });
+  const r4 = r.body.reply?.id as string;
   check('after cancel: a new reply is allowed', r.status === 201);
+  r = await http('DELETE', `/api/comment-replies/${r4}`, B);
+  check('user B: delete A\'s draft → 404', r.status === 404);
+  r = await http('DELETE', `/api/comment-replies/${r4}`, A);
+  const del = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentId, c[1]!), eq(schema.commentLogs.action, 'draft_deleted')));
+  check('delete a draft → 204, row gone, logged on the comment (draft_deleted, actor)', r.status === 204 && !(await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, r4))).length
+    && del.length === 1 && del[0]!.actorName === `cca${tag}`, `${r.status} ${del.length}`);
+  r = await http('POST', `/api/comments/${c[1]}/replies`, A, { text: `Reply four ${tag}` });
+  check('after deleting the draft: a new draft is allowed', r.status === 201 && r.body.reply.status === 'draft');
 
   // reject is gone with the approval step
   r = await http('POST', `/api/comment-replies/${r3}/reject`, T, { reason: 'self-promotion' });
@@ -225,11 +254,11 @@ try {
   const same = `Thanks for watching! ${tag}`;
   const dupIds: string[] = [];
   for (const i of [3, 4, 5]) {
-    r = await http('POST', `/api/comments/${c[i]}/replies`, A, { text: same, submit: true });
+    r = await replyAndSchedule(c[i]!, A, { text: same });
     dupIds.push(r.body.reply?.id);
   }
   check('same text on 3 comments → allowed (limit 3 / 24 h)', dupIds.every(Boolean));
-  r = await http('POST', `/api/comments/${c[6]}/replies`, A, { text: same, submit: true });
+  r = await replyAndSchedule(c[6]!, A, { text: same });
   const blockedDraft = r.body?.reply?.id;
   check('4th identical reply → 409 comment.duplicate_text', r.status === 409 && r.body.code === 'comment.duplicate_text' && r.body.params?.max === 3, r.text);
   const [d6] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.commentId, c[6]!));
@@ -242,7 +271,7 @@ try {
   r = await http('PATCH', `/api/comment-replies/${d6!.id}`, A, { text: `Glad you liked the part about lighting ${tag}` });
   r = await http('POST', `/api/comment-replies/${d6!.id}/submit`, A);
   check('individually written text → submitted (scheduled)', r.status === 200 && r.body.reply.status === 'scheduled');
-  r = await http('POST', `/api/comments/${c[7]}/replies`, B, { text: same, submit: true });
+  r = await http('POST', `/api/comments/${c[7]}/replies`, B, { text: same });
   check('(B cannot even reach A\'s comment: 404)', r.status === 404);
 
   // ---------------------------------------------------------------- no batch approval any more
@@ -253,9 +282,9 @@ try {
 
   // ---------------------------------------------------------------- scheduled send + cancel
   const later = new Date(Date.now() + 3600_000).toISOString();
-  r = await http('POST', `/api/comments/${c[8]}/replies`, A, { text: `See you tomorrow ${tag}`, submit: true, scheduledAt: later });
+  r = await replyAndSchedule(c[8]!, A, { text: `See you tomorrow ${tag}`, scheduledAt: later });
   const r8 = r.body.reply.id as string;
-  check('submitted with a send time → scheduled', r.status === 201 && r.body.reply.status === 'scheduled', r.text);
+  check('排程 with a send time → scheduled', r.status === 200 && r.body.reply.status === 'scheduled' && r.body.reply.scheduledAt === later, r.text);
   const t8 = await taskRow(r.body.reply.taskId);
   check('scheduled task-centre task with run_at', t8.status === 'scheduled' && !!t8.runAt);
   r = await http('POST', `/api/comment-replies/${r8}/cancel`, A);
@@ -265,8 +294,8 @@ try {
   r = await http('PUT', '/api/comments/settings', T, { sendsPerHour: 2 });
   const rl: string[] = [];
   for (let i = 0; i < 3; i++) {
-    r = await http('POST', `/api/comments/${cr2[i]}/replies`, T, { text: `Admin reply ${i} ${tag}`, submit: true });
-    check(`admin reply ${i}: submitted → scheduled (no reviewer)`, r.status === 201 && r.body.reply.reviewerName === null && r.body.reply.status === 'scheduled', r.text);
+    r = await replyAndSchedule(cr2[i]!, T, { text: `Admin reply ${i} ${tag}` });
+    check(`admin reply ${i}: scheduled (no reviewer)`, r.status === 200 && r.body.reply.reviewerName === null && r.body.reply.status === 'scheduled', r.text);
     rl.push(r.body.reply.id);
     if (i < 2) await waitReply(r.body.reply.id, ['awaiting_operator']);
   }
@@ -284,7 +313,7 @@ try {
     userId: uA, accountId: ya, platform: 'youtube', source: 'api', externalId: `Ugz${tag}fakecommentid`, externalPostId: `vid${tag}`, authorName: 'YT Viewer', text: `nice video ${tag}`,
     publishedAt: new Date(),
   }).returning();
-  r = await http('POST', `/api/comments/${apiC!.id}/replies`, A, { text: `Thanks a lot ${tag}`, submit: true });
+  r = await replyAndSchedule(apiC!.id, A, { text: `Thanks a lot ${tag}` });
   const ry = r.body.reply.id as string;
   row = await waitReply(ry, ['failed', 'sent', 'awaiting_operator']);
   check('reply to a historical API comment → awaiting_operator, method manual (no API send)', row.status === 'awaiting_operator' && row.method === 'manual', `${row.status} ${row.method} ${row.errorCode}`);
@@ -337,7 +366,7 @@ try {
     r = await http('PUT', `/api/social/accounts/${ib}`, A, { personaId: pid });
     const cm = (await mc(A, ib, 'banned')).body.comment?.id;
     check('persona with banned words on a fresh account + a comment', !!pid && r.status === 200 && !!cm, r.text.slice(0, 200));
-    r = await http('POST', `/api/comments/${cm}/replies`, A, { text: '有问题请加微信聊', submit: true });
+    r = await http('POST', `/api/comments/${cm}/replies`, A, { text: '有问题请加微信聊' });
     const r2 = await http('POST', `/api/comments/${cm}/replies`, A, { text: 'no SPAM here, promise' });
     check('reply with a banned word → 400 persona.banned_word with the words (also case-insensitive), nothing stored',
       r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '加微信' && r2.status === 400 && r2.body.params?.words === 'Spam'
@@ -397,6 +426,7 @@ try {
   const left = await db.select().from(schema.socialAccounts).where(like(schema.socialAccounts.handle, `cc_${tag}_%`));
   const leftC = userIds.length ? await db.select().from(schema.comments).where(inArray(schema.comments.userId, userIds)) : [];
   check('cleanup: users, accounts, comments, replies, templates removed', left.length === 0 && leftC.length === 0);
+  check('every reply written through replyAndSchedule started as a draft without a task', draftsWithTask === 0, String(draftsWithTask));
   await closeTaskQueues();
   await sqlClient.end();
   const failed = results.filter((x) => !x[1]).length;

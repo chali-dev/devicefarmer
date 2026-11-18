@@ -8,7 +8,7 @@ import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { visibleAccount } from '../social/social.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
 import {
-  assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, recordReplyOutcome,
+  assertTemplateWritable, cancelReply, createManualComment, createReply, deleteDraft, deleteManualComment, editReply, getRules, recordReplyOutcome,
   REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
 } from './comments.js';
 import { assertPersonaFor } from './personas.js';
@@ -150,12 +150,14 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
         sendsPerHour: z.number().int().min(1).max(500).optional(),
         sendsPerDay: z.number().int().min(1).max(2000).optional(),
         minGapSec: z.number().int().min(0).max(86_400).optional(),
+        /** Removed (test mode, 2026-11-18): an older page may still send it; accepted and ignored. */
         testMode: z.boolean().optional(),
       }).strict(),
     },
   }, async (req) => {
     if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改评论规则', 'comment.admin_only');
-    return { rules: await saveRules(req.body) };
+    const { testMode: _removed, ...rules } = req.body;
+    return { rules: await saveRules(rules) };
   });
 
   // ------------------------------------------------------------ accounts (filters, new-comment counts)
@@ -261,12 +263,15 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(204);
   });
 
-  /** Write a reply to ONE comment (there is no bulk reply). */
+  /**
+   * Write a reply to ONE comment (there is no bulk reply). Always saved as a draft (draft first, 2026-11-18): `submit`
+   * of an older page is accepted and ignored; 排程 is POST /api/comment-replies/:id/submit.
+   */
   app.post('/api/comments/:id/replies', {
     schema: { params: Id, body: z.object({ text: ReplyText, templateId: z.string().uuid().nullable().optional(), submit: z.boolean().optional(), scheduledAt: When }) },
   }, async (req, reply) => {
     const c = await visibleComment(req.user, req.params.id);
-    const r = await createReply(req.user, c, { ...req.body, scheduledAt: at(req.body.scheduledAt) });
+    const r = await createReply(req.user, c, { text: req.body.text, templateId: req.body.templateId, scheduledAt: at(req.body.scheduledAt) });
     if (req.audit) req.audit.extra = { replyId: r.id, status: r.status };
     reply.code(201);
     return { reply: (await toReplyItems([r], req.user))[0] };
@@ -318,11 +323,19 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     return { reply: (await toReplyItems([await editReply(req.user, r, { ...req.body, scheduledAt: at(req.body.scheduledAt) })], req.user))[0] };
   });
 
+  /** 排程: draft → scheduled at `scheduledAt` (null / past = now); the cloud phone (or an operator) sends it then. */
   app.post('/api/comment-replies/:id/submit', { schema: { params: Id, body: z.object({ scheduledAt: When }).nullish() } }, async (req) => {
     const r = await visibleReply(req.user, req.params.id);
     const next = await submitReply(req.user, r, at(req.body?.scheduledAt));
     if (req.audit) req.audit.extra = { status: next.status, taskId: next.taskId };
     return { reply: (await toReplyItems([next], req.user))[0] };
+  });
+
+  /** Deletes a draft (only drafts: anything scheduled is cancelled instead, so its history stays). */
+  app.delete('/api/comment-replies/:id', { schema: { params: Id } }, async (req, reply) => {
+    const r = await visibleReply(req.user, req.params.id);
+    await deleteDraft(req.user, r);
+    reply.code(204);
   });
 
   app.post('/api/comment-replies/:id/cancel', { schema: { params: Id } }, async (req) => {

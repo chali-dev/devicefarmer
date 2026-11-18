@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { egressGeo, proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
+import { canPower, egressGeo, proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
@@ -228,9 +228,11 @@ const appColumns = computed(() => [
     <template #title-suffix><StatusTag :status="inst.status" /></template>
     <template #extra>
       <a-button :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">{{ t('detail.screenshot') }}</a-button>
-      <a-button :disabled="inst.status === 'running'" @click="act('start')">{{ t('devices.start') }}</a-button>
-      <a-button :disabled="inst.status !== 'running'" @click="act('stop')">{{ t('devices.stop') }}</a-button>
-      <a-button @click="act('restart')">{{ t('devices.restart') }}</a-button>
+      <template v-if="canPower(inst, auth.isAdmin)">
+        <a-button :disabled="inst.status === 'running'" @click="act('start')">{{ t('devices.start') }}</a-button>
+        <a-button :disabled="inst.status !== 'running'" @click="act('stop')">{{ t('devices.stop') }}</a-button>
+        <a-button @click="act('restart')">{{ t('devices.restart') }}</a-button>
+      </template>
     </template>
 
     <a-alert v-if="inst.lastError" type="error" :message="inst.lastError" show-icon />

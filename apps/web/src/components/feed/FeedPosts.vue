@@ -44,7 +44,7 @@ async function loadMore(p: FeedPost) {
 const ACTIVE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent']
 const canReply = (c: FeedComment) => !props.readonly && (!c.reply || !ACTIVE.includes(c.reply.status))
 const replyTime = (r: FeedReply) => fmt(r.sentAt ?? r.handedAt ?? r.scheduledAt ?? r.updatedAt)
-const replyError = (r: FeedReply) => (r.errorCode && r.status !== 'sent' && r.status !== 'dry_run' ? codeText(r.errorCode, undefined, r.error ?? r.errorCode) : null)
+const replyError = (r: FeedReply) => (r.errorCode && r.status !== 'sent' && r.status !== 'dry_run' && r.status !== 'draft' ? codeText(r.errorCode, undefined, r.error ?? r.errorCode) : null)
 </script>
 
 <template>

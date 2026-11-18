@@ -224,7 +224,7 @@ export class CollectorDefer extends Error {
 export async function requireCollector(platform: CollectorPlatform): Promise<CollectorEntry & { instanceId: string }> {
   const e = await collectorEntry(platform);
   if (!e) throw new HttpError(400, '未设置采集设备（管理员可在设置 → 追踪账号中选择）', 'tracked.collector_unset');
-  if (await deviceHalt(e.instanceId)) throw new HttpError(409, '采集设备遇到验证/限制页面，采集已停止，需管理员在风控页恢复', 'tracked.collector_halted');
+  if (await deviceHalt(e.instanceId)) throw new HttpError(409, '采集设备遇到验证/限制页面，采集已停止，需管理员在云机管理的设备卡片上恢复', 'tracked.collector_halted');
   return e;
 }
 
@@ -249,6 +249,26 @@ export interface DeviceOpOptions {
   lockMs?: number;
   /** Screens the operation opens (counted in the hourly cap; default 1). */
   weight?: number;
+  /** What the operation does, shown as the device's 忙 state on 云机管理 (stored in the lock value). */
+  what?: DeviceOpKind;
+}
+export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish';
+
+/**
+ * Automatic operations running now (the device lock is held), per device id: what and since when. Read only (one
+ * MGET); a lock written by an older version (bare token) reads as `auto`.
+ */
+export async function deviceBusy(instanceIds: string[]): Promise<Map<string, { what: DeviceOpKind | 'auto'; since: string | null }>> {
+  const out = new Map<string, { what: DeviceOpKind | 'auto'; since: string | null }>();
+  if (!instanceIds.length) return out;
+  const vals = await redis.mget(...instanceIds.map(lockKey));
+  vals.forEach((v, i) => {
+    if (!v) return;
+    const [, what, at] = v.split('|');
+    const ok = ['collect', 'check', 'feed', 'reply', 'publish'].includes(what ?? '');
+    out.set(instanceIds[i]!, { what: ok ? (what as DeviceOpKind) : 'auto', since: at && Number(at) ? new Date(Number(at)).toISOString() : null });
+  });
+  return out;
 }
 
 export async function withDevice<T>(inst: Instance, log: Log, offline: () => Error, fn: (dev: CollectorDevice) => Promise<T>, opts: DeviceOpOptions = {}): Promise<T> {
@@ -260,7 +280,8 @@ export async function withDevice<T>(inst: Instance, log: Log, offline: () => Err
     throw new CollectorDefer('tracked.collector_busy', `设备 ${inst.name} 正在被远程查看/控制，稍后再执行`, new Date(now + pace.busyRetrySec * 1000));
   }
   const token = randomBytes(8).toString('hex');
-  if ((await redis.set(lockKey(inst.id), token, 'PX', opts.lockMs ?? LOCK_MS, 'NX')) !== 'OK') {
+  const lockVal = `${token}|${opts.what ?? 'auto'}|${now}`;
+  if ((await redis.set(lockKey(inst.id), lockVal, 'PX', opts.lockMs ?? LOCK_MS, 'NX')) !== 'OK') {
     throw new CollectorDefer('tracked.collector_queued', '设备正在执行其他自动操作', new Date(now + pace.minIntervalSec * 1000));
   }
   try {
@@ -274,7 +295,7 @@ export async function withDevice<T>(inst: Instance, log: Log, offline: () => Err
     return await fn({ inst, adbPort: inst.adbPort });
   } finally {
     // Release only our own lock.
-    await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lockKey(inst.id), token).catch(() => undefined);
+    await redis.eval("if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end", 1, lockKey(inst.id), lockVal).catch(() => undefined);
   }
 }
 
@@ -286,5 +307,5 @@ export async function withCollector<T>(platform: CollectorPlatform, log: Log, fn
   const entry = await requireCollector(platform);
   const inst = await getInstance(entry.instanceId);
   if (!inst) throw new HttpError(400, '采集设备已不存在，请重新选择', 'tracked.collector_unset');
-  return withDevice(inst, log, () => new HttpError(503, `采集设备 ${inst.name} 不在线`, 'tracked.collector_offline', { name: inst.name }), fn);
+  return withDevice(inst, log, () => new HttpError(503, `采集设备 ${inst.name} 不在线`, 'tracked.collector_offline', { name: inst.name }), fn, { what: 'collect' });
 }

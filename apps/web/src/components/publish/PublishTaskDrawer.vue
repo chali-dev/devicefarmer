@@ -44,8 +44,8 @@ defineExpose({ reload: load })
 
 const s = computed(() => task.value?.status)
 const canCancel = computed(() => s.value === 'pending' || s.value === 'scheduled' || s.value === 'awaiting_operator')
-// A test-mode run (dry_run) can run again: now (retry) or at another time (reschedule).
-const canReschedule = computed(() => s.value === 'pending' || s.value === 'scheduled' || s.value === 'dry_run')
+const canReschedule = computed(() => s.value === 'pending' || s.value === 'scheduled')
+// dry_run = a test-mode rehearsal left by an old colour (test mode removed 2026-11-18): scheduled again with retry.
 const canRetry = computed(() => s.value === 'failed' || s.value === 'cancelled' || s.value === 'dry_run')
 const evidenceOpen = ref(false)
 const canOutcome = computed(() => s.value === 'awaiting_operator')
@@ -140,7 +140,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-button v-if="task.instance?.accessible" @click="$router.push(`/instances/${task.instance.id}`)">{{ t('publish.openDevice') }}</a-button>
           <a-button v-if="task.instance?.accessible && task.mediaIds.length && (canOutcome || canReschedule)" :disabled="busy || !task.instance.online" @click="pushMedia">{{ t('publish.pushMedia') }}</a-button>
           <a-button v-if="task.hasEvidence" @click="evidenceOpen = true">{{ t('publish.evidence') }}</a-button>
-          <a-button v-if="canReschedule && s !== 'dry_run' && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
+          <a-button v-if="canReschedule && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
           <a-button v-if="canReschedule" :disabled="busy" @click="openTime('reschedule')">{{ t('publish.reschedule') }}</a-button>
           <a-button v-if="canRetry" :disabled="busy" @click="openTime('retry')">{{ t('publish.retry') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
@@ -148,7 +148,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-alert v-if="canOutcome" type="warning" show-icon :message="t('publish.operatorHint')" style="margin-bottom: 16px">
           <template v-if="task.postType !== 'feed'" #description><b>{{ t('publish.operatorType', { type: t(`publish.type.${task.postType}`) }) }}</b></template>
         </a-alert>
-        <a-alert v-if="s === 'dry_run'" type="info" show-icon :message="t('publish.dryRunHint')" style="margin-bottom: 16px" />
         <a-alert v-if="errorMsg && s === 'scheduled'" type="warning" show-icon :message="errorMsg" style="margin-bottom: 16px" />
         <a-alert v-if="errorMsg && canOutcome && task.method === 'device'" type="error" show-icon :message="errorMsg" style="margin-bottom: 16px" />
         <a-alert v-if="errorMsg && (s === 'failed' || s === 'pending')" type="error" show-icon :message="errorMsg" :description="task.error && task.error !== errorMsg ? task.error : undefined" style="margin-bottom: 16px" />

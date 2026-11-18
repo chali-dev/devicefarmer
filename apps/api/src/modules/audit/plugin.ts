@@ -310,14 +310,14 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'PUT /api/publish/device-settings': {
     action: 'publish.device_settings',
-    detail: ({ body }) => ({ enabled: body.enabled, postsPerDay: body.postsPerDay, minGapMin: body.minGapMin, testMode: body.testMode }),
+    detail: ({ body }) => ({ enabled: body.enabled, postsPerDay: body.postsPerDay, minGapMin: body.minGapMin }),
   },
   // comments & engagement (评论互动). Comment and reply texts are not copied into the audit log.
   'PUT /api/comments/settings': {
     action: 'comment.rules_update',
     detail: ({ body }) => ({
       duplicateMax: body.duplicateMax, duplicateWindowHours: body.duplicateWindowHours, sendsPerHour: body.sendsPerHour,
-      sendsPerDay: body.sendsPerDay, minGapSec: body.minGapSec, testMode: body.testMode,
+      sendsPerDay: body.sendsPerDay, minGapSec: body.minGapSec,
     }),
   },
   'POST /api/comments': {
@@ -327,9 +327,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'PATCH /api/comments/:id': { action: 'comment.status', detail: ({ body }) => ({ status: body.status }) },
   'DELETE /api/comments/:id': { action: 'comment.delete' },
-  'POST /api/comments/:id/replies': { action: 'comment.reply_create', detail: ({ body }) => ({ templateId: body.templateId, submit: body.submit, scheduledAt: body.scheduledAt }) },
+  'POST /api/comments/:id/replies': { action: 'comment.reply_create', detail: ({ body }) => ({ templateId: body.templateId, scheduledAt: body.scheduledAt }) },
   'PATCH /api/comment-replies/:id': { action: 'comment.reply_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
-  'POST /api/comment-replies/:id/submit': { action: 'comment.reply_submit' },
+  'POST /api/comment-replies/:id/submit': { action: 'comment.reply_submit', detail: ({ body }) => ({ scheduledAt: body?.scheduledAt ?? null }) },
+  'DELETE /api/comment-replies/:id': { action: 'comment.reply_draft_delete' },
   'POST /api/comment-replies/:id/cancel': { action: 'comment.reply_cancel' },
   'POST /api/comment-replies/:id/outcome': {
     action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),

@@ -54,8 +54,6 @@ export interface PublishRunContext {
 
 export type PublishMethodResult =
   | { state: 'published'; externalId: string | null; url: string | null; publishedAt: Date | null; evidence?: ReplyEvidence | null; data?: Record<string, unknown> }
-  /** Test mode: rehearsed up to the step before 分享, nothing posted. */
-  | { state: 'dry_run'; evidence?: ReplyEvidence | null; data?: Record<string, unknown> }
   /** The phone tried but an operator must finish / check it (e.g. publish.send_uncertain). */
   | { state: 'awaiting_operator'; code: string; message: string; evidence?: ReplyEvidence | null }
   /** Not now (pace, daily cap, busy phone): a new round at `at`. */

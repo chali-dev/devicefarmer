@@ -9,7 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, errorText } from '../api/client'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
-import { egressGeo, proxyLabel, type Instance } from '../api/types'
+import { canPower, egressGeo, proxyLabel, type Instance } from '../api/types'
 import { dateLocale } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -200,14 +200,14 @@ const other = computed(() => [
                   <a-upload :multiple="true" :show-upload-list="false" :custom-request="upload as any" :disabled="uploading">
                     <a-tooltip :title="t('cloud.uploadTip')" placement="left"><button class="tool" :disabled="uploading"><UploadOutlined /><span>{{ t('cloud.upload') }}</span></button></a-tooltip>
                   </a-upload>
-                  <a-tooltip :title="t('devices.restart')" placement="left"><button class="tool" @click="menu('restart')"><ReloadOutlined /><span>{{ t('devices.restart') }}</span></button></a-tooltip>
+                  <a-tooltip v-if="canPower(inst, auth.isAdmin)" :title="t('devices.restart')" placement="left"><button class="tool" @click="menu('restart')"><ReloadOutlined /><span>{{ t('devices.restart') }}</span></button></a-tooltip>
                   <a-tooltip :title="t('cloud.openDetail')" placement="left"><button class="tool" @click="router.push(`/instances/${inst.id}`)"><AppstoreOutlined /><span>{{ t('cloud.more') }}</span></button></a-tooltip>
                 </div>
               </template>
             </DevicePlayer>
             <div v-else-if="running" class="waiting"><a-spin /><span>{{ t('cloud.waitingScreen') }}</span></div>
-            <a-empty v-else :description="t('detail.notRunning', { status: t(`status.${inst.status}`) })">
-              <a-button v-if="inst.status === 'stopped' || inst.status === 'error'" type="primary" @click="menu('start')">{{ t('devices.start') }}</a-button>
+            <a-empty v-else :description="canPower(inst, auth.isAdmin) ? t('detail.notRunning', { status: t(`status.${inst.status}`) }) : t('devices.state.askAdmin')">
+              <a-button v-if="canPower(inst, auth.isAdmin) && (inst.status === 'stopped' || inst.status === 'error')" type="primary" @click="menu('start')">{{ t('devices.start') }}</a-button>
             </a-empty>
           </div>
         </section>
@@ -240,8 +240,8 @@ const other = computed(() => [
             </template>
 
             <template v-else>
-              <h4>{{ t('cloud.power') }}</h4>
-              <a-space wrap>
+              <h4 v-if="canPower(inst, auth.isAdmin)">{{ t('cloud.power') }}</h4>
+              <a-space v-if="canPower(inst, auth.isAdmin)" wrap>
                 <a-button :disabled="running" @click="menu('start')">{{ t('devices.start') }}</a-button>
                 <a-button :disabled="inst.status === 'stopped'" @click="menu('stop')">{{ t('devices.stop') }}</a-button>
                 <a-button @click="menu('restart')">{{ t('devices.restart') }}</a-button>

@@ -97,7 +97,7 @@ export const useInstancesStore = defineStore('instances', () => {
   }
 
   async function action(action: 'start' | 'stop' | 'restart' | 'delete', ids: string[]) {
-    return api<{ accepted: { instanceId: string; taskId: string }[]; skipped: { instanceId: string; reason: string }[] }>(
+    return api<{ accepted: { instanceId: string; taskId: string }[]; skipped: { instanceId: string; reason: string; code?: string }[] }>(
       'POST', '/api/instances/actions', { action, ids })
   }
 

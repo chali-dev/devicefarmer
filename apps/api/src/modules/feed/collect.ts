@@ -57,7 +57,7 @@ export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: So
   if (why) throw new HttpError(400, why === 'feed.no_device' ? '账号未绑定云手机，不能采集' : '该平台不支持云手机采集', why, { platform: acc.platform });
   const instanceId = kind === 'social' ? (acc as SocialAccount).instanceId! : (await collectorEntry('instagram'))?.instanceId;
   if (!instanceId) throw new HttpError(400, '未设置采集设备（管理员可在设置 → 追踪账号中选择）', 'tracked.collector_unset');
-  if (await deviceHalt(instanceId)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在风控页恢复', 'feed.device_halted');
+  if (await deviceHalt(instanceId)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'feed.device_halted');
   if (await unfinished(kind, acc.id)) throw conflict('该账号已有采集在排队或进行中', 'feed.in_progress');
   const { task } = await createTask({
     type: FEED_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: feedRef(kind), refId: acc.id,
@@ -176,7 +176,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   try {
     r = await withDevice(inst, ctx.log, offline, (dev) => collectIgFeed(dev, acc!.handle, {
       posts: settings.feedPosts, commentsPerPost: settings.feedCommentsPerPost, log: ctx.log, signal: ctx.signal,
-    }), { lockMs: 15 * 60_000, weight: settings.feedPosts + 2 });
+    }), { lockMs: 15 * 60_000, weight: settings.feedPosts + 2, what: 'feed' });
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

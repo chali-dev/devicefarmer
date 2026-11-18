@@ -4,17 +4,17 @@ import { CheckCircleFilled, DownOutlined, ExclamationCircleOutlined, FacebookFil
 import { message, Modal } from 'ant-design-vue'
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, errorText } from '../api/client'
+import { api, codeText, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../api/query'
-import { BUSY_STATUSES, egressGeo, profileLabel, proxyLabel, taskText, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
+import { BUSY_STATUSES, canPower, egressGeo, profileLabel, proxyLabel, taskText, type DeviceAutomation, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
 import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
+import DeviceState from '../components/DeviceState.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
-import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -44,9 +44,8 @@ const counts = computed(() => {
 const columns = computed(() => [
   { title: t('common.name'), dataIndex: 'name', key: 'name', width: 180, fixed: 'left' as const },
   { title: t('devices.colImage'), key: 'profile', width: 190 },
-  { title: t('common.status'), key: 'status', width: 110 },
+  { title: t('common.status'), key: 'status', width: 170 },
   ...(auth.isAdmin ? [{ title: t('devices.colOwners'), key: 'owners', width: 200 }] : []),
-  { title: t('common.device'), key: 'device', width: 220 },
   { title: t('devices.colNet'), key: 'net', width: 170 },
   { title: t('devices.colEgress'), key: 'egress', width: 170 },
   { title: t('devices.colAdbPort'), dataIndex: 'adbPort', key: 'adbPort', width: 100 },
@@ -109,6 +108,13 @@ function readPref(): { view: 'grid' | 'table'; panel: boolean } {
 }
 const pref = reactive(readPref())
 watch(pref, (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify(p)) } catch { /* private mode */ } })
+/**
+ * 我的云手机 (non-admins, owner decision 2026-11-18): grid only, no side list, no selection / batch menu / status filter,
+ * the name search only with more than 6 devices; per card only 远控, the status, 日志 and 重启 / 启动 (local phones:
+ * 启动 while stopped, 重启 while running; external phones: none, admins power them). The API's RBAC is unchanged.
+ */
+const view = computed(() => (auth.isAdmin ? pref.view : 'grid'))
+const showSearch = computed(() => auth.isAdmin || store.list.length > 6)
 
 // ---- slide-in remote control
 const phoneOpen = ref(false)
@@ -130,6 +136,7 @@ const isBusy = (i: Instance) => BUSY_STATUSES.includes(i.status)
 /** Whether an action makes sense for this device's current status. */
 function canDo(key: MenuKey, i: Instance) {
   if (isBusy(i)) return false
+  if ((key === 'start' || key === 'stop' || key === 'restart') && !canPower(i, auth.isAdmin)) return false
   if (key === 'start') return i.status !== 'running'
   if (key === 'stop' || key === 'restart') return i.status !== 'stopped'
   if (key === 'install' || key === 'uninstall') return i.status === 'running'
@@ -155,7 +162,7 @@ async function run(action: Action, ids: string[]) {
     try {
       const r = await store.action(action, ids)
       if (r.accepted.length) message.success(t('devices.submitted', { n: r.accepted.length, action: actionText(action) }))
-      if (r.skipped.length) message.warning(t('common.skipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((s) => s.reason))].join(t('common.reasonSep')) }))
+      if (r.skipped.length) message.warning(t('common.skipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((s) => (s.code ? codeText(s.code, undefined, s.reason) : s.reason)))].join(t('common.reasonSep')) }))
       if (action === 'delete') selectedKeys.value = selectedKeys.value.filter((k) => !ids.includes(k))
     } catch (e) {
       message.error(errorText(e))
@@ -401,14 +408,14 @@ function netTitle(i: Instance) {
 /** Country for the compact badges: measured egress first, else the one configured on the pool proxy. */
 const countryOf = (i: Instance) => i.proxyStatus?.country ?? i.proxy?.country ?? null
 
-function deviceText(i: Instance) {
-  if (i.status !== 'running') return null
-  return [
-    { ok: i.bootCompleted, text: t('devices.sys') },
-    { ok: i.adbState === 'device', text: 'ADB' },
-    { ok: i.stfReady, text: 'STF' },
-  ]
+// ---- automation state (风控暂停 / busy) of the visible devices, for the one status per device (DeviceState)
+const automation = ref<Record<string, DeviceAutomation>>({})
+async function loadAutomation() {
+  try { automation.value = (await api<{ devices: Record<string, DeviceAutomation> }>('GET', '/api/instances/automation')).devices } catch { /* status without it */ }
 }
+void loadAutomation()
+const automationTimer = setInterval(() => { if (!document.hidden) void loadAutomation() }, 10_000)
+onUnmounted(() => clearInterval(automationTimer))
 
 // ---- per-device log drawer
 const logOpen = ref(false)
@@ -461,26 +468,26 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 
     <a-card :bordered="false">
       <SearchBar :loading="store.loading" @refresh="store.refresh()">
-        <a-tooltip v-if="pref.view === 'grid'" :title="t('cloud.togglePanel')">
+        <a-tooltip v-if="view === 'grid' && auth.isAdmin" :title="t('cloud.togglePanel')">
           <a-button :aria-label="t('cloud.togglePanel')" @click="pref.panel = !pref.panel"><template #icon><MenuFoldOutlined v-if="pref.panel" /><MenuUnfoldOutlined v-else /></template></a-button>
         </a-tooltip>
-        <a-tooltip v-if="pref.view === 'grid'" :title="t('cloud.selectAll')">
+        <a-tooltip v-if="view === 'grid' && auth.isAdmin" :title="t('cloud.selectAll')">
           <a-checkbox :checked="allSelected" :indeterminate="someSelected" :disabled="!rows.length" @change="(e: any) => toggleAll(e.target.checked)" />
         </a-tooltip>
-        <a-input v-model:value="search" allow-clear :placeholder="t('cloud.search')" style="width: 320px">
+        <a-input v-if="showSearch" v-model:value="search" allow-clear :placeholder="t('cloud.search')" style="width: 320px">
           <template #prefix><SearchOutlined class="muted" /></template>
         </a-input>
-        <a-select :value="statusFilter ?? ''" :options="statusOptions" style="width: 150px" @change="(v: any) => (statusFilter = v || undefined)" />
+        <a-select v-if="auth.isAdmin" :value="statusFilter ?? ''" :options="statusOptions" style="width: 150px" @change="(v: any) => (statusFilter = v || undefined)" />
         <a-tag v-if="ownerFilter" closable color="blue" @close="ownerFilter = null">{{ t('devices.ownerTag', { name: ownerFilter.username }) }}</a-tag>
         <a-tag v-if="focusId" closable color="blue" @close="clearFocus">{{ t('devices.focusTag', { name: store.byId.get(focusId)?.name ?? focusId.slice(0, 8) }) }}</a-tag>
-        <template #actions>
+        <template v-if="auth.isAdmin" #actions>
           <BatchActions :count="selectedKeys.length" :items="batchItems" @select="(k: string) => onMenu(k as MenuKey, selectedKeys)" @clear="selectedKeys = []" />
           <a-segmented v-model:value="pref.view" :options="[{ value: 'grid', label: t('cloud.viewGrid') }, { value: 'table', label: t('cloud.viewTable') }]" />
         </template>
       </SearchBar>
 
       <a-table
-        v-if="pref.view === 'table'"
+        v-if="view === 'table'"
         :data-source="rows"
         :columns="columns"
         row-key="id"
@@ -506,7 +513,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             </a-space>
           </template>
           <template v-else-if="column.key === 'status'">
-            <StatusTag :status="record.status" />
+            <DeviceState :instance="record as Instance" :automation="automation[record.id]" :resumable="auth.isAdmin" :admin="auth.isAdmin" @resumed="loadAutomation" />
           </template>
           <template v-else-if="column.key === 'owners'">
             <span v-if="!record.owners?.length" class="faint">{{ t('devices.unassigned') }}</span>
@@ -516,13 +523,6 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                 <a-tag v-if="record.owners.length > 3">+{{ record.owners.length - 3 }}</a-tag>
               </span>
             </a-tooltip>
-          </template>
-          <template v-else-if="column.key === 'device'">
-            <a-typography-text v-if="record.lastError" type="danger" :ellipsis="{ tooltip: record.lastError }" :content="record.lastError" />
-            <a-space v-else-if="deviceText(record)" :size="4">
-              <a-tag v-for="d in deviceText(record)" :key="d.text" :color="d.ok ? 'green' : 'orange'">{{ d.text }}</a-tag>
-            </a-space>
-            <span v-else class="faint">—</span>
           </template>
           <template v-else-if="column.key === 'net'">
             <a-tooltip v-if="record.proxy" :title="netTitle(record)">
@@ -569,7 +569,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
       </a-table>
 
       <div v-else class="body">
-        <aside v-if="pref.panel" class="side">
+        <aside v-if="pref.panel && auth.isAdmin" class="side">
           <div class="side-head">{{ statusOptions.find((o) => o.value === (statusFilter ?? ''))?.label }}</div>
           <div class="side-list">
             <div v-for="i in rows" :key="i.id" class="item" :class="{ active: phoneOpen && phoneId === i.id }" @click="openPhone(i.id)">
@@ -578,7 +578,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                 <div class="ellipsis">{{ i.name }}</div>
                 <div class="ellipsis muted small">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}<template v-if="countryOf(i) || i.proxy"> · {{ countryOf(i) ?? proxyLabel(i.proxy!) }}</template></div>
               </div>
-              <StatusTag :status="i.status" />
+              <DeviceState :instance="i" :automation="automation[i.id]" />
             </div>
             <div v-if="!rows.length" class="side-empty muted">{{ store.list.length ? t('cloud.noMatch') : '—' }}</div>
           </div>
@@ -587,9 +587,9 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         <section class="grid">
           <div v-for="i in rows" :key="i.id" class="phone" :class="{ selected: selectedKeys.includes(i.id), focus: i.id === focusId }">
             <div class="phone-head">
-              <a-checkbox :checked="selectedKeys.includes(i.id)" @change="(e: any) => toggleOne(i.id, e.target.checked)" />
+              <a-checkbox v-if="auth.isAdmin" :checked="selectedKeys.includes(i.id)" @change="(e: any) => toggleOne(i.id, e.target.checked)" />
               <span class="phone-name ellipsis" :title="i.name">{{ i.name }}</span>
-              <a-dropdown :trigger="['click']" placement="bottomRight">
+              <a-dropdown v-if="auth.isAdmin" :trigger="['click']" placement="bottomRight">
                 <a-button size="small" type="text" :aria-label="t('common.more')"><template #icon><MoreOutlined /></template></a-button>
                 <template #overlay>
                   <a-menu @click="({ key }: any) => (key === 'log' ? openLog(i.id) : onMenu(key as MenuKey, [i.id]))">
@@ -618,14 +618,21 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             </div>
             <div class="phone-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
               <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :paused="phoneOpen" :slow="!!i.sourceId" :width="i.spec.width" :height="i.spec.height">
-                <StatusTag :status="i.status" />
-                <span v-if="i.lastError" class="err" :title="i.lastError">{{ i.lastError }}</span>
+                <DeviceState :instance="i" :automation="automation[i.id]" :resumable="auth.isAdmin" :admin="auth.isAdmin" @resumed="loadAutomation" />
               </DeviceThumb>
               <div class="badges">
                 <span class="badge">{{ i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : profileName(i.profile) }}</span>
                 <span v-if="i.proxy || countryOf(i)" class="badge" :class="{ bad: i.proxyStatus && !i.proxyStatus.ok }" :title="netTitle(i)">{{ countryOf(i) ?? i.proxy!.type.toUpperCase() }}</span>
               </div>
               <div v-if="i.status === 'running'" class="hover"><span>{{ t('cloud.clickToControl') }}</span></div>
+            </div>
+            <div v-if="!auth.isAdmin" class="phone-actions">
+              <a-button size="small" type="link" :disabled="i.status !== 'running'" @click="openPhone(i.id)">{{ t('devices.control') }}</a-button>
+              <a-button size="small" type="link" @click="openLog(i.id)">{{ t('devices.log') }}</a-button>
+              <template v-if="canPower(i, false) && !isBusy(i)">
+                <a-button v-if="i.status === 'running'" size="small" type="link" @click="run('restart', [i.id])">{{ t('devices.restart') }}</a-button>
+                <a-button v-else-if="i.status === 'stopped' || i.status === 'error'" size="small" type="link" @click="run('start', [i.id])">{{ t('devices.start') }}</a-button>
+              </template>
             </div>
           </div>
 
@@ -848,6 +855,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 .phone-owners { display: flex; min-width: 0; margin-top: -4px; }
 :deep(.row-focus > td) { background: var(--cp-primary-bg) !important; }
 .phone-head { display: flex; align-items: center; gap: 8px; }
+.phone-actions { display: flex; flex-wrap: wrap; justify-content: center; }
 .phone-name { flex: 1; font-weight: 600; }
 .phone-screen { position: relative; cursor: pointer; border-radius: var(--cp-radius-lg); outline: none; }
 .phone-screen:focus-visible { box-shadow: 0 0 0 2px var(--cp-primary); }
@@ -857,7 +865,6 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 .badge.bad { background: var(--cp-error); }
 .hover { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: var(--cp-radius-lg); background: var(--cp-mask); color: #fff; opacity: 0; transition: opacity 0.15s; }
 .phone-screen:hover .hover, .phone-screen:focus-visible .hover { opacity: 1; }
-.err { color: var(--cp-error); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .add { align-self: stretch; align-items: center; justify-content: center; gap: 12px; min-height: 320px; border-style: dashed; border-color: var(--cp-border); background: var(--cp-fill-alter); color: var(--cp-text-secondary); cursor: pointer; font: inherit; }
 .add:hover { border-color: var(--cp-primary); color: var(--cp-primary); }
 .add-icon { width: 36px; height: 36px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--cp-primary-bg); color: var(--cp-primary); font-size: 16px; }

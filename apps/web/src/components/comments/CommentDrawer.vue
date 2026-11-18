@@ -2,7 +2,6 @@
 import { dateLocale } from '../../i18n'
 import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { commentActionText, logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
@@ -11,11 +10,13 @@ import PlatformTag from '../social/PlatformTag.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
 import PersonaCard from './PersonaCard.vue'
+import ReplyScheduleModal from '../feed/ReplyScheduleModal.vue'
 
 /**
  * One comment: its thread, the reply composer (always written by a person, optionally from a template or one of the
  * account persona's 范例; the persona card shows 定位/语气/禁用词 and flags banned words and an off-range length),
- * the current reply's workflow actions (submit, cancel, manual outcome; no approval step since 2026-11-18) and the history + log.
+ * the current reply's workflow actions and the history + log. Draft first (owner decision 2026-11-18): the composer only
+ * saves a draft; 排程 (preview: account, phone, comment, text + time) queues it, 删除 drops the draft. No approval step.
  */
 const props = defineProps<{ open: boolean; commentId: string | null; templates: CommentTemplate[] }>()
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>()
@@ -30,7 +31,7 @@ const busy = ref(false)
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const DONE = ['failed', 'rejected', 'cancelled']
 
-const form = reactive({ text: '', templateId: undefined as string | undefined, at: null as Dayjs | null })
+const form = reactive({ text: '', templateId: undefined as string | undefined })
 /** Template persona filter; defaults to the comment account's persona (账号人设) when templates use it. */
 const persona = ref<string | undefined>()
 const personas = computed(() => [...new Map(props.templates.flatMap((x) => (x.persona ? [[x.persona.id, x.persona] as const] : []))).values()]
@@ -48,7 +49,6 @@ async function load() {
     const a = active.value
     form.text = a?.status === 'draft' ? a.text : ''
     form.templateId = a?.templateId ?? undefined
-    form.at = null
     const pid = r.comment.account?.personaId
     persona.value = pid && personas.value.some((p) => p.id === pid) ? pid : undefined
     Object.assign(outcome, { result: 'sent', reason: '', externalReplyId: '' })
@@ -71,18 +71,25 @@ async function act(fn: () => Promise<unknown>, ok: string) {
   busy.value = true
   try { await fn(); message.success(ok); emit('changed') } catch (e) { message.error(errorText(e)) } finally { busy.value = false; await load() }
 }
-const at = () => (form.at ? form.at.toISOString() : null)
-function save(submit: boolean) {
+function save() {
   const a = active.value
   if (!form.text.trim()) { message.warning(t('errors.comment.text_empty')); return }
-  if (!a) {
-    return act(() => api('POST', `/api/comments/${props.commentId}/replies`, { text: form.text, templateId: form.templateId ?? null, submit, scheduledAt: at() }),
-      submit ? t('comments.submitted') : t('common.saved'))
-  }
-  return act(async () => {
-    await api('PATCH', `/api/comment-replies/${a.id}`, { text: form.text, templateId: form.templateId ?? null, scheduledAt: at() })
-    if (submit && a.status === 'draft') await api('POST', `/api/comment-replies/${a.id}/submit`, {})
-  }, submit ? t('comments.submitted') : t('common.saved'))
+  if (!a) return act(() => api('POST', `/api/comments/${props.commentId}/replies`, { text: form.text, templateId: form.templateId ?? null }), t('feed.draftSaved'))
+  return act(() => api('PATCH', `/api/comment-replies/${a.id}`, { text: form.text, templateId: form.templateId ?? null }), t('common.saved'))
+}
+// 排程 of the saved draft (unsaved edits must be saved first, so the preview shows what will be sent)
+const scheduleOpen = ref(false)
+const dirty = computed(() => !!active.value && active.value.status === 'draft' && form.text !== active.value.text)
+function schedule() {
+  if (dirty.value) { message.warning(t('feed.saveFirst')); return }
+  scheduleOpen.value = true
+}
+async function scheduled() { emit('changed'); await load() }
+function removeDraft() {
+  confirmDanger({
+    title: t('feed.deleteDraftConfirm'),
+    onOk: () => act(() => api('DELETE', `/api/comment-replies/${active.value!.id}`), t('common.deleted')),
+  })
 }
 function cancel() {
   confirmDanger({
@@ -150,16 +157,16 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
             <a-form-item :label="t('comments.replyText')" required>
               <a-textarea v-model:value="form.text" :auto-size="{ minRows: 3, maxRows: 10 }" :maxlength="5000" show-count />
             </a-form-item>
-            <a-form-item v-if="!active || active.status === 'draft'" :label="t('comments.sendAt')">
-              <a-date-picker v-model:value="form.at" show-time :placeholder="t('comments.sendAtPlaceholder')" style="width: 100%" />
-            </a-form-item>
           </a-form>
           <a-space wrap>
-            <a-button :loading="busy" @click="save(false)">{{ t('comments.saveDraft') }}</a-button>
-            <a-button v-if="!active || active.status === 'draft'" type="primary" :loading="busy" @click="save(true)">{{ t('comments.submit') }}</a-button>
-            <span v-if="!active || active.status === 'draft'" class="muted small">{{ t('comments.submitHint') }}</span>
-            <a-button v-if="active" danger :disabled="busy" @click="cancel">{{ t('comments.cancel') }}</a-button>
+            <a-button type="primary" :loading="busy" @click="save">{{ t('comments.saveDraft') }}</a-button>
+            <template v-if="active?.status === 'draft'">
+              <a-button :disabled="busy" @click="schedule">{{ t('feed.submit') }}</a-button>
+              <a-button danger :disabled="busy" @click="removeDraft">{{ t('common.delete') }}</a-button>
+            </template>
+            <a-button v-else-if="active" danger :disabled="busy" @click="cancel">{{ t('comments.cancel') }}</a-button>
           </a-space>
+          <div class="muted small hint">{{ active?.status === 'draft' ? t('feed.draftScheduleHint') : t('feed.draftHint') }}</div>
         </template>
 
         <!-- current reply (not editable here) -->
@@ -231,6 +238,7 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
       </template>
     </a-spin>
   </a-drawer>
+  <ReplyScheduleModal v-model:open="scheduleOpen" :reply="active" @done="scheduled" />
 </template>
 
 <style scoped>
@@ -247,4 +255,5 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
 .tpl-persona { width: 160px; }
 .tpl-pick { flex: 1; min-width: 200px; }
 .hist { border-bottom: 1px solid var(--cp-border-secondary); padding: 6px 0; }
+.hint { margin-top: 6px; }
 </style>

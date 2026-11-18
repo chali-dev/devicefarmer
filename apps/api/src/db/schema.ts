@@ -717,8 +717,8 @@ export const contentTagLinks = pgTable('content_tag_links', {
  * ref_id = this id, idempotency key publish:<id>:<attempt_no>). `task_id` is the current scheduler task;
  * every reschedule/retry bumps `attempt_no` and creates a new tasks row (older ones stay as history).
  * Status: pending | scheduled → running → published | awaiting_operator (manual method: handed to an
- * operator, who records the outcome) | failed | cancelled | dry_run (云手机发帖 test mode: rehearsed on the phone up to
- * the step before 分享, nothing posted; finished, may be retried / rescheduled). `user_id` = the account's owner.
+ * operator, who records the outcome) | failed | cancelled | dry_run (LEGACY: the former 云手机发帖 test mode, removed
+ * 2026-11-18; no longer produced, db:migrate turned old rows into cancelled; kept in the enum for expand/contract). `user_id` = the account's owner.
  * Media and texts are snapshots taken at distribution (what was scheduled is what gets published).
  * At most one unfinished row per (content, account) (partial unique index); a second publish of an
  * already published pair needs `republish`.
@@ -765,7 +765,7 @@ export const publishTasks = pgTable('publish_tasks', {
   error: text('error'),
   errorCode: text('error_code'),
   publishedAt: timestamp('published_at', { withTimezone: true }),
-  /** 云手机发帖 (method device): when the phone last reached the 分享 step (live or test mode); daily cap + min gap per account. */
+  /** 云手机发帖 (method device): when the phone last started a run; daily cap + min gap per account. */
   deviceRunAt: timestamp('device_run_at', { withTimezone: true }),
   /** 云手机发帖: screenshot of the last screen before 分享 (storage key server-side only) + the caption read back. */
   evidence: jsonb('evidence').$type<ReplyEvidence>(),
@@ -900,10 +900,11 @@ export const commentSyncStates = pgTable('comment_sync_states', {
  * rejected / cancelled. At most one reply per comment that is not failed / rejected / cancelled.
  * `round` is bumped when a rate-limited send is deferred (idempotency key comment-reply:<id>:<round>).
  */
+/** dry_run = LEGACY (test mode removed 2026-11-18; db:migrate turned old rows back into drafts), never produced now. */
 export const COMMENT_REPLY_STATUSES = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'rejected', 'cancelled', 'dry_run'] as const;
 export type CommentReplyStatus = (typeof COMMENT_REPLY_STATUSES)[number];
 
-/** What a test-mode run (dry_run) or a device send left as proof: screenshot in storage + a short screen excerpt. */
+/** What a device send left as proof (screenshot before 发布 / 分享, or of the failing screen) + a short screen excerpt. */
 export interface ReplyEvidence { at: string; storage?: string | null; key?: string | null; inputText?: string | null; excerpt?: string | null }
 
 export const commentTasks = pgTable('comment_tasks', {
@@ -924,7 +925,7 @@ export const commentTasks = pgTable('comment_tasks', {
    * keeps the id and fails `comment.comment_gone` instead of turning into a comment directly under the post.
    */
   trackedCommentId: uuid('tracked_comment_id'),
-  /** Test mode run (status dry_run) / device send: screenshot + what the input field showed. */
+  /** Device send: screenshot + what the input field showed (old dry_run rows: the test-mode rehearsal's). */
   evidence: jsonb('evidence').$type<ReplyEvidence>(),
   platform: text('platform').notNull(),
   text: text('text').notNull(),
@@ -956,7 +957,7 @@ export const commentTasks = pgTable('comment_tasks', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [
-  // dry_run (test mode, nothing posted) does not block a real reply afterwards.
+  // dry_run (LEGACY test mode, nothing posted) does not block a real reply afterwards. A draft does block.
   uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
   index('comment_tasks_post_idx').on(t.postId, t.createdAt),
   index('comment_tasks_tracked_post_idx').on(t.trackedPostId, t.createdAt),

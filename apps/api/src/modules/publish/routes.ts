@@ -9,7 +9,7 @@ import { mediaItem } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
 import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
 import { storageFor } from '../settings/storage.js';
-import { DevicePublishInput, getDevicePublishRules, saveDevicePublishRules } from './device-rules.js';
+import { DevicePublishBody, getDevicePublishRules, saveDevicePublishRules } from './device-rules.js';
 import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish, retryPublish } from './publish.js';
 
 const pt = schema.publishTasks;
@@ -184,7 +184,7 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     return { task: (await toPublishItems([await editPublish(req.user, row, req.body)], req.user))[0] };
   });
 
-  /** 云手机发帖: the screenshot of the last screen before 分享 (test mode / live run). */
+  /** 云手机发帖: the screenshot of the last screen before 分享 (or of the failing screen). */
   app.get('/api/publish/tasks/:id/evidence', { schema: { params: Id } }, async (req, reply) => {
     const row = await visiblePublishTask(req.user, req.params.id);
     const ev = row.evidence;
@@ -194,12 +194,12 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     return reply.send(stream);
   });
 
-  /** 风控 → 云手机发帖: per-account daily cap, minimum gap, test mode (admin). */
+  /** 风控 → 云手机发帖: on/off, per-account daily cap, minimum gap (admin). */
   app.get('/api/publish/device-settings', async (req) => {
     if (!isAdmin(req.user)) throw forbidden('仅管理员可以查看云手机发帖设置', 'publish.admin_only');
     return { rules: await getDevicePublishRules() };
   });
-  app.put('/api/publish/device-settings', { schema: { body: DevicePublishInput.partial().strict() } }, async (req) => {
+  app.put('/api/publish/device-settings', { schema: { body: DevicePublishBody } }, async (req) => {
     if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改云手机发帖设置', 'publish.admin_only');
     return { rules: await saveDevicePublishRules(req.body) };
   });
