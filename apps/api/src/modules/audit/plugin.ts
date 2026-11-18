@@ -41,6 +41,11 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/notifications/delete-read',
 ]);
 
+/** Routes that are read-only for some bodies: 批量发布's preview (`dryRun: true`) creates nothing. */
+const AUDIT_EXCLUDED_IF: Record<string, (body: Record<string, unknown>) => boolean> = {
+  'POST /api/contents/batch': (b) => b.dryRun === true,
+};
+
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -288,7 +293,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // 批量操作: action + ids only (the route adds ok/skipped/changed counts), never texts.
   'POST /api/contents/batch': {
     action: ({ body }) => `content.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
-    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, categoryId: body.categoryId, tags: body.tags }),
+    detail: ({ body }) => ({
+      action: body.action, ids: ids(body.ids), count: ids(body.ids).length, categoryId: body.categoryId, tags: body.tags,
+      // 批量发布 (dryRun previews are not recorded, see AUDIT_EXCLUDED_IF)
+      scheduledAt: body.scheduledAt, postType: body.postType, includeDrafts: body.includeDrafts,
+    }),
   },
   // 多语言内容: only the language is recorded, never the translated texts.
   'PUT /api/contents/:id/translations/:lang': { action: 'content.translation_save', detail: ({ params }) => ({ lang: params.lang }) },
@@ -524,7 +533,9 @@ function audited(req: FastifyRequest): string | null {
   const pattern = req.routeOptions.url;
   if (!pattern || !pattern.startsWith('/api/') || !MUTATING.has(req.method) || req.ws) return null;
   const key = `${req.method} ${pattern}`;
-  return AUDIT_EXCLUDED.has(key) ? null : key;
+  if (AUDIT_EXCLUDED.has(key)) return null;
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? (req.body as Record<string, unknown>) : {};
+  return AUDIT_EXCLUDED_IF[key]?.(body) ? null : key;
 }
 
 function fieldText(raw: unknown, max = 20): string | undefined {

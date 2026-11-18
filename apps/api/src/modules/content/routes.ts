@@ -190,11 +190,23 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
         /** set-category: null clears */
         categoryId: z.string().uuid().nullable().optional(),
         tags: Tags.optional(),
+        /** publish (批量发布): one time for all (null/absent = now), post type (default feed), drafts too, preview only */
+        scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
+        postType: z.enum(POST_TYPES).optional(),
+        includeDrafts: z.boolean().optional(),
+        dryRun: z.boolean().optional(),
       }),
     },
   }, async (req) => {
-    const res = await batchContents(req.user, req.body);
-    if (req.audit) req.audit.extra = { ok: res.ok.length, skipped: res.skipped.length, changed: res.changed, ...(res.cancelledTasks !== undefined ? { cancelledTasks: res.cancelledTasks } : {}) };
+    const b = req.body;
+    const res = await batchContents(req.user, { ...b, scheduledAt: b.scheduledAt ? new Date(b.scheduledAt) : null });
+    if (req.audit) {
+      req.audit.extra = {
+        ok: res.ok.length, skipped: res.skipped.length, changed: res.changed,
+        ...(res.cancelledTasks !== undefined ? { cancelledTasks: res.cancelledTasks } : {}),
+        ...(res.publish ? { tasks: res.publish.tasks, skippedCodes: [...new Set(res.skipped.map((s) => s.code))] } : {}),
+      };
+    }
     return res;
   });
 

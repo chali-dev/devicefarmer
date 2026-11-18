@@ -2,8 +2,8 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
+import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { assertInstanceAccess, assertInstancesAccess } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from '../apps/package.js';
@@ -14,7 +14,10 @@ import path from 'node:path';
 
 const Pkg = z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/);
 
-/** App library: import from a device or upload (admin), install to instances, preinstall on new instances. */
+/**
+ * App library (应用库, admin only since 2026-11-18): import from a device or upload, install to instances, preinstall on
+ * new instances. Every route requires an admin (403 auth.admin_only otherwise), including the list, targets and logs.
+ */
 async function libraryApp(id: string) {
   const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, id));
   if (!lib) throw notFound('library app not found', 'library.not_found');
@@ -22,7 +25,7 @@ async function libraryApp(id: string) {
 }
 
 export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
-  app.addHook('preHandler', app.authenticate);
+  app.addHook('preHandler', app.requireAdmin);
 
   app.get('/api/library', async () => ({
     apps: await db.select().from(schema.libraryApps).orderBy(schema.libraryApps.package, desc(schema.libraryApps.createdAt)),
@@ -39,11 +42,10 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * Upload (admin only: library entries can be preinstalled on every new device). multipart, one file:
+   * Upload (library entries can be preinstalled on every new device). multipart, one file:
    * .apk or a split bundle (.apks/.xapk/.apkm/.zip). Package and version are read from the manifests.
    */
   app.post('/api/library/upload', async (req) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以上传到应用库', 'library.upload_admin_only');
     const file = await req.file();
     if (!file) throw badRequest('missing file', 'library.missing_file');
     const prepared = await prepareUpload(file.file, file.filename);
@@ -59,7 +61,6 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch('/api/library/:id', {
     schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ preinstall: z.boolean() }) },
   }, async (req) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改应用库预装设置', 'library.preinstall_admin_only');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!row) throw notFound('library app not found', 'library.not_found');
     // Only one version of a package is preinstalled.
@@ -68,10 +69,10 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
     return { app: updated };
   });
 
-  /** Devices the caller may install this entry on, with the installed version (live read over adb) and a state. */
+  /** Devices this entry can be installed on, with the installed version (live read over adb) and a state. */
   app.get('/api/library/:id/targets', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     const lib = await libraryApp(req.params.id);
-    return installTargets(req.user, lib);
+    return installTargets(lib);
   });
 
   /** Install log of this entry's package (all versions), task-centre visibility. */
@@ -111,7 +112,6 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.delete('/api/library/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以从应用库删除', 'library.delete_admin_only');
     const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
     if (!row) throw notFound('library app not found', 'library.not_found');
     await removeLibraryApp(row);

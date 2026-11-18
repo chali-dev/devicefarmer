@@ -5,7 +5,7 @@
  *   retention keeps N → delete; the daily schedule is idempotent; no DB password in payloads/logs/audit.
  * - System logs: ring + daily file, level/text/time filters, redaction of secret-looking values.
  * - Connection monitoring: status history written by repo.updateInstance (directly and by the monitor)
- *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, RBAC.
+ *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
  * - Admin-only routes (a user gets 403) and audit entries.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3104 npx tsx --env-file=../../.env scripts/sysadmin-check.ts
  */
@@ -244,11 +244,11 @@ try {
   check('panel row: no offline time for a deliberate stop, no 24 h counters, adb/STF/scrcpy/proxy fields', p2?.lastOfflineAt === null && !('changes24h' in p2) && !('offline24h' in p2) && 'stfReady' in p2 && 'adbRttMs' in p2 && p2.scrcpy === null && 'proxyStatus' in p2, JSON.stringify(p2));
   check('admin sees all placeholder devices', fakeIds.every((id) => panel.some((x) => x.id === id)));
 
-  // RBAC
+  // RBAC: 连线监控 is admin only (2026-11-18), even for a device granted to the user
   await http('PUT', `/api/users/${userId}/grants`, T, { instanceIds: [D1.id] });
   const up = await http('GET', '/api/system/connections', U);
-  check('user sees only granted devices', up.status === 200 && up.body.devices.length === 1 && up.body.devices[0].id === D1.id, JSON.stringify(up.body).slice(0, 200));
-  check('user can read history of a granted device', (await http('GET', `/api/system/connections/${D1.id}/history`, U)).status === 200);
+  check('user cannot read the connection panel (403 auth.admin_only)', up.status === 403 && up.body?.code === 'auth.admin_only', `${up.status} ${JSON.stringify(up.body).slice(0, 200)}`);
+  check('user cannot read history of a granted device (403)', (await http('GET', `/api/system/connections/${D1.id}/history`, U)).status === 403);
   check('user cannot read history of another device (403)', (await http('GET', `/api/system/connections/${D3.id}/history`, U)).status === 403);
   check('anonymous refused (401)', (await http('GET', '/api/system/connections', null)).status === 401);
 

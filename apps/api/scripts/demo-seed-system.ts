@@ -496,10 +496,10 @@ async function verify() {
     const mine = (await http('GET', '/api/instances', UT)).body.instances as any[];
     check(`${UTname} sees exactly its granted devices`, mine.length === [...new Set([...before, dev.id])].length && mine.some((i) => i.id === dev.id), mine.map((i) => i.name).join(','));
     check('device view for a user has no proxy credentials', !/"username"|"password"|passwordEnc/.test(JSON.stringify(mine.map((i) => i.proxy ?? null))));
-    const conn = (await http('GET', '/api/system/connections', UT)).body.devices as any[];
-    check('connection monitoring for the user is RBAC-scoped', conn.length === mine.length && conn.some((d) => d.id === dev.id));
+    r = await http('GET', '/api/system/connections', UT);
+    check('connection monitoring is admin only (user 403)', r.status === 403);
     r = await http('GET', `/api/system/connections/${dev.id}/history?hours=24`, UT);
-    check('user can read the granted device\'s connection history', r.status === 200 && Array.isArray(r.body.events));
+    check('user cannot read even the granted device\'s connection history (403, admin only)', r.status === 403);
     for (const o of others.slice(0, 1)) {
       r = await http('GET', `/api/system/connections/${o.id}/history`, UT);
       check('user cannot read another device\'s history (403)', r.status === 403);
@@ -509,6 +509,8 @@ async function verify() {
       ['GET', '/api/settings/storage'], ['GET', '/api/settings/tasks'], ['GET', '/api/settings/system'], ['GET', '/api/device-sources'], ['POST', '/api/proxies/import']];
     const res = await Promise.all(denied.map(([m, p]) => http(m, p, UT, m === 'POST' ? { text: '' } : undefined)));
     check('user gets 403 on every admin page/API', res.every((x) => x.status === 403), denied.map(([m, p], i) => `${m} ${p}=${res[i]!.status}`).filter((_, i) => res[i]!.status !== 403).join(', '));
+    r = await http('GET', '/api/library', UT);
+    check('user cannot list the library (403, admin only)', r.status === 403);
     r = await http('PATCH', `/api/library/${state.library[0]}`, UT, { preinstall: true });
     check('user cannot toggle library preinstall (403)', r.status === 403);
     r = await http('DELETE', `/api/library/${state.library[0]}`, UT);

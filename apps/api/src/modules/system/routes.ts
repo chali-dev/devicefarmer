@@ -10,8 +10,8 @@ import { systemHourly } from './maintenance.js';
 import { getSystemSettings, saveSystemSettings, SYSTEM_DEFAULTS, SystemSettings } from './settings.js';
 
 /**
- * System management (系统管理): backups, system logs and settings are admin only; the connection
- * monitoring panel is RBAC-scoped like the device list.
+ * System management (系统管理): backups, system logs, settings and the connection monitoring panel (连线监控,
+ * admin only since 2026-11-18, including a device's connection history) are admin only.
  */
 export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
   const admin = { preHandler: app.requireAdmin };
@@ -66,11 +66,11 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.get('/api/system/logs/files', admin, async () => ({ files: await listLogFiles() }));
 
-  // ------------------------------------------------------------ connection monitoring (RBAC-scoped)
-  app.get('/api/system/connections', { preHandler: app.authenticate }, async (req) => ({ devices: await connectionPanel(req.user) }));
+  // ------------------------------------------------------------ connection monitoring (admin only)
+  app.get('/api/system/connections', admin, async (req) => ({ devices: await connectionPanel(req.user) }));
 
   app.get('/api/system/connections/:id/history', {
-    preHandler: app.authenticate,
+    ...admin,
     schema: { params: IdParam, querystring: z.object({ hours: z.coerce.number().int().min(1).max(24 * 90).default(24) }) },
   }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');

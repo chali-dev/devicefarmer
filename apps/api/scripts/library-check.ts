@@ -2,7 +2,8 @@
  * App library test (real devices, no mocks): upload an APK into the library (admin only, package and
  * version read from the manifest), then import an installed app from instance A, flag it for preinstall,
  * create instance B and verify it was installed automatically.
- * The preinstall task is in the library's install log (refType library_app, flagged as preinstall).
+ * The preinstall task is in the library's install log (refType library_app, flagged as preinstall). The library is admin
+ * only: a user gets 403 on every /api/library* route.
  * Usage: npx tsx --env-file=../../.env scripts/library-check.ts <test.apk>   (E2E_API / API_PORT for another API)
  */
 import { createHash } from 'node:crypto';
@@ -62,7 +63,14 @@ try {
   const cu = await http('POST', '/api/users', T, { username: uname, password: 'test-pass-123', role: 'user' });
   const UT: string = (await (await fetch(`${API}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(await withCaptcha(API, { username: uname, password: 'test-pass-123' })) })).json()).token;
   up = await upload(UT, apkBytes, 'user.apk');
-  check('non-admin upload refused (403 library.upload_admin_only)', up.status === 403 && up.body?.code === 'library.upload_admin_only');
+  check('non-admin upload refused (403 auth.admin_only)', up.status === 403 && up.body?.code === 'auth.admin_only');
+  // The whole library is admin only (2026-11-18): list, targets, logs, install, import, patch, delete.
+  const userRes = await Promise.all(([
+    ['GET', '/api/library'], ['GET', `/api/library/${u.id}/targets`], ['GET', `/api/library/${u.id}/logs`],
+    ['POST', `/api/library/${u.id}/install`, { instanceIds: [crypto.randomUUID()] }], ['POST', '/api/library/import', { instanceId: crypto.randomUUID(), package: PKG }],
+    ['PATCH', `/api/library/${u.id}`, { preinstall: true }], ['DELETE', `/api/library/${u.id}`],
+  ] as [string, string, unknown?][]).map(([m, p, b]) => http(m, p, UT, b).then((x) => [`${m} ${p}`, x.status] as const)));
+  check('non-admin gets 403 on every other library route', userRes.every(([, st]) => st === 403), userRes.filter(([, st]) => st !== 403).map(([k, st]) => `${k}=${st}`).join(', '));
   await http('DELETE', `/api/users/${cu.body.user.id}`, T);
   // audit writes are fire-and-forget: poll briefly
   const audited = await waitFor('audit entry', async () => ((await http('GET', '/api/audit?action=library.upload&pageSize=5', T)).body?.items ?? []).find((e: any) => String(e.target ?? '').startsWith(PKG)), 10_000).catch(() => null);
