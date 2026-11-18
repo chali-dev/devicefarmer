@@ -120,7 +120,8 @@ export async function readFollowingList(dev: CollectorDevice, acc: Pick<SocialAc
     for (;;) {
       const before = seen.size;
       for (const r of cur.rows) if (!seen.has(r.handle) && seen.size < max) seen.set(r.handle, { handle: r.handle, displayName: r.displayName });
-      const full = tabCount !== null && seen.size >= tabCount;
+      // the tab count only proves completeness while it is exact (≤ max; larger ones may be abbreviated, "1.2万")
+      const full = tabCount !== null && tabCount <= max && seen.size >= tabCount;
       if (cur.end || full) return { entries: [...seen.values()], tabCount, complete: true, capped: false, screens: s.screens, swipes };
       if (seen.size >= max) return { entries: [...seen.values()], tabCount, complete: false, capped: true, screens: s.screens, swipes };
       stalls = seen.size === before ? stalls + 1 : 0;
