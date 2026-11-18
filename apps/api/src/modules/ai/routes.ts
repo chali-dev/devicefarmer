@@ -8,19 +8,16 @@ import { toContentItems } from '../content/content.js';
 import { distribute } from '../publish/publish.js';
 import { toPublishItems } from '../publish/routes.js';
 import { visibleAccount } from '../social/social.js';
-import {
-  AccountDraftSaveInput, AccountDraftsInput, ManualDraftsInput, previewAccountDraft, previewDraft, PreviewInput, PREVIEW_LIMIT, requestAccountDrafts,
-  saveAccountDraft, setAccountDrafts,
-} from './drafts.js';
-import { accountDraftRuns } from './runs.js';
+import { AccountDraftSaveInput, AccountDraftsInput, previewAccountDraft, previewDraft, PreviewInput, PREVIEW_LIMIT, saveAccountDraft } from './drafts.js';
 import { AI_MODELS, AiSettingsInput, getAiSettings, saveAiSettings } from './settings.js';
 
 const Id = z.object({ id: z.string().uuid() });
 
 /**
  * AI 草稿: AI测试 preview (managers of the persona: personal → owner/admin, public → admin; a style test, nothing
- * stored), the daily drafts of a social account and its 立即生成 (owner/admin, others 404) and the admin AI settings (Anthropic key write-only, model, daily hour,
- * on/off).
+ * stored), 「AI生成草稿」 on a social account (preview → save, owner/admin, others 404) and the admin AI settings
+ * (Anthropic key write-only, workspace, model). No daily drafts since 2026-11-18 (owner decision); the task-based
+ * `POST …/ai-drafts/generate` is gone (404).
  */
 export const aiRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
@@ -47,25 +44,14 @@ export const aiRoutes: FastifyPluginAsyncZod = async (app) => {
     }
   });
 
-  /** 社交号 → AI 草稿: on/off, per day, the account's persona and the last daily runs. */
-  app.get('/api/social/accounts/:id/ai-drafts', { schema: { params: Id } }, async (req) => {
-    const a = await visibleAccount(req.user, req.params.id);
-    const s = await getAiSettings();
-    return { enabled: a.aiDraftsEnabled, perDay: a.aiDraftsPerDay, personaId: a.personaId, runs: await accountDraftRuns(a.id), ai: { keySet: s.keySet, hour: s.hour } };
-  });
-
-  app.put('/api/social/accounts/:id/ai-drafts', { schema: { params: Id, body: AccountDraftsInput } }, async (req) => {
-    const a = await setAccountDrafts(await visibleAccount(req.user, req.params.id), req.body);
-    return { enabled: a.aiDraftsEnabled, perDay: a.aiDraftsPerDay, personaId: a.personaId };
-  });
-
-  /** 「AI生成草稿」: drafts for this account now (202 + the account-drafts task; the UI follows it). */
-  app.post('/api/social/accounts/:id/ai-drafts/generate', { schema: { params: Id, body: ManualDraftsInput } }, async (req, reply) => {
-    const a = await visibleAccount(req.user, req.params.id);
-    const task = await requestAccountDrafts(req.user, a, { count: req.body?.count, topic: req.body?.topic });
-    reply.code(202);
-    return { task: { id: task.id, status: task.status } };
-  });
+  /**
+   * LEGACY (the removed daily switch, for a page of an older release): GET answers in the old shape with the switch
+   * off and no runs (the legacy columns are not read), PUT is accepted and ignores its body (nothing written, not
+   * audited). RBAC as before (others 404).
+   */
+  const legacyState = async (a: { personaId: string | null }) => ({ enabled: false, personaId: a.personaId, runs: [], ai: { keySet: (await getAiSettings()).keySet } });
+  app.get('/api/social/accounts/:id/ai-drafts', { schema: { params: Id } }, async (req) => legacyState(await visibleAccount(req.user, req.params.id)));
+  app.put('/api/social/accounts/:id/ai-drafts', { schema: { params: Id, body: AccountDraftsInput } }, async (req) => legacyState(await visibleAccount(req.user, req.params.id)));
 
   /**
    * 「AI生成草稿」 step 1: one draft generated synchronously for this account (≤ 90 s, aborted when the client leaves),

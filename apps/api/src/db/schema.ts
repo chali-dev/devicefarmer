@@ -509,8 +509,8 @@ export const socialAccounts = pgTable('social_accounts', {
    */
   lang: text('lang'),
   /**
-   * 每日 AI 草稿 (modules/ai/drafts.ts): on = the daily `account-drafts` task writes `ai_drafts_per_day` (1..10) drafts
-   * in the account's persona style for its owner, targeting this account. Only with a persona (ai.account_no_persona).
+   * LEGACY (expand/contract): the former 每日 AI 草稿 switch + count of the account. The daily drafts were removed on
+   * 2026-11-18 (owner decision); never read, written or returned since. Drop both columns in a later release.
    */
   aiDraftsEnabled: boolean('ai_drafts_enabled').notNull().default(false),
   aiDraftsPerDay: integer('ai_drafts_per_day').notNull().default(4),
@@ -1151,7 +1151,7 @@ export const trendingItems = pgTable('trending_items', {
 
 /**
  * Origin of an AI draft: the model that served it, the persona, the task and when; `mediaTags` = the model's media keywords.
- * `via`: `account` = an `account-drafts` run of one social account (`accountId`; daily or 立即生成), `preview` = LEGACY
+ * `via`: `account` = 「AI生成草稿」 of one social account (`accountId`; older rows: an `account-drafts` run, daily or 立即生成), `preview` = LEGACY
  * (an AI测试 preview saved by a person; saving was removed on 2026-11-18, older rows keep it).
  */
 export interface ContentAiInfo {
