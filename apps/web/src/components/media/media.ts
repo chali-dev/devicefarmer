@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { ApiError, getToken, responseError } from '../../api/client'
-import type { MediaCropAspect, MediaFormatLimit, MediaItem, MediaLimits, MediaProcessOptions } from '../../api/types'
+import type { ContentMedia, MediaCropAspect, MediaFormatLimit, MediaItem, MediaLimits, MediaProcessOptions } from '../../api/types'
 
 /** <img>/<video> can't send the Authorization header: fetch → Blob (→ object URL). */
 export async function fetchAuthBlob(url: string): Promise<Blob> {
@@ -29,6 +29,11 @@ export function fmtDuration(s: number | null): string {
 export const STATUS_COLOR: Record<MediaItem['status'], string> = { processing: 'processing', ready: 'success', failed: 'error', disabled: 'default' }
 
 /** Thumbnail object URLs keyed by asset id + updatedAt, fetched 4 at a time. */
+/** The fields a content keeps of an asset (content_media item). */
+export const toContentMedia = (m: MediaItem): ContentMedia => ({
+  id: m.id, name: m.name, fileType: m.fileType, status: m.status, ownerType: m.ownerType, width: m.width, height: m.height, duration: m.duration, thumbnailUrl: m.thumbnailUrl,
+})
+
 export function useThumbs() {
   const urls = reactive(new Map<string, string>())
   const failed = new Set<string>()

@@ -398,8 +398,10 @@ export interface Content {
   createdAt: string; updatedAt: string
 }
 export interface ContentAiInfo {
-  /** account = daily run of one social account, preview = AI测试 saved by a person. */
+  /** account = account-drafts run of one social account (daily or 立即生成), preview = LEGACY (an AI测试 saved before 2026-11-18). */
   via?: 'account' | 'preview'; accountId?: string
+  /** 立即生成 with a 主题: the topic the person asked for. */
+  topic?: string
   model: string; requestedModel: string; personaId: string; personaName: string; taskId: string | null; generatedAt: string; mediaTags: string[]
   /** Languages of the target accounts other than Chinese: the draft needs a human translation. */
   needsTranslation?: string[]
@@ -628,13 +630,14 @@ export interface PersonaDraftRun {
   id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null
   created: number | null; skipped?: string | null
 }
-/** POST /api/personas/:id/drafts/preview (AI测试): one draft, nothing stored; `token` saves it within 10 minutes. */
+/** POST /api/personas/:id/drafts/preview {topic?} (AI测试): one draft, a style test, nothing stored. */
 export interface DraftPreview {
   preview: {
     title: string; text: string; body: string; hashtags: string[]; mediaTags: string[]; opening: string | null; closing: string | null
     banned: string[]; model: string; requestedModel: string; fallback: boolean; usage: { input: number; output: number; cacheRead: number }
+    topic: string | null
   }
-  token: string; expiresAt: string; limit: number
+  limit: number
 }
 /** GET /api/social/accounts/:id/ai-drafts (社交号 → AI 草稿). */
 export interface AccountAiDrafts {

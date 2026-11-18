@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { codeText } from '../../api/client'
 import type { FeedComment, FeedPost } from '../../api/types'
 import { DRAWER_WIDTH } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
 import EvidenceModal from './EvidenceModal.vue'
 import FeedActivity from './FeedActivity.vue'
-import FeedCollectBar from './FeedCollectBar.vue'
 import FeedPosts from './FeedPosts.vue'
 import FeedReplyModal, { type ReplyTarget } from './FeedReplyModal.vue'
 import FeedReplyTable from './FeedReplyTable.vue'
@@ -20,7 +20,7 @@ const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null; personaId?: string | null } | null }>()
 const { t } = useI18n()
 const tab = ref<'activity' | 'posts' | 'replies'>('posts')
-const { feed, page, pageSize, loading, collecting, load, collectNow, reset } = useAccountFeed('social')
+const { feed, page, pageSize, loading, load, reset } = useAccountFeed('social')
 
 const rTotal = ref(0)
 const replyTable = ref<InstanceType<typeof FeedReplyTable> | null>(null)
@@ -50,7 +50,8 @@ function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = 
       <a-space v-if="account" :size="6"><PlatformTag :platform="account.platform" /><span>@{{ account.handle }}</span></a-space>
     </template>
     <template v-if="account && feed">
-      <FeedCollectBar :state="feed.collect" :collecting="collecting" @collect="collectNow(account.id)" />
+      <a-alert v-if="feed.collect.unsupported" type="info" show-icon class="note" :message="codeText(feed.collect.unsupported, undefined, t('feed.noDevice'))" />
+      <a-alert v-if="feed.collect.halted" type="warning" show-icon class="note" :message="t('feed.halted')" />
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="activity" :tab="t('feed.tabs.activity')"><FeedActivity :items="feed.activity" /></a-tab-pane>
         <a-tab-pane key="posts" :tab="`${t('feed.tabs.posts')} (${feed.posts.total})`">
@@ -67,3 +68,7 @@ function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = 
   <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="!!feed?.collect.halted" :persona-id="account?.personaId" @done="drafted" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 </template>
+
+<style scoped>
+.note { margin-bottom: 8px; }
+</style>

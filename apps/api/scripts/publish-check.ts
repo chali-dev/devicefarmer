@@ -141,6 +141,50 @@ try {
   check("user cannot attach another user's private media (404 media.not_found)", r.status === 404 && r.body.code === 'media.not_found', r.text.slice(0, 120));
   r = await http('POST', '/api/contents', T, { title: 'x', ownerId: uA, mediaIds: [imgB] });
   check("admin cannot attach B's private media to A's content (400 content.media_not_usable)", r.status === 400 && r.body.code === 'content.media_not_usable', r.text.slice(0, 120));
+
+  // 内容编辑器「上传」: the editor uploads as the content owner's own media (scope mine) and attaches the asset at once,
+  // while it is still processing; publishing waits until it is ready. An admin's own upload can't go on a user's content
+  // (the editor disables 上传 there).
+  {
+    const fd = new FormData();
+    fd.append('scope', 'mine');
+    fd.append('name', `pc-editor-upload-${tag}`);
+    fd.append('process', JSON.stringify({ maxSize: 720, quality: 'low' }));
+    const big = await sharp({ create: { width: 3000, height: 2000, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 40 } } }).png().toBuffer();
+    fd.append('file', new Blob([new Uint8Array(big)], { type: 'image/png' }), 'pc-editor.png');
+    const up = await http('POST', '/api/media/upload', A, fd);
+    const upId: string = up.body?.item?.id;
+    check('editor upload: 201 processing, own private media', up.status === 201 && up.body.item.status === 'processing' && up.body.item.ownerType === 'user', up.text.slice(0, 160));
+    const cr = await http('POST', '/api/contents', A, { title: `pc-${tag} editor upload`, mediaIds: [imgA1, upId] });
+    const cUp = cr.body.content;
+    check('content accepts its own processing media, appended in order', cr.status === 201 && cUp.media.map((m: any) => m.id).join() === [imgA1, upId].join(), cr.text.slice(0, 200));
+    const stillProcessing = cUp?.media?.[1]?.status === 'processing';
+    const d1 = await http('POST', `/api/contents/${cUp.id}/distribute`, A, { targets: [{ accountId: igA, scheduledAt: new Date(Date.now() + 3 * 86400_000).toISOString() }] });
+    if (stillProcessing) check('distribute while the uploaded asset processes → 409 publish.media_not_ready', d1.status === 409 && d1.body.code === 'publish.media_not_ready', d1.text.slice(0, 160));
+    else {
+      console.log(`  (asset was already ready when the content was created: media_not_ready not exercised, distribute ${d1.status})`);
+      for (const tk of d1.body?.created ?? []) await http('POST', `/api/publish/tasks/${tk.id}/cancel`, A);
+    }
+    const ready = await waitFor('editor upload ready', async () => { const g = await http('GET', `/api/media/${upId}`, A); return g.body.item.status === 'ready' ? g.body.item : null; }, 90_000);
+    check('GET /api/media/:id (the editor polls it) → ready with a thumbnail, 720p', Boolean(ready.thumbnailUrl) && Math.min(ready.width, ready.height) === 720, `${ready.width}×${ready.height}`);
+    const cg = await http('GET', `/api/contents/${cUp.id}`, A);
+    check('content media shows the asset ready afterwards', cg.body.content.media[1]?.status === 'ready');
+    if (stillProcessing) {
+      const d2 = await http('POST', `/api/contents/${cUp.id}/distribute`, A, { targets: [{ accountId: igA, scheduledAt: new Date(Date.now() + 3 * 86400_000).toISOString() }] });
+      check('distribute once ready → 201', d2.status === 201, d2.text.slice(0, 160));
+      for (const tk of d2.body?.created ?? []) await http('POST', `/api/publish/tasks/${tk.id}/cancel`, A);
+    }
+    const del = await http('DELETE', `/api/contents/${cUp.id}`, A);
+    check('content with the uploaded asset deleted (publish task cancelled)', del.status === 200 || del.status === 204, del.text.slice(0, 120));
+    const adminUp = new FormData();
+    adminUp.append('scope', 'mine');
+    adminUp.append('file', new Blob([new Uint8Array(await png(77))], { type: 'image/png' }), 'pc-admin.png');
+    const au = await http('POST', '/api/media/upload', T, adminUp);
+    const ac = await http('POST', '/api/contents', T, { title: 'x', ownerId: uA, mediaIds: [au.body.item.id] });
+    check("admin's own upload on A's content → 400 content.media_not_usable (editor disables 上传)", ac.status === 400 && ac.body.code === 'content.media_not_usable', ac.text.slice(0, 120));
+    await waitFor('admin upload settled', async () => ['ready', 'failed'].includes((await http('GET', `/api/media/${au.body.item.id}`, T)).body.item.status), 90_000);
+    await http('DELETE', `/api/media/${au.body.item.id}`, T);
+  }
   const catLaunch = (await http('POST', '/api/content-categories', A, { scope: 'mine', name: 'Launch' })).body.category;
   const catVideo = (await http('POST', '/api/content-categories', A, { scope: 'mine', name: 'Video' })).body.category;
   r = await http('POST', '/api/contents', A, {

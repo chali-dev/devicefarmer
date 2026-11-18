@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
-import { computed, h, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -10,7 +10,7 @@ import { langName } from '../api/lang'
 import {
   AI_DRAFT_TAG, CONTENT_STATUSES, PUBLISH_UNFINISHED,
   type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentLanguages, type ContentTranslation, type ManagedUser, type PostType, type PublishTaskItem,
-  type SocialAccount,
+  type MediaItem, type SocialAccount,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
@@ -22,6 +22,7 @@ import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import VNodes from '../components/common/VNodes'
 import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
+import ContentMediaUpload from '../components/content/ContentMediaUpload.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
 import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
@@ -30,6 +31,7 @@ import PhonePreview from '../components/content/PhonePreview.vue'
 import PlatformTextTabs, { type TextTab } from '../components/content/PlatformTextTabs.vue'
 import TemplateInsert from '../components/content/TemplateInsert.vue'
 import PersonaCard from '../components/comments/PersonaCard.vue'
+import { toContentMedia } from '../components/media/media'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { platformName, textField, textMax } from '../components/social/platformMeta'
@@ -365,6 +367,37 @@ const editorPersonas = computed(() => [...new Set([
 ])])
 const personaText = computed(() => [form.title, ...Object.values(form.texts), ...(currentTr.value ? [currentTr.value.title, ...Object.values(currentTr.value.texts)] : [])].join('\n'))
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
+
+/**
+ * 上传: the editor uploads into the caller's personal media; a content may only use its owner's private media
+ * (content.media_not_usable), so it is blocked with a hint on someone else's content. New assets are appended in order
+ * while they are still processing (the API accepts that; publishing waits for ready: publish.media_not_ready) and are
+ * polled until the media-process task has finished.
+ */
+const MAX_MEDIA = 20
+const uploadBlocked = computed(() => (targetOwner.value && targetOwner.value !== myId.value ? t('content.uploadOtherOwner') : ''))
+function onUploaded(items: ContentMedia[]) {
+  const fresh = items.filter((p) => !form.media.some((m) => m.id === p.id))
+  const room = Math.max(0, MAX_MEDIA - form.media.length)
+  if (fresh.length > room) message.warning(t('content.uploadOverLimit', { max: MAX_MEDIA, n: fresh.length - room }))
+  form.media = [...form.media, ...fresh.slice(0, room)]
+}
+const processingMedia = computed(() => form.media.filter((m) => m.status === 'processing').map((m) => m.id))
+let mediaPoll: ReturnType<typeof setTimeout> | undefined
+function scheduleMediaPoll() {
+  clearTimeout(mediaPoll)
+  if (editorOpen.value && processingMedia.value.length) mediaPoll = setTimeout(() => void pollMedia(), 3000)
+}
+async function pollMedia() {
+  const fresh = await Promise.all(processingMedia.value.map((id) => api<{ item: MediaItem }>('GET', `/api/media/${id}`).then((r) => r.item).catch(() => null)))
+  const done = fresh.filter((x): x is MediaItem => Boolean(x) && x!.status !== 'processing')
+  if (!editorOpen.value) return
+  if (!done.length) { scheduleMediaPoll(); return }
+  form.media = form.media.map((m) => { const d = done.find((x) => x.id === m.id); return d ? toContentMedia(d) : m })
+  for (const d of done) if (d.status === 'failed') message.error(t('content.uploadFailed', { name: d.name, error: d.error ?? '' }))
+}
+watch([processingMedia, editorOpen], scheduleMediaPoll)
+onBeforeUnmount(() => clearTimeout(mediaPoll))
 
 /** Saves the editor; resolves to the saved content, or null when validation or a request failed (already shown). */
 async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
@@ -722,7 +755,12 @@ async function submitBatchForm() {
       </a-row>
       <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
-        <a-button style="margin-top: 8px" :disabled="form.media.length >= 20" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
+        <a-space style="margin-top: 8px" wrap>
+          <a-button :disabled="form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
+          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" @uploaded="onUploaded" />
+        </a-space>
+        <div v-if="uploadBlocked" class="muted small media-hint">{{ uploadBlocked }}</div>
+        <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
       </a-form-item>
     </a-form>
 
@@ -795,6 +833,7 @@ async function submitBatchForm() {
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 .new-category { display: flex; gap: 4px; padding: 4px 8px; }
+.media-hint { margin-top: 4px; }
 .status-tabs { margin-bottom: 4px; }
 .tab-count { color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
 .only-tag { margin-bottom: var(--cp-gap); }

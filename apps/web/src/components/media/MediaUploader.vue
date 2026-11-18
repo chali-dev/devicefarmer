@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { CloudUploadOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../../api/client'
-import type { MediaCategory, MediaLimits, MediaProcessOptions } from '../../api/types'
+import type { MediaCategory, MediaItem, MediaLimits, MediaProcessOptions } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
 import MediaEditor from './MediaEditor.vue'
 import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFields, precheck, processOptions, xhrUpload, type PendingFile, type UploadMeta } from './media'
@@ -12,15 +12,19 @@ import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFiel
  * Multi-file upload: drag & drop / picker → nothing is sent yet; the files open in MediaEditor
  * (crop, size, quality, preview; name, category, tags). 保存 there queues the file here: 2 parallel XHRs with progress,
  * retry. Crop/compress itself runs on the server (media-process job) with the chosen options.
+ * `uploaded` fires when the queue is idle again, with the assets uploaded since the last time, in the order they were saved
+ * (still `processing`).
  */
 const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
 const open = defineModel<boolean>('open', { required: true })
-const emit = defineEmits<{ uploaded: []; categoriesChanged: [] }>()
+const emit = defineEmits<{ uploaded: [items: MediaItem[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
 
 interface Entry {
   uid: number; file: File; process: MediaProcessOptions | null; meta: UploadMeta | null
   state: 'waiting' | 'uploading' | 'done' | 'error'; pct: number; error: string; abort?: () => void
+  /** The created asset once uploaded; `reported` once it was passed on with `uploaded`. */
+  item?: MediaItem; reported?: boolean
 }
 const entries = ref<Entry[]>([])
 const pending = ref<PendingFile[]>([])
@@ -81,7 +85,7 @@ async function start(e: Entry) {
   const up = xhrUpload(fields, e.file, (p) => { e.pct = p })
   e.abort = up.abort
   try {
-    await up.promise
+    e.item = await up.promise
     e.state = 'done'
   } catch (err) {
     e.state = 'error'
@@ -89,7 +93,11 @@ async function start(e: Entry) {
   } finally {
     e.abort = undefined
     pump()
-    if (!stats.value.busy && stats.value.done) emit('uploaded')
+    if (!stats.value.busy) {
+      const fresh = entries.value.filter((x) => x.state === 'done' && x.item && !x.reported)
+      for (const x of fresh) x.reported = true
+      if (fresh.length) emit('uploaded', fresh.map((x) => x.item!))
+    }
   }
 }
 

@@ -7,7 +7,6 @@ import { api, errorText } from '../../api/client'
 import type { PersonaDetail, PersonaExample, PersonaLengths, PersonaVoice, TemplateKind } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
-import DraftPreviewModal from './DraftPreviewModal.vue'
 import PersonaVoiceFields from './PersonaVoiceFields.vue'
 import { forgetPersona, type VoiceForm } from './persona'
 
@@ -16,8 +15,8 @@ import { forgetPersona, type VoiceForm } from './persona'
  * 基本 = name, 一句话定位, 常聊话题, 禁用词 (checked on posts and comments);
  * 发文风格 = tone preset + note, emoji, length (post range), hashtags, fixed opening/closing, 更多 (audience, notes) and
  * the 发文范例; 评论风格 = tone + note, emoji, length (comment range) and the 评论范例 (范例 = templates of the persona,
- * ≤ 20 per kind, edited in place one by one); AI测试 = a preview of one draft in the saved 发文风格 (DraftPreviewModal,
- * nothing stored unless 保存为草稿). How many drafts a day is set per social account (社交号 → AI 草稿), not here.
+ * ≤ 20 per kind, edited in place one by one). AI测试 is only the 人设页 row action (DraftPreviewModal: a style test with
+ * an optional 主题, never stored; owner 2026-11-18: not repeated in the form). How many drafts a day is set per social account (社交号 → AI 草稿), not here.
  * No language: it belongs to the social account.
  * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one): 范例 can be written right
  * away and are created with the persona in one request (POST /api/personas `examples`, one transaction); after creating,
@@ -35,7 +34,6 @@ const id = ref<string | null>(null)
 const detail = ref<PersonaDetail | null>(null)
 const loading = ref(false)
 const saving = ref(false)
-const previewOpen = ref(false)
 const noteOf = (tone: PersonaVoice['tone']) => t(`personas.toneNotes.${tone}`)
 const voiceOf = (v?: PersonaVoice): VoiceForm => ({
   tone: v?.tone ?? 'casual', toneNote: v ? v.toneNote ?? noteOf(v.tone) : noteOf('casual'), emoji: v?.emoji ?? 'medium', length: v?.length ?? 'medium',
@@ -213,12 +211,6 @@ function removeExample(kind: TemplateKind, i: number) {
           </a-collapse>
         </template>
 
-        <!-- AI测试: preview only (per-day drafts are set on the social accounts) -->
-        <a-divider orientation="left" plain>{{ t('personas.form.ai') }}</a-divider>
-        <div class="ai-row">
-          <a-button size="small" :disabled="!id" @click="previewOpen = true">{{ t('personas.aiTest') }}</a-button>
-          <span class="muted small">{{ id ? t('personas.form.aiHint') : t('personas.form.aiAfterSave') }}</span>
-        </div>
       </a-form>
     </a-spin>
     <template #footer>
@@ -228,11 +220,9 @@ function removeExample(kind: TemplateKind, i: number) {
       </a-space>
     </template>
   </a-drawer>
-  <DraftPreviewModal v-model:open="previewOpen" :persona-id="id" :persona-name="form.name" />
 </template>
 
 <style scoped>
 .sections :deep(.ant-collapse-header) { padding-inline-start: 0 !important; }
 .ex-row { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; }
-.ai-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 </style>

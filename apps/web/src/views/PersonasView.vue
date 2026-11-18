@@ -18,7 +18,7 @@ import { useAuthStore } from '../stores/auth'
 /**
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
  * (账号人设 accounts → /social; 范例 count → opens the form, the 话术库 page /scripts was removed 2026-11-18) and its
- * 发文/评论 tone; row actions 编辑 / AI测试 (preview of one draft, nothing stored unless 保存为草稿: DraftPreviewModal) / 更多.
+ * 发文/评论 tone; row actions 编辑 / AI测试 (preview of one draft, a style test, never stored: DraftPreviewModal) / 更多.
  * `?edit=<id>` opens the form of that persona (插入话术 links here). 复制到我的人设 on every row (any visible persona → a
  * personal copy with all 范例; admins pick the owner in the 全部用户 tab), then the copy's form opens.
  * Daily AI drafts are set per social account (社交号 → AI 草稿), not on personas. Public personas are managed by admins; personal ones by their owner (admins: all).
