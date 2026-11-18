@@ -15,9 +15,11 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
 
 /**
  * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
- * device + login status), the schedule, and per-account fine-tuning: each account's title/caption/hashtags/privacy/time
+ * device + login status), the schedule, and per-account fine-tuning: each account's title/caption/privacy/time
  * start as the values the task would get anyway (content texts for its platform, the unified time) and follow them
  * until edited; only edited fields are sent as overrides, so an untouched account publishes exactly as without them.
+ * No separate hashtags field (owner 2026-11-18): hashtags are written in the caption text itself; the API still accepts
+ * `hashtags` from an older page, this one never sends them.
  * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
  * The content's 发布目标 (default target accounts) are preselected, except accounts this content was already
  * published to (tagged 已发布); checking one of those re-publishes (`republish` is sent only then).
@@ -39,7 +41,7 @@ const platforms = ref<PublishPlatform[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const selected = ref<string[]>([])
-interface Override { title: string; hashtags: string[]; privacy: string | undefined; at: Dayjs | null }
+interface Override { title: string; privacy: string | undefined; at: Dayjs | null }
 const overrides = reactive<Record<string, Override>>({})
 /** Per-account caption (starts as the content's text for that platform); one tab per selected account. */
 const captions = reactive<Record<string, string>>({})
@@ -127,14 +129,13 @@ const postTypes = computed(() => {
   return POST_TYPES.filter((pt) => platforms.value.some((p) => ids.has(p.id) && p.postTypes.includes(pt)))
 })
 const accountById = (id: string) => accounts.value.find((a) => a.id === id)
-/** Phone preview of the account tab shown below: its caption + hashtags (stories: none), starting at the chosen post type. */
+/** Phone preview of the account tab shown below: its caption (stories: none), starting at the chosen post type. */
 const previewType = ref<PostType>('feed')
 watch(() => form.postType, (v) => { previewType.value = v }, { immediate: true })
 const previewText = computed(() => {
   const id = accountTab.value
   if (!id || !hasCaption(id)) return ''
-  const tags = (overrides[id]?.hashtags ?? []).map((x) => (x.startsWith('#') ? x : `#${x}`)).join(' ')
-  return [captions[id] ?? '', tags].filter((x) => x.trim()).join('\n\n')
+  return captions[id] ?? ''
 })
 const noCaption = computed(() => selected.value.some((id) => !hasCaption(id)))
 // Changing the type drops accounts whose platform no longer fits.
@@ -150,7 +151,7 @@ function toggle(id: string, on: boolean) {
   if (on && !selected.value.includes(id)) {
     selected.value = [...selected.value, id]
     const platform = accountById(id)?.platform ?? ''
-    overrides[id] ??= { title: defaultTitle(id), hashtags: [], privacy: defaultPrivacy(platform), at: commonAt.value }
+    overrides[id] ??= { title: defaultTitle(id), privacy: defaultPrivacy(platform), at: commonAt.value }
     captions[id] ??= defaultCaption(id)
     accountTab.value = id
   } else if (!on) selected.value = selected.value.filter((x) => x !== id)
@@ -194,7 +195,7 @@ const defaultPrivacy = (platform: string) => (capOf(platform)?.privacy ? str((pr
 const missingLangAccounts = computed(() => selected.value.filter((id) => textsOf(id).missing))
 const langLabel = (l: string | null) => (l ? `${langName(l)} (${l})` : t('distribute.lang.unknown'))
 
-type Field = 'title' | 'caption' | 'hashtags' | 'privacy' | 'at'
+type Field = 'title' | 'caption' | 'privacy' | 'at'
 /** Which fields of an account differ from what it inherits (only those are sent). */
 function edited(id: string): Record<Field, boolean> {
   const o = overrides[id]!
@@ -202,7 +203,6 @@ function edited(id: string): Record<Field, boolean> {
   return {
     title: !!o.title.trim() && o.title.trim() !== defaultTitle(id).trim(),
     caption: (captions[id] ?? '') !== defaultCaption(id),
-    hashtags: o.hashtags.length > 0,
     privacy: o.privacy !== defaultPrivacy(platform),
     at: !sameAt(o.at, commonAt.value),
   }
@@ -212,7 +212,6 @@ function restore(id: string, field: Field) {
   const platform = accountById(id)?.platform ?? ''
   if (field === 'title') o.title = defaultTitle(id)
   else if (field === 'caption') captions[id] = defaultCaption(id)
-  else if (field === 'hashtags') o.hashtags = []
   else if (field === 'privacy') o.privacy = defaultPrivacy(platform)
   else o.at = commonAt.value
 }
@@ -238,7 +237,6 @@ async function submit() {
         accountId: id,
         ...(e.title ? { title: o.title.trim() } : {}),
         ...(text && e.caption ? { caption: captions[id] } : {}),
-        ...(text && e.hashtags ? { hashtags: o.hashtags } : {}),
         ...(e.privacy && o.privacy ? { options: { privacy: o.privacy } } : {}),
         scheduledAt: at ? at.toISOString() : null,
         ...(form.postType !== 'feed' ? { postType: form.postType } : {}),
@@ -321,10 +319,6 @@ async function submit() {
               <a-form-item v-if="capOf(tab.platform ?? '')?.title">
                 <template #label>{{ t('distribute.titleOverride') }}<EditedMark :show="edited(tab.key).title" @restore="restore(tab.key, 'title')" /></template>
                 <a-input v-model:value="overrides[tab.key]!.title" :maxlength="capOf(tab.platform ?? '')!.title!.max" :placeholder="defaultTitle(tab.key)" />
-              </a-form-item>
-              <a-form-item v-if="tab.text !== false">
-                <template #label>{{ t('distribute.hashtags') }}<EditedMark :show="edited(tab.key).hashtags" @restore="restore(tab.key, 'hashtags')" /></template>
-                <a-select v-model:value="overrides[tab.key]!.hashtags" mode="tags" :placeholder="t('distribute.hashtagsPlaceholder')" :token-separators="[',', ' ']" />
               </a-form-item>
               <a-row :gutter="12">
                 <a-col v-if="capOf(tab.platform ?? '')?.privacy" :xs="24" :sm="12">
