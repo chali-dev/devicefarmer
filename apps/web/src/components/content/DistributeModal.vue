@@ -10,6 +10,7 @@ import { useInstancesStore } from '../../stores/instances'
 import StatusTag from '../common/StatusTag.vue'
 import { MODAL_WIDTH } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
+import PhonePreview from './PhonePreview.vue'
 import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
 
 /**
@@ -22,6 +23,8 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
  * published to (tagged 已发布); checking one of those re-publishes (`republish` is sent only then).
  * Languages: each account publishes the content's translation in its 账号语言, else the Chinese source (shown per
  * account, with a warning when its language has no translation); its inherited title/caption follow that language.
+ * Nothing is queued until the person presses 发布 / 定时发布 here (draft first, 2026-11-18): the phone preview shows the
+ * selected account's post as it will be shared, and the notice says the cloud phone really posts it (no test mode).
  */
 const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
@@ -121,6 +124,15 @@ const postTypes = computed(() => {
   return POST_TYPES.filter((pt) => platforms.value.some((p) => ids.has(p.id) && p.postTypes.includes(pt)))
 })
 const accountById = (id: string) => accounts.value.find((a) => a.id === id)
+/** Phone preview of the account tab shown below: its caption + hashtags (stories: none), starting at the chosen post type. */
+const previewType = ref<PostType>('feed')
+watch(() => form.postType, (v) => { previewType.value = v }, { immediate: true })
+const previewText = computed(() => {
+  const id = accountTab.value
+  if (!id || !hasCaption(id)) return ''
+  const tags = (overrides[id]?.hashtags ?? []).map((x) => (x.startsWith('#') ? x : `#${x}`)).join(' ')
+  return [captions[id] ?? '', tags].filter((x) => x.trim()).join('\n\n')
+})
 const noCaption = computed(() => selected.value.some((id) => !hasCaption(id)))
 // Changing the type drops accounts whose platform no longer fits.
 watch(() => form.postType, () => { selected.value = selected.value.filter((id) => !incompatible(accountById(id)?.platform ?? '')) })
@@ -289,6 +301,9 @@ async function submit() {
       </div>
 
       <template v-if="selected.length">
+        <a-divider orientation="left" plain>{{ t('distribute.preview') }}</a-divider>
+        <a-alert type="warning" show-icon class="prefill" :message="t('distribute.liveNotice')" />
+        <div class="preview"><PhonePreview v-model:mode="previewType" :media="content?.media ?? []" :text="previewText" :handle="accountById(accountTab)?.handle ?? null" /></div>
         <a-divider orientation="left" plain>{{ t('distribute.overrides') }}</a-divider>
         <div class="muted small prefill">{{ t('distribute.overridesHint') }}</div>
         <a-alert v-if="missingLangAccounts.length" type="warning" show-icon class="prefill"
@@ -335,6 +350,7 @@ async function submit() {
 
 <style scoped>
 .group { margin-bottom: 12px; }
+.preview { display: flex; justify-content: center; }
 .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .acc { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-radius: var(--cp-radius); }
 .acc:hover { background: var(--cp-bg-hover); }

@@ -1,8 +1,10 @@
 /**
  * 评论追踪账号的帖子 on a real cloud phone (owner decision 2026-11-18): an own Instagram account comments on / replies
  * under a tracked account's post, sent by that account's cloud phone. Real API, DB, BullMQ, adb, STF and the real
- * Instagram app on the BitBrowser phone bit-ins-02 (no mocks). TEST MODE ONLY: the script refuses to start when the
- * comment rules say testMode=false; nothing is ever posted (paste → read back → clear → back).
+ * Instagram app on the BitBrowser phone bit-ins-02 (no mocks). Since 2026-11-18 there is no test mode (draft first): a
+ * scheduled comment is really posted, so this script only collects (read only) and then saves the 「评论」 / 「回复」 as
+ * DRAFTS, checks what is shown before 排程 (account, phone, target, text), finds no send task and deletes the drafts.
+ * Nothing is scheduled, nothing is pasted or posted. Live sending is tested by the owner himself, by hand.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/tracked-comment-device-check.ts
  *
@@ -11,17 +13,14 @@
  * opens a second tunnel. It does NOT take the main API's device lock (never touches the main Redis): check that the
  * main API has nothing scheduled on the phone before running. A scrcpy viewer on the phone stops the script.
  *
- * Budget: 4 Instagram visits (deep links): natgeo collected as a tracked account with 1 post (profile + the post;
- * plus the grid tap that reveals the media ids), then 1. 「评论」 rehearsal on that post with the own account
- * (post → own account check via the session id → comments → field → paste → read back → clear → back) and 2. 「回复」
- * rehearsal on its first comment (… → the comment's 回复 → paste → read back → clear → cancel → back). Both end
- * dry_run. End: launcher, no dump left, the clipboard overwritten with a space (the test text doesn't stay on it).
+ * Budget: 2 Instagram visits (deep links): natgeo collected as a tracked account with 1 post (profile + the post;
+ * plus the grid tap that reveals the media ids). End: launcher, keyboard hidden, no dump left.
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { activeStorage } from '../src/modules/settings/storage.js';
-import { adb, stf } from '../src/services.js';
+import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -29,7 +28,7 @@ const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
 const OWN_HANDLE = process.env.OWN_HANDLE ?? 'conchadoroperto650';
 const OWN_ID = process.env.OWN_EXTERNAL_ID ?? '78090361572';
 const TRACKED = process.env.TRACKED_HANDLE ?? 'natgeo';
-const MAX_VISITS = 4;
+const MAX_VISITS = 2;
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
 async function http<T = any>(method: string, path: string, token: string | null, body?: unknown) {
@@ -79,9 +78,6 @@ try {
   // ---------------------------------------------------------------- preconditions (read only)
   const serial = adb.serialFor(BIT_PORT);
   if ((await adb.states()).get(serial) !== 'device') throw new Error(`${serial} is not attached: bit-ins-02 is off or the main API's tunnel is down — stopping before anything touches it`);
-  const rules = (await http('GET', '/api/comments/settings', admin)).body.rules;
-  if (rules?.testMode !== true) throw new Error('comment rules say testMode=false: this script only runs in test mode');
-  check('test mode is ON (nothing will be posted)', true);
   const procs = await adb.shell(BIT_PORT, 'ps -A -o ARGS | grep -c "[s]crcpy"; dumpsys activity activities | grep " ResumedActivity"');
   if (Number(procs.trim().split('\n')[0]) > 0) throw new Error('a scrcpy viewer is on the phone (someone is watching it): stopping');
   console.log(`   phone before: ${procs.trim().split('\n')[1]?.trim().slice(0, 140)}`);
@@ -97,9 +93,8 @@ try {
   }).returning();
   extRows.push({ source: src!.id, instance: phone!.id });
   await db.insert(schema.instanceGrants).values({ userId: userIds[0]!, instanceId: phone!.id }).onConflictDoNothing();
-  check('pace 10 s, schedules off, 1 post / 5 comments, no gap between the two rehearsals, collector = the phone', (await Promise.all([
+  check('pace 10 s, schedules off, 1 post / 5 comments, collector = the phone', (await Promise.all([
     http('PUT', '/api/risk/settings', admin, { minIntervalSec: 10, maxPerHour: 60, accountCheckHours: null, feedCollectHours: null, feedPosts: 1, feedCommentsPerPost: 5 }),
-    http('PUT', '/api/comments/settings', admin, { minGapSec: 0 }),
     http('PUT', '/api/settings/tracked-collectors/instagram', admin, { instanceId: phone!.id }),
   ])).every((x) => x.status === 200));
   const tr = await http('POST', '/api/tracked-accounts', U, { input: TRACKED, platform: 'instagram', refreshIntervalHours: null });
@@ -123,51 +118,38 @@ try {
   const comments = post ? await db.select().from(schema.trackedPostComments).where(eq(schema.trackedPostComments.trackedPostId, post.id)) : [];
   const first = comments.filter((c) => !!c.authorHandle).sort((a, b) => (a.position ?? 99) - (b.position ?? 99))[0];
   check(`natgeo collected: 1 post (${post?.url}), ${comments.length} comments`, run1.final.status === 'success' && !!post && !!first, `${run1.final.status} ${run1.final.errorCode}`);
-  if (!post || !first) throw new Error('collection failed: stopping before the rehearsals');
+  if (!post || !first) throw new Error('collection failed: stopping before the drafts');
 
   // ---------------------------------------------------------------- account choice
   r = await http('GET', `/api/tracked-accounts/${tracked.id}/reply-accounts`, U);
   check(`account choice offers @${OWN_HANDLE} on the phone`, r.body.items?.length === 1 && r.body.items[0].id === own.id && r.body.items[0].instance.id === phone!.id, r.text);
 
-  // ---------------------------------------------------------------- 1. 「评论」 rehearsal on the tracked post (1 visit)
+  // ---------------------------------------------------------------- 1. 「评论」 / 「回复」 saved as drafts, checked before 排程 (no phone)
+  // Draft first, no test mode (owner decision 2026-11-18): a scheduled comment would really be posted, so this script
+  // never schedules (POST …/submit) anything. It checks what the person sees before 排程, then deletes the drafts.
   const text1 = `测试评论 tracked ✨ ${tag}`;
-  since = new Date(Date.now() - 2000);
   r = await http('POST', `/api/tracked-accounts/${tracked.id}/posts/${post.id}/comments`, U, { accountId: own.id, text: text1 });
-  check('评论 scheduled (now)', r.status === 201 && r.body.reply.status === 'scheduled', r.text);
   const id1 = r.body.reply?.id;
-  const run2 = await waitTask('comment-reply', id1, since);
-  const [rep1] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, id1));
-  const l2 = await logsOf(run2.all.map((x) => x.id));
-  visits += l2.filter((l) => l.message === 'reply: post opened').length;
-  if (rep1?.evidence?.key) evidenceKeys.push(rep1.evidence.key);
-  for (const l of l2) console.log(`     · ${l.level} ${l.message}`);
-  check('评论 → dry_run (method device), read back = the text exactly, field cleared, not sent', rep1?.status === 'dry_run' && rep1.method === 'device' && rep1.sentAt === null
-    && rep1.evidence?.inputText === text1 && l2.some((l) => l.message === 'reply: test mode, not sent; field cleared'), `${rep1?.status} ${rep1?.errorCode} ${rep1?.error} "${rep1?.evidence?.inputText}"`);
-  if (rep1?.status !== 'dry_run') throw new Error('comment rehearsal failed: stopping before the reply');
-
-  // ---------------------------------------------------------------- 2. 「回复」 rehearsal on its first comment (1 visit)
+  check('评论 saved as a draft (not scheduled)', r.status === 201 && r.body.reply.status === 'draft', r.text);
   const text2 = `测试回复 tracked 🙂 ${tag}`;
-  since = new Date(Date.now() - 2000);
   r = await http('POST', `/api/tracked-accounts/${tracked.id}/posts/${post.id}/comments/${first.id}/replies`, U, { accountId: own.id, text: text2 });
-  check(`回复 @${first.authorHandle} scheduled (now)`, r.status === 201 && r.body.reply.status === 'scheduled', r.text);
   const id2 = r.body.reply?.id;
-  const run3 = await waitTask('comment-reply', id2, since);
-  const [rep2] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, id2));
-  const l3 = await logsOf(run3.all.map((x) => x.id));
-  visits += l3.filter((l) => l.message === 'reply: post opened').length;
-  if (rep2?.evidence?.key) evidenceKeys.push(rep2.evidence.key);
-  for (const l of l3) console.log(`     · ${l.level} ${l.message}`);
-  check('回复 → dry_run, read back = "@author " + the text, replying to that comment, field cleared', rep2?.status === 'dry_run' && rep2.method === 'device'
-    && (rep2.evidence?.inputText ?? '').endsWith(text2) && (rep2.evidence?.inputText ?? '').toLowerCase().startsWith(`@${first.authorHandle!.toLowerCase()}`)
-    && ['reply: replying to the comment', 'reply: text pasted and read back', 'reply: test mode, not sent; field cleared'].every((m) => l3.some((l) => l.message === m)),
-  `${rep2?.status} ${rep2?.errorCode} ${rep2?.error} "${rep2?.evidence?.inputText}"`);
-  const ev = await http('GET', `/api/comment-replies/${id2}/evidence`, U);
-  check('screenshot evidence stored (PNG)', ev.status === 200 && ev.type.startsWith('image/png'), `${ev.status} ${ev.buf.length} bytes`);
-
-  // ---------------------------------------------------------------- records on both sides
-  r = await http('GET', `/api/comment-replies?trackedAccountId=${tracked.id}`, U);
-  const r2 = await http('GET', `/api/comment-replies?accountId=${own.id}`, U);
-  check('回复记录: both dry runs in the tracked account\'s list and in the own account\'s list', r.body.total === 2 && r2.body.items?.filter((x: any) => x.trackedPost?.handle === TRACKED).length === 2, `${r.body.total} ${r2.body.total}`);
+  check(`回复 @${first.authorHandle} saved as a draft (not scheduled)`, r.status === 201 && r.body.reply.status === 'draft', r.text);
+  const tasks = await db.select().from(T).where(and(eq(T.type, 'comment-reply'), inArray(T.refId, [id1, id2].filter(Boolean))));
+  check('no send task exists for either draft (nothing reaches the phone)', tasks.length === 0, String(tasks.length));
+  // 排程前校验: what ReplyScheduleModal shows (account, phone, to whom / under which post, text)
+  const [p1, p2] = await Promise.all([http('GET', `/api/comment-replies/${id1}`, U), http('GET', `/api/comment-replies/${id2}`, U)]);
+  const a = p1.body.reply;
+  const b = p2.body.reply;
+  check('preview of the post comment: own account, its phone (online), the tracked post (handle + link), the text',
+    a?.account?.handle === OWN_HANDLE && a.instance?.id === phone!.id && a.instance.online === true && a.trackedPost?.handle === TRACKED && a.trackedPost.permalink === post.url && a.text === text1 && a.canEdit === true,
+    JSON.stringify(a).slice(0, 300));
+  check('preview of the reply: the tracked comment replied to (author + text) and the text',
+    b?.trackedComment?.authorHandle === first.authorHandle && b.trackedComment.text === first.text && b.text === text2 && b.instance?.id === phone!.id, JSON.stringify(b).slice(0, 300));
+  r = await http('GET', `/api/comment-replies?trackedAccountId=${tracked.id}&status=draft`, U);
+  check('回复记录 (tracked account, filter 草稿): both drafts', r.body.total === 2, r.text.slice(0, 200));
+  const del = await Promise.all([http('DELETE', `/api/comment-replies/${id1}`, U), http('DELETE', `/api/comment-replies/${id2}`, U)]);
+  check('both drafts deleted (204), never scheduled', del.every((x) => x.status === 204), del.map((x) => x.status).join(','));
 } catch (err) {
   check(`stopped: ${(err as Error).message}`, false);
 } finally {
@@ -177,14 +159,6 @@ try {
     const after = await adb.shell(BIT_PORT, 'dumpsys activity activities | grep " ResumedActivity"; dumpsys input_method | grep -c "mInputShown=true"; ls /data/local/tmp').catch((e) => String(e));
     const lines = after.trim().split('\n');
     check('phone back on the launcher, keyboard hidden, no dump file left', /Launcher/i.test(lines[0] ?? '') && lines[1]?.trim() === '0' && !/cp-ig-.*\.xml/.test(after), lines.slice(0, 2).join(' | ').slice(0, 200));
-    // The test text stays on the device clipboard after STF's paste: overwrite it with a space while the launcher is
-    // in front and no field is focused (the paste key then goes nowhere).
-    if (/Launcher/i.test(lines[0] ?? '') && lines[1]?.trim() === '0') {
-      const dev = await stf.getDevice(adb.serialFor(BIT_PORT)).catch(() => null);
-      if (dev?.channel) {
-        await stf.paste(dev.channel, ' ').then(() => check('clipboard overwritten with a space (test text no longer on it)', true)).catch((e) => check('clipboard overwrite', false, String(e)));
-      } else check('clipboard overwrite: STF channel unavailable', false);
-    }
   }
   await db.update(T).set({ status: 'cancelled', finishedAt: new Date() }).where(and(inArray(T.status, ['pending', 'scheduled']), sql`${T.createdAt} >= ${t0.toISOString()}::timestamptz`));
   for (const k of evidenceKeys) await (await activeStorage()).delete(k).catch(() => undefined);

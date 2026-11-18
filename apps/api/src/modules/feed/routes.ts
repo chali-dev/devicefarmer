@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { Comment, CommentTask, Task } from '../../db/schema.js';
 import { notFound } from '../../lib/errors.js';
-import { createPostComment, createTrackedComment, getRules, replyAccountFor, visibleReply } from '../comments/comments.js';
+import { createPostComment, createTrackedComment, replyAccountFor, visibleReply } from '../comments/comments.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { platformById } from '../social/platforms.js';
@@ -159,15 +159,14 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     const acc = await visibleAccount(req.user, req.params.id);
     const q = req.query;
     const P = schema.socialAccountPosts;
-    const [runs, rules, posts, [ptotal], stats, newPosts, replies] = await Promise.all([
+    const [runs, posts, [ptotal], stats, newPosts, replies] = await Promise.all([
       collectRuns('social', acc.id),
-      getRules(),
       db.select().from(P).where(eq(P.socialAccountId, acc.id)).orderBy(desc(sql`coalesce(${P.publishedAt}, ${P.firstSeenAt})`), desc(P.id)).limit(q.limit).offset(q.offset),
       db.select({ n: count() }).from(P).where(eq(P.socialAccountId, acc.id)),
       db.select().from(schema.socialAccountStats).where(eq(schema.socialAccountStats.socialAccountId, acc.id)).orderBy(desc(schema.socialAccountStats.day)).limit(30),
       db.select({ id: P.id, caption: P.caption, publishedAt: P.publishedAt, firstSeenAt: P.firstSeenAt, permalink: P.permalink }).from(P)
         .where(eq(P.socialAccountId, acc.id)).orderBy(desc(P.firstSeenAt)).limit(20),
-      db.select().from(R).where(and(eq(R.accountId, acc.id), inArray(R.status, ['sent', 'dry_run', 'failed']))).orderBy(desc(R.updatedAt)).limit(20),
+      db.select().from(R).where(and(eq(R.accountId, acc.id), inArray(R.status, ['sent', 'failed']))).orderBy(desc(R.updatedAt)).limit(20),
     ]);
     const items = await Promise.all(posts.map(async (p) => {
       const [comments, postReplies] = await Promise.all([
@@ -190,7 +189,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     return {
       account: { id: acc.id, platform: acc.platform, handle: acc.handle, instanceId: acc.instanceId, userId: acc.userId },
       collect: await collectState('social', unsupported, acc.instanceId, runs),
-      send: { testMode: rules.testMode, deviceCapable: !unsupported },
+      send: { deviceCapable: !unsupported },
       activity,
       posts: { items, total: ptotal?.n ?? 0 },
     };
@@ -203,7 +202,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     return socialPostComments(acc.id, p.externalId, req.query.limit, req.query.offset);
   });
 
-  /** 评论 directly under one of the account's posts: written by a person, scheduled (default now), sent from the cloud phone. */
+  /** 评论 directly under one of the account's posts: written by a person, saved as a draft (排程 via …/comment-replies/:id/submit). */
   app.post('/api/social/accounts/:id/posts/:postId/comments', {
     schema: { params: PostParams, body: z.object({ text: z.string().max(2200), scheduledAt: z.string().datetime({ offset: true }).nullable().optional() }) },
   }, async (req, reply) => {
@@ -226,16 +225,15 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     const acc = await getVisibleAccount(req.user, req.params.id);
     const q = req.query;
     const P = schema.trackedPosts;
-    const [runs, posts, [ptotal], snaps, newPosts, rules, replies] = await Promise.all([
+    const [runs, posts, [ptotal], snaps, newPosts, replies] = await Promise.all([
       collectRuns('tracked', acc.id),
       db.select().from(P).where(eq(P.trackedAccountId, acc.id)).orderBy(desc(sql`coalesce(${P.publishedAt}, ${P.firstSeenAt})`), desc(P.id)).limit(q.limit).offset(q.offset),
       db.select({ n: count() }).from(P).where(eq(P.trackedAccountId, acc.id)),
       db.select().from(schema.trackedAccountSnapshots).where(eq(schema.trackedAccountSnapshots.trackedAccountId, acc.id)).orderBy(desc(schema.trackedAccountSnapshots.capturedAt)).limit(30),
       db.select({ id: P.id, title: P.title, publishedAt: P.publishedAt, firstSeenAt: P.firstSeenAt, url: P.url }).from(P)
         .where(eq(P.trackedAccountId, acc.id)).orderBy(desc(P.firstSeenAt)).limit(20),
-      getRules(),
       db.select({ r: R }).from(R).innerJoin(P, eq(P.id, R.trackedPostId))
-        .where(and(eq(P.trackedAccountId, acc.id), inArray(R.status, ['sent', 'dry_run', 'failed']), ownReplies(req.user))).orderBy(desc(R.updatedAt)).limit(20),
+        .where(and(eq(P.trackedAccountId, acc.id), inArray(R.status, ['sent', 'failed']), ownReplies(req.user))).orderBy(desc(R.updatedAt)).limit(20),
     ]);
     const items = await Promise.all(posts.map(async (p) => {
       const [comments, postReplies] = await Promise.all([
@@ -259,7 +257,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
       account: { id: acc.id, platform: acc.platform, handle: acc.handle, userId: acc.userId },
       collect: await collectState('tracked', unsupported, (await collectorEntry('instagram'))?.instanceId ?? null, runs),
       // 评论 / 回复 with an own account's cloud phone (platforms the phone can send on)
-      send: { testMode: rules.testMode, deviceCapable: !!platformById(acc.platform)?.deviceCheck && isPlatformEnabled(acc.platform) },
+      send: { deviceCapable: !!platformById(acc.platform)?.deviceCheck && isPlatformEnabled(acc.platform) },
       activity,
       posts: { items, total: ptotal?.n ?? 0 },
     };
@@ -293,7 +291,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   });
 
-  /** 评论 under a tracked account's post with one own account (sent from that account's cloud phone, default now). */
+  /** 评论 under a tracked account's post with one own account: a draft; once scheduled, that account's cloud phone sends it. */
   app.post('/api/tracked-accounts/:id/posts/:postId/comments', { schema: { params: PostParams, body: TrackedCommentBody } }, async (req, reply) => {
     const { acc, post } = await trackedPostOf(req.user, req.params.id, req.params.postId);
     const own = await replyAccountFor(req.user, req.body.accountId, acc.platform);
@@ -303,7 +301,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { reply: replySummary(r) };
   });
 
-  /** 回复 one (top-level) comment under a tracked account's post with one own account. */
+  /** 回复 one (top-level) comment under a tracked account's post with one own account (a draft, like 评论). */
   app.post('/api/tracked-accounts/:id/posts/:postId/comments/:commentId/replies', { schema: { params: TrackedCommentParams, body: TrackedCommentBody } }, async (req, reply) => {
     const { acc, post } = await trackedPostOf(req.user, req.params.id, req.params.postId);
     const [comment] = await db.select().from(K).where(and(eq(K.id, req.params.commentId), eq(K.trackedPostId, post.id)));
@@ -322,7 +320,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { task: { id: task.id, status: task.status } };
   });
 
-  // ------------------------------------------------------------ evidence of a device send / test run
+  // ------------------------------------------------------------ evidence of a device send (screenshot before 发布)
   app.get('/api/comment-replies/:id/evidence', { schema: { params: Id } }, async (req, reply) => {
     const r = await visibleReply(req.user, req.params.id);
     const ev = r.evidence;

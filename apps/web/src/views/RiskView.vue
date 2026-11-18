@@ -4,28 +4,25 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import PageContainer from '../components/common/PageContainer.vue'
 import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vue'
-import CommentRulesSettings from '../components/risk/CommentRulesSettings.vue'
-import DeviceCommentSettings from '../components/risk/DeviceCommentSettings.vue'
+import CommentSendSettings from '../components/risk/CommentSendSettings.vue'
 import DevicePublishSettings from '../components/risk/DevicePublishSettings.vue'
-import RiskDevices from '../components/risk/RiskDevices.vue'
 import RiskEvents from '../components/risk/RiskEvents.vue'
 import RiskPaceSettings from '../components/risk/RiskPaceSettings.vue'
 
 /**
  * 风控 (admin): every rule that limits what the platform does with the operators' media accounts and phones,
  * in one place. Each section is one entry of SECTIONS (tab key = ?tab=, label = risk.tabs.<key>); a new
- * section (e.g. limits for comments sent from the cloud phones) is one component + one entry here.
+ * section is one component + one entry here. The per-device state (风控暂停 + 恢复, busy) is shown on the 云机管理
+ * cards since 2026-11-18 (owner decision), not here; 评论回复 holds both the reply rules and the cloud-phone limits.
  */
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
 const SECTIONS: { key: string; component: Component }[] = [
-  { key: 'devices', component: RiskDevices },
   { key: 'pace', component: RiskPaceSettings },
   { key: 'limits', component: SocialLimitsSettings },
-  { key: 'comments', component: CommentRulesSettings },
-  { key: 'deviceComments', component: DeviceCommentSettings },
+  { key: 'comments', component: CommentSendSettings },
   { key: 'devicePublish', component: DevicePublishSettings },
   { key: 'events', component: RiskEvents },
 ]

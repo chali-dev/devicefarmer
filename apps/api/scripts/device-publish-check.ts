@@ -1,14 +1,16 @@
 /**
  * 云手机发帖 without a phone (owner decision 2026-11-18): method selection and the fallback to an operator, the
  * 风控 → 云手机发帖 settings (validation, RBAC, audit), the daily cap / minimum gap deferral, the halted phone
- * (parked, 恢复 re-queues), test-mode rows (dry_run: not counted as failed, retry / reschedule allowed, evidence RBAC),
- * an uncertain share (awaiting the operator, never re-sent), through the real HTTP API and the real task centre.
+ * (parked, 恢复 re-queues), legacy test-mode rows (dry_run, only left by an older colour: not counted as failed, retry
+ * allowed, reschedule refused, evidence RBAC), an uncertain share (awaiting the operator, never re-sent), through the
+ * real HTTP API and the real task centre. Test mode was removed on 2026-11-18 (draft first): the settings have no
+ * testMode (an older page's value is accepted and ignored), and a content is only a draft until it is distributed.
  *
  * Devices are placeholder `instances` rows (no Android container, adb ports 5571–5573 that nothing listens on) kept
  * "online" by a test-only trigger like publish-check.ts: the `device` method takes their runs, finds that adb doesn't
  * see the phone and hands them to an operator (`publish.device_offline`) — so the phone is never touched. The real
  * phone flow (push, share target, caption read back, discard) is covered by device-publish-device-check.ts.
- * The dry_run / send_uncertain end states are written as DB fixtures (only a real phone produces them).
+ * The dry_run (legacy) / send_uncertain end states are written as DB fixtures.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/device-publish-check.ts
  */
@@ -112,8 +114,8 @@ try {
 
   // ---------------------------------------------------------------- settings: defaults, validation, RBAC, audit
   let r = await http('GET', '/api/publish/device-settings', T);
-  check('settings default: enabled, 3 posts / 24 h, 60 min gap, test mode ON', r.status === 200 && JSON.stringify(r.body.rules) === JSON.stringify({ enabled: true, postsPerDay: 3, minGapMin: 60, testMode: true }), r.text);
-  const [g403, p403] = await Promise.all([http('GET', '/api/publish/device-settings', A), http('PUT', '/api/publish/device-settings', A, { testMode: false })]);
+  check('settings default: enabled, 3 posts / 24 h, 60 min gap, no test mode', r.status === 200 && JSON.stringify(r.body.rules) === JSON.stringify({ enabled: true, postsPerDay: 3, minGapMin: 60 }), r.text);
+  const [g403, p403] = await Promise.all([http('GET', '/api/publish/device-settings', A), http('PUT', '/api/publish/device-settings', A, { postsPerDay: 2 })]);
   check('settings: users get 403 (read and write)', g403.status === 403 && p403.status === 403 && g403.body.code === 'publish.admin_only', `${g403.status} ${p403.status}`);
   const bad = await Promise.all([
     http('PUT', '/api/publish/device-settings', T, { postsPerDay: 0 }), http('PUT', '/api/publish/device-settings', T, { minGapMin: 2000 }),
@@ -121,10 +123,22 @@ try {
   ]);
   check('settings: out-of-range / wrong type / unknown field → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
   r = await http('PUT', '/api/publish/device-settings', T, { postsPerDay: 5, minGapMin: 0 });
-  check('settings: partial PUT keeps the other fields', r.status === 200 && r.body.rules.postsPerDay === 5 && r.body.rules.minGapMin === 0 && r.body.rules.testMode === true && r.body.rules.enabled === true, r.text);
+  check('settings: partial PUT keeps the other fields', r.status === 200 && r.body.rules.postsPerDay === 5 && r.body.rules.minGapMin === 0 && r.body.rules.enabled === true && !('testMode' in r.body.rules), r.text);
+  // an old stored testMode (written by an older version) is ignored and dropped on the next save; an older page's PUT with it is accepted
+  await db.update(schema.settings).set({ value: { enabled: true, postsPerDay: 5, minGapMin: 0, testMode: true } }).where(eq(schema.settings.key, 'publish.device'));
+  r = await http('GET', '/api/publish/device-settings', T);
+  const ok1 = r.status === 200 && !('testMode' in r.body.rules);
+  r = await http('PUT', '/api/publish/device-settings', T, { testMode: false, postsPerDay: 5 });
+  const [storedPd] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.device'));
+  check('settings: a stored testMode is not returned; PUT with testMode from an older page → 200, ignored, dropped from the stored value',
+    ok1 && r.status === 200 && !('testMode' in r.body.rules) && !('testMode' in (storedPd?.value as object)) && (storedPd?.value as any).postsPerDay === 5, `${r.text} ${JSON.stringify(storedPd?.value)}`);
 
+  // ---------------------------------------------------------------- draft first: a content creates no publish task until it is distributed
+  const offC = await content('offline', [img]);
+  const before = await db.select().from(pt).where(eq(pt.contentId, offC));
+  check('a saved content is only a draft: no publish task until 发布 / 定时发布 (distribute)', before.length === 0, String(before.length));
   // ---------------------------------------------------------------- method selection: device → adb doesn't see the phone → operator
-  let p = await dist(await content('offline', [img]), a0.id);
+  let p = await dist(offC, a0.id);
   let d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
   let res = d.runs[d.runs.length - 1]?.result;
   check('IG account on a (placeholder) phone: method device tried, adb doesn\'t see it → operator (manual, reason publish.device_offline)',
@@ -132,7 +146,7 @@ try {
     && res?.reasons?.device === 'publish.device_offline', `${d.task.status} ${d.task.method} ${JSON.stringify(res)} ${msgs(d).join(' | ')}`);
   const [row0] = await db.select().from(pt).where(eq(pt.id, p.id));
   check('the offline phone did not count as a device run (device_run_at undone)', row0?.deviceRunAt === null, String(row0?.deviceRunAt));
-  check('logged "cloud phone: test mode" before trying the phone', msgs(d).includes('cloud phone: test mode (stops before sharing)'));
+  check('logged "cloud phone: live" before trying the phone (no test mode any more)', msgs(d).includes('cloud phone: live (shares the post)') && !msgs(d).some((m) => /test mode/.test(m)));
 
   // feed with a video → by hand
   const vid = await upload(A, `dpc-${tag}.mp4`, await (async () => {
@@ -206,7 +220,7 @@ try {
   check('after 恢复 the parked run is queued again (new round) and runs (here: adb offline → operator)',
     d.task.attemptNo === 2 && msgs(d).includes('device resumed: queued again') && d.task.status === 'awaiting_operator', `${d.task.status} ${d.task.attemptNo} ${msgs(d).join(' | ')}`);
 
-  // ---------------------------------------------------------------- dry_run rows (fixture: only a real phone produces them)
+  // ---------------------------------------------------------------- legacy dry_run rows (fixture: only an older colour's test mode wrote them)
   const dryC = await content('dry run', [img]);
   p = await dist(dryC, a1.id, { scheduledAt: new Date(Date.now() + 2 * 86400_000).toISOString() });
   const [tk] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, p.taskId));
@@ -214,7 +228,7 @@ try {
   await db.update(pt).set({ status: 'dry_run', method: 'device', errorCode: 'publish.test_mode', error: null, deviceRunAt: new Date(), evidence: { at: new Date().toISOString(), inputText: '正文 ✅', excerpt: 'feed_caption · media 1' } }).where(eq(pt.id, p.id));
   await sqlClient`select 1`;
   d = await ptask(A, p.id);
-  check('dry_run row: listed with its read-back caption, no screenshot (hasEvidence false), evidence key never returned',
+  check('legacy dry_run row: listed with its read-back caption, no screenshot (hasEvidence false), evidence key never returned',
     d.task.status === 'dry_run' && d.task.evidence?.inputText === '正文 ✅' && d.task.hasEvidence === false && !JSON.stringify(d.task).includes('"key"'), JSON.stringify(d.task.evidence));
   const [contentRow] = await db.select().from(schema.contents).where(eq(schema.contents.id, dryC));
   await http('PUT', `/api/contents/${dryC}`, A, { title: `dpc-${tag} dry run` }); // triggers no status change by itself
@@ -224,13 +238,12 @@ try {
   check('list filter status=dry_run + byStatus.dry_run', r.status === 200 && r.body.items.length === 1 && r.body.byStatus.dry_run >= 1, r.text);
   const [e404, eB] = await Promise.all([http('GET', `/api/publish/tasks/${p.id}/evidence`, A), http('GET', `/api/publish/tasks/${p.id}/evidence`, B)]);
   check('evidence endpoint: no screenshot → 404 publish.no_evidence; another user → 404 publish.not_found', e404.status === 404 && e404.body.code === 'publish.no_evidence' && eB.status === 404 && eB.body.code === 'publish.not_found', `${e404.text} ${eB.text}`);
-  r = await http('POST', `/api/publish/tasks/${p.id}/reschedule`, B, { scheduledAt: null });
-  check('another user cannot reschedule it (404)', r.status === 404);
+  r = await http('POST', `/api/publish/tasks/${p.id}/retry`, B, { scheduledAt: null });
+  check('another user cannot schedule it again (404)', r.status === 404);
   r = await http('POST', `/api/publish/tasks/${p.id}/reschedule`, A, { scheduledAt: new Date(Date.now() + 86400_000).toISOString() });
-  check('dry_run → 改期 allowed: new round, scheduled, test-mode code cleared', r.status === 200 && r.body.task.status === 'scheduled' && r.body.task.attemptNo === 2 && r.body.task.errorCode === null, r.text);
-  await db.update(pt).set({ status: 'dry_run', taskId: null }).where(eq(pt.id, p.id));
+  check('legacy dry_run → 改期 refused now (409 publish.bad_status; it is finished, scheduled again with 重试)', r.status === 409 && r.body.code === 'publish.bad_status', r.text);
   r = await http('POST', `/api/publish/tasks/${p.id}/retry`, A, { scheduledAt: new Date(Date.now() + 86400_000).toISOString() });
-  check('dry_run → 重试 allowed: new round', r.status === 202 && r.body.task.status === 'scheduled' && r.body.task.attemptNo === 3, r.text);
+  check('legacy dry_run → 重试 allowed: new round, scheduled, test-mode code cleared', r.status === 202 && r.body.task.status === 'scheduled' && r.body.task.attemptNo === 2 && r.body.task.errorCode === null, r.text);
   await http('POST', `/api/publish/tasks/${p.id}/cancel`, A);
   void tk;
 

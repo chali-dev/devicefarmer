@@ -16,7 +16,7 @@ import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import { useNotificationsStore } from '../stores/notifications'
-import { MENU_GROUPS, useMenuLocation } from '../components/common/menu'
+import { MENU_GROUPS, navLabel, useMenuLocation } from '../components/common/menu'
 import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
@@ -159,7 +159,7 @@ async function savePassword() {
           <template #title>{{ t(`nav.group.${g.key}`) }}</template>
           <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
             <component :is="it.icon" />
-            <span>{{ t(`nav.${it.key}`) }}</span>
+            <span>{{ navLabel(it.key, auth.isAdmin) }}</span>
           </a-menu-item>
         </a-sub-menu>
       </a-menu>

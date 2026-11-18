@@ -5,8 +5,8 @@ import { codeText } from '../../api/client'
 import type { FeedCollectState } from '../../api/types'
 import { dateLocale } from '../../i18n'
 
-/** Collection state of an account feed (schedule, last run, queued) + 立即采集; the halted / test-mode notices. */
-const props = defineProps<{ state: FeedCollectState; collecting: boolean; testMode?: boolean | null }>()
+/** Collection state of an account feed (schedule, last run, queued) + 立即采集; the halted notice. */
+const props = defineProps<{ state: FeedCollectState; collecting: boolean }>()
 const emit = defineEmits<{ collect: [] }>()
 const { t } = useI18n()
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
@@ -38,7 +38,6 @@ const lastText = computed(() => {
   </div>
   <a-alert v-if="state.unsupported" type="info" show-icon class="note" :message="codeText(state.unsupported, undefined, t('feed.noDevice'))" />
   <a-alert v-if="state.halted" type="warning" show-icon class="note" :message="t('feed.halted')" />
-  <a-alert v-if="testMode === true" type="info" show-icon class="note" :message="t('feed.testMode')" />
 </template>
 
 <style scoped>

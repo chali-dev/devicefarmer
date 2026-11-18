@@ -13,6 +13,8 @@ import {
 import CommentDrawer from '../components/comments/CommentDrawer.vue'
 import FoldToggle from '../components/comments/FoldToggle.vue'
 import EvidenceModal from '../components/feed/EvidenceModal.vue'
+import FeedReplyModal from '../components/feed/FeedReplyModal.vue'
+import ReplyScheduleModal from '../components/feed/ReplyScheduleModal.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -24,7 +26,8 @@ import { useInstancesStore } from '../stores/instances'
 
 /**
  * Comments & engagement (评论互动): threads, reply composer, sending queue / history, templates. No approval step
- * (removed 2026-11-18); the reply rules are edited on the 风控 page.
+ * (removed 2026-11-18); the reply rules are edited on the 风控 page. Draft first (2026-11-18): every reply starts as a
+ * draft; the queue's drafts have 编辑 / 排程 (preview + time) / 删除, nothing is sent before 排程.
  */
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -40,6 +43,7 @@ const tab = computed<Tab>({
 })
 /** `approved` / `pending_review` only on rows older than the removal of the approval step. */
 const QUEUE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
+/** `dry_run` (former test mode) only on old rows of an old colour; db:migrate turned the rest into drafts. */
 const HISTORY: CommentReplyStatus[] = ['sent', 'dry_run', 'failed', 'rejected', 'cancelled']
 const STATUSES: CommentStatus[] = ['new', 'read', 'replied', 'hidden', 'ignored']
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
@@ -174,7 +178,23 @@ const replyColumns = computed(() => [
   { title: t('comments.colPeople'), key: 'people', width: 180 },
   { title: t('comments.colTime'), key: 'time', width: 160 },
   ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 100 }] : []),
+  ...(tab.value === 'queue' ? [actionColumn(170)] : []),
 ])
+// ---- drafts in the queue: 编辑 (a reply to a comment: in the comment drawer) / 排程 / 删除
+const draftEditOpen = ref(false)
+const scheduleOpen = ref(false)
+const currentDraft = ref<CommentReplyItem | null>(null)
+function editDraft(r: CommentReplyItem) {
+  if (r.commentId) { openComment(r.commentId); return }
+  currentDraft.value = r; draftEditOpen.value = true
+}
+function scheduleDraft(r: CommentReplyItem) { currentDraft.value = r; scheduleOpen.value = true }
+function removeDraft(r: CommentReplyItem) {
+  confirmDanger({
+    title: t('feed.deleteDraftConfirm'),
+    onOk: async () => { try { await api('DELETE', `/api/comment-replies/${r.id}`); message.success(t('common.deleted')); changed() } catch (e) { message.error(errorText(e)) } },
+  })
+}
 
 // ---------------------------------------------------------------- templates
 const tplOpen = ref(false)
@@ -231,7 +251,7 @@ const drawerOpen = ref(false)
 const drawerId = ref<string | null>(null)
 const drawer = ref<InstanceType<typeof CommentDrawer>>()
 function openComment(id: string) { drawerId.value = id; drawerOpen.value = true }
-/** Screenshot of a device send / test-mode run. */
+/** Screenshot of a device send (before 发布). */
 const evidenceOpen = ref(false)
 const evidenceId = ref<string | null>(null)
 function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = true }
@@ -378,6 +398,13 @@ onMounted(() => {
           </template>
           <template v-else-if="column.key === 'time'">{{ fmt(record.sentAt ?? record.scheduledAt ?? record.updatedAt) }}</template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+          <template v-else-if="column.key === 'ops'">
+            <a-space v-if="record.status === 'draft'" :size="0" wrap>
+              <a-button size="small" type="link" @click="editDraft(record as CommentReplyItem)">{{ t('common.edit') }}</a-button>
+              <a-button size="small" type="link" @click="scheduleDraft(record as CommentReplyItem)">{{ t('feed.submit') }}</a-button>
+              <a-button size="small" type="link" danger @click="removeDraft(record as CommentReplyItem)">{{ t('common.delete') }}</a-button>
+            </a-space>
+          </template>
         </template>
       </a-table>
 
@@ -402,6 +429,8 @@ onMounted(() => {
 
   <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" :templates="templates" @changed="changed" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
+  <FeedReplyModal v-model:open="draftEditOpen" :draft="currentDraft" @done="changed" />
+  <ReplyScheduleModal v-model:open="scheduleOpen" :reply="currentDraft" @done="changed" />
 
   <a-modal v-model:open="manualOpen" :title="t('comments.manualTitle')" :width="MODAL_WIDTH.md" :confirm-loading="manualBusy" @ok="saveManual">
     <a-form layout="vertical">

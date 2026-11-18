@@ -949,8 +949,10 @@ try {
     let blockedCode: string | undefined;
     for (let i = 0; i <= max; i++) {
       const c = await mkC(100 + i);
-      const x = await http('POST', `/api/comments/${c.id}/replies`, ADMIN, { text: same, submit: true });
-      if (x.status === 201) made.push(x.body.reply); else blockedCode = codeOf(x);
+      // draft first: the reply is a draft, 排程 (submit) applies the duplicate-text rule
+      const d = await http('POST', `/api/comments/${c.id}/replies`, ADMIN, { text: same });
+      const x = d.status === 201 ? await http('POST', `/api/comment-replies/${d.body.reply.id}/submit`, ADMIN, {}) : d;
+      if (x.status === 200) made.push(x.body.reply); else blockedCode = codeOf(x);
     }
     check(`duplicate-text rule: ${max} identical submits allowed, the next is blocked (comment.duplicate_text)`, made.length === max && blockedCode === 'comment.duplicate_text', `${made.length} ${blockedCode}`);
     const blockLog = (await must('GET', `/api/comments?accountId=${ta.id}&limit=200`, DU.token)).items as any[];

@@ -65,7 +65,7 @@ export async function requestAccountCheck(user: AuthUser, acc: SocialAccount) {
   const why = autoCheckUnsupported(acc);
   if (why === 'account_check.no_device') throw new HttpError(400, '账号未绑定云手机，不能自动检测', why);
   if (why) throw new HttpError(400, '该平台不支持自动检测', why, { platform: acc.platform });
-  if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在风控页恢复', 'account_check.device_halted');
+  if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'account_check.device_halted');
   if (await unfinishedCheck(acc.id)) throw conflict('该账号已有检测在排队或进行中', 'account_check.in_progress');
   const { task } = await createTask({
     type: ACCOUNT_CHECK_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: ACCOUNT_CHECK_REF, refId: acc.id,
@@ -174,7 +174,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const offline = () => new HttpError(503, `设备 ${inst.name} 不在线`, 'account_check.offline', { name: inst.name });
   let o: Outcome;
   try {
-    o = await withDevice(inst, ctx.log, offline, (dev) => checkOnDevice(acc, dev, ctx));
+    o = await withDevice(inst, ctx.log, offline, (dev) => checkOnDevice(acc, dev, ctx), { what: 'check' });
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

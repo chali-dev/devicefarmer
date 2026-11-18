@@ -72,7 +72,8 @@ function replyTo(c: FeedComment, p: FeedPost) {
 const rTotal = ref(0)
 const replyTable = ref<InstanceType<typeof FeedReplyTable> | null>(null)
 const replyFilter = computed(() => (open.value && acc.value ? `trackedAccountId=${acc.value.id}` : null))
-const afterReply = () => { void loadPosts(); void replyTable.value?.reload() }
+/** A new draft: show it in 回复记录, where it is scheduled. */
+const afterReply = () => { void loadPosts(); void replyTable.value?.reload(); tab.value = 'replies' }
 const evidenceOpen = ref(false)
 const evidenceId = ref<string | null>(null)
 function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = true }
@@ -203,12 +204,12 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             @comment="commentOn" @reply="replyTo" @evidence="showEvidence" />
         </a-tab-pane>
         <a-tab-pane key="replies" force-render :tab="`${t('feed.tabs.replies')} (${rTotal})`">
-          <FeedReplyTable ref="replyTable" :filter="replyFilter" show-account @total="(n) => (rTotal = n)" @evidence="showEvidence" />
+          <FeedReplyTable ref="replyTable" :filter="replyFilter" show-account @total="(n) => (rTotal = n)" @evidence="showEvidence" @changed="() => loadPosts()" />
         </a-tab-pane>
       </a-tabs>
     </template>
   </a-drawer>
-  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="false" :test-mode="feed?.send?.testMode ?? null" @done="afterReply" />
+  <FeedReplyModal v-model:open="composeOpen" :target="target" @done="afterReply" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 </template>
 

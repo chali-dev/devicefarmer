@@ -66,7 +66,7 @@ async function save(c: Collector, body: { instanceId: string | null }) {
         <a-form-item :label="t('tracked.collector.state')">
           <a-space wrap>
             <a-tag v-if="!c.device">{{ t('tracked.collector.none') }}</a-tag>
-            <router-link v-else-if="c.halted" to="/risk"><a-tag color="error">{{ t('tracked.collector.halted', { time: when(c.halted.at) }) }}</a-tag></router-link>
+            <router-link v-else-if="c.halted" :to="`/instances?id=${c.instanceId}`"><a-tag color="error">{{ t('tracked.collector.halted', { time: when(c.halted.at) }) }}</a-tag></router-link>
             <a-tag v-else-if="online(c)" color="success">{{ t('tracked.collector.ready') }}</a-tag>
             <a-tag v-else color="warning">{{ t('tracked.collector.offline') }}</a-tag>
           </a-space>

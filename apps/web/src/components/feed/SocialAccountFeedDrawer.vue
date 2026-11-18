@@ -14,7 +14,7 @@ import { useAccountFeed } from './useAccountFeed'
 
 /**
  * 社交号详情 (drawer, opened by clicking an account row): 动态 / 帖子 (comments folded under each post, 「评论」 /
- * 「回复」 → schedule → sent by the account's cloud phone) / 回复记录 (state, time, result, test-mode runs).
+ * 「回复」 → saved as a draft) / 回复记录 (drafts: 编辑 / 排程 → sent by the account's cloud phone; state, time, result).
  */
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null; personaId?: string | null } | null }>()
@@ -31,6 +31,8 @@ watch(() => [open.value, props.account?.id] as const, ([o, id]) => {
   void load(id, 1)
 }, { immediate: true })
 const reload = () => { if (props.account) { void load(props.account.id); void replyTable.value?.reload() } }
+/** A new draft: show it in 回复记录, where it is scheduled. */
+const drafted = () => { reload(); tab.value = 'replies' }
 
 // ---- compose
 const composeOpen = ref(false)
@@ -48,7 +50,7 @@ function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = 
       <a-space v-if="account" :size="6"><PlatformTag :platform="account.platform" /><span>@{{ account.handle }}</span></a-space>
     </template>
     <template v-if="account && feed">
-      <FeedCollectBar :state="feed.collect" :collecting="collecting" :test-mode="feed.send?.testMode ?? null" @collect="collectNow(account.id)" />
+      <FeedCollectBar :state="feed.collect" :collecting="collecting" @collect="collectNow(account.id)" />
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="activity" :tab="t('feed.tabs.activity')"><FeedActivity :items="feed.activity" /></a-tab-pane>
         <a-tab-pane key="posts" :tab="`${t('feed.tabs.posts')} (${feed.posts.total})`">
@@ -56,12 +58,12 @@ function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = 
             :readonly="!!feed.collect.unsupported" @page="(n) => load(account!.id, n)" @reply="replyTo" @comment="commentOn" @evidence="showEvidence" />
         </a-tab-pane>
         <a-tab-pane key="replies" force-render :tab="`${t('feed.tabs.replies')} (${rTotal})`">
-          <FeedReplyTable ref="replyTable" :filter="replyFilter" @total="(n) => (rTotal = n)" @evidence="showEvidence" />
+          <FeedReplyTable ref="replyTable" :filter="replyFilter" @total="(n) => (rTotal = n)" @evidence="showEvidence" @changed="() => account && load(account.id)" />
         </a-tab-pane>
       </a-tabs>
     </template>
     <a-skeleton v-else active />
   </a-drawer>
-  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="!!feed?.collect.halted" :test-mode="feed?.send?.testMode ?? null" :persona-id="account?.personaId" @done="reload" />
+  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="!!feed?.collect.halted" :persona-id="account?.personaId" @done="drafted" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 </template>

@@ -17,11 +17,12 @@ import {
  * - sendIgComment: (own profile check when the account's numeric id is unknown) → open the post → check the
  *   logged-in account (session user id) → open the comments → (reply) find the comment, tap its 回复 → paste
  *   the person's text through STF's clipboard.paste (works for any script/emoji; `input text` doesn't) → read
- *   the field back → test mode: screenshot, clear the field, back (dry_run); live: tap 发布 and read back until
- *   the comment shows (sent), never retried after the tap.
+ *   the field back → screenshot → tap 发布 and read back until the comment shows (sent), never retried after the
+ *   tap. There is no test mode any more (owner decision 2026-11-18): a person saved the reply as a draft and
+ *   scheduled it, so a run sends for real.
  *
  * Every dump is deleted at once, HOME at the end (also after failures). Only the taps/scrolls needed to open the
- * post, the comments and the reply field, plus the paste and (live only) 发布: no likes, follows, DMs, profile edits.
+ * post, the comments and the reply field, plus the paste and 发布: no likes, follows, DMs, profile edits.
  */
 export const SCREEN_GAP_MS = 3000;
 const MAX_SCROLLS = 12;
@@ -52,7 +53,7 @@ export class FeedScreenError extends HttpError {
 }
 
 const problemError = (p: 'challenge' | 'login' | 'not_found', nodes: UiNode[], what: string) =>
-  p === 'challenge' ? new FeedScreenError('challenge', 'feed.challenge', 'Instagram 显示了验证/限制页面：设备的自动操作已暂停，需管理员在风控页恢复', dumpExcerpt(nodes))
+  p === 'challenge' ? new FeedScreenError('challenge', 'feed.challenge', 'Instagram 显示了验证/限制页面：设备的自动操作已暂停，需管理员在云机管理的设备卡片上恢复', dumpExcerpt(nodes))
     : p === 'login' ? new FeedScreenError('login', 'feed.logged_out', '设备上的 Instagram 未登录', dumpExcerpt(nodes))
       : new FeedScreenError('unavailable', 'feed.unavailable', `${what} 无法显示（不存在、已删除或无法加载）`, dumpExcerpt(nodes));
 
@@ -177,11 +178,10 @@ export interface SendInput {
   /** Reply to this comment (author + text as read on screen); null = comment directly under the post. */
   replyTo: { author: string; text: string; key: string } | null;
   text: string;
-  testMode: boolean;
   log: Log;
   signal?: AbortSignal;
 }
-export interface SendResult { outcome: 'sent' | 'dry_run'; inputText: string; excerpt: string; screenshot: Buffer | null; screens: number }
+export interface SendResult { outcome: 'sent'; inputText: string; excerpt: string; screenshot: Buffer | null; screens: number }
 
 const fail = (code: string, message: string, o: ConstructorParameters<typeof ReplyDeviceError>[2] = { final: true }) => new ReplyDeviceError(code, message, o);
 
@@ -291,14 +291,6 @@ export async function sendIgComment(dev: CollectorDevice, input: SendInput): Pro
     await log('info', 'reply: text pasted and read back', { length: inputText.length, replyingTo: composer.replyingTo });
     const screenshot = await s.screenshot().catch(() => null);
     const excerpt = `${composer.replyingTo ? `replying to ${composer.replyingTo} · ` : ''}input: ${inputText}`.slice(0, 300);
-    if (input.testMode) {
-      await clearComposer(s, inputText.length);
-      dirty = false;
-      if (composer.replyingTo && composer.cancelReply) await s.tap(composer.cancelReply);
-      await s.keys(4);
-      await log('info', 'reply: test mode, not sent; field cleared');
-      return { outcome: 'dry_run', inputText, excerpt, screenshot, screens: s.screens };
-    }
     if (!composer.postButton) throw fail('comment.device_timeout', '找不到“发布”按钮');
     await s.tap(composer.postButton);
     dirty = false;

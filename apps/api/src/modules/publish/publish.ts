@@ -28,8 +28,8 @@ export { PublishCheckError };
  * checks — account owner, account status, media still ready and valid for the platform, no earlier
  * successful publish of the same content on the same account (unless re-publish), device linked + online
  * and account logged in — each written to publish_logs and the task log. Then the registered methods are tried
- * in order (methods.ts): `device` (云手机发帖, device.ts: the account's cloud phone publishes in the app; test mode
- * → dry_run) when available, else the task is handed to an operator (`manual`, awaiting_operator; the reason the
+ * in order (methods.ts): `device` (云手机发帖, device.ts: the account's cloud phone publishes in the app; no test
+ * mode since 2026-11-18: a run only exists because a person distributed the content) when available, else the task is handed to an operator (`manual`, awaiting_operator; the reason the
  * phone couldn't take it is logged), who publishes by hand on the device and records the outcome. Publishing
  * through official platform APIs was removed on 2026-11-18 (owner decision). Checks that can't change by waiting
  * fail at once (PublishCheckError, no retry); device offline is retried with backoff. A deferred device run (daily
@@ -211,8 +211,9 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
   return row;
 }
 
-// A test-mode run (dry_run) can be run again (retry) or at another time (reschedule).
-export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled', 'dry_run'], at, 'rescheduled');
+// dry_run = a test-mode rehearsal of an old colour (test mode removed 2026-11-18; db:migrate turned them into cancelled):
+// such a row can still be scheduled again with retry.
+export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled'], at, 'rescheduled');
 export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled', 'dry_run'], at, 'retried');
 
 /** Cancel while waiting (pending/scheduled) or while handed to an operator. */
@@ -342,11 +343,6 @@ async function applyResult(row: PublishTask, ctx: TaskContext<Payload>, method: 
       await db.update(pt).set({ status: 'published', method, externalId: r.externalId, url: r.url, publishedAt: r.publishedAt ?? new Date(), evidence: r.evidence ?? null, error: null, errorCode: null }).where(mine);
       await log('info', 'published from the cloud phone and seen on the profile', { externalId: r.externalId, url: r.url, ...(r.data ?? {}) });
       return { state: 'published', method, externalId: r.externalId, url: r.url };
-    }
-    case 'dry_run': {
-      await db.update(pt).set({ status: 'dry_run', method, evidence: r.evidence ?? null, error: null, errorCode: 'publish.test_mode' }).where(mine);
-      await log('info', 'test mode: rehearsed on the cloud phone up to sharing, nothing posted (draft discarded)', r.data);
-      return { state: 'dry_run', method, evidence: { key: r.evidence?.key ?? null } };
     }
     case 'awaiting_operator': {
       await db.update(pt).set({ status: 'awaiting_operator', method, evidence: r.evidence ?? null, error: r.message.slice(0, 1000), errorCode: r.code }).where(mine);

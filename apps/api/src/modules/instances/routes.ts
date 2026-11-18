@@ -10,7 +10,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { accessibleInstanceIds, assertInstanceAccess, assertInstancesAccess, isAdmin } from '../auth/rbac.js';
+import { accessibleInstanceIds, assertInstanceAccess, assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { checkEgress } from './egress.js';
 import { enqueue, type DeviceOpName } from './queue.js';
 import { getInstance, publicInstance, publicInstances, publishInstance, updateInstance } from './repo.js';
@@ -22,6 +22,7 @@ import { DeviceSettings, readDeviceSettings } from './device-settings.js';
 import { prepareUpload } from '../apps/package.js';
 import { PLATFORM_IDS } from '../social/platforms.js';
 import { scrcpyActive } from '../control/scrcpy-hub.js';
+import { deviceBusy, deviceHalts } from '../tracked/collector.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
 
@@ -131,6 +132,25 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instances: visible.map((i) => ({ ...i, owners: owners.get(i.id) ?? [] })) };
   });
 
+  /**
+   * Automation state of the visible devices for the 云机管理 cards (owner decision 2026-11-18, moved from the 风控
+   * page): `halted` (风控暂停: code, time, source, platform) and `busy` (an automatic operation holds the device lock:
+   * collect / check / feed / reply / publish, since). Only devices with one of them are listed. One settings read +
+   * one Redis MGET (read only), polled by the page.
+   */
+  app.get('/api/instances/automation', async (req) => {
+    const allowed = await accessibleInstanceIds(req.user);
+    const ids = allowed === 'all' ? (await db.select({ id: schema.instances.id }).from(schema.instances)).map((r) => r.id) : [...allowed];
+    const [halts, busy] = await Promise.all([deviceHalts(), deviceBusy(ids).catch(() => new Map())]);
+    const devices: Record<string, { halted: { at: string; code: string; source: string; platform: string } | null; busy: { what: string; since: string | null } | null }> = {};
+    for (const id of ids) {
+      const h = halts[id];
+      const b = busy.get(id);
+      if (h || b) devices[id] = { halted: h ? { at: h.at, code: h.code, source: h.source, platform: h.platform } : null, busy: b ?? null };
+    }
+    return { devices };
+  });
+
   app.get('/api/instances/:id', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
@@ -200,6 +220,15 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instances: await publicInstances(rows), taskIds };
   });
 
+  /**
+   * Power of external phones (BitBrowser etc., `source_id` set; power-on is billed) is admin only (owner decision
+   * 2026-11-18): start / stop / restart (= off + on) of such a device by a user → 403 for a single device, skipped with
+   * the code in a batch. Local containers are unchanged (users with `operate` may start / stop / restart them).
+   */
+  const POWER_ACTIONS = new Set(['start', 'stop', 'restart']);
+  const externalPowerRefused = (user: AuthUser, inst: Pick<Instance, 'sourceId'>, action: string) =>
+    !isAdmin(user) && !!inst.sourceId && POWER_ACTIONS.has(action);
+
   /** Batch lifecycle actions. Each instance becomes one task; busy instances are skipped. */
   app.post('/api/instances/actions', {
     schema: {
@@ -213,9 +242,13 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const ids = [...new Set(req.body.ids)];
     await assertInstancesAccess(req.user, ids, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
+    if (rows.length === 1 && externalPowerRefused(req.user, rows[0]!, req.body.action)) {
+      throw forbidden('比特云手机的开机 / 关机只有管理员可以操作', 'instances.external_power_admin_only');
+    }
     const accepted: { instanceId: string; taskId: string }[] = [];
-    const skipped: { instanceId: string; reason: string }[] = [];
+    const skipped: { instanceId: string; reason: string; code?: string }[] = [];
     for (const r of rows) {
+      if (externalPowerRefused(req.user, r, req.body.action)) { skipped.push({ instanceId: r.id, reason: 'external power is admin only', code: 'instances.external_power_admin_only' }); continue; }
       if (BUSY.includes(r.status)) { skipped.push({ instanceId: r.id, reason: `busy (${r.status})` }); continue; }
       if (req.body.action === 'start' && r.status === 'running') { skipped.push({ instanceId: r.id, reason: 'already running' }); continue; }
       if (req.body.action === 'stop' && r.status === 'stopped') { skipped.push({ instanceId: r.id, reason: 'already stopped' }); continue; }

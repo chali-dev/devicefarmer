@@ -2,20 +2,29 @@
  * 风控 page (owner decision 2026-11-18) against the real API + DB + Redis + task centre (no mocks, no phone):
  * - settings `risk.device` (pace + account-check interval): admin read/write, range validation, non-admins 403,
  *   a save takes effect at once (GET /api/tracked-accounts/capacity and the collector setting show the new pace);
- * - 云手机状态: placeholder devices (no adb, ports 5581–5582), a device halt (haltDevice, as on a challenge
- *   screen) shows with code/source/account and raises collector.blocked; 恢复 clears it and recovers the alert;
+ * - device state (moved from the 风控 page to the 云机管理 cards on 2026-11-18): placeholder devices (no adb, ports
+ *   5581–5582), a device halt (haltDevice, as on a challenge screen) shows in GET /api/instances/automation (code,
+ *   source; only for devices the viewer may see) and raises collector.blocked; a held device lock shows as busy with
+ *   what runs (lock value written as withDevice writes it; a bare token of an older version reads as `auto`);
+ *   恢复 clears the halt and recovers the alert; /api/risk/devices (filter source of 风控记录) still lists it;
  * - 风控记录: list newest first, filters by device / code, paging, code facet, 90-day purge by the hourly
  *   system maintenance (POST /api/system/maintenance);
  * - 账号上限 from its new entry (PUT /api/social/settings) is enforced when linking;
- * - comment replies without approval: a user's submitted reply goes straight to `scheduled` (send task created)
- *   and on to awaiting_operator; the approve/reject endpoints are gone (404); the rules have no requireApproval
+ * - comment replies without approval, draft first: a user's reply is a draft (no task) until 排程 (POST …/submit),
+ *   which goes straight to `scheduled` (send task created) and on to awaiting_operator; the approve/reject endpoints are gone (404); the rules have no requireApproval
  *   (refused by the strict schema); the data migration moves seeded pending_review / approved rows on (live
  *   task kept, others get a task row), logs `approval removed`, and a second run changes nothing;
+ * - power of external phones is admin only (owner decision 2026-11-18): an inert external placeholder (invalid source
+ *   config, nothing listens; never a real BitBrowser phone) granted to the user: start / stop / restart → 403
+ *   instances.external_power_admin_only and no task; in a batch the external one is skipped with that code while the
+ *   user's local device passes the RBAC layer (stop of an already stopped one = skipped, nothing runs); an admin is not
+ *   refused (same stopped device → only "already stopped", no power call);
  * - audit rows of the new actions.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/risk-check.ts
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, like } from 'drizzle-orm';
+import { Redis } from 'ioredis';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { migrateCommentApproval } from '../src/db/comment-approval-migration.js';
 import { recordRiskEvent } from '../src/modules/risk/events.js';
@@ -119,8 +128,34 @@ try {
   r = await http('PUT', `/api/social/accounts/${accId}`, T, { loginStatus: 'logged_out', accountStatus: 'suspended', lastError: 'x', notes: 'n1' });
   check('PUT ignores loginStatus / accountStatus / lastError (system-written)', r.status === 200 && r.body.account.loginStatus === 'unknown' && r.body.account.accountStatus === 'active' && r.body.account.lastError === null && r.body.account.notes === 'n1', r.text);
 
-  // ---------------------------------------------------------------- devices list, halt, resume
+  // ---------------------------------------------------------------- device state on 云机管理 (halt, busy), resume
   await haltDevice(D1, { code: 'account_check.challenge', source: 'account_check', platform: 'instagram', socialAccountId: accId });
+  // busy = an automatic operation holds the device lock (value token|what|startedAt as withDevice writes it), only in the
+  // test API's own Redis (REDIS_URL of this run), removed right after
+  const redis = new Redis(process.env.REDIS_URL!);
+  const lockKey = (id: string) => `tracked:collector:lock:${id}`;
+  const since = Date.now() - 5_000;
+  await redis.set(lockKey(D2.id), `abc|reply|${since}`, 'PX', 60_000);
+  r = await http('GET', '/api/instances/automation', T);
+  const a1 = r.body.devices?.[D1.id];
+  const a2 = r.body.devices?.[D2.id];
+  check('automation (admin): D1 halted with code + source, not busy; D2 busy sending a comment since the lock time, not halted',
+    r.status === 200 && a1?.halted?.code === 'account_check.challenge' && a1.halted.source === 'account_check' && a1.busy === null
+    && a2?.busy?.what === 'reply' && a2.busy.since === new Date(since).toISOString() && a2.halted === null, JSON.stringify(r.body.devices));
+  await redis.set(lockKey(D2.id), 'baretoken', 'PX', 60_000);
+  r = await http('GET', '/api/instances/automation', T);
+  check('automation: a lock of an older version (bare token) reads as busy "auto"', r.body.devices?.[D2.id]?.busy?.what === 'auto' && r.body.devices[D2.id].busy.since === null, JSON.stringify(r.body.devices?.[D2.id]));
+  r = await http('GET', '/api/instances/automation', U);
+  check('automation (user without grants): neither device listed', r.status === 200 && !r.body.devices[D1.id] && !r.body.devices[D2.id], r.text);
+  await http('PUT', `/api/users/${userId}/grants`, T, { instanceIds: [D1.id] });
+  r = await http('GET', '/api/instances/automation', U);
+  check('automation (user granted D1): sees D1\'s halt, not D2', !!r.body.devices[D1.id]?.halted && !r.body.devices[D2.id], r.text);
+  r = await http('POST', `/api/risk/devices/${D1.id}/resume`, U);
+  check('恢复 by a user (even with the grant) → 403 (admins only)', r.status === 403, String(r.status));
+  await redis.del(lockKey(D2.id));
+  r = await http('GET', '/api/instances/automation', T);
+  check('lock released → D2 no longer listed', !r.body.devices[D2.id], JSON.stringify(r.body.devices));
+  await redis.quit();
   r = await http('GET', '/api/risk/devices', T);
   const d1 = r.body.devices?.find((d: any) => d.id === D1.id);
   const d2 = r.body.devices?.find((d: any) => d.id === D2.id);
@@ -140,11 +175,38 @@ try {
   r = await http('POST', `/api/risk/devices/${D1.id}/resume`, T);
   const [st2] = await db.select().from(schema.alertStates).where(and(eq(schema.alertStates.kind, 'collector.blocked'), eq(schema.alertStates.key, alertKey)));
   const after = (await http('GET', '/api/risk/devices', T)).body.devices.find((d: any) => d.id === D1.id);
-  check('恢复: resumed, halt gone, alert recovered', r.status === 200 && r.body.resumed === true && !after?.halted && st2?.active === false, r.text);
+  const afterCard = (await http('GET', '/api/instances/automation', T)).body.devices[D1.id];
+  check('恢复: resumed, halt gone (risk list + device card), alert recovered', r.status === 200 && r.body.resumed === true && !after?.halted && !afterCard && st2?.active === false, r.text);
   r = await http('POST', `/api/risk/devices/${D1.id}/resume`, T);
   check('恢复 again: resumed=false (no-op)', r.status === 200 && r.body.resumed === false);
   r = await http('POST', '/api/risk/devices/00000000-0000-4000-8000-000000000000/resume', T);
   check('恢复 of an unknown device → 404', r.status === 404);
+
+  // ---------------------------------------------------------------- external phone power: admin only (inert placeholder)
+  {
+    const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `riskchk-src-${tag}`, config: { apiUrl: 'not a url' } }).returning();
+    const [E] = await db.insert(schema.instances).values({
+      name: `riskchk-${tag}-ext`, engine: 'bitbrowser', sourceId: src!.id, externalId: `riskchk-${tag}`, profile: 'bitbrowser', image: '',
+      adbPort: 5583, status: 'stopped', spec: { width: 1080, height: 2374, dpi: 480 },
+    }).returning();
+    devIds.push(E!.id);
+    await http('PUT', `/api/users/${userId}/grants`, T, { instanceIds: [D1.id, E!.id] });
+    const single = await Promise.all((['start', 'stop', 'restart'] as const).map((action) => http('POST', '/api/instances/actions', U, { action, ids: [E!.id] })));
+    const eTasks = await db.select().from(schema.tasks).where(eq(schema.tasks.instanceId, E!.id));
+    check('user (granted): start / stop / restart of an external phone → 403 instances.external_power_admin_only, no task',
+      single.every((x) => x.status === 403 && x.body.code === 'instances.external_power_admin_only') && eTasks.length === 0, single.map((x) => `${x.status}:${x.body?.code}`).join(','));
+    r = await http('POST', '/api/instances/actions', U, { action: 'stop', ids: [E!.id, D1.id] });
+    const sk = (r.body.skipped ?? []) as { instanceId: string; reason: string; code?: string }[];
+    check('user batch (external + own local): external skipped with the code, local passes RBAC (already stopped → skipped, nothing runs)',
+      r.status === 202 && r.body.accepted.length === 0 && sk.find((x) => x.instanceId === E!.id)?.code === 'instances.external_power_admin_only'
+      && sk.find((x) => x.instanceId === D1.id)?.reason === 'already stopped', r.text);
+    r = await http('POST', '/api/instances/actions', T, { action: 'stop', ids: [E!.id] });
+    check('admin is not refused for the external phone (stopped already → skipped, no power call)', r.status === 202 && r.body.skipped?.[0]?.reason === 'already stopped' && !r.body.skipped[0].code, r.text);
+    const after = await db.select().from(schema.tasks).where(eq(schema.tasks.instanceId, E!.id));
+    check('…still no task on the external placeholder', after.length === 0, String(after.length));
+    await db.delete(schema.instances).where(eq(schema.instances.id, E!.id));
+    await db.delete(schema.deviceSources).where(eq(schema.deviceSources.id, src!.id));
+  }
 
   // ---------------------------------------------------------------- 风控记录
   await recordRiskEvent({ instance: D1, socialAccountId: accId, source: 'account_check', code: 'account_check.logged_out', detail: 'login screen', userId });
@@ -194,17 +256,20 @@ try {
   const mkComment = async (author: string) => (await http('POST', '/api/comments', U, { accountId: accId, authorName: author, text: `hello ${author} ${tag}` })).body.comment.id as string;
   const c1 = await mkComment('v1');
   r = await http('POST', `/api/comments/${c1}/replies`, U, { text: `Thanks v1 ${tag}`, submit: true });
+  check('user reply → a draft without a task (draft first; submit: true of an older page ignored)', r.status === 201 && r.body.reply.status === 'draft' && !r.body.reply.taskId, r.text.slice(0, 300));
+  r = await http('POST', `/api/comment-replies/${r.body.reply.id}/submit`, U, { scheduledAt: null });
   const rep1 = r.body.reply;
-  check('user reply submitted → scheduled at once (no pending_review), send task created', r.status === 201 && rep1.status === 'scheduled' && !!rep1.taskId && !('canReview' in rep1), r.text.slice(0, 300));
+  check('排程 → scheduled at once (no pending_review), send task created', r.status === 200 && rep1.status === 'scheduled' && !!rep1.taskId && !('canReview' in rep1), r.text.slice(0, 300));
   const done1 = await waitFor('handed over', async () => { const [x] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, rep1.id)); return x?.status === 'awaiting_operator' ? x : null; });
   check('…then handed to an operator (awaiting_operator, method manual)', done1.method === 'manual' && done1.reviewerId === null);
   const logs1 = (await db.select({ a: schema.commentLogs.action }).from(schema.commentLogs).where(eq(schema.commentLogs.commentTaskId, rep1.id))).map((x) => x.a);
   check('reply log: created → submitted → queued → run → handed_over, no approval', ['created', 'submitted', 'queued', 'run', 'handed_over'].every((a) => logs1.includes(a)) && !logs1.includes('approved'), logs1.join(','));
   const c2 = await mkComment('v2');
   const when = new Date(Date.now() + 3 * 86_400_000).toISOString();
-  r = await http('POST', `/api/comments/${c2}/replies`, U, { text: `Thanks v2 ${tag}`, submit: true, scheduledAt: when });
+  r = await http('POST', `/api/comments/${c2}/replies`, U, { text: `Thanks v2 ${tag}` });
+  r = await http('POST', `/api/comment-replies/${r.body.reply.id}/submit`, U, { scheduledAt: when });
   const [t2] = r.body?.reply?.taskId ? await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.body.reply.taskId)) : [];
-  check('reply with a send time → scheduled, its task scheduled for that time', r.status === 201 && r.body.reply.status === 'scheduled' && t2?.status === 'scheduled' && t2.runAt?.toISOString() === when, r.text.slice(0, 200));
+  check('排程 with a send time → scheduled, its task scheduled for that time', r.status === 200 && r.body.reply.status === 'scheduled' && t2?.status === 'scheduled' && t2.runAt?.toISOString() === when, r.text.slice(0, 200));
   const rep2 = r.body.reply.id as string;
   const gone = await Promise.all([
     http('POST', `/api/comment-replies/${rep2}/approve`, T), http('POST', '/api/comment-replies/approve', T, { ids: [rep2] }), http('POST', `/api/comment-replies/${rep2}/reject`, T, { reason: 'x' }),

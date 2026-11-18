@@ -29,6 +29,10 @@ import { CollectorDefer, deviceHalt, haltDevice, onDeviceResumed, withDevice } f
  * - No approval step (owner decision 2026-11-18): a submitted reply goes straight to its send task
  *   (draft → scheduled → sending → awaiting_operator). pending_review / approved / rejected stay in the
  *   status list for old rows only; src/db/comment-approval-migration.ts moved waiting rows on.
+ * - Draft first, no test mode (owner decision 2026-11-18): every reply / post comment is saved as a `draft`
+ *   (no task, nothing on the phone); only 排程 (submitReply, a time or now) queues it, and the cloud phone then
+ *   really sends it. `dry_run` (the former test mode) stays in the enum for old rows only;
+ *   src/db/test-mode-removal-migration.ts turned those back into drafts.
  * - Anti-abuse (owner's hard constraint), each block written to comment_logs with a reason code:
  *   one reply per comment (unless the previous one failed / was rejected / cancelled; also a DB
  *   partial unique index), the same text at most `duplicateMax` times per account per
@@ -58,20 +62,15 @@ export interface CommentRules {
   /** Same reply text at most this many times per account within the window. */
   duplicateMax: number;
   duplicateWindowHours: number;
-  /** Sends (device sends, test-mode runs and hand-overs to an operator) per account per rolling hour. */
+  /** Sends (device sends and hand-overs to an operator) per account per rolling hour. */
   sendsPerHour: number;
-  /** 云手机发评论: device sends + test-mode runs per account per rolling 24 h. */
+  /** 云手机发评论: device sends per account per rolling 24 h. */
   sendsPerDay: number;
-  /** 云手机发评论: minimum seconds between two device sends / test runs of one account. */
+  /** 云手机发评论: minimum seconds between two device sends of one account. */
   minGapSec: number;
-  /**
-   * 测试模式 (default ON): the phone opens the post, the comments, the reply field and pastes the text, then
-   * clears it and goes back without tapping 发布; the reply ends as `dry_run` with a screenshot.
-   */
-  testMode: boolean;
 }
 const RULES_KEY = 'comments.rules';
-export const DEFAULT_RULES: CommentRules = { duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20, sendsPerDay: 50, minGapSec: 60, testMode: true };
+export const DEFAULT_RULES: CommentRules = { duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20, sendsPerDay: 50, minGapSec: 60 };
 
 export async function getRules(exec: Exec = db): Promise<CommentRules> {
   const [row] = await exec.select().from(schema.settings).where(eq(schema.settings.key, RULES_KEY));
@@ -83,13 +82,16 @@ export async function getRules(exec: Exec = db): Promise<CommentRules> {
     sendsPerHour: int(v.sendsPerHour, DEFAULT_RULES.sendsPerHour),
     sendsPerDay: int(v.sendsPerDay, DEFAULT_RULES.sendsPerDay),
     minGapSec: typeof v.minGapSec === 'number' && Number.isInteger(v.minGapSec) && v.minGapSec >= 0 ? v.minGapSec : DEFAULT_RULES.minGapSec,
-    testMode: typeof v.testMode === 'boolean' ? v.testMode : DEFAULT_RULES.testMode,
   };
 }
 
-/** Stored without the removed `requireApproval` (an old row's flag is dropped on the next save). */
+/**
+ * Stored with the known fields only: the removed `requireApproval` and `testMode` of an old row are dropped on the next
+ * save (an old colour reading the row then falls back to its own default, test mode ON, i.e. never posts).
+ */
 export async function saveRules(input: Partial<CommentRules>): Promise<CommentRules> {
-  const next = { ...(await getRules()), ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) };
+  const keys = Object.keys(DEFAULT_RULES) as (keyof CommentRules)[];
+  const next = { ...(await getRules()), ...Object.fromEntries(Object.entries(input).filter(([k, v]) => v !== undefined && (keys as string[]).includes(k))) };
   await db.insert(schema.settings).values({ key: RULES_KEY, value: next })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
   return getRules();
@@ -233,9 +235,9 @@ async function assertNotDuplicate(tx: Tx, actor: AuthUser | null, r: Pick<Commen
   }
 }
 
-export interface ReplyInput { text: string; templateId?: string | null; submit?: boolean; scheduledAt?: Date | null }
+export interface ReplyInput { text: string; templateId?: string | null; scheduledAt?: Date | null }
 
-/** Writes a reply to one comment (draft, or submitted at once). One active reply per comment. */
+/** Writes a reply to one comment, always as a draft (排程 = submitReply). One active reply per comment. */
 export async function createReply(user: AuthUser, comment: Comment, b: ReplyInput): Promise<CommentTask> {
   const text = b.text.trim();
   if (!text) throw badRequest('回复内容不能为空', 'comment.text_empty');
@@ -265,7 +267,14 @@ export async function createReply(user: AuthUser, comment: Comment, b: ReplyInpu
     throw err;
   }
   if (comment.status === 'new') await db.update(C).set({ status: 'read' }).where(and(eq(C.id, comment.id), eq(C.status, 'new')));
-  return b.submit ? submitReply(user, row, b.scheduledAt) : row;
+  return row;
+}
+
+/** Deletes a draft (never sent, no task). Logged on the account (and the comment) since the reply's own log goes with it. */
+export async function deleteDraft(user: AuthUser, r: CommentTask): Promise<void> {
+  const [gone] = await db.delete(R).where(and(eq(R.id, r.id), eq(R.status, 'draft'))).returning({ id: R.id });
+  if (!gone) throw conflict(`当前状态（${r.status}）不能删除，只能删除草稿`, 'comment.bad_status', { status: r.status });
+  await commentLog({ accountId: r.accountId, commentId: r.commentId, action: 'draft_deleted', message: 'draft deleted', data: { replyId: r.id }, actor: user });
 }
 
 export async function editReply(user: AuthUser, r: CommentTask, b: { text?: string; scheduledAt?: Date | null; templateId?: string | null }): Promise<CommentTask> {
@@ -438,8 +447,8 @@ async function planReply(r: CommentTask): Promise<ReplyPlan> {
   return { kind: 'device', inst, acc, shortcode, postPk, replyTo };
 }
 
-/** Device sends / test runs of the account (rate rules of 云手机发评论). */
-const DEVICE_DONE = sql`${R.method} = 'device' and ${R.status} in ('sent', 'dry_run')`;
+/** Device sends of the account (rate rules of 云手机发评论). */
+const DEVICE_DONE = sql`${R.method} = 'device' and ${R.status} = 'sent'`;
 const doneAt = sql<Date>`coalesce(${R.sentAt}, ${R.handedAt})`;
 
 /** The reply's next round at `at` (pace / rate limit): back to scheduled, a new send task. Never dropped. */
@@ -507,7 +516,7 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     const hourAgo = new Date(now - 3600_000);
     const recent = await tx.select({ at: sql<Date>`coalesce(${R.sentAt}, ${R.handedAt}, ${R.updatedAt})` }).from(R).where(and(
       eq(R.accountId, r.accountId), ne(R.id, r.id),
-      or(and(eq(R.status, 'sent'), gte(R.sentAt, hourAgo)), eq(R.status, 'sending'), and(inArray(R.status, ['awaiting_operator', 'dry_run']), gte(R.handedAt, hourAgo))),
+      or(and(eq(R.status, 'sent'), gte(R.sentAt, hourAgo)), eq(R.status, 'sending'), and(eq(R.status, 'awaiting_operator'), gte(R.handedAt, hourAgo))),
     ));
     if (recent.length >= rules.sendsPerHour) {
       const oldest = Math.min(...recent.map((x) => new Date(x.at).getTime()));
@@ -583,8 +592,8 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     try {
       res = await withDevice(inst, ctx.log, offline, (dev) => sendIgComment(dev, {
         shortcode: plan.shortcode, postPk: plan.postPk, handle: acc.handle, externalId: acc.externalId, replyTo: plan.replyTo, text: r.text,
-        testMode: rules.testMode, log: ctx.log, signal: ctx.signal,
-      }), { lockMs: 6 * 60_000, weight: acc.externalId ? 1 : 2 });
+        log: ctx.log, signal: ctx.signal,
+      }), { lockMs: 6 * 60_000, weight: acc.externalId ? 1 : 2, what: 'reply' });
     } catch (err) {
       if (err instanceof CollectorDefer) {
         await db.update(R).set({ status: 'scheduled' }).where(and(eq(R.id, r.id), eq(R.status, 'sending')));
@@ -606,13 +615,8 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
       }
       throw err;
     }
+    // The screenshot of the filled-in field (taken before 发布) stays with the sent reply as evidence.
     const evidence = await storeEvidence(r, res.screenshot, res.inputText, res.excerpt);
-    if (res.outcome === 'dry_run') {
-      await db.update(R).set({ status: 'dry_run', method: 'device', handedAt: new Date(), evidence, senderName: inst.name, errorCode: 'comment.test_mode' })
-        .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
-      await log('info', 'dry_run', 'test mode: text pasted and checked on the phone, not sent (field cleared)', { device: inst.name, screens: res.screens, screenshot: !!evidence.key });
-      return { state: 'dry_run', method: 'device', evidence: { key: evidence.key ?? null } };
-    }
     await db.update(R).set({ status: 'sent', method: 'device', sentAt: new Date(), evidence, senderName: inst.name, senderId: null })
       .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
     await markReplied(r.commentId);
@@ -651,7 +655,7 @@ registerTaskHandler<ReplyPayload>(REPLY_TYPE, {
   },
 });
 
-/** A comment written directly under one of the account's own posts (sent from the cloud phone; no approval). */
+/** A comment written directly under one of the account's own posts, saved as a draft (排程 sends it from the cloud phone). */
 export async function createPostComment(user: AuthUser, acc: SocialAccount, postId: string, b: { text: string; scheduledAt?: Date | null }): Promise<CommentTask> {
   const text = b.text.trim();
   if (!text) throw badRequest('评论内容不能为空', 'comment.text_empty');
@@ -663,7 +667,7 @@ export async function createPostComment(user: AuthUser, acc: SocialAccount, post
     status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS, authorId: user.id, authorName: user.username,
   }).returning();
   await replyLog(row!, { action: 'created', message: 'post comment written', data: { postId: post.id }, actor: user });
-  return submitReply(user, row!, b.scheduledAt);
+  return row!;
 }
 
 // ---------------------------------------------------------------- 评论追踪账号的帖子 (own account on a tracked post)
@@ -683,8 +687,8 @@ export async function replyAccountFor(user: AuthUser, accountId: string, platfor
 
 /**
  * A comment under a tracked post (`comment` null) or a reply to one of its comments (comments are top level as read
- * on the phone), written by a person and sent by `acc`'s cloud phone (same flow, rules and test mode as the
- * account's own posts). One active reply per tracked comment; no bulk: one post / comment and one account per call.
+ * on the phone), written by a person, saved as a draft and, once scheduled, sent by `acc`'s cloud phone (same flow and
+ * rules as the account's own posts). One active reply per tracked comment; no bulk: one post / comment and one account per call.
  */
 export async function createTrackedComment(user: AuthUser, acc: SocialAccount, post: TrackedPost, comment: TrackedPostComment | null, b: { text: string; scheduledAt?: Date | null }): Promise<CommentTask> {
   const text = b.text.trim();
@@ -713,7 +717,7 @@ export async function createTrackedComment(user: AuthUser, acc: SocialAccount, p
     if (isUnique(err)) throw await blocked({ accountId: acc.id }, user, conflict('这条评论已有回复', 'comment.already_replied', { status: 'unknown' }));
     throw err;
   }
-  return submitReply(user, row, b.scheduledAt);
+  return row;
 }
 
 // ---------------------------------------------------------------- templates
