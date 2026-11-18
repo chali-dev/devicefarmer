@@ -97,6 +97,12 @@ const byRid = (nodes: UiNode[], suffix: string) => nodes.find((n) => n.rid === I
 export function firstGridItem(nodes: UiNode[]): UiNode | null {
   return nodes.find((n) => n.rid === `${ID}image_button` && n.bounds && n.bounds[3] - n.bounds[1] > 40) ?? null;
 }
+/**
+ * The profile's grid shows no post ("发布你的第一篇帖子" / an empty-state view below the tabs). The own profile's
+ * grid is cached: right after publishing (seen 2026-11-18 on bit-ins-02) the header already counted the new post
+ * while the grid still showed this empty state (or the old posts) until a pull to refresh.
+ */
+export const isGridEmpty = (nodes: UiNode[]) => !!byRid(nodes, 'empty_state_view_root') || !!byRid(nodes, 'igds_empty_state_title');
 /** Is the opened screen the contextual feed (a post list), i.e. did the grid tap land? */
 export const isPostList = (nodes: UiNode[]) => !!byRid(nodes, 'row_feed_view_group_buttons');
 
@@ -273,6 +279,8 @@ export class IgScreenSession {
     const h = b[3] - b[1];
     await this.sh(`input swipe ${x} ${Math.round(b[3] - h * 0.15)} ${x} ${Math.round(b[1] + h * 0.25)} 450`);
   }
+  /** Pull to refresh: a downward swipe from the profile header (coordinates verified on bit-ins-02's 1080×2374 screen). */
+  async pullToRefresh(): Promise<void> { await this.sh('input swipe 540 900 540 1900 400'); }
   async keys(...codes: number[]): Promise<void> { if (codes.length) await this.sh(`input keyevent ${codes.join(' ')}`); }
   /** Clears the focused text field: cursor to the end, then delete `n` characters. */
   async clearField(n: number): Promise<void> { await this.keys(123); await this.keys(...Array.from({ length: Math.min(Math.max(n, 1), 400) }, () => 67)); }
