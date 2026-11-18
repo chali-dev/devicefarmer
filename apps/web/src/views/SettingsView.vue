@@ -6,7 +6,7 @@ import { api } from '../api/client'
 import type { SettingsConfig } from '../api/types'
 import AiSettings from '../components/settings/AiSettings.vue'
 import MediaLimitSettings from '../components/settings/MediaLimitSettings.vue'
-import PublishRetrySettings from '../components/settings/PublishRetrySettings.vue'
+import PublishTaskSettings from '../components/settings/PublishTaskSettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
@@ -58,7 +58,7 @@ onMounted(async () => { try { cfg.value = await api<SettingsConfig>('GET', '/api
           <a-divider />
           <RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" />
         </a-tab-pane>
-        <a-tab-pane key="publishRetry" :tab="t('settings.tabs.publishRetry')"><PublishRetrySettings /></a-tab-pane>
+        <a-tab-pane key="publishRetry" :tab="t('settings.tabs.publishRetry')"><PublishTaskSettings /></a-tab-pane>
         <a-tab-pane key="media" :tab="t('settings.tabs.media')"><MediaLimitSettings /></a-tab-pane>
         <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
         <a-tab-pane key="ai" :tab="t('settings.tabs.ai')"><AiSettings /></a-tab-pane>

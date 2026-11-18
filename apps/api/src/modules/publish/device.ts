@@ -113,7 +113,6 @@ async function run(input: PublishInput, ctx: PublishRunContext): Promise<Publish
         if (!err.opts.afterSend) return { state: 'parked', code: 'publish.device_halted', device: inst.name };
       }
       if (err.opts.afterSend) return { state: 'awaiting_operator', code, message: err.message };
-      if (err.opts.retry) throw new TaskError(code, err.message);
       throw new PublishCheckError(code, err.message);
     }
     throw err;

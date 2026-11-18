@@ -146,6 +146,7 @@ const RULES: Rule[] = [
   [/^backup stored \((\d+) bytes\)$/, 'backupStored', (m) => ({ size: m[1]! })],
   [/^deleted (\d+) old backups$/, 'backupsPruned', (m) => ({ n: m[1]! })],
   [/^run started \(round (\d+), attempt (\d+)\/(\d+)\)$/, 'runStarted', (m) => ({ round: m[1]!, n: m[2]!, max: m[3]! })],
+  [/^run started \(round (\d+)\)$/, 'runStartedRound', (m) => ({ round: m[1]! })],
   [/^(failed|cancelled) \(scheduler task (\w+)\)$/, 'schedulerEnded', (m) => ({ status: status('publish', m[1]!), task: status('tasks', m[2]!) })],
   [/^send started \(attempt (\d+)\/(\d+)\)$/, 'sendStarted', (m) => ({ n: m[1]!, max: m[2]! })],
   [/^send rate limit reached \((\d+)\/(\d+) per hour\), deferred$/, 'rateLimited', (m) => ({ n: m[1]!, max: m[2]! })],

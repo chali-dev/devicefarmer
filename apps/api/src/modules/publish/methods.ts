@@ -40,7 +40,7 @@ export const MANUAL_METHOD = 'manual';
 /** 云手机发帖: the account's cloud phone publishes in the app. */
 export const DEVICE_METHOD = 'device';
 
-/** Check failure that retrying won't fix: fails the run at once (no further attempts). */
+/** Coded failure of a run (every failure ends the round: there are no automatic retries). */
 export class PublishCheckError extends UnrecoverableError {
   constructor(readonly code: string, message: string, readonly params: Record<string, unknown> = {}) { super(message); }
 }

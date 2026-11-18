@@ -132,10 +132,11 @@ const Env = z.object({
   TRACKED_DEVICE_BUSY_RETRY_SEC: z.coerce.number().int().min(5).max(86_400).default(300),
   /** Public URL of the web UI (reverse proxy), used for links in alert messages (default: WEB_ORIGIN). */
   PUBLIC_BASE_URL: z.string().url().optional(),
-  /** Publish scheduler: default attempts per scheduled run (a distribution may lower/raise it, 1–10), attempt timeout and retry backoff base. */
-  PUBLISH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+  /**
+   * Publish scheduler: default timeout of a round's single attempt (系统配置 → 发布任务 overrides it). No retries since
+   * 2026-11-18: PUBLISH_MAX_ATTEMPTS / PUBLISH_RETRY_BACKOFF_MS are no longer read (left in an .env they are ignored).
+   */
   PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10 * 60_000),
-  PUBLISH_RETRY_BACKOFF_MS: z.coerce.number().int().min(100).default(30_000),
   /**
    * System management (modules/system). Database backups run `${PG_DUMP_CMD} --format=custom …` with the
    * password only in PGPASSWORD (never argv). PG_DUMP_CMD is split on spaces; its major version must be ≥ the

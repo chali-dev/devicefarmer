@@ -498,7 +498,7 @@ export interface DashboardResponse {
   errors: Record<string, string>
 }
 export interface SettingsConfig {
-  publish: { maxAttempts: number; timeoutMs: number; retryBackoffMs: number }
+  publish: { timeoutMs: number }
   auditRetentionDays: number
   media: { imageMaxMb: number; videoMaxMb: number; allowedTypes: string[] }
   adbPorts: { min: number; max: number }

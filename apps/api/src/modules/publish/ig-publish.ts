@@ -44,7 +44,7 @@ const SHARE: Record<PostType, string> = {
 const STEP_GAP_MS = 1500;
 const WAIT_MS = 20_000;
 
-/** Coded failure of a device publish. `afterSend` = 分享 was tapped (never retried); `challenge` = halt the device; `retry` = may work later. */
+/** Coded failure of a device publish. `afterSend` = 分享 was tapped (never retried); `challenge` = halt the device; `retry` = may work later (informational only: publish rounds are never retried automatically since 2026-11-18). */
 export class PublishDeviceError extends HttpError {
   constructor(code: string, message: string, readonly opts: { afterSend?: boolean; challenge?: boolean; excerpt?: string; retry?: boolean; shot?: Buffer | null } = {}) { super(409, message, code); }
 }
