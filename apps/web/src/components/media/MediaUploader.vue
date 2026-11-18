@@ -10,13 +10,13 @@ import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFiel
 
 /**
  * Multi-file upload: drag & drop / picker → nothing is sent yet; the files open in MediaEditor
- * (crop, size, quality, preview; name, category, tags). 保存 there queues the file here: 2 parallel XHRs with progress,
+ * (crop, size, quality, preview; name, category). 保存 there queues the file here: 2 parallel XHRs with progress,
  * retry. Crop/compress itself runs on the server (media-process job) with the chosen options.
  * `uploaded` fires when the queue is idle again, with the assets uploaded since the last time, in the order they were saved
  * (still `processing`).
  */
 /** ownerId (admin, scope mine): upload into that user's personal media. */
-const props = defineProps<{ scope: 'public' | 'mine'; ownerId?: string; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
+const props = defineProps<{ scope: 'public' | 'mine'; ownerId?: string; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[] }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ uploaded: [items: MediaItem[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
@@ -51,7 +51,7 @@ function add(file: File) {
     pending.value.push(reactive<PendingFile>({
       uid: ++uid, file, url: URL.createObjectURL(file), video: isVideoFile(file, props.limits), processable: Boolean(fmt?.processable), formatId: fmt?.id ?? '',
       settings: { aspect: 'free', maxSize: 'original', quality: 'original' }, rect: null, dims: null,
-      meta: { name: fileStem(file.name), categoryId: undefined, tags: [] },
+      meta: { name: fileStem(file.name), categoryId: undefined },
     }))
     editorOpen.value = true
   }
@@ -65,7 +65,7 @@ function dropPending(uids: number[]) {
 function save(uids: number[]) {
   for (const p of pending.value.filter((x) => uids.includes(x.uid))) {
     const proc = p.processable ? processOptions(p.settings, p.rect, p.dims, p.video) : null
-    entries.value.push(reactive<Entry>({ uid: p.uid, file: p.file, process: proc, meta: { ...p.meta, tags: [...p.meta.tags] }, state: 'waiting', pct: 0, error: '' }))
+    entries.value.push(reactive<Entry>({ uid: p.uid, file: p.file, process: proc, meta: { ...p.meta }, state: 'waiting', pct: 0, error: '' }))
   }
   dropPending(uids)
   pump()
@@ -167,7 +167,7 @@ onBeforeUnmount(() => {
     </div>
   </a-modal>
   <MediaEditor
-    v-model:open="editorOpen" :items="pending" :scope="scope" :owner-id="ownerId" :categories="categories" :tag-options="tagOptions"
+    v-model:open="editorOpen" :items="pending" :scope="scope" :owner-id="ownerId" :categories="categories"
     @save="save" @discard="dropPending" @categories-changed="emit('categoriesChanged')"
   />
 </template>

@@ -145,9 +145,6 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <a-tag v-if="acc.verified" color="blue">{{ t('tracked.verified') }}</a-tag>
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
           </a-space>
-          <div v-if="acc.tags.length" class="muted small">
-            <a-tag v-for="tg in acc.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
-          </div>
           <div class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>
           <div v-if="acc.bio" class="bio">{{ acc.bio }}</div>
         </div>
@@ -222,5 +219,4 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 .delta { font-size: 12px; }
 .delta.up { color: var(--cp-primary); }
 .delta.down { color: var(--cp-error); }
-.small-tag { margin-left: 4px; font-size: 11px; }
 </style>

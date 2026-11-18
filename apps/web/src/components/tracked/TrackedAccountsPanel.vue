@@ -35,7 +35,6 @@ const route = useRoute()
 const router = useRouter()
 
 const platforms = ref<TrackedPlatform[]>([])
-const facets = ref<{ tags: string[] }>({ tags: [] })
 const users = ref<ManagedUser[]>([])
 const items = ref<TrackedAccount[]>([])
 const total = ref(0)
@@ -45,7 +44,7 @@ const loading = ref(false)
 const selectedKeys = ref<string[]>([])
 
 const filters = reactive({
-  q: '', platform: undefined as string | undefined, tag: undefined as string | undefined,
+  q: '', platform: undefined as string | undefined,
   favorite: false, status: queryParam<TrackedStatus>(route.query, 'status', ['active', 'paused', 'error']), ownerId: undefined as string | undefined,
 })
 if (queryParam(route.query, 'platform')) filters.platform = queryParam(route.query, 'platform')
@@ -54,7 +53,7 @@ const platformLabel = (id: string) => platforms.value.find((p) => p.id === id)?.
 function query(): string {
   const p = new URLSearchParams({ page: String(page.value), pageSize: String(pageSize.value) })
   if (filters.q.trim()) p.set('q', filters.q.trim())
-  for (const k of ['platform', 'tag', 'status', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
+  for (const k of ['platform', 'status', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
   if (filters.favorite) p.set('favorite', 'true')
   return p.toString()
 }
@@ -71,22 +70,17 @@ async function load(quiet = false) {
   } catch (e) { if (!quiet) message.error(errorText(e)) }
   finally { loading.value = false }
 }
-async function loadFacets() {
-  try {
-    facets.value = await api('GET', `/api/tracked-accounts/facets${filters.ownerId ? `?ownerId=${filters.ownerId}` : ''}`)
-  } catch { /* suggestions only */ }
-}
 async function loadPlatforms() {
   try { platforms.value = (await api<{ platforms: TrackedPlatform[] }>('GET', '/api/tracked-accounts/platforms')).platforms } catch (e) { message.error(errorText(e)) }
 }
 function search() { page.value = 1; void load() }
 function reset() {
-  Object.assign(filters, { q: '', platform: undefined, tag: undefined, favorite: false, status: undefined, ownerId: undefined })
-  search(); void loadFacets()
+  Object.assign(filters, { q: '', platform: undefined, favorite: false, status: undefined, ownerId: undefined })
+  search()
 }
 onMounted(async () => {
   await loadPlatforms()
-  void load(); void loadFacets(); void loadCapacity()
+  void load(); void loadCapacity()
   if (auth.isAdmin) { try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch { /* filter only */ } }
 })
 
@@ -103,7 +97,6 @@ const columns = computed(() => [
   { title: '', key: 'favorite', width: 44 },
   { title: t('tracked.colAccount'), key: 'account', width: 250 },
   { title: t('tracked.colPlatform'), key: 'platform', width: 110 },
-  { title: t('tracked.tags'), key: 'tags', width: 180 },
   { title: t('tracked.metrics.followers'), key: 'followers', width: 130, align: 'right' as const },
   { title: t('tracked.lastChecked'), key: 'checked', width: 170 },
   ...(collectable.value.length ? [{ title: t('collect.schedule'), key: 'schedule', width: 170 }] : []),
@@ -241,7 +234,7 @@ function remove(a: TrackedAccount) {
         await api('DELETE', `/api/tracked-accounts/${a.id}`)
         message.success(t('common.deleted'))
         if (detail.value?.id === a.id) detailOpen.value = false
-        void load(); void loadFacets()
+        void load()
       } catch (e) { message.error(errorText(e)) }
     },
   })
@@ -250,11 +243,11 @@ function remove(a: TrackedAccount) {
 // ---- add
 const addOpen = ref(false)
 const adding = ref(false)
-const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', tags: [] as string[], favorite: false, notes: '', interval: 0 })
+const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0 })
 const preview = ref<{ platform: string; handle: string; profileUrl: string } | null>(null)
 const previewError = ref('')
 function openAdd() {
-  Object.assign(addForm, { platform: undefined, input: '', displayName: '', tags: [], favorite: false, notes: '', interval: 0 })
+  Object.assign(addForm, { platform: undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0 })
   preview.value = null; previewError.value = ''
   addOpen.value = true
   void loadCapacity()
@@ -279,12 +272,12 @@ async function saveAdd() {
   try {
     await api('POST', '/api/tracked-accounts', {
       input: addForm.input, platform: addForm.platform, displayName: addForm.displayName || undefined,
-      tags: addForm.tags, favorite: addForm.favorite, notes: addForm.notes || undefined,
+      favorite: addForm.favorite, notes: addForm.notes || undefined,
       ...(addCollectable.value ? { refreshIntervalHours: addForm.interval || null } : {}),
     })
     message.success(t('common.created'))
     addOpen.value = false
-    void load(); void loadFacets(); void loadCapacity()
+    void load(); void loadCapacity()
   } catch (e) { message.error(errorText(e)) }
   finally { adding.value = false }
 }
@@ -293,11 +286,11 @@ async function saveAdd() {
 const editOpen = ref(false)
 const editSaving = ref(false)
 const editing = ref<TrackedAccount | null>(null)
-const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', tags: [] as string[], status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
+const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
 function openEdit(a: TrackedAccount) {
   editing.value = a
   Object.assign(editForm, {
-    displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '', tags: [...a.tags],
+    displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '',
     status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '', interval: a.refreshIntervalHours ?? 0,
   })
   editOpen.value = true
@@ -309,14 +302,14 @@ async function saveEdit() {
   try {
     const r = await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${editing.value.id}`, {
       displayName: editForm.displayName, avatarUrl: editForm.avatarUrl.trim() || null, bio: editForm.bio,
-      tags: editForm.tags, notes: editForm.notes,
+      notes: editForm.notes,
       ...(editing.value.status === 'error' || editing.value.status !== editForm.status ? { status: editForm.status } : {}),
       ...((editing.value.refreshIntervalHours ?? 0) !== editForm.interval ? { refreshIntervalHours: editForm.interval || null } : {}),
     })
     replace(r.account)
     message.success(t('common.saved'))
     editOpen.value = false
-    void loadFacets(); void loadCapacity()
+    void loadCapacity()
   } catch (e) { message.error(errorText(e)) }
   finally { editSaving.value = false }
 }
@@ -326,7 +319,6 @@ const detailOpen = ref(false)
 const detail = ref<TrackedAccount | null>(null)
 function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = true }
 
-const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
 </script>
 
 <template>
@@ -344,14 +336,11 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
         <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
           <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.label" /></a-select-option>
         </a-select>
-        <a-select v-model:value="filters.tag" :placeholder="t('tracked.tag')" allow-clear show-search style="width: 130px" @change="search">
-          <a-select-option v-for="tg in facets.tags" :key="tg" :value="tg">{{ tg }}</a-select-option>
-        </a-select>
         <a-select v-model:value="filters.status" :placeholder="t('common.status')" allow-clear style="width: 120px" @change="search">
           <a-select-option v-for="s in (['active', 'paused', 'error'] as const)" :key="s" :value="s">{{ t(`tracked.status.${s}`) }}</a-select-option>
         </a-select>
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('tracked.owner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="() => { search(); loadFacets() }" />
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search" />
         <a-checkbox v-model:checked="filters.favorite" @change="search">{{ t('tracked.favoritesOnly') }}</a-checkbox>
         <template #actions>
           <BatchActions v-if="collectable.length" :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
@@ -359,7 +348,7 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
       </SearchBar>
 
       <a-table
-        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1580 }"
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1400 }"
         :pagination="pagination({ current: page, pageSize, total, totalText: (n) => t('tracked.total', { n }) })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         @change="onTableChange"
@@ -381,10 +370,6 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
             </div>
           </template>
           <template v-else-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformLabel(record.platform)" /></template>
-          <template v-else-if="column.key === 'tags'">
-            <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
-            <span v-if="!record.tags.length" class="muted">—</span>
-          </template>
           <template v-else-if="column.key === 'followers'">
             <a-tooltip :title="record.followers !== null ? approxPrefix(record as TrackedAccount) + record.followers.toLocaleString(dateLocale()) + (approxPrefix(record as TrackedAccount) ? ` · ${t('tracked.approxHint')}` : '') : undefined">
               <span class="num">{{ approxPrefix(record as TrackedAccount) }}{{ compactNumber(record.followers) }}</span>
@@ -473,7 +458,6 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
         <ScheduleCapacityHint :capacity="capacity" :deltas="addDeltas" />
       </a-form-item>
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="addForm.displayName" :maxlength="200" :placeholder="t('common.optional')" /></a-form-item>
-      <a-form-item :label="t('tracked.tags')"><a-select v-model:value="addForm.tags" mode="tags" :options="tagOptions" :max-tag-count="6" /></a-form-item>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="addForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
       <a-checkbox v-model:checked="addForm.favorite">{{ t('tracked.favorite') }}</a-checkbox>
     </a-form>
@@ -484,7 +468,6 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="editForm.displayName" :maxlength="200" /></a-form-item>
       <a-form-item :label="t('tracked.avatarUrl')"><a-input v-model:value="editForm.avatarUrl" :maxlength="1000" :placeholder="URL_HINT" /></a-form-item>
       <a-form-item :label="t('tracked.bio')"><a-textarea v-model:value="editForm.bio" :maxlength="2000" :auto-size="{ minRows: 2, maxRows: 5 }" /></a-form-item>
-      <a-form-item :label="t('tracked.tags')"><a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions" /></a-form-item>
       <a-row :gutter="12">
         <a-col :xs="24" :sm="12">
           <a-form-item :label="t('tracked.trackingStatus')">
@@ -521,7 +504,6 @@ const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
 .sched-link :deep(.anticon) { font-size: 11px; opacity: 0.6; }
 .sched-pop { width: 220px; display: flex; flex-direction: column; gap: 6px; }
 .sched-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
-.small-tag { font-size: 11px; margin-top: 2px; }
 .acct { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .acct-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .acct-text .name { font-weight: 500; }
