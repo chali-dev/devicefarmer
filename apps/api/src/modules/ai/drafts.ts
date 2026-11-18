@@ -420,7 +420,7 @@ async function runAccountDrafts(ctx: TaskContext<AccountDraftPayload>) {
   const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
   if (!acc) throw new AiFinalError('social.not_found', 'the social account no longer exists');
   const creds = await aiCredentials();
-  const skip = !creds.enabled ? 'ai.disabled' : !acc.aiDraftsEnabled && !manual ? 'ai.account_drafts_off' : !acc.personaId ? 'ai.account_no_persona'
+  const skip = !acc.aiDraftsEnabled && !manual ? 'ai.account_drafts_off' : !acc.personaId ? 'ai.account_no_persona'
     : !isPlatformEnabled(acc.platform) ? 'platform.disabled' : null;
   if (skip) {
     await ctx.log('info', 'drafts: skipped (switched off)', { code: skip });
@@ -476,12 +476,11 @@ const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).pad
 /**
  * Hourly (main.ts): from the configured local hour on, one task per switched-on social account with a persona per
  * local day (idempotency key per day, so later ticks and other API processes create nothing new). Accounts of disabled
- * users or on disabled platforms are skipped. Without a key, or switched off, nothing happens.
+ * users or on disabled platforms are skipped. Without a key nothing happens (there is no global switch).
  */
 export async function scheduleAccountDrafts(now = new Date()): Promise<{ created: number; existing: number; skipped: { accountId: string; code: string }[]; reason?: string }> {
   const s = await getAiSettings();
   const empty = { created: 0, existing: 0, skipped: [] as { accountId: string; code: string }[] };
-  if (!s.enabled) return { ...empty, reason: 'ai.disabled' };
   if (!s.keySet) return { ...empty, reason: 'ai.not_configured' };
   if (now.getHours() < s.hour) return { ...empty, reason: 'ai.not_due' };
   const day = localDay(now);
@@ -514,13 +513,12 @@ const HTTP_STATUS: Record<string, number> = { 'ai.unavailable': 503, 'ai.api_rat
  * AI测试: one draft from the persona's current 发文风格, generated in the request and only returned (a style test: never
  * stored, no way to save it).
  * `info` receives the requested/served model (for the audit entry, also when the call fails). Errors: 400
- * ai.not_configured / ai.disabled, 429 ai.rate_limited (PREVIEW_LIMIT per persona per 10 min), model errors with their
+ * ai.not_configured, 429 ai.rate_limited (PREVIEW_LIMIT per persona per 10 min), model errors with their
  * ai.* code (502; 503 unavailable / API rate limit, 504 timeout).
  */
 export async function previewDraft(user: AuthUser, p: Persona, info: Record<string, unknown>, signal?: AbortSignal, topic?: string) {
   const creds = await aiCredentials();
   if (!creds.apiKey) throw badRequest('未配置 Anthropic API 密钥（管理员可在设置 → AI 中填写）', 'ai.not_configured');
-  if (!creds.enabled) throw badRequest('AI 草稿已在设置中关闭', 'ai.disabled');
   if (topic) await assertNoBannedWords([p.id], [topic]);
   info.requestedModel = creds.model;
   const key = `ai:preview:count:${p.id}`;
@@ -564,7 +562,7 @@ export const PreviewInput = z.object({ topic: TopicInput }).nullish();
 /**
  * 「AI生成草稿」 on a social account: queues one `account-drafts` task NOW (trigger manual, created by the caller, drafts
  * of the account owner targeting this account, like the daily run). Refused before queueing: no persona
- * (ai.account_no_persona), platform disabled, no key (ai.not_configured), AI switched off (ai.disabled), more than once
+ * (ai.account_no_persona), platform disabled, no key (ai.not_configured), more than once
  * per account per MANUAL_WINDOW_SEC (429 ai.rate_limited {seconds}), a topic with a banned word of the persona (400
  * persona.banned_word). The optional topic goes into the payload (not secret) and the prompt. The caller already
  * passed visibleAccount (RBAC).
@@ -576,7 +574,6 @@ export async function requestAccountDrafts(user: AuthUser, acc: SocialAccount, o
   if (!isPlatformEnabled(acc.platform)) throw badRequest('该平台未启用', 'platform.disabled', { platform: acc.platform });
   const s = await getAiSettings();
   if (!s.keySet) throw badRequest('未配置 Anthropic API 密钥（管理员可在设置 → AI 中填写）', 'ai.not_configured');
-  if (!s.enabled) throw badRequest('AI 草稿已在设置中关闭', 'ai.disabled');
   const [p] = await db.select({ name: schema.personas.name }).from(schema.personas).where(eq(schema.personas.id, acc.personaId));
   if (!p) throw badRequest('账号未绑定人设，不能生成 AI 草稿', 'ai.account_no_persona');
   if (topic) await assertNoBannedWords([acc.personaId], [topic]);

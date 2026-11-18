@@ -642,7 +642,7 @@ export interface DraftPreview {
 /** GET /api/social/accounts/:id/ai-drafts (社交号 → AI 草稿). */
 export interface AccountAiDrafts {
   enabled: boolean; perDay: number; personaId: string | null; runs: PersonaDraftRun[]
-  ai: { enabled: boolean; keySet: boolean; hour: number }
+  ai: { keySet: boolean; hour: number }
 }
 export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
 export type PersonaTone = (typeof PERSONA_TONES)[number]
@@ -670,7 +670,7 @@ export interface PersonaDetail {
   /** 范例 per kind (20). */
   maxExamples: number
 }
-export interface AiSettingsState { enabled: boolean; keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
+export interface AiSettingsState { keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */
 export type Persona = ScopedItem
 /** 内容分类 (count = contents using it). */

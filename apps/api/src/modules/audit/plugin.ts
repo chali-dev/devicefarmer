@@ -389,7 +389,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // Never the key itself: only whether one was set or cleared.
   'PUT /api/settings/ai': {
     action: 'settings.ai',
-    detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, workspaceId: body.workspaceId, model: body.model, hour: body.hour, enabled: body.enabled }),
+    detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, workspaceId: body.workspaceId, model: body.model, hour: body.hour }),
   },
   // 风控 (risk control)
   'PUT /api/risk/settings': {

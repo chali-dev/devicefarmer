@@ -892,7 +892,7 @@ const zhCN = {
       perDay: '每天篇数',
       noPersona: '先给账号设置人设并保存，才能开启 AI 草稿',
       hint: '每天 {hour} 点起按账号人设的发文风格生成草稿，草稿归账号所有者、发布目标是这个账号；每条都要人审改后再发布，不会自动发布。',
-      aiOff: '（管理员尚未配置或已关闭 AI，当前不会生成）',
+      aiOff: '（管理员尚未配置 AI 密钥，当前不会生成）',
       generateNow: 'AI生成草稿',
       generateTitle: 'AI生成草稿：@{handle}',
       generateIntro: '按账号人设的发文风格立即生成草稿（不受每日开关影响）：草稿归账号所有者、发布目标是这个账号，每条都要人审改后再发布，不会自动发布。',
@@ -1903,8 +1903,6 @@ const zhCN = {
     },
     ai: {
       title: 'AI 草稿（Anthropic）',
-      hint: '每日草稿（在社交号上开启）和人设的 AI测试会把人设的风格设定、范例和最近帖子发送给 Anthropic API 生成草稿。AI 只生成草稿，必须由人审改后再发布；不会自动发布或排程。',
-      enabled: '启用每日草稿',
       keyState: 'API 密钥状态',
       keySet: '已设置',
       keyNotSet: '未设置',

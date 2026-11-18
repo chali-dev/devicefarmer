@@ -45,12 +45,12 @@ async function put(body: { enabled?: boolean; perDay?: number }) {
       <span>{{ t('social.aiDrafts.perDay') }}</span>
       <a-input-number :value="state.perDay" :min="1" :max="10" :precision="0" size="small" style="width: 70px" :disabled="saving"
         @change="(v: unknown) => { if (typeof v === 'number' && v !== state!.perDay) void put({ perDay: v }) }" />
-      <a-button size="small" :disabled="!state.personaId || !state.ai.keySet || !state.ai.enabled" @click="genOpen = true">{{ t('social.aiDrafts.generateNow') }}</a-button>
+      <a-button size="small" :disabled="!state.personaId || !state.ai.keySet" @click="genOpen = true">{{ t('social.aiDrafts.generateNow') }}</a-button>
     </div>
     <div class="muted small">
       <template v-if="!state.personaId">{{ t('social.aiDrafts.noPersona') }}</template>
       <template v-else>{{ t('social.aiDrafts.hint', { hour: state.ai.hour }) }}</template>
-      <template v-if="!state.ai.keySet || !state.ai.enabled"> {{ t('social.aiDrafts.aiOff') }}</template>
+      <template v-if="!state.ai.keySet"> {{ t('social.aiDrafts.aiOff') }}</template>
     </div>
     <DraftRunInfo v-if="state.runs[0]" :run="state.runs[0]" />
     <AccountAiGenerateModal v-model:open="genOpen" :account="{ id: accountId, handle: handle ?? '', personaId: state.personaId }" @done="load" />

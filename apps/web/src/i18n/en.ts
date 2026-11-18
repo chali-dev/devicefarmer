@@ -891,7 +891,7 @@ const en: Messages = {
       perDay: 'Per day',
       noPersona: 'Set and save a persona on the account to switch AI drafts on',
       hint: 'From {hour}:00 every day, drafts are written in the post style of the account\'s persona; they belong to the account owner and target this account. Each must be reviewed by a person; nothing is published automatically.',
-      aiOff: '(AI is not configured or switched off by an admin, so nothing is generated now)',
+      aiOff: '(no AI key is configured by an admin yet, so nothing is generated now)',
       generateNow: 'AI drafts now',
       generateTitle: 'AI drafts: @{handle}',
       generateIntro: 'Writes drafts now in the post style of the account\'s persona (independent of the daily switch): they belong to the account owner and target this account. Each must be reviewed by a person; nothing is published automatically.',
@@ -1892,8 +1892,6 @@ const en: Messages = {
     },
     ai: {
       title: 'AI drafts (Anthropic)',
-      hint: "Daily drafts (switched on per social account) and the persona AI test send the persona's style settings, examples and recent posts to the Anthropic API. AI only writes drafts; a person must review and edit them before publishing. Nothing is published or scheduled automatically.",
-      enabled: 'Generate daily drafts',
       keyState: 'API key',
       keySet: 'Set',
       keyNotSet: 'Not set',

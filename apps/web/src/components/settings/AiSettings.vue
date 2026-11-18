@@ -7,8 +7,8 @@ import { api, errorText } from '../../api/client'
 import type { AiSettingsState } from '../../api/types'
 
 /**
- * Settings → AI (admin): Anthropic API key (write-only: the API only says whether it is set), model, daily hour
- * and the on/off switch for 人设每日草稿.
+ * Settings → AI (admin): Anthropic API key (write-only: the API only says whether it is set), model,
+ * workspace and the daily hour. No on/off here: AI drafts are switched on per social account (AccountAiDrafts).
  */
 const { t, te } = useI18n()
 type Res = { ai: AiSettingsState; models: string[] }
@@ -16,12 +16,12 @@ const state = ref<AiSettingsState | null>(null)
 const models = ref<string[]>([])
 const saving = ref(false)
 const keyInput = ref('')
-const form = ref({ enabled: true, model: '', hour: 6, workspaceId: '' })
+const form = ref({ model: '', hour: 6, workspaceId: '' })
 
 function apply(r: Res) {
   state.value = r.ai
   models.value = r.models
-  form.value = { enabled: r.ai.enabled, model: r.ai.model, hour: r.ai.hour, workspaceId: r.ai.workspaceId ?? '' }
+  form.value = { model: r.ai.model, hour: r.ai.hour, workspaceId: r.ai.workspaceId ?? '' }
 }
 onMounted(async () => { try { apply(await api<Res>('GET', '/api/settings/ai')) } catch (e) { message.error(errorText(e)) } })
 
@@ -42,11 +42,7 @@ const hours = Array.from({ length: 24 }, (_, h) => ({ value: h, label: `${String
   <div class="settings-pane">
     <a-spin :spinning="!state">
       <a-typography-title :level="5">{{ t('settings.ai.title') }}</a-typography-title>
-      <a-alert type="info" show-icon :message="t('settings.ai.hint')" class="block-gap" />
       <a-form layout="vertical">
-        <a-form-item :label="t('settings.ai.enabled')">
-          <a-switch v-model:checked="form.enabled" />
-        </a-form-item>
         <a-form-item :label="t('settings.ai.keyState')">
           <a-space wrap>
             <a-tag :color="state?.keySet ? 'success' : 'default'">{{ state?.keySet ? t('settings.ai.keySet') : t('settings.ai.keyNotSet') }}</a-tag>
@@ -76,5 +72,4 @@ const hours = Array.from({ length: 24 }, (_, h) => ({ value: h, label: `${String
 
 <style scoped>
 .settings-pane { max-width: 640px; }
-.block-gap { margin-bottom: 16px; }
 </style>
