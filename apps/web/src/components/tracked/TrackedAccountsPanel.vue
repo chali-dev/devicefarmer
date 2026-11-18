@@ -148,7 +148,7 @@ async function toggleFavorite(a: TrackedAccount) {
 const canCollect = (a: TrackedAccount) => a.dataMode !== 'manual_only'
 const unconfigured = (a: TrackedAccount) => a.dataMode.endsWith('_unconfigured')
 const refreshTip = (a: TrackedAccount) => (a.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint')
-  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : t('tracked.syncHint'))
+  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : a.platform === 'instagram' ? t('feed.syncHint') : t('tracked.syncHint'))
 /** 定时采集 cell tooltip: next slot and the last skip reason (no second line in the cell). */
 const schedTip = (a: TrackedAccount) => [
   a.nextRefreshAt ? t('collect.next', { time: new Date(a.nextRefreshAt).toLocaleString(dateLocale()) }) : '',
@@ -161,7 +161,7 @@ const collectable = computed(() => items.value.filter(canCollect))
 const selectedCollectable = computed(() => collectable.value.filter((a) => selectedKeys.value.includes(a.id)).length)
 async function refreshOne(a: TrackedAccount) {
   try {
-    await api('POST', `/api/tracked-accounts/${a.id}/refresh`)
+    await api('POST', `/api/tracked-accounts/${a.id}/sync`)
     message.info(t('tracked.refreshQueued'))
     await load(true)
   } catch (e) { message.error(errorText(e)) }
@@ -411,7 +411,7 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
             <a-tooltip :title="statusTip(record as TrackedAccount)">
               <StatusTag kind="tracked" :status="record.status" />
             </a-tooltip>
-            <a-tag v-if="busy(record as TrackedAccount)" color="processing">{{ t('tracked.refreshing') }}</a-tag>
+            <a-tag v-if="busy(record as TrackedAccount)" color="processing">{{ record.lastRefresh?.type === 'feed-collect' ? t('feed.syncStepFeedShort') : t('tracked.refreshing') }}</a-tag>
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'ops'">

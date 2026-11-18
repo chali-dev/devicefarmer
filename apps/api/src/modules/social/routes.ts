@@ -249,6 +249,20 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     return { task: { id: task.id, status: task.status } };
   });
 
+  /**
+   * 同步 of one account (the single button of 我的媒体号, owner 2026-11-18): step 1 = 从云手机同步 on its linked phone
+   * (same task, RBAC and codes as above), step 2 = its feed collection, queued by step 1 once it succeeded.
+   */
+  app.post('/api/social/accounts/:id/sync', { schema: { params: Id } }, async (req, reply) => {
+    const acc = await visibleAccount(req.user, req.params.id);
+    if (acc.platform !== 'instagram') throw badRequest('该平台不支持从云手机同步', 'account_sync.unsupported_platform', { platform: acc.platform });
+    if (!acc.instanceId) throw badRequest('账号未绑定云手机，不能同步', 'account_sync.no_device');
+    const task = await requestAccountSync(req.user, acc.instanceId, undefined, { feed: true });
+    if (req.audit) req.audit.extra = { taskId: task.id, instanceId: acc.instanceId };
+    reply.code(202);
+    return { task: { id: task.id, status: task.status } };
+  });
+
   /** 自动发现 now (admin): the hourly `dumpsys account` round over every eligible phone. */
   app.post('/api/social/discover', { preHandler: app.requireAdmin }, async () => ({ discovery: await discoverDeviceAccounts() }));
 

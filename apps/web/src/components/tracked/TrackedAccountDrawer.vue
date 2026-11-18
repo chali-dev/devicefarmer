@@ -38,7 +38,7 @@ const tab = ref('history')
 const snapshots = ref<TrackedSnapshot[]>([])
 const loading = ref(false)
 const feedApi = useAccountFeed('tracked')
-const { feed, page: postsPage, pageSize: postsPageSize, loading: feedLoading, collecting } = feedApi
+const { feed, page: postsPage, pageSize: postsPageSize, loading: feedLoading } = feedApi
 
 async function loadSnapshots() {
   if (!acc.value) return
@@ -77,8 +77,10 @@ const afterReply = () => { void loadPosts(); void replyTable.value?.reload(); ta
 const evidenceOpen = ref(false)
 const evidenceId = ref<string | null>(null)
 function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = true }
-// A finished refresh brings new data.
-watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s && s !== old && (s === 'success' || s === 'failed')) void loadAll() })
+// A finished step of 同步 (refresh, then the feed collection = a new lastRefresh task) brings new data.
+watch(() => [acc.value?.lastRefresh?.id, acc.value?.lastRefresh?.status] as const, ([id, s], old) => {
+  if (open.value && s && (id !== old?.[0] || s !== old?.[1]) && (s === 'success' || s === 'failed')) void loadAll()
+})
 
 // ---- chart
 const metric = ref<TrackedMetric>('followers')
@@ -129,7 +131,8 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
         <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
         <a-button v-if="acc.dataMode !== 'manual_only'" type="primary" :disabled="acc.status === 'paused' || acc.dataMode.endsWith('_unconfigured')"
           :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
-          {{ t('tracked.refreshNow') }}
+          {{ !['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '') ? t('tracked.sync')
+            : acc.lastRefresh?.type === 'feed-collect' ? t('feed.syncStepFeed') : t('feed.syncStepAccount') }}
         </a-button>
       </a-space>
     </template>
@@ -164,7 +167,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
         </a-col>
       </a-row>
 
-      <FeedCollectBar v-if="feed && acc.platform === 'instagram'" :state="feed.collect" :collecting="collecting" @collect="feedApi.collectNow(acc.id)" />
+      <FeedCollectBar v-if="feed && acc.platform === 'instagram'" :state="feed.collect" />
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="activity" :tab="t('feed.tabs.activity')">
           <a-spin :spinning="feedLoading"><FeedActivity :items="feed?.activity ?? []" /></a-spin>

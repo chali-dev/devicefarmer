@@ -338,7 +338,7 @@ export interface TrackedAccount {
   createdAt: string; updatedAt: string; dataMode: TrackedDataMode
   latest: { capturedAt: string; source: TrackedSource; approx: string[]; followers: number | null; following: number | null; posts: number | null; views: number | null } | null
   followers: number | null; followersDelta: number | null; followersPrevAt: string | null
-  lastRefresh: { id: string; status: TaskStatus; error: string | null; createdAt: string; finishedAt: string | null } | null
+  lastRefresh: { id: string; type: string; status: TaskStatus; error: string | null; createdAt: string; finishedAt: string | null } | null
   /** 定时采集: hours between scheduled refreshes (null = off), next slot, why the last due slot was skipped. */
   refreshIntervalHours: number | null; nextRefreshAt: string | null; scheduleSkipCode: string | null
 }

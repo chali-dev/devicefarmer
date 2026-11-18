@@ -258,6 +258,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // 从云手机同步 (queued; the result is the task's) and 自动发现 now
   'POST /api/social/sync-from-device': { action: 'social.sync_from_device', target: ({ body }) => String(body.instanceId), detail: ({ body }) => ({ instanceId: body.instanceId, ownerId: body.ownerId }) },
   'POST /api/social/discover': { action: 'social.discover' },
+  // 同步 button of one account (step 1 sync, step 2 feed collection)
+  'POST /api/social/accounts/:id/sync': { action: 'social.account_sync' },
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
@@ -278,6 +280,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/tracked-accounts/:id/snapshots/:snapshotId': { action: 'tracked.snapshot_delete', detail: ({ params }) => ({ snapshotId: params.snapshotId }) },
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
+  'POST /api/tracked-accounts/:id/sync': { action: 'tracked.sync' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
   'POST /api/tracked-accounts/schedule': {
     action: 'tracked.schedule_batch', detail: ({ body }) => ({ count: ids(body.ids).length, refreshIntervalHours: body.refreshIntervalHours }),

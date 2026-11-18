@@ -5,9 +5,8 @@ import { codeText } from '../../api/client'
 import type { FeedCollectState } from '../../api/types'
 import { dateLocale } from '../../i18n'
 
-/** Collection state of an account feed (schedule, last run, queued) + 立即采集; the halted notice. */
-const props = defineProps<{ state: FeedCollectState; collecting: boolean }>()
-const emit = defineEmits<{ collect: [] }>()
+/** Collection state of an account feed (schedule, last run, queued); the halted notice. Collected by the account's 同步 button (step 2) and the schedule. */
+const props = defineProps<{ state: FeedCollectState }>()
 const { t } = useI18n()
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const last = computed(() => props.state.last)
@@ -33,9 +32,7 @@ const lastText = computed(() => {
         {{ state.settings.hours ? t('feed.schedule', { h: state.settings.hours, posts: state.settings.posts, comments: state.settings.commentsPerPost }) : t('feed.scheduleOff') }}
       </div>
     </div>
-    <a-tag v-if="state.pending" color="processing">{{ t('feed.pending') }}</a-tag>
-    <a-button :disabled="!!state.unsupported || state.halted || !!state.pending" :loading="collecting" @click="emit('collect')">{{ t('feed.collectNow') }}</a-button>
-  </div>
+    <a-tag v-if="state.pending" color="processing">{{ t('feed.pending') }}</a-tag>  </div>
   <a-alert v-if="state.unsupported" type="info" show-icon class="note" :message="codeText(state.unsupported, undefined, t('feed.noDevice'))" />
   <a-alert v-if="state.halted" type="warning" show-icon class="note" :message="t('feed.halted')" />
 </template>

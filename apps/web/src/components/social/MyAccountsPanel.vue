@@ -222,8 +222,9 @@ function remove(a: SocialAccount) {
 }
 
 // ---------------------------------------------------------------- 自动检测 (system-run) + 同步 (row action, replaces 立即检测)
-/** Account id → sync task being followed (POST /api/social/sync-from-device on its linked phone). */
-const syncing = ref<Record<string, string>>({})
+/** Account id → the 同步 task being followed: step 1 account (account-device-sync), step 2 feed (feed-collect). */
+const syncing = ref<Record<string, { taskId: string; step: 'account' | 'feed' }>>({})
+const syncLabel = (id: string) => (syncing.value[id]?.step === 'feed' ? t('feed.syncStepFeedShort') : syncing.value[id] ? t('feed.syncStepAccount') : t('social.syncNow'))
 /** Translated result code of the last automatic check. */
 const checkText = (code: string | null) => (code ? (te(`social.checkResult.${code}`) ? t(`social.checkResult.${code}`) : code) : '')
 const CHECK_COLOR: Record<string, string> = { ok: 'success', logged_out: 'error', wrong_account: 'error', challenge: 'error', offline: 'default', timeout: 'warning', app_missing: 'warning' }
@@ -236,31 +237,51 @@ const syncDisabled = (a: SocialAccount) => !a.instanceId || a.platform !== 'inst
 async function syncNow(a: SocialAccount) {
   if (syncDisabled(a) || syncing.value[a.id]) return
   try {
-    const r = await api<{ task: { id: string } }>('POST', '/api/social/sync-from-device', { instanceId: a.instanceId })
-    syncing.value = { ...syncing.value, [a.id]: r.task.id }
+    const r = await api<{ task: { id: string } }>('POST', `/api/social/accounts/${a.id}/sync`)
+    syncing.value = { ...syncing.value, [a.id]: { taskId: r.task.id, step: 'account' } }
     message.info(t('social.syncQueued'))
   } catch (e) { message.error(errorText(e)) }
 }
-async function syncFinished(accountId: string, taskId: string) {
+type SyncTaskResult = { outcome?: string; result?: string; code?: string; taskId?: string; handle?: string; feed?: { taskId?: string; code?: string }
+  posts?: number; newPosts?: number; comments?: number; newComments?: number }
+/**
+ * One followed task ended. Step 1 (account): message as before, row reloaded at once; when it queued step 2 the
+ * feed task is followed next ("账号已更新 → 正在读取帖子…"). Step 2 (feed): its own result; a failure there never
+ * changes what step 1 wrote. Pace deferrals of either step continue with the new task.
+ */
+async function syncFinished(accountId: string, cur: { taskId: string; step: 'account' | 'feed' }) {
+  const done = () => { const { [accountId]: _d, ...rest } = syncing.value; syncing.value = rest }
   try {
-    const { task } = await api<{ task: Task & { result: { outcome?: string; result?: string; code?: string; taskId?: string; handle?: string } | null } }>('GET', `/api/tasks/${taskId}`)
+    const { task } = await api<{ task: Task & { result: SyncTaskResult | null } }>('GET', `/api/tasks/${cur.taskId}`)
     const res = task.result ?? {}
-    if (task.status === 'success' && res.outcome === 'deferred' && res.taskId) { syncing.value = { ...syncing.value, [accountId]: res.taskId }; return }
-    const { [accountId]: _done, ...rest } = syncing.value
-    syncing.value = rest
+    if (task.status === 'success' && res.outcome === 'deferred' && res.taskId) { syncing.value = { ...syncing.value, [accountId]: { ...cur, taskId: res.taskId } }; return }
+    if (cur.step === 'feed') {
+      done()
+      if (task.status !== 'success') message.warning(t('feed.syncFeedFailed', { msg: codeText(task.errorCode ?? undefined, {}, task.error ?? task.status) }))
+      else if (res.outcome === 'skipped') message.info(t('feed.syncFeedNotQueued', { msg: codeText(res.code, {}, res.code ?? '') }))
+      else message.success(t('feed.syncFeedDone', { msg: t('feed.activity.collect', { posts: res.posts ?? 0, newPosts: res.newPosts ?? 0, comments: res.comments ?? 0, newComments: res.newComments ?? 0 }) }))
+      return
+    }
+    if (task.status === 'success' && res.feed?.taskId) {
+      syncing.value = { ...syncing.value, [accountId]: { taskId: res.feed.taskId, step: 'feed' } }
+      message.info(t('feed.syncStepFeed'))
+      return
+    }
+    done()
     if (task.status !== 'success') message.error(t('social.sync.failed', { msg: codeText(task.errorCode ?? undefined, {}, task.error ?? task.status) }))
     else if (res.outcome === 'skipped') message.info(t('social.sync.skipped', { msg: codeText(res.code, {}, res.code ?? '') }))
     else {
       const text = res.result && te(`social.sync.result.${res.result}`) ? t(`social.sync.result.${res.result}`) : res.result ?? ''
-      if (res.result === 'created' || res.result === 'updated') message.success(text)
+      if (res.feed?.code) message.warning(`${text} · ${t('feed.syncFeedNotQueued', { msg: codeText(res.feed.code, {}, res.feed.code) })}`)
+      else if (res.result === 'created' || res.result === 'updated') message.success(text)
       else message.warning(text)
     }
-  } catch (e) { message.error(errorText(e)) }
-  void load()
+  } catch (e) { done(); message.error(errorText(e)) }
+  finally { if (cur.step === 'account') void load() }
 }
 const offSync = store.onTaskEvent((ev) => {
   if (ev.type !== 'task.updated' || !['success', 'failed', 'cancelled'].includes(ev.task.status)) return
-  const hit = Object.entries(syncing.value).find(([, id]) => id === ev.task.id)
+  const hit = Object.entries(syncing.value).find(([, s]) => s.taskId === ev.task.id)
   if (hit) void syncFinished(hit[0], hit[1])
 })
 onBeforeUnmount(offSync)
@@ -288,10 +309,6 @@ const showGuide = computed(() => loaded.value && !loading.value && total.value =
 const feedOpen = ref(false)
 const feedFor = ref<SocialAccount | null>(null)
 function openFeed(a: SocialAccount) { feedFor.value = a; feedOpen.value = true }
-/** 立即采集 (帖子与评论) of one account, from the row's 更多 menu (owner 2026-11-18: not in the feed drawer). */
-async function collectNow(a: SocialAccount) {
-  try { await api('POST', `/api/social/accounts/${a.id}/collect`); message.success(t('feed.collectQueued')) } catch (e) { message.error(errorText(e)) }
-}
 /** A click on the row's own controls (links, buttons, checkbox, dropdown) is not a row click. */
 const rowProps = (record: SocialAccount) => ({
   class: record.id === highlightId.value ? 'row-click row-synced' : 'row-click',
@@ -527,14 +544,13 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-tooltip :title="syncDisabled(record as SocialAccount) ? t('social.syncNoDevice') : t('social.syncNowHint')">
-                <a-button type="link" size="small" :disabled="syncDisabled(record as SocialAccount)" :loading="!!syncing[record.id]" @click="syncNow(record as SocialAccount)">{{ t('social.syncNow') }}</a-button>
+                <a-button type="link" size="small" :disabled="syncDisabled(record as SocialAccount)" :loading="!!syncing[record.id]" @click="syncNow(record as SocialAccount)">{{ syncLabel(record.id) }}</a-button>
               </a-tooltip>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('social.more') }}</a-button>
                 <template #overlay>
                   <a-menu>
                     <a-menu-item key="feed" @click="openFeed(record as SocialAccount)">{{ t('feed.tabs.posts') }}</a-menu-item>
-                    <a-menu-item key="collect" :disabled="!record.instance" @click="collectNow(record as SocialAccount)">{{ t('feed.collectNow') }}</a-menu-item>
                     <a-menu-item key="ai" :disabled="!record.personaId" :title="record.personaId ? undefined : t('social.aiDrafts.noPersonaGenerate')" @click="openAiGenerate(record as SocialAccount)">{{ t('social.aiDrafts.generateNow') }}</a-menu-item>
                     <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
                     <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
@@ -605,7 +621,7 @@ async function submitBatchForm() {
           <span class="muted small">{{ editing.lastCheckedAt ? fmt(editing.lastCheckedAt) : t('social.notChecked') }}</span>
           <span v-if="editing.lastCheckDetail" class="muted small">{{ editing.lastCheckDetail }}</span>
           <a-tooltip :title="syncDisabled(editing) ? t('social.syncNoDevice') : t('social.syncNowHint')">
-            <a-button size="small" :disabled="syncDisabled(editing)" :loading="!!syncing[editing.id]" @click="syncNow(editing!)">{{ t('social.syncNow') }}</a-button>
+            <a-button size="small" :disabled="syncDisabled(editing)" :loading="!!syncing[editing.id]" @click="syncNow(editing!)">{{ syncLabel(editing.id) }}</a-button>
           </a-tooltip>
         </a-space>
         <div class="muted small">{{ editing.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${editing.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.autoCheckHint') }}</div>

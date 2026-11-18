@@ -9,6 +9,7 @@ import { youtubeSource } from './youtube.js';
 import { instagramDeviceSource } from './instagram-device.js';
 import { CollectorDefer } from './collector.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
+import { queueFeedAfter } from '../feed/collect.js';
 
 /**
  * Tracked accounts (追踪账号): service layer. Rows are private to their owner (`user_id`);
@@ -67,7 +68,7 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
         where tracked_account_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}) and followers is not null
       ) x where rn <= 2`),
     db.selectDistinctOn([schema.tasks.refId], {
-      refId: schema.tasks.refId, id: schema.tasks.id, status: schema.tasks.status, error: schema.tasks.error,
+      refId: schema.tasks.refId, id: schema.tasks.id, type: schema.tasks.type, status: schema.tasks.status, error: schema.tasks.error,
       createdAt: schema.tasks.createdAt, finishedAt: schema.tasks.finishedAt,
     }).from(schema.tasks).where(and(eq(schema.tasks.refType, REF_TYPE), inArray(schema.tasks.refId, ids)))
       .orderBy(schema.tasks.refId, desc(schema.tasks.createdAt)),
@@ -217,7 +218,10 @@ const MAX_DEFERRALS = 30;
 // the source unconfigured since it was queued → a skipped no-op instead of a call.
 // CollectorDefer (device pace, another visit running, someone viewing the device) ends this attempt as
 // `deferred` and creates the next refresh at the given time (same payload, deferrals + 1): never dropped.
-registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; deferrals?: number }>('tracked-refresh', {
+// `feed` (the 同步 button): once the refresh succeeded (`refreshed`), step 2 = the feed collection is queued as its
+// own task (feed/collect.ts queueFeedAfter); a failed / deferred / skipped refresh runs no step 2 (a deferred one
+// carries the flag to the next attempt).
+registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; feed?: boolean; deferrals?: number }>('tracked-refresh', {
   queue: 'task-ops',
   timeoutMs: 5 * 60_000,
   maxAttempts: 1,
@@ -232,7 +236,9 @@ registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; deferrals?:
       }
     }
     try {
-      return await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal, userId: ctx.task.createdBy });
+      const r = await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal, userId: ctx.task.createdBy });
+      if (!ctx.payload.feed || r.outcome !== 'refreshed') return r;
+      return { ...r, feed: await queueFeedAfter('tracked', id, ctx.task.createdBy, ctx.task.id, ctx.log) };
     } catch (err) {
       if (!(err instanceof CollectorDefer)) throw err;
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;
