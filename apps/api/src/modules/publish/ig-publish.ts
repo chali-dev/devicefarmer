@@ -195,9 +195,11 @@ export interface PublishFlowInput {
   text: string;
   log: Log;
   signal?: AbortSignal;
+  /** Diagnostics only (scripts, owner-approved): stop after the caption read-back, never tap 分享; the draft is discarded. */
+  probeOnly?: boolean;
 }
 export interface PublishFlowResult {
-  outcome: 'published';
+  outcome: 'published' | 'probe';
   inputText: string;
   excerpt: string;
   screenshot: Buffer | null;
@@ -386,6 +388,10 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     const screenshot = shot ?? await s.screenshot().catch(() => null);
     const excerpt = `${publishScreen(await s.dump()) ?? '?'} · media ${pushed.length}${inputText ? ` · caption: ${inputText}` : ''}`.slice(0, 300);
 
+    if (input.probeOnly) {
+      await log('info', 'publish: probe stopped before 分享', { inputText });
+      return { outcome: 'probe', inputText, excerpt, screenshot, screens: s.screens, keptFiles: [] };
+    }
     // ---- 5. 分享
     if (inputText) { await s.keys(4); await sleep(1000, undefined, { signal: input.signal }); } // hide the keyboard over the share button
     const now = await s.dump();
