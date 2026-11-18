@@ -124,8 +124,8 @@ const categoryOptions = computed(() => [
   { value: '', label: t('media.allCategories') }, { value: 'none', label: t('media.uncategorized') },
   ...categories.value.map((c) => ({ value: c.id, label: `${c.name} (${c.count})` })),
 ])
-const statusOptions = computed(() => [{ value: '', label: t('media.allStatus') }, ...(['processing', 'ready', 'failed', 'disabled'] as const)
-  .filter((s) => s !== 'disabled' || props.tab !== 'mine').map((s) => ({ value: s, label: t(`media.statuses.${s}`) }))])
+const statusOptions = computed(() => [{ value: '', label: t('media.allStatus') }, ...(['processing', 'ready', 'failed'] as const)
+  .map((s) => ({ value: s, label: t(`media.statuses.${s}`) }))])
 const ownerOptions = computed(() => [
   { value: '', label: t('media.ownerMine') }, { value: '*', label: t('media.ownerAll') },
   ...users.value.filter((u) => u.id !== auth.user?.id).map((u) => ({ value: u.id, label: u.displayName ? `${u.displayName} (${u.username})` : u.username })),
@@ -253,7 +253,7 @@ function processedText(m: MediaItem): string {
 
 // edit
 const editing = ref<MediaItem | null>(null)
-const editForm = reactive({ name: '', categoryId: undefined as string | undefined, tags: [] as string[], visible: true })
+const editForm = reactive({ name: '', categoryId: undefined as string | undefined, tags: [] as string[] })
 const editCategories = ref<MediaCategory[]>([])
 const editSaving = ref(false)
 async function openEdit(m: MediaItem) {
@@ -261,7 +261,6 @@ async function openEdit(m: MediaItem) {
   editForm.name = m.name
   editForm.categoryId = m.categoryId ?? undefined
   editForm.tags = [...m.tags]
-  editForm.visible = m.status !== 'disabled'
   const qs = m.ownerType === 'public' ? 'scope=public' : m.ownerId === auth.user?.id ? 'scope=mine' : `scope=mine&ownerId=${m.ownerId}`
   try { editCategories.value = (await api<{ categories: MediaCategory[] }>('GET', `/api/media/categories?${qs}`)).categories }
   catch { editCategories.value = [] }
@@ -275,7 +274,6 @@ async function saveEdit() {
   if (tagList.some((x) => x.length > 32)) { message.warning(t('media.tagTooLong')); return }
   if (tagList.length > 20) { message.warning(t('media.tooManyTags')); return }
   const body: Record<string, unknown> = { name, categoryId: editForm.categoryId ?? null, tags: tagList }
-  if (m.ownerType === 'public' && auth.isAdmin && (m.status === 'ready' || m.status === 'disabled')) body.status = editForm.visible ? 'ready' : 'disabled'
   editSaving.value = true
   try {
     await api('PUT', `/api/media/${m.id}`, body)
@@ -292,7 +290,7 @@ const pushTargets = ref<string[]>([])
 const pushing = ref(false)
 const runningDevices = computed(() => store.list.filter((i) => i.status === 'running').map((i) => ({ value: i.id, label: i.name })))
 function openPush(list: MediaItem[]) {
-  const ready = list.filter((m) => m.status === 'ready' || m.status === 'disabled')
+  const ready = list.filter((m) => m.status === 'ready')
   if (!ready.length) { message.warning(t('media.pushNotReady')); return }
   if (ready.length > 20) { message.warning(t('media.pushLimit')); return }
   pushItems.value = ready
@@ -405,7 +403,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
           <div class="actions">
             <a-tooltip :title="t('media.preview')"><a-button type="text" size="small" :aria-label="t('media.preview')" @click="openPreview(m)"><EyeOutlined /></a-button></a-tooltip>
             <a-tooltip :title="t('media.pushToDevice')">
-              <a-button type="text" size="small" :aria-label="t('media.pushToDevice')" :disabled="m.status !== 'ready' && m.status !== 'disabled'" @click="openPush([m])"><SendOutlined /></a-button>
+              <a-button type="text" size="small" :aria-label="t('media.pushToDevice')" :disabled="m.status !== 'ready'" @click="openPush([m])"><SendOutlined /></a-button>
             </a-tooltip>
             <a-tooltip :title="t('media.download')"><a-button type="text" size="small" :aria-label="t('media.download')" @click="download(m)"><DownloadOutlined /></a-button></a-tooltip>
             <a-tooltip v-if="m.canManage" :title="t('media.edit')"><a-button type="text" size="small" :aria-label="t('media.edit')" @click="openEdit(m)"><EditOutlined /></a-button></a-tooltip>
@@ -453,7 +451,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openPreview(record)">{{ t('media.preview') }}</a-button>
-              <a-button type="link" size="small" :disabled="record.status !== 'ready' && record.status !== 'disabled'" @click="openPush([record])">{{ t('common.push') }}</a-button>
+              <a-button type="link" size="small" :disabled="record.status !== 'ready'" @click="openPush([record])">{{ t('common.push') }}</a-button>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
@@ -505,12 +503,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
         </a-form-item>
         <a-form-item :label="t('media.tags')">
           <a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :placeholder="t('media.addTag')" style="width: 100%" />
-        </a-form-item>
-        <a-form-item
-          v-if="editing && editing.ownerType === 'public' && auth.isAdmin && (editing.status === 'ready' || editing.status === 'disabled')"
-          :label="t('media.visible')"
-        >
-          <a-switch v-model:checked="editForm.visible" />
         </a-form-item>
       </a-form>
     </a-modal>

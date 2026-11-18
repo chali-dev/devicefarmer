@@ -61,15 +61,15 @@ try {
   const spec = (o: string) => MEDIA.filter((m) => m.owner === o);
   const names = (xs: any[]) => xs.map((x) => x.name).filter((n: string) => MEDIA.some((m) => mediaName(m) === n));
 
-  check('admin public scope: all 11 public demo assets (incl. disabled)', eqSet(names(pubAdmin), spec('public').map(mediaName)), sorted(names(pubAdmin)));
-  check('demo-user public scope: 10 ready ones, disabled 旧版LOGO hidden', eqSet(names(pubUser), spec('public').filter((m) => !m.disabled).map(mediaName)), sorted(names(pubUser)));
+  check('admin public scope: all 11 public demo assets', eqSet(names(pubAdmin), spec('public').map(mediaName)), sorted(names(pubAdmin)));
+  check('demo-user public scope: the same 11 (public media is always visible)', eqSet(names(pubUser), spec('public').map(mediaName)), sorted(names(pubUser)));
   check('admin mine: only admin private demo assets', eqSet(names(mineAdmin), spec('admin').map(mediaName)));
   check('demo-user mine: only own private demo assets', eqSet(names(mineUser), spec('user').map(mediaName)) && mineUser.every((x) => x.ownerId === userId));
 
   // processing results
   const all = MEDIA.map((m) => ({ m, it: byName.get(mediaName(m)) }));
-  const notReady = all.filter(({ m, it }) => !it || it.status !== (m.disabled ? 'disabled' : 'ready'));
-  check('processing finished: every asset ready (旧版LOGO disabled)', notReady.length === 0, notReady.map(({ m, it }) => `${m.file}:${it?.status}`).join(','));
+  const notReady = all.filter(({ it }) => !it || it.status !== 'ready');
+  check('processing finished: every asset ready', notReady.length === 0, notReady.map(({ m, it }) => `${m.file}:${it?.status}`).join(','));
   const dimsBad = all.filter(({ m, it }) => it && (it.width !== m.w || it.height !== m.h));
   check('metadata: width/height match the generated files (images + videos)', dimsBad.length === 0, dimsBad.map(({ m, it }) => `${m.file} ${it.width}x${it.height}≠${m.w}x${m.h}`).join(','));
   const durBad = all.filter(({ m, it }) => m.secs && !(Math.abs(Number(it?.duration) - m.secs) < 0.6));
@@ -88,12 +88,12 @@ try {
   await c0.arrayBuffer();
 
   // RBAC
-  const adminPriv = byName.get('demo-admin-草图-01'); const disabled = byName.get('demo-旧版LOGO'); const userPriv = byName.get('demo-user-自拍-01');
+  const adminPriv = byName.get('demo-admin-草图-01'); const oldLogo = byName.get('demo-旧版LOGO'); const userPriv = byName.get('demo-user-自拍-01');
   const pubImg = byName.get('demo-咖啡新品-方图');
   let r = await http('GET', `/api/media/${adminPriv.id}`, U);
   check('demo-user GET admin private asset → 404', r.status === 404 && r.body.code === 'media.not_found');
-  r = await http('GET', `/api/media/${disabled.id}`, U);
-  check('demo-user GET disabled public asset → 404', r.status === 404);
+  r = await http('GET', `/api/media/${oldLogo.id}`, U);
+  check('demo-user GET any public asset (旧版LOGO) → 200', r.status === 200);
   r = await http('GET', `/api/media/${userPriv.id}`, T);
   check('admin GET demo-user private asset → 200 (canManage)', r.status === 200 && r.body.item.canManage === true);
   r = await http('GET', '/api/media?scope=all-users', U);
@@ -139,13 +139,13 @@ try {
     const x = (await http('GET', `/api/media?scope=public&q=demo-&pageSize=4&page=${p}`, U)).body;
     total = x.total; pages.push(...x.items.map((i: any) => i.id));
   }
-  check('pagination pageSize=4 over 3 pages: total 10, 10 distinct ids, no overlap', total === 10 && pages.length === 10 && new Set(pages).size === 10, `${total}/${pages.length}`);
+  check('pagination pageSize=4 over 3 pages: total 11 (every public demo asset), 11 distinct ids, no overlap', total === 11 && pages.length === 11 && new Set(pages).size === 11, `${total}/${pages.length}`);
   r = await http('GET', '/api/media?scope=public&q=demo-&pageSize=4&page=9', U);
-  check('page past the end → empty items, same total', r.status === 200 && r.body.items.length === 0 && r.body.total === 10);
+  check('page past the end → empty items, same total', r.status === 200 && r.body.items.length === 0 && r.body.total === 11);
   r = await http('GET', '/api/media?scope=public&pageSize=101', U);
   check('pageSize > 100 → 400', r.status === 400);
   const tagSug = (await http('GET', '/api/media/tags?scope=public', U)).body.tags as string[];
-  check('tag suggestions (user, public) contain demo tags but not admin-private/disabled-only ones', tagSug.includes('christmas') && !tagSug.includes('archive') && !tagSug.includes('draft'), tagSug.filter((t) => ['archive', 'draft', 'christmas'].includes(t)).join(','));
+  check('tag suggestions (user, public) contain public demo tags (also archive of 旧版LOGO) but not admin-private ones', tagSug.includes('christmas') && tagSug.includes('archive') && !tagSug.includes('draft'), tagSug.filter((t) => ['archive', 'draft', 'christmas'].includes(t)).join(','));
 
   // favorites
   const favU = await listAll(U, '/api/media?scope=favorites');
@@ -162,12 +162,6 @@ try {
   await http('DELETE', `/api/media/${tf.id}/favorite`, U);
   const favAfter = await listAll(U, '/api/media?scope=favorites');
   check('favorite toggle: add (idempotent) → listed, remove → gone', r.status === 200 && r2.status === 200 && favMid.some((x) => x.id === tf.id) && !favAfter.some((x) => x.id === tf.id));
-  await http('PUT', `/api/media/${disabled.id}`, T, { status: 'ready' });
-  await http('POST', `/api/media/${disabled.id}/favorite`, U);
-  await http('PUT', `/api/media/${disabled.id}`, T, { status: 'disabled' });
-  const favDis = await listAll(U, '/api/media?scope=favorites');
-  await http('DELETE', `/api/media/${disabled.id}/favorite`, U);
-  check('a favorite that gets disabled disappears from the user\'s favorites', !favDis.some((x) => x.id === disabled.id));
 
   // edit / disable / delete on throw-away assets
   const myCats = (await http('GET', '/api/media/categories?scope=mine', U)).body.categories as any[];
@@ -183,7 +177,7 @@ try {
   r = await http('PUT', `/api/media/${e1.id}`, U, { categoryId: prodCat.id });
   check('assigning a public category to a private asset → 400 media.category_mismatch', r.status === 400 && r.body.code === 'media.category_mismatch');
   r = await http('PUT', `/api/media/${e1.id}`, U, { status: 'disabled' });
-  check('disable a private asset → 400 media.status_public_only', r.status === 400 && r.body.code === 'media.status_public_only');
+  check('disable a private asset → 400 media.visibility_removed', r.status === 400 && r.body.code === 'media.visibility_removed');
   r = await http('PUT', `/api/media/${e1.id}`, U, {});
   check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
   r = await http('DELETE', `/api/media/${e1.id}`, U);
@@ -193,10 +187,8 @@ try {
   r = await upload(T, 'public', `${tmp}-pub.png`, await sharp({ create: { width: 300, height: 200, channels: 3, background: '#aa3344' } }).png().toBuffer(), 'image/png');
   const p1 = r.body.item; await waitReady(T, p1.id);
   r = await http('PUT', `/api/media/${p1.id}`, T, { status: 'disabled' });
-  const seenDis = await http('GET', `/api/media/${p1.id}`, U);
-  await http('PUT', `/api/media/${p1.id}`, T, { status: 'ready' });
   const seenEn = await http('GET', `/api/media/${p1.id}`, U);
-  check('admin disable → user 404; re-enable → user 200', r.status === 200 && seenDis.status === 404 && seenEn.status === 200);
+  check('admin disable → 400 media.visibility_removed; user still 200', r.status === 400 && r.body.code === 'media.visibility_removed' && seenEn.status === 200);
   r = await upload(T, 'mine', `${tmp}-b1.jpg`, await jpeg(100, 100), 'image/jpeg');
   const b1 = r.body.item; await waitReady(T, b1.id);
   r = await http('POST', '/api/media/batch-delete', U, { ids: [p1.id, b1.id] });
@@ -390,14 +382,9 @@ try {
   check('create with stage archived → 400 content.bad_stage', r.status === 400 && r.body.code === 'content.bad_stage');
   r = await http('POST', '/api/contents', U, { title: `${tmp} x`, mediaIds: [adminPriv.id] });
   check('demo-user attaching admin private media → 404 media.not_found', r.status === 404 && r.body.code === 'media.not_found');
-  r = await http('POST', '/api/contents', U, { title: `${tmp} x`, mediaIds: [disabled.id] });
-  check('demo-user attaching disabled public media → 404', r.status === 404);
   r = await http('POST', '/api/contents', T, { title: `${tmp} x`, ownerId: userId, mediaIds: [adminPriv.id] });
   { const cid = r.body?.content?.id; if (cid) cleanup.push(() => http('DELETE', `/api/contents/${cid}`, T)); }
   check('admin creating for demo-user with admin private media → 400 content.media_not_usable', r.status === 400 && r.body.code === 'content.media_not_usable');
-  r = await http('POST', '/api/contents', T, { title: `${tmp} x`, ownerId: userId, mediaIds: [disabled.id] });
-  { const cid = r.body?.content?.id; if (cid) cleanup.push(() => http('DELETE', `/api/contents/${cid}`, T)); }
-  check('admin creating for demo-user with disabled public media → 400 content.media_not_usable', r.status === 400 && r.body.code === 'content.media_not_usable');
   r = await http('POST', '/api/contents', U, { title: `${tmp} x`, ownerId: adminId });
   check('demo-user creating for another owner → 403', r.status === 403);
   r = await http('POST', '/api/contents', U, { title: `${tmp} 新内容`, body: '正文', categoryId: null, tags: ['A', 'a', '#B'], mediaIds: [uOwn.id, pubReady.id, uOwn.id], platformHints: { instagram: { caption: 'cap 1' } } });
