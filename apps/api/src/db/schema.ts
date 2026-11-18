@@ -603,6 +603,8 @@ export const contents = pgTable('contents', {
   status: text('status', { enum: CONTENT_STATUSES }).notNull().default('draft'),
   /** Per-platform defaults, e.g. { youtube: { title, description, privacy }, instagram: { caption }, tiktok: { caption } }. */
   platformHints: jsonb('platform_hints').$type<ContentPlatformHints>().notNull().default({}),
+  /** Set when the content was written as an AI draft (人设每日草稿); null for everything a person wrote. */
+  aiGenerated: jsonb('ai_generated').$type<ContentAiInfo>(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -906,6 +908,13 @@ export const personas = pgTable('personas', {
   /** Short tone/background note. */
   description: text('description'),
   sort: integer('sort').notNull().default(0),
+  /** 人设每日草稿 (AI): generate `drafts_per_day` draft contents per day from `brief` (modules/ai). Off by default. */
+  draftEnabled: boolean('draft_enabled').notNull().default(false),
+  draftsPerDay: integer('drafts_per_day').notNull().default(4),
+  /** 内容设定: tone, topics, audience, language, hashtags, banned words, example post templates, notes. */
+  brief: jsonb('brief').$type<PersonaBrief>().notNull().default({}),
+  /** Public personas: the (enabled) user who owns the generated drafts. Personal personas: unused (their owner). */
+  draftOwnerId: uuid('draft_owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -914,6 +923,19 @@ export const personas = pgTable('personas', {
   ownerCheck('personas_owner_chk'),
 ]);
 export type Persona = typeof personas.$inferSelect;
+
+/** 人设内容设定 (personas.brief). All fields optional; `lang` is BCP-47 from the content language settings. */
+export interface PersonaBrief {
+  tone?: string;
+  topics?: string[];
+  audience?: string;
+  lang?: string | null;
+  hashtags?: string[];
+  bannedWords?: string[];
+  /** Post templates (话术库 kind=post) visible to the persona's scope, used as style examples. */
+  exampleTemplateIds?: string[];
+  notes?: string;
+}
 
 /**
  * Saved templates (话术库): reply templates (`kind` comment) and post/caption templates (`kind` post), with an optional
@@ -973,6 +995,17 @@ export const trendingItems = pgTable('trending_items', {
   publishedAt: timestamp('published_at', { withTimezone: true }),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
 }, (t) => [unique('trending_items_snapshot_rank').on(t.snapshotId, t.rank)]);
+
+/** Origin of an AI draft: the model that served it, the persona, the task and when; `mediaTags` = the model's media keywords. */
+export interface ContentAiInfo {
+  model: string;
+  requestedModel: string;
+  personaId: string;
+  personaName: string;
+  taskId: string | null;
+  generatedAt: string;
+  mediaTags: string[];
+}
 
 export interface ContentPlatformHints {
   youtube?: { title?: string; description?: string; privacy?: 'public' | 'unlisted' | 'private' };

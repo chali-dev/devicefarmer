@@ -13,7 +13,8 @@ import { confirmDanger, MODAL_WIDTH } from './ui'
  * same API shape): public rows (admins edit, users read) and personal ones (own; admins may also list every user's).
  * Add / edit name + description / reorder / merge / delete. `texts` is the i18n prefix of the list's own labels (manage,
  * tabs.*, add, count, …; `accountCount` when rows carry `accounts`). `mergeIntoPublic: false` = a personal row merges
- * only into the same owner's rows (media categories). `initialTab` = tab shown when the dialog opens.
+ * only into the same owner's rows (media categories). `initialTab` = tab shown when the dialog opens. Slot `rowExtra`
+ * ({ item }) adds actions to a writable row (人设: 内容设定).
  */
 const props = withDefaults(defineProps<{ path: string; listKey: string; texts: string; mergeIntoPublic?: boolean; initialTab?: 'public' | 'mine' }>(), {
   mergeIntoPublic: true, initialTab: undefined,
@@ -53,6 +54,7 @@ watch(open, (v) => {
   void load()
 })
 watch(owner, () => { void load() })
+defineExpose({ reload: load })
 watch(tab, () => { editingId.value = null })
 
 async function run(fn: () => Promise<unknown>) {
@@ -151,6 +153,7 @@ async function doMerge() {
             <div v-if="p.description" class="muted small ellipsis">{{ p.description }}</div>
           </div>
           <template v-if="p.writable">
+            <slot name="rowExtra" :item="p" />
             <template v-if="!allUsers">
               <a-tooltip :title="t('scopedList.moveUp')"><a-button type="text" size="small" :disabled="i === 0 || busy" @click="move(i, -1)"><ArrowUpOutlined /></a-button></a-tooltip>
               <a-tooltip :title="t('scopedList.moveDown')"><a-button type="text" size="small" :disabled="i === list.length - 1 || busy" @click="move(i, 1)"><ArrowDownOutlined /></a-button></a-tooltip>

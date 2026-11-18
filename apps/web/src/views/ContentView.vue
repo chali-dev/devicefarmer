@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText, type ErrorParams } from '../api/client'
 import { langName } from '../api/lang'
 import {
-  CONTENT_STATUSES, PUBLISH_UNFINISHED,
+  AI_DRAFT_TAG, CONTENT_STATUSES, PUBLISH_UNFINISHED,
   type Content, type ContentCategory, type ContentHints, type ContentMedia, type ContentStatus, type ContentTranslation, type LanguageSettings, type ManagedUser, type PostType, type PublishTaskItem,
   type SocialAccount,
 } from '../api/types'
@@ -152,6 +152,11 @@ const shortFmt = (d: string) => {
   return x.toLocaleString(dateLocale(), { ...(x.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' as const } : {}), month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 const TAG_MAX = 3
+/** 人设每日草稿: the `ai-draft` tag is shown as 「AI 草稿」 (tooltip: persona, model, time). */
+const tagLabel = (x: string) => (x === AI_DRAFT_TAG ? t('content.aiDraft') : x)
+const aiInfo = (c: Content) => (c.aiGenerated
+  ? t('content.aiDraftInfo', { persona: c.aiGenerated.personaName, model: c.aiGenerated.model, at: fmt(c.aiGenerated.generatedAt) })
+  : '')
 const publishTotal = (c: Content) => Object.entries(c.publishCounts).filter(([s]) => s !== 'cancelled').reduce((a, [, n]) => a + (n ?? 0), 0)
 
 // ---------------------------------------------------------------- editor
@@ -449,7 +454,7 @@ function batch(action: BatchAction) {
         <a-select v-model:value="filters.categoryId" :placeholder="t('content.colCategory')" allow-clear show-search option-filter-prop="label" style="width: 160px"
           :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
-        <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: x }))" @change="search" />
+        <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: tagLabel(x) }))" @change="search" />
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
       </SearchBar>
@@ -484,7 +489,8 @@ function batch(action: BatchAction) {
             <a class="title-link ellipsis" :title="record.title" @click="openEdit(record)">{{ record.title }}</a>
             <div v-if="record.category || record.tags.length || record.lang || record.translations.length" class="meta">
               <a-tag v-if="record.category" color="blue" class="chip">{{ record.category.name }}</a-tag>
-              <a-tag v-for="tg in record.tags.slice(0, TAG_MAX)" :key="tg" class="chip">#{{ tg }}</a-tag>
+              <a-tooltip v-if="record.aiGenerated" :title="aiInfo(record)"><a-tag color="purple" class="chip">{{ t('content.aiDraft') }}</a-tag></a-tooltip>
+              <a-tag v-for="tg in record.tags.filter((x: string) => x !== AI_DRAFT_TAG).slice(0, TAG_MAX)" :key="tg" class="chip">#{{ tg }}</a-tag>
               <a-tooltip v-if="record.tags.length > TAG_MAX" :title="record.tags.slice(TAG_MAX).map((x: string) => `#${x}`).join(' ')">
                 <a-tag class="chip">+{{ record.tags.length - TAG_MAX }}</a-tag>
               </a-tooltip>
@@ -547,6 +553,11 @@ function batch(action: BatchAction) {
   </PageContainer>
 
   <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg + 360" destroy-on-close>
+    <a-alert v-if="editing?.aiGenerated" type="warning" show-icon class="ai-notice" :message="t('content.aiDraftNotice')">
+      <template #description>
+        {{ aiInfo(editing) }}<template v-if="editing.aiGenerated.mediaTags.length"> · {{ t('content.aiDraftMediaTags', { tags: editing.aiGenerated.mediaTags.join(', ') }) }}</template>
+      </template>
+    </a-alert>
     <a-row :gutter="24">
     <a-col :xs="24" :lg="15">
     <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
@@ -692,6 +703,7 @@ function batch(action: BatchAction) {
 
 
 <style scoped>
+.ai-notice { margin-bottom: 16px; }
 .title-link { display: block; font-weight: 500; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .meta .chip { margin: 0; font-size: 11px; line-height: 18px; padding-inline: 5px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
