@@ -225,7 +225,7 @@ try {
     await new Promise((r) => setTimeout(r, 1000));
     const au = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'settings.media_limits')));
     const au200 = au.find((a) => a.status === 200);
-    check('audit settings.media_limits: the save (values) + the user 403', JSON.stringify((au200?.detail as any)?.allowedTypes) === '["png","jpeg","mp4","png"]' && (au200?.detail as any)?.imageMaxMb === 1
+    check('audit settings.media_limits: the save (normalised values) + the user 403', JSON.stringify((au200?.detail as any)?.allowedTypes) === '["jpeg","png","mp4"]' && (au200?.detail as any)?.imageMaxMb === 1
       && au.some((a) => a.status === 403), JSON.stringify(au.map((a) => [a.status, a.detail])));
     // Restore: save the env defaults through the API (clears its cache), then drop the row (the defaults stay in effect).
     const back = await http('PUT', '/api/settings/media-limits', admin, { imageMaxMb: d.imageMaxMb, videoMaxMb: d.videoMaxMb, allowedTypes: d.allowedTypes });
