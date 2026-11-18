@@ -17,7 +17,7 @@ import { useAccountFeed } from './useAccountFeed'
  * 「回复」 → schedule → sent by the account's cloud phone) / 回复记录 (state, time, result, test-mode runs).
  */
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null } | null }>()
+const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null; personaId?: string | null } | null }>()
 const { t } = useI18n()
 const tab = ref<'activity' | 'posts' | 'replies'>('posts')
 const { feed, page, pageSize, loading, collecting, load, collectNow, reset } = useAccountFeed('social')
@@ -62,6 +62,6 @@ function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = 
     </template>
     <a-skeleton v-else active />
   </a-drawer>
-  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="!!feed?.collect.halted" :test-mode="feed?.send?.testMode ?? null" @done="reload" />
+  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="!!feed?.collect.halted" :test-mode="feed?.send?.testMode ?? null" :persona-id="account?.personaId" @done="reload" />
   <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 </template>

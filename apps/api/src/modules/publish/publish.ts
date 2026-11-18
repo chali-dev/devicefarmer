@@ -7,6 +7,7 @@ import { badRequest, conflict } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { assertNoBannedWords } from '../comments/persona-style.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
@@ -112,6 +113,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
       const texts = textsForAccount(content, translations, acc);
       const post = postFor(content, texts, acc.platform, t);
+      await assertNoBannedWords([acc.personaId], [post.title, post.caption, ...post.hashtags], tx);
       const bad = validateForPlatform(acc.platform, media, post);
       if (bad) throw badRequest(`@${acc.handle}: ${bad.message}`, bad.code, { ...bad.params, account: acc.handle });
       if (t.scheduledAt && t.scheduledAt.getTime() > now.getTime() + 366 * 86400_000) throw badRequest('发布时间不能超过一年', 'publish.too_far');

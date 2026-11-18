@@ -391,6 +391,8 @@ export interface Content {
 }
 export interface ContentAiInfo {
   model: string; requestedModel: string; personaId: string; personaName: string; taskId: string | null; generatedAt: string; mediaTags: string[]
+  /** Languages of the target accounts other than Chinese: the draft needs a human translation. */
+  needsTranslation?: string[]
 }
 /** Tag set on every AI draft (shown as 「AI 草稿」). */
 export const AI_DRAFT_TAG = 'ai-draft'
@@ -604,23 +606,34 @@ export interface ScopedItem extends PersonaRef {
   count: number; writable: boolean; ownerName: string | null
   /** 人设 only: social accounts with this 账号人设 that the viewer can see. */
   accounts?: number
-  /** 人设 only: 人设每日草稿 (AI) on and drafts per day. */
+  /** 人设 only: AI 草稿 on and drafts per day. */
   draftEnabled?: boolean; draftsPerDay?: number
-  /** 人设 only: newest generation task, on rows the viewer manages (else null). */
-  lastDraftRun?: PersonaDraftRun | null
+  /** 人设 only: style (with defaults); the draft owner only on rows the viewer manages. */
+  style?: PersonaStyle; draftOwnerId?: string | null
 }
 /** A 人设每日草稿 generation task (trigger schedule|manual; `created` = drafts written, null until it succeeded). */
 export interface PersonaDraftRun { id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null; created: number | null }
-/** 人设内容设定 (GET/PUT /api/personas/:id/drafts). */
-export interface PersonaBrief {
-  tone?: string; topics?: string[]; audience?: string; lang?: string | null; hashtags?: string[]; bannedWords?: string[]
-  exampleTemplateIds?: string[]; notes?: string
+export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
+export type PersonaTone = (typeof PERSONA_TONES)[number]
+export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const
+export type PersonaLevel = (typeof PERSONA_LEVELS)[number]
+/** 人设风格, shared by posts and replies (API fills tone/emoji/length and the lists with defaults). */
+export interface PersonaStyle {
+  tone: PersonaTone; toneNote?: string; emoji: PersonaLevel; length: PersonaLevel
+  topics: string[]; bannedWords: string[]; hashtags: string[]
+  audience?: string; opening?: string; closing?: string; notes?: string
 }
-export interface PersonaDraftSettings {
-  id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null
-  draftEnabled: boolean; draftsPerDay: number; brief: PersonaBrief
-  draftOwnerId: string | null; draftOwnerName: string | null; draftOwnerDisabled: boolean | null
-  runs: PersonaDraftRun[]
+/** Character ranges per length level: posts and replies (GET /api/personas[/:id] `lengths`). */
+export type PersonaLengths = Record<'post' | 'comment', Record<PersonaLevel, [number, number]>>
+export interface PersonaExample { id: string; kind: TemplateKind; name: string; text: string }
+/** GET /api/personas/:id: the persona (draft owner + runs only for managers), its 范例 per kind and the length table. */
+export interface PersonaDetail {
+  persona: PersonaRef & {
+    sort: number; style: PersonaStyle; writable: boolean; draftEnabled: boolean; draftsPerDay: number
+    draftOwnerId?: string | null; draftOwnerName?: string | null; draftOwnerDisabled?: boolean | null; runs?: PersonaDraftRun[]
+  }
+  examples: { post: PersonaExample[]; comment: PersonaExample[] }
+  lengths: PersonaLengths
 }
 export interface AiSettingsState { enabled: boolean; keySet: boolean; workspaceId: string | null; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */

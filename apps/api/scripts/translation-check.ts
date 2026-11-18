@@ -5,7 +5,7 @@
  *   GET /api/contents/languages per viewer (users: own accounts; admins: all or ?ownerId=), the old admin setting
  *   /api/settings/languages is gone (404) while its LEGACY row stays untouched; new contents are zh-CN, another source
  *   language is refused (content.source_lang_fixed); older contents keep theirs read-only (a missing one may become
- *   zh-CN); the persona AI language must be Chinese or a 配置语系 of the accounts that can use the persona.
+ *   zh-CN); personas have no language (style.lang refused, 2026-11-18): AI drafts are Chinese, accounts carry the language.
  * - Translations CRUD: PUT creates (201) / replaces (200), list + detail include them, DELETE (204, then 404),
  *   same-as-source refused, text-only hints.
  * - RBAC/isolation: another user gets 404 on every translation route; admin can manage a user's content.
@@ -100,20 +100,13 @@ try {
   const bad3 = await http('PUT', `/api/contents/${c1.id}`, A.token, { lang: null });
   check('a content without source language may be declared zh-CN; clearing a source → 400', set3.status === 200 && set3.body.content.lang === 'zh-CN' && bad3.status === 400, `${set3.status} ${bad3.status}`);
 
-  // ---------------------------------------------------------------- persona AI language: Chinese or a 配置语系
+  // ---------------------------------------------------------------- personas have no language any more (2026-11-18)
   const pA = await http('POST', '/api/personas', A.token, { name: `trchk persona ${tag}`, scope: 'mine' });
-  const pP = await http('POST', '/api/personas', T, { name: `trchk public ${tag}`, scope: 'public' });
   if (pA.body?.persona) personaIds.push(pA.body.persona.id);
-  if (pP.body?.persona) personaIds.push(pP.body.persona.id);
-  const brief = (id: string, tok: string, lang: string) => http('PUT', `/api/personas/${id}/drafts`, tok, { brief: { lang } });
-  const okEn = await brief(pA.body.persona.id, A.token, 'en');
-  const okZh = await brief(pA.body.persona.id, A.token, 'zh-CN');
-  const noPt = await brief(pA.body.persona.id, A.token, 'pt-BR');
-  const noFr = await brief(pA.body.persona.id, A.token, 'fr');
-  const pubPt = await brief(pP.body.persona.id, T, 'pt-BR');
-  check('persona AI language: personal → zh-CN or the owner\'s account languages (en ok, B\'s pt-BR and legacy fr → 400); public → any account language',
-    okEn.status === 200 && okZh.status === 200 && noPt.status === 400 && noPt.body?.code === 'persona.draft_lang_not_offered' && noFr.status === 400 && pubPt.status === 200,
-    `${pA.status}/${pP.status} ${okEn.status} ${okZh.status} ${noPt.status} ${noFr.status} ${pubPt.status} ${okEn.text.slice(0, 100)}`);
+  const langStyle = await http('PATCH', `/api/personas/${pA.body.persona.id}`, A.token, { style: { lang: 'en' } });
+  const oldBrief = await http('PUT', `/api/personas/${pA.body.persona.id}/drafts`, A.token, { brief: { lang: 'en' } });
+  check('personas carry no language (the account does): style.lang → 400, the old 内容设定 endpoint → 404, AI drafts are always zh-CN',
+    pA.status === 201 && langStyle.status === 400 && oldBrief.status === 404 && !('lang' in pA.body.persona.style), `${pA.status} ${langStyle.status} ${oldBrief.status}`);
 
   // ---------------------------------------------------------------- CRUD
   const p1 = await http('PUT', `/api/contents/${c1.id}/translations/EN`, A.token, {

@@ -996,14 +996,17 @@ export const personas = pgTable('personas', {
   ownerType: text('owner_type', { enum: ['public', 'user'] }).notNull(),
   ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
-  /** Short tone/background note. */
+  /** 一句话定位 (one-line positioning). */
   description: text('description'),
   sort: integer('sort').notNull().default(0),
-  /** 人设每日草稿 (AI): generate `drafts_per_day` draft contents per day from `brief` (modules/ai). Off by default. */
+  /** 人设每日草稿 (AI): generate `drafts_per_day` draft contents per day from the persona (定位, `style`, 范例; modules/ai). Off by default. */
   draftEnabled: boolean('draft_enabled').notNull().default(false),
   draftsPerDay: integer('drafts_per_day').notNull().default(4),
-  /** 内容设定: tone, topics, audience, language, hashtags, banned words, example post templates, notes. */
-  brief: jsonb('brief').$type<PersonaBrief>().notNull().default({}),
+  /**
+   * 风格 (shared by posts and replies, `PersonaStyle`), stored in the column `brief` (the former 内容设定; its old shape was
+   * wiped with every persona by migration 0037, owner decision 2026-11-18). Defaults are applied on read (`styleOf`).
+   */
+  style: jsonb('brief').$type<PersonaStyle>().notNull().default({}),
   /** Public personas: the (enabled) user who owns the generated drafts. Personal personas: unused (their owner). */
   draftOwnerId: uuid('draft_owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -1015,16 +1018,26 @@ export const personas = pgTable('personas', {
 ]);
 export type Persona = typeof personas.$inferSelect;
 
-/** 人设内容设定 (personas.brief). All fields optional; `lang` is BCP-47 from the content language settings. */
-export interface PersonaBrief {
-  tone?: string;
+export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const;
+export type PersonaTone = (typeof PERSONA_TONES)[number];
+export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const;
+export type PersonaLevel = (typeof PERSONA_LEVELS)[number];
+/**
+ * 人设风格 (personas.brief), one set for posts and replies. tone = preset (亲切日常/专业干货/幽默俏皮/高冷简洁/温暖治愈) with
+ * an editable note; emoji/length low|medium|high (length maps to a character range per kind, `PERSONA_LENGTHS`).
+ * No language: the language belongs to the social account (账号语言).
+ */
+export interface PersonaStyle {
+  tone?: PersonaTone;
+  toneNote?: string;
+  emoji?: PersonaLevel;
+  length?: PersonaLevel;
   topics?: string[];
-  audience?: string;
-  lang?: string | null;
-  hashtags?: string[];
   bannedWords?: string[];
-  /** Post templates (话术库 kind=post) visible to the persona's scope, used as style examples. */
-  exampleTemplateIds?: string[];
+  hashtags?: string[];
+  audience?: string;
+  opening?: string;
+  closing?: string;
   notes?: string;
 }
 
@@ -1096,6 +1109,8 @@ export interface ContentAiInfo {
   taskId: string | null;
   generatedAt: string;
   mediaTags: string[];
+  /** Languages of the target accounts other than the Chinese source: the draft needs a human translation (no MT). */
+  needsTranslation?: string[];
 }
 
 export interface ContentPlatformHints {

@@ -2,13 +2,17 @@
  * 账号人设 + 发布目标 against the real API and DB. No mocks.
  * - Account persona rules: public persona ok, the owner's personal persona ok, another user's personal persona → 400
  *   persona.account_not_allowed (create, update, batch); list filter personaId / none, personaName in items; batch
- *   "set-persona" (incl. clear); persona delete → accounts 未设人设; merge moves accounts; account logs (names, from → to); audit.
+ *   "set-persona" (incl. clear); persona delete → accounts 未设人设; no persona merge (404); account logs (names, from → to); audit.
  * - Content targets (content_targets): owner's accounts only (others' → 404), an admin editing a user's content may only use
  *   that user's accounts (400 content.target_not_owner), disabled-platform accounts refused (400 platform.disabled),
  *   order kept and duplicates dropped, deleting an account drops it from targets, deleting the content cascades.
  * - Bulk by persona (分组 were removed; personas are the grouping): the picker expands a persona to concrete ids from the
  *   account list (`?personaId=`); the server stores only those ids (a later persona change does not change the targets).
  * - RBAC/isolation: another user's content 404, another user's accounts never appear.
+ * - 人设禁用词 on contents (400 persona.banned_word with the words): create/update texts (title, body, platform captions,
+ *   case-insensitive) with a target account whose persona bans them, adding such a target to existing text, a
+ *   translation, an AI draft's own persona without targets, and distribution (also a per-target caption override and a
+ *   word added to the persona after saving); stage-only updates are not blocked; clean texts pass.
  * Usage (from apps/api, API running with the default ENABLED_PLATFORMS=instagram):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/targets-check.ts
  */
@@ -122,7 +126,8 @@ try {
   await http('PUT', `/api/social/accounts/${a4.id}`, A.token, { personaId: aOther.id });
   r = await http('POST', `/api/personas/${aOther.id}/merge`, A.token, { into: aOwn.id });
   const [a4row] = await db.select().from(SA).where(eq(SA.id, a4.id));
-  check('merge moves accounts to the target persona', r.status === 200 && r.body.movedAccounts === 1 && a4row?.personaId === aOwn.id, JSON.stringify(r.body));
+  check('personas cannot be merged any more (POST …/merge → 404, account keeps its persona)', r.status === 404 && a4row?.personaId === aOther.id, `${r.status}`);
+  await http('PUT', `/api/social/accounts/${a4.id}`, A.token, { personaId: aOwn.id });
   r = await http('DELETE', `/api/personas/${aOwn.id}`, A.token);
   const rows = await db.select().from(SA).where(inArray(SA.id, [a2.id, a4.id]));
   check('persona delete → accounts 未设人设 (persona_id null)', r.status === 204 && rows.every((x) => x.personaId === null));
@@ -184,6 +189,44 @@ try {
   r = await http('DELETE', `/api/contents/${c1.id}`, A.token);
   const left = await db.select().from(schema.contentTargets).where(eq(schema.contentTargets.contentId, c1.id));
   check('content delete cascades to content_targets', r.status === 204 && left.length === 0);
+
+  // ================================================================ 人设禁用词 on contents
+  {
+    const ban = await persona(A.token, { scope: 'mine', name: `ban ${tag}`, style: { bannedWords: ['最便宜', 'Free'] } });
+    const a5 = (await acc(A.token, 'a5', { personaId: ban.id })).body.account;
+    const n0 = (await db.select().from(schema.contents).where(eq(schema.contents.userId, A.id))).length;
+    r = await content(A.token, { body: '全网最便宜的蛋白粉', targetIds: [a5.id] });
+    const r2b = await content(A.token, { body: 'ok', platformHints: { instagram: { caption: 'FREE gift today' } }, targetIds: [a5.id] });
+    const r3b = await content(A.token, { title: `免费? Free ${tag}`, body: 'ok', targetIds: [a5.id] });
+    const n1 = (await db.select().from(schema.contents).where(eq(schema.contents.userId, A.id))).length;
+    check('create: body / caption (case-insensitive) / title with a banned word of a target\'s persona → 400 persona.banned_word, nothing stored',
+      r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '最便宜' && r.body.params?.persona === `ban ${tag}`
+        && r2b.status === 400 && r2b.body.params?.words === 'Free' && r3b.status === 400 && n0 === n1, `${r.status} ${JSON.stringify(r.body)} ${r2b.status} ${r3b.status}`);
+    const c3 = (await content(A.token, { body: '今天练腿', targetIds: [a5.id] })).body.content;
+    const c4 = (await content(A.token, { body: '全网最便宜' })).body.content;
+    check('clean text with the target, and the banned text without any persona target, are saved', !!c3?.id && !!c4?.id);
+    r = await http('PUT', `/api/contents/${c3.id}`, A.token, { body: '今天练腿，最便宜的健身房' });
+    const r4b = await http('PUT', `/api/contents/${c4.id}`, A.token, { targetIds: [a5.id] });
+    const r5b = await http('PUT', `/api/contents/${c4.id}`, A.token, { stage: 'ready' });
+    check('update: banned text → 400; adding a target whose persona bans existing text → 400; a stage-only update passes',
+      r.status === 400 && r.body.code === 'persona.banned_word' && r4b.status === 400 && r4b.body.code === 'persona.banned_word' && r5b.status === 200, `${r.status} ${r4b.status} ${r5b.status}`);
+    r = await http('PUT', `/api/contents/${c3.id}/translations/en`, A.token, { title: 't', body: 'Free shipping' });
+    const r6b = await http('PUT', `/api/contents/${c3.id}/translations/en`, A.token, { title: 't', body: 'Leg day' });
+    check('translation with a banned word → 400, clean translation saved', r.status === 400 && r.body.code === 'persona.banned_word' && [200, 201].includes(r6b.status), `${r.status} ${r6b.status}`);
+    // an AI draft: its own persona counts even without targets
+    const [draft] = await db.insert(schema.contents).values({ userId: A.id, title: `ai ${tag}`, body: 'x', lang: 'zh-CN', stage: 'draft', status: 'draft', platformHints: {},
+      aiGenerated: { model: 'm', requestedModel: 'm', personaId: ban.id, personaName: ban.name, taskId: null, generatedAt: new Date().toISOString(), mediaTags: [] } }).returning();
+    r = await http('PUT', `/api/contents/${draft!.id}`, A.token, { body: 'AI 写的：最便宜' });
+    check('AI draft without targets: its persona\'s banned words apply', r.status === 400 && r.body.code === 'persona.banned_word', `${r.status}`);
+    // distribution: per-target caption override, and a word added to the persona after saving
+    const pt0 = (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c3.id))).length;
+    r = await http('POST', `/api/contents/${c3.id}/distribute`, A.token, { targets: [{ accountId: a5.id, caption: 'free stuff' }] });
+    await http('PATCH', `/api/personas/${ban.id}`, A.token, { style: { bannedWords: ['最便宜', 'Free', '练腿'] } });
+    const r7b = await http('POST', `/api/contents/${c3.id}/distribute`, A.token, { targets: [{ accountId: a5.id }] });
+    const pt1 = (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c3.id))).length;
+    check('distribute: a banned per-target caption → 400; a word added to the persona after saving → 400 (words 练腿); no publish task',
+      r.status === 400 && r.body.code === 'persona.banned_word' && r7b.status === 400 && r7b.body.params?.words === '练腿' && pt0 === 0 && pt1 === 0, `${r.status} ${r7b.status} ${r7b.text.slice(0, 200)}`);
+  }
 
   // ================================================================ audit
   await sleep(500);

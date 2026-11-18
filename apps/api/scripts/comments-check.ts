@@ -9,6 +9,8 @@
  * - Anti-abuse: one reply per comment (again allowed after failed / rejected / cancelled), duplicate-text
  *   limit (normalized), per-account send rate limit (deferred, not dropped), every block logged with its code.
  * - Idempotency of the reply job (same key → same task), RBAC/isolation (admin, user A, user B), templates, audit.
+ * - 人设禁用词: replies on an account whose 账号人设 has banned words are refused (400 persona.banned_word with the hit
+ *   words, case-insensitive) on create, edit and submit (a word added to the persona after the draft was saved too).
  * Creates two temporary users and removes everything afterwards.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/comments-check.ts
  */
@@ -327,6 +329,32 @@ try {
   check('B: delete A\'s comment → 404', r.status === 404);
   r = await http('DELETE', `/api/comments/${c[10]}`, A);
   check('A: delete manual comment → 204', r.status === 204);
+
+  // ---------------------------------------------------------------- 人设禁用词 on replies
+  {
+    const pid = (await http('POST', '/api/personas', A, { scope: 'mine', name: h('persona'), style: { bannedWords: ['加微信', 'Spam'] } })).body.persona?.id;
+    const ib = await mk(A, 'instagram', h('ib'));
+    r = await http('PUT', `/api/social/accounts/${ib}`, A, { personaId: pid });
+    const cm = (await mc(A, ib, 'banned')).body.comment?.id;
+    check('persona with banned words on a fresh account + a comment', !!pid && r.status === 200 && !!cm, r.text.slice(0, 200));
+    r = await http('POST', `/api/comments/${cm}/replies`, A, { text: '有问题请加微信聊', submit: true });
+    const r2 = await http('POST', `/api/comments/${cm}/replies`, A, { text: 'no SPAM here, promise' });
+    check('reply with a banned word → 400 persona.banned_word with the words (also case-insensitive), nothing stored',
+      r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '加微信' && r2.status === 400 && r2.body.params?.words === 'Spam'
+        && (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.commentId, cm))).length === 0, `${r.status} ${JSON.stringify(r.body)}`);
+    r = await http('POST', `/api/comments/${cm}/replies`, A, { text: `谢谢支持 ${tag}` });
+    const rid = r.body.reply?.id;
+    const e = await http('PATCH', `/api/comment-replies/${rid}`, A, { text: '谢谢，加微信详聊' });
+    check('clean draft saved; editing it to contain a banned word → 400', r.status === 201 && e.status === 400 && e.body.code === 'persona.banned_word', `${r.status} ${e.status}`);
+    await http('PATCH', `/api/personas/${pid}`, A, { style: { bannedWords: ['加微信', 'Spam', '谢谢'] } });
+    r = await http('POST', `/api/comment-replies/${rid}/submit`, A, {});
+    check('a word added to the persona after the draft was saved blocks the submit (400, still a draft)', r.status === 400 && r.body.code === 'persona.banned_word' && r.body.params?.words === '谢谢'
+      && (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, rid)))[0]?.status === 'draft', `${r.status} ${r.text.slice(0, 200)}`);
+    await http('PATCH', `/api/comment-replies/${rid}`, A, { text: `收到，感谢 ${tag}` });
+    r = await http('POST', `/api/comment-replies/${rid}/submit`, A, {});
+    check('after editing the text the reply is submitted', r.status === 200 && ['scheduled', 'awaiting_operator', 'sending'].includes(r.body.reply?.status), `${r.status} ${r.text.slice(0, 200)}`);
+    r = await http('DELETE', `/api/personas/${pid}`, A);
+  }
 
   // ---------------------------------------------------------------- logs, leaks, audit
   const logs = await db.select().from(schema.commentLogs).where(inArray(schema.commentLogs.accountId, [ya, ia, ta, ta2]));

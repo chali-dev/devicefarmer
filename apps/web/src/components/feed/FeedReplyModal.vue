@@ -6,11 +6,13 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { ReplyAccountOption } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
+import PersonaCard from '../comments/PersonaCard.vue'
 
 /**
  * Write a reply to a comment, or a comment directly under the account's post, and schedule it (default now).
  * No approval: it is sent by the account's cloud phone at that time (test mode: only filled in + screenshot).
- * The text is always typed by the person here; nothing is generated.
+ * The text is always typed by the person here (or started from one of the account persona's 范例); nothing is
+ * generated. The persona card shows 定位/语气/禁用词 and flags banned words (refused on submit) and off-range lengths.
  * On a tracked account's post (`tracked-*`) the person also picks which own account (and so which cloud phone) sends it.
  */
 export type ReplyTarget =
@@ -19,7 +21,7 @@ export type ReplyTarget =
   | { kind: 'tracked-post'; trackedAccountId: string; postId: string; caption: string | null }
   | { kind: 'tracked-comment'; trackedAccountId: string; postId: string; commentId: string; author: string | null; text: string }
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ target: ReplyTarget | null; halted: boolean; testMode: boolean | null }>()
+const props = defineProps<{ target: ReplyTarget | null; halted: boolean; testMode: boolean | null; personaId?: string | null }>()
 const emit = defineEmits<{ done: [] }>()
 const { t } = useI18n()
 
@@ -80,6 +82,7 @@ async function submit() {
     <a-alert v-if="testMode === true" type="info" show-icon class="block" :message="t('feed.testMode')" />
     <a-alert v-else-if="testMode === false" type="warning" show-icon class="block" :message="t('feed.liveMode')" />
     <div v-if="quoted" class="quote">{{ quoted }}</div>
+    <PersonaCard :persona-id="personaId" kind="comment" :text="text" insertable @insert="(x: string) => (text = x)" />
     <a-form layout="vertical">
       <a-form-item v-if="tracked" :label="t('feed.replyAccount')" :extra="t('feed.replyAccountHint')" required>
         <a-select v-model:value="accountId" :loading="accountsLoading" :placeholder="t('feed.pickAccount')" :not-found-content="t('feed.noReplyAccounts')"

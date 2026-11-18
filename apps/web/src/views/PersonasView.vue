@@ -11,14 +11,15 @@ import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import { useScopedList } from '../components/common/scopedList'
 import { actionColumn, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
-import DraftRunInfo from '../components/comments/DraftRunInfo.vue'
-import PersonaDraftDrawer from '../components/comments/PersonaDraftDrawer.vue'
+import PersonaFormDrawer from '../components/comments/PersonaFormDrawer.vue'
 import { useAuthStore } from '../stores/auth'
 
 /**
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
- * (账号人设 accounts → /social, 话术 → /scripts) and 人设每日草稿 (AI) state (on/off, per day, newest generation task on
- * rows the viewer manages). Public personas are managed by admins; personal ones by their owner (admins: all).
+ * (账号人设 accounts → /social, 话术 → /scripts) and its tone; row actions 编辑 / AI测试 (one AI draft now) / 更多.
+ * AI 草稿 on/off and per day live only in the form (no AI column since 2026-11-18). Public personas are managed by admins; personal ones by their owner (admins: all).
+ * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 风格, 范例, 更多, AI 草稿). No merge for personas
+ * (owner decision 2026-11-18; the shared `useScopedList` merge stays for 内容分类/素材分类).
  * Tabs: 公共 / 我的 (+ admin 全部用户 with an owner filter); `?tab=` keeps the tab in the URL.
  */
 const { t } = useI18n()
@@ -34,7 +35,7 @@ const pageTab = computed<PageTab>({
 })
 
 const {
-  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, run, create, update, move, remove, merging, mergeInto, mergeTargets, startMerge, doMerge,
+  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, run, move, remove,
 } = useScopedList({ path: '/api/personas', listKey: 'personas', texts: 'scripts.personas' })
 const isAllUsers = computed(() => pageTab.value === 'all-users')
 function applyTab() {
@@ -72,8 +73,7 @@ const columns = computed(() => [
   { title: t('personas.colScope'), key: 'scope', width: 140 },
   { title: t('personas.colAccounts'), key: 'accounts', width: 100, align: 'right' as const },
   { title: t('personas.colTemplates'), key: 'count', width: 100, align: 'right' as const },
-  { title: t('personas.colDrafts'), key: 'drafts', width: 300 },
-  actionColumn(230),
+  actionColumn(160),
 ])
 const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
 
@@ -83,34 +83,31 @@ function scriptsLink(p: ScopedItem): RouteLocationRaw {
   return { path: '/scripts', query: { tab: 'mine', personaId: p.id, ...(p.ownerId !== auth.user?.id ? { owner: 'all-users' } : {}) } }
 }
 
-// ---- create / edit (name + description)
-const formOpen = ref(false)
-const editing = ref<ScopedItem | null>(null)
-const form = ref({ name: '', description: '', ownerId: undefined as string | undefined })
-function openForm(p?: ScopedItem) {
-  editing.value = p ?? null
-  form.value = { name: p?.name ?? '', description: p?.description ?? '', ownerId: p ? undefined : ownerId.value }
-  formOpen.value = true
-}
-async function save() {
-  const name = form.value.name.trim()
-  const description = form.value.description.trim() || null
-  if (!name) { message.warning(t('personas.nameRequired')); return }
-  const p = editing.value
-  if (!p && isAllUsers.value && !form.value.ownerId) { message.warning(t('personas.ownerRequired')); return }
-  const ok = p ? await update(p, name, description) : await create(name, description, isAllUsers.value ? form.value.ownerId : undefined)
-  if (ok) { formOpen.value = false; if (!p) message.success(t('scripts.personas.created')) }
-}
-
-// ---- 内容设定 (AI drafts) and "generate one now"
-const draftPersona = ref<string | null>(null)
+// ---- AI测试: one AI draft now (same as 立即生成一条 in the form; errors such as ai.not_configured / ai.rate_limited shown by run())
 const generating = ref<string | null>(null)
 async function generate(p: ScopedItem) {
   generating.value = p.id
   try {
-    // run() shows errors (e.g. ai.not_configured, ai.rate_limited); the new task is the newest run after its reload
     await run(async () => { await api('POST', `/api/personas/${p.id}/drafts/generate`); message.success(t('scripts.drafts.generated')) })
   } finally { generating.value = null }
+}
+
+// ---- create / edit: the persona form drawer
+const formOpen = ref(false)
+const editingId = ref<string | null>(null)
+const newOwner = ref<string | undefined>()
+const ownerPick = ref(false)
+function openForm(p?: ScopedItem) {
+  editingId.value = p?.id ?? null
+  // admin, 全部用户 tab: a new personal persona needs its owner first
+  if (!p && isAllUsers.value && !ownerId.value) { newOwner.value = undefined; ownerPick.value = true; return }
+  newOwner.value = !p && isAllUsers.value ? ownerId.value : undefined
+  formOpen.value = true
+}
+function pickOwner() {
+  if (!newOwner.value) { message.warning(t('personas.ownerRequired')); return }
+  ownerPick.value = false
+  formOpen.value = true
 }
 </script>
 
@@ -136,6 +133,7 @@ async function generate(p: ScopedItem) {
           <template v-if="column.key === 'name'"><span class="strong">{{ record.name }}</span></template>
           <template v-else-if="column.key === 'description'">
             <span v-if="record.description" class="clamp">{{ record.description }}</span><span v-else class="muted">—</span>
+            <div v-if="record.style" class="muted small">{{ t(`personas.tones.${record.style.tone}`) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
           </template>
           <template v-else-if="column.key === 'scope'">
             <a-tag v-if="record.ownerType === 'public'" color="blue">{{ t('scopedList.public') }}</a-tag>
@@ -150,21 +148,10 @@ async function generate(p: ScopedItem) {
           <template v-else-if="column.key === 'count'">
             <router-link :to="scriptsLink(record as ScopedItem)">{{ record.count }}</router-link>
           </template>
-          <template v-else-if="column.key === 'drafts'">
-            <div>
-              <a-tag v-if="record.draftEnabled" color="purple">{{ tx('draftOn', { n: record.draftsPerDay ?? 0 }) }}</a-tag>
-              <a-tag v-else>{{ t('personas.draftOff') }}</a-tag>
-            </div>
-            <div v-if="record.writable" class="last-run">
-              <DraftRunInfo v-if="record.lastDraftRun" :run="record.lastDraftRun" />
-              <span v-else class="muted small">{{ t('personas.noRun') }}</span>
-            </div>
-          </template>
           <template v-else-if="column.key === 'ops'">
             <a-space v-if="record.writable" :size="0">
               <a-button type="link" size="small" @click="openForm(record as ScopedItem)">{{ t('common.edit') }}</a-button>
-              <a-button type="link" size="small" @click="draftPersona = record.id">{{ tx('draftSettings') }}</a-button>
-              <a-button type="link" size="small" :loading="generating === record.id" @click="generate(record as ScopedItem)">{{ t('scripts.drafts.generate') }}</a-button>
+              <a-button type="link" size="small" :loading="generating === record.id" @click="generate(record as ScopedItem)">{{ t('personas.aiTest') }}</a-button>
               <a-dropdown>
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
@@ -173,7 +160,6 @@ async function generate(p: ScopedItem) {
                       <a-menu-item key="up" :disabled="indexOf(record as ScopedItem) === 0 || busy" @click="move(list, indexOf(record as ScopedItem), -1)">{{ t('scopedList.moveUp') }}</a-menu-item>
                       <a-menu-item key="down" :disabled="indexOf(record as ScopedItem) === list.length - 1 || busy" @click="move(list, indexOf(record as ScopedItem), 1)">{{ t('scopedList.moveDown') }}</a-menu-item>
                     </template>
-                    <a-menu-item key="merge" @click="startMerge(record as ScopedItem)">{{ t('scopedList.merge') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
                   </a-menu>
                 </template>
@@ -185,26 +171,16 @@ async function generate(p: ScopedItem) {
       </a-table>
     </a-card>
 
-    <a-modal v-model:open="formOpen" :title="editing ? t('personas.edit') : tx('add')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')"
-      :confirm-loading="busy" :width="MODAL_WIDTH.sm" @ok="save">
+    <a-modal v-model:open="ownerPick" :title="tx('add')" :ok-text="t('common.ok')" :cancel-text="t('common.cancel')" :width="MODAL_WIDTH.sm" @ok="pickOwner">
       <a-form layout="vertical">
-        <a-form-item v-if="!editing && isAllUsers" :label="t('personas.owner')" required>
-          <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="userOptions" />
-        </a-form-item>
-        <a-form-item :label="t('personas.colName')" required><a-input v-model:value="form.name" :maxlength="50" :placeholder="tx('namePlaceholder')" /></a-form-item>
-        <a-form-item :label="t('personas.colDesc')">
-          <a-textarea v-model:value="form.description" :maxlength="200" :auto-size="{ minRows: 2, maxRows: 4 }" show-count :placeholder="tx('descPlaceholder')" />
+        <a-form-item :label="t('personas.owner')" required>
+          <a-select v-model:value="newOwner" show-search option-filter-prop="label" :options="userOptions" />
         </a-form-item>
       </a-form>
     </a-modal>
 
-    <a-modal :open="!!merging" :title="merging ? tx('mergeTitle', { name: merging.name }) : ''" :width="MODAL_WIDTH.sm"
-      :ok-text="t('scopedList.merge')" :cancel-text="t('common.cancel')" :ok-button-props="{ disabled: !mergeInto }" :confirm-loading="busy"
-      @ok="doMerge" @cancel="merging = null">
-      <a-select v-model:value="mergeInto" show-search option-filter-prop="label" style="width: 100%" :options="mergeTargets" />
-    </a-modal>
 
-    <PersonaDraftDrawer :persona-id="draftPersona" @close="draftPersona = null" @changed="load" />
+    <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" :users="users" @saved="load" />
   </PageContainer>
 </template>
 
@@ -212,5 +188,4 @@ async function generate(p: ScopedItem) {
 .tabs-card :deep(.ant-card-body) { padding-top: 4px; }
 .strong { font-weight: 500; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.last-run { margin-top: 4px; }
 </style>

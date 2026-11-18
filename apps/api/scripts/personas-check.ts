@@ -6,7 +6,15 @@
  * - Counts per persona (templates and 账号人设 accounts, exact, per viewer), template filter personaId / none, facets without personas.
  * - 人设 page links: the counts equal what the linked lists return (/social?personaId → accounts total; /scripts?personaId
  *   → shared + own templates for users, shared + all-users for admins; a personal persona → its owner's templates only).
- * - Delete → templates become 未设人设; merge moves templates and deletes the source (scope rules).
+ * - Delete → templates become 未设人设. No merge for personas (owner decision 2026-11-18): POST …/merge → 404 for
+ *   everyone, nothing moved.
+ * - The one persona form (owner decision 2026-11-18): 定位 (description), style (tone preset + note, emoji, length,
+ *   topics, banned words, hashtags, audience, fixed opening/closing, notes; strict validation, normalisation, defaults,
+ *   no language), GET /api/personas/:id (style for everyone who may see it, 范例 per kind in the persona's own scope,
+ *   length ranges, draft owner/runs only for managers), admin-created examples for a user's personal persona (ownerId),
+ *   banned words inside the fixed opening/closing refused.
+ * - Migration 0037 (persona reset) executed inside a transaction on seeded rows and rolled back: personas, their
+ *   templates, 账号人设 and legacy texts/groups cleared; contents.ai_generated untouched.
  * - Audit entries (names only).
  * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
  *   (shared + personal, case/space variants), migrated twice → personas created once, templates linked, no re-link
@@ -73,6 +81,7 @@ try {
   check('user cannot create public personas or personas for others (403 persona.admin_only)', r.status === 403 && r.body.code === 'persona.admin_only' && r2.status === 403);
   const [brand, chef, old, pre] = await Promise.all(['Brand', 'Chef', 'Old', 'Pre'].map(async (n) => (await persona(T, { scope: 'public', name: `${n} ${tag}` })).body.persona));
   check('admin creates public personas', [brand, chef, old, pre].every((p) => p?.ownerType === 'public' && p.ownerId === null));
+  check('persona responses carry the style with defaults (no legacy brief)', !('brief' in brand) && brand.style?.tone === 'casual');
   r = await persona(T, { scope: 'public', name: `brand ${tag.toUpperCase()}` });
   check('public names unique case-insensitively → 409', r.status === 409 && r.body.code === 'persona.exists');
   r = await persona(T, { scope: 'mine', ownerId: A.id, name: `Coach2 ${tag}` });
@@ -96,8 +105,7 @@ try {
 
   r = await http('PATCH', `/api/personas/${bCoach.id}`, A.token, { name: 'hijack' });
   const dB = await http('DELETE', `/api/personas/${bCoach.id}`, A.token);
-  const mB = await http('POST', `/api/personas/${bCoach.id}/merge`, A.token, { into: aCoach.id });
-  check('other user\'s personal persona: PATCH/DELETE/merge → 404 persona.not_found', r.status === 404 && dB.status === 404 && mB.status === 404 && r.body.code === 'persona.not_found');
+  check('other user\'s personal persona: PATCH/DELETE → 404 persona.not_found', r.status === 404 && dB.status === 404 && r.body.code === 'persona.not_found');
   r = await http('PATCH', `/api/personas/${brand.id}`, A.token, { name: 'x' });
   const dP = await http('DELETE', `/api/personas/${brand.id}`, A.token);
   check('user cannot edit/delete public personas (403)', r.status === 403 && dP.status === 403 && r.body.code === 'persona.admin_only');
@@ -111,6 +119,61 @@ try {
   check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
   r = await http('PATCH', `/api/personas/${bCoach.id}`, T, { description: 'by admin' });
   check('admin edits a user\'s personal persona', r.status === 200 && r.body.persona.description === 'by admin');
+
+  // ================================================================ the persona form: style, examples, GET /:id
+  {
+    const st = await persona(A.token, { scope: 'mine', name: `Style ${tag}`, description: '一句话定位', style: {
+      tone: 'funny', toneNote: '  轻松吐槽  ', emoji: 'high', length: 'low', topics: ['跑步', ' 跑步 ', 'Run', 'run'], bannedWords: ['Spam', 'spam', '违禁'],
+      hashtags: ['#Run', 'run', 'morning run'], audience: '', opening: '早！', closing: '', notes: 'n',
+    } });
+    const sp = st.body.persona;
+    check('create with style: stored normalised (trimmed, lists de-duplicated case-insensitively, hashtags without # / spaces, empty texts dropped)',
+      st.status === 201 && sp.style.tone === 'funny' && sp.style.toneNote === '轻松吐槽' && sp.style.topics.join() === '跑步,Run' && sp.style.bannedWords.join() === 'Spam,违禁'
+        && sp.style.hashtags.join() === 'Run,morningrun' && !('audience' in sp.style) && sp.style.opening === '早！' && !('closing' in sp.style) && sp.description === '一句话定位',
+      JSON.stringify(sp?.style ?? st.body));
+    const plain = (await persona(A.token, { scope: 'mine', name: `Plain ${tag}` })).body.persona;
+    check('defaults on read: tone casual, emoji medium, length medium, empty lists', plain.style.tone === 'casual' && plain.style.emoji === 'medium' && plain.style.length === 'medium'
+      && plain.style.topics.length === 0 && plain.style.bannedWords.length === 0 && plain.style.hashtags.length === 0);
+    const bad = await Promise.all([
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'angry' } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { emoji: 'tons' } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { lang: 'en' } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { bannedWords: Array.from({ length: 51 }, (_, k) => `w${k}`) } }),
+      http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { notes: 'n'.repeat(1001) } }),
+    ]);
+    check('style validation: unknown tone/emoji, a language, > 50 banned words, notes > 1000 → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join());
+    let x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { bannedWords: ['早'], opening: '早上好' } });
+    check('a banned word inside the fixed opening/closing → 400 persona.banned_in_style', x.status === 400 && x.body.code === 'persona.banned_in_style', `${x.status} ${x.body?.code}`);
+    x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'pro', length: 'high' }, description: '专业' });
+    check('PATCH replaces the whole style together with the description', x.status === 200 && x.body.persona.style.tone === 'pro' && x.body.persona.style.length === 'high'
+      && x.body.persona.style.emoji === 'medium' && x.body.persona.description === '专业');
+    // examples: own templates of the persona; admin adds one for A (ownerId)
+    const ex1 = await http('POST', '/api/comment-templates', A.token, { kind: 'post', name: 'e1', text: `发文范例 ${tag}`, personaId: sp.id });
+    const ex2 = await http('POST', '/api/comment-templates', A.token, { kind: 'comment', name: 'e2', text: `回复范例 ${tag}`, personaId: sp.id });
+    const ex3 = await http('POST', '/api/comment-templates', T, { kind: 'comment', name: 'e3', text: `管理员替 A 写的回复范例 ${tag}`, personaId: sp.id, ownerId: A.id });
+    const ex4 = await http('POST', '/api/comment-templates', B.token, { kind: 'comment', name: 'e4', text: 'x', personaId: sp.id, ownerId: A.id });
+    for (const e of [ex1, ex2, ex3]) if (e.body?.template?.id) templateIds.push(e.body.template.id);
+    check('examples: owner adds post + reply examples; admin adds one for A (ownerId → A\'s private template); a user cannot use ownerId (403)',
+      ex1.status === 201 && ex2.status === 201 && ex3.status === 201 && ex3.body.template.userId === A.id && ex3.body.template.shared === false && ex4.status === 403,
+      `${ex1.status} ${ex2.status} ${ex3.status} ${ex4.status}`);
+    x = await http('GET', `/api/personas/${sp.id}`, A.token);
+    check('GET /api/personas/:id: style, examples per kind (oldest first), lengths, draft owner + runs for the owner',
+      x.status === 200 && x.body.examples.post.map((e: any) => e.text).join() === `发文范例 ${tag}` && x.body.examples.comment.map((e: any) => e.text).join() === `回复范例 ${tag},管理员替 A 写的回复范例 ${tag}`
+        && x.body.lengths.comment.low.join() === '4,30' && x.body.lengths.post.medium.join() === '150,500' && x.body.persona.draftOwnerName === `pea${tag}` && Array.isArray(x.body.persona.runs)
+        && x.body.persona.style.bannedWords.join() === 'Spam,违禁', JSON.stringify(x.body).slice(0, 400));
+    x = await http('GET', `/api/personas/${sp.id}`, B.token);
+    check('GET /api/personas/:id of another user\'s personal persona → 404', x.status === 404 && x.body.code === 'persona.not_found');
+    const pubStyle = (await persona(T, { scope: 'public', name: `PubStyle ${tag}`, style: { bannedWords: ['广告'] } })).body.persona;
+    const pubEx = await http('POST', '/api/comment-templates', T, { kind: 'post', name: 'pe', text: `公共范例 ${tag}`, personaId: pubStyle.id, shared: true });
+    const aOnPub = await http('POST', '/api/comment-templates', A.token, { kind: 'post', name: 'ape', text: `A 私有 ${tag}`, personaId: pubStyle.id });
+    templateIds.push(pubEx.body.template.id, aOnPub.body.template.id);
+    x = await http('GET', `/api/personas/${pubStyle.id}`, A.token);
+    check('public persona read by a user: style (banned words for the editor card), only shared examples (not A\'s private one), no draft owner/runs',
+      x.status === 200 && x.body.persona.style.bannedWords.join() === '广告' && x.body.examples.post.length === 1 && x.body.examples.post[0].text === `公共范例 ${tag}`
+        && !('draftOwnerId' in x.body.persona) && !('runs' in x.body.persona) && x.body.persona.writable === false);
+    const l2 = await http('GET', '/api/personas?scope=mine', A.token);
+    check('list carries style and the length table', l2.body.personas.find((p: any) => p.id === sp.id)?.style?.tone === 'funny' && !!l2.body.lengths?.post?.high);
+  }
 
   // ================================================================ template persona rules
   const tpl = async (token: string, body: Record<string, unknown>) => {
@@ -186,25 +249,19 @@ try {
   r = await http('DELETE', `/api/personas/${old.id}`, T);
   const [s2row] = await db.select().from(TPL).where(eq(TPL.id, S2.id));
   check('delete public persona → 204, its templates become 未设人设', r.status === 204 && s2row?.personaId === null);
-  r = await http('POST', `/api/personas/${aCoach2.id}/merge`, A.token, { into: aCoach2.id });
-  check('merge into itself → 400 persona.merge_same', r.status === 400 && r.body.code === 'persona.merge_same');
-  r = await http('POST', `/api/personas/${aCoach2.id}/merge`, T, { into: bCoach.id });
-  check('merge personal into another user\'s persona → 400 persona.merge_scope', r.status === 400 && r.body.code === 'persona.merge_scope');
-  r = await http('POST', `/api/personas/${chef.id}/merge`, T, { into: aCoach.id });
-  check('merge public into personal → 400 persona.merge_scope', r.status === 400 && r.body.code === 'persona.merge_scope');
-  r = await http('POST', `/api/personas/${chef.id}/merge`, A.token, { into: brand.id });
-  check('user cannot merge public personas (403)', r.status === 403);
-  r = await http('POST', `/api/personas/${aCoach2.id}/merge`, A.token, { into: aCoach.id });
-  const [a3row] = await db.select().from(TPL).where(eq(TPL.id, A3.id));
-  const goneC2 = await db.select().from(P).where(eq(P.id, aCoach2.id));
-  check('merge personal → personal (same owner): templates moved, source deleted', r.status === 200 && r.body.moved === 1 && a3row?.personaId === aCoach.id && goneC2.length === 0);
-  r = await http('POST', `/api/personas/${aCoach.id}/merge`, A.token, { into: brand.id });
-  const moved = await db.select().from(TPL).where(inArray(TPL.id, [A1.id, A3.id]));
-  check('merge personal → public', r.status === 200 && r.body.moved === 2 && moved.every((x) => x.personaId === brand.id));
-  r = await http('POST', `/api/personas/${chef.id}/merge`, T, { into: brand.id });
-  const [s3row] = await db.select().from(TPL).where(eq(TPL.id, S3.id));
-  check('admin merges public → public', r.status === 200 && r.body.moved === 1 && s3row?.personaId === brand.id);
-  check('counts after merges (Brand as admin: s1 s3 a1 a2 a3 b1 = 6)', count((await plist(T, 'scope=public')).items, brand.id) === 6);
+  {
+    // no merge for personas: the endpoint is gone for owners and admins alike, nothing moves
+    const tries = await Promise.all([
+      http('POST', `/api/personas/${aCoach2.id}/merge`, A.token, { into: aCoach.id }),
+      http('POST', `/api/personas/${chef.id}/merge`, T, { into: brand.id }),
+    ]);
+    const [a3row] = await db.select().from(TPL).where(eq(TPL.id, A3.id));
+    const [s3row] = await db.select().from(TPL).where(eq(TPL.id, S3.id));
+    const both = await db.select().from(P).where(inArray(P.id, [aCoach2.id, chef.id]));
+    check('persona merge removed: POST /api/personas/:id/merge → 404 (owner and admin), templates and personas unchanged',
+      tries.every((x) => x.status === 404) && a3row?.personaId === aCoach2.id && s3row?.personaId === chef.id && both.length === 2, tries.map((x) => x.status).join());
+    check('counts unchanged (Brand as admin: s1 a2 b1 = 3)', count((await plist(T, 'scope=public')).items, brand.id) === 3);
+  }
   r = await http('DELETE', `/api/personas/${bCoach.id}`, B.token);
   const [b2row] = await db.select().from(TPL).where(eq(TPL.id, B2.id));
   check('owner deletes own persona → template becomes 未设人设', r.status === 204 && b2row?.personaId === null);
@@ -213,10 +270,9 @@ try {
   await sleep(500);
   const acts = await sqlClient`select action, target, detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action like 'persona.%'`;
   const have = new Set(acts.map((x) => x.action as string));
-  check('audit actions persona.create/update/delete/merge recorded', ['persona.create', 'persona.update', 'persona.delete', 'persona.merge'].every((x) => have.has(x)), [...have].join());
-  check('audit: names only (target = persona name, merge target name, no description text)',
+  check('audit actions persona.create/update/delete recorded, no persona.merge', ['persona.create', 'persona.update', 'persona.delete'].every((x) => have.has(x)) && !have.has('persona.merge'), [...have].join());
+  check('audit: names only (target = persona name, no description text)',
     acts.some((x) => x.action === 'persona.delete' && x.target === `Old ${tag}`)
-      && acts.some((x) => x.action === 'persona.merge' && x.target === `Chef ${tag}` && x.detail?.into === `Brand ${tag}` && x.detail?.templates === 1)
       && !JSON.stringify(acts).includes('Upbeat') && !JSON.stringify(acts).includes('Calm'));
   const tplActs = await sqlClient`select detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'comment.template_create' and target = ${`a1 ${tag}`}`;
   check('audit: template create records the persona name', tplActs[0]?.detail?.persona === `Coach ${tag} Pro`, JSON.stringify(tplActs[0]?.detail));
@@ -254,6 +310,37 @@ try {
   check('migration does not re-link templates whose persona was deleted or cleared', run3.created === 0 && run3.linked === 0 && after.every((x) => x.personaId === null && x.persona === null), JSON.stringify(run3));
   r = await http('GET', `/api/comment-templates?kind=all&personaId=${pubChef!.id}`, A.token);
   check('migrated templates are listed by persona (A: s2, s3, own aChef)', r.body.templates.length === 3, String(r.body.templates?.length));
+
+  // ================================================================ migration 0037 (persona reset), rolled back
+  {
+    const { readFileSync } = await import('node:fs');
+    const sqlText = readFileSync(new URL('../drizzle/0037_persona_reset.sql', import.meta.url), 'utf8');
+    const stmts = sqlText.split('--> statement-breakpoint').map((x) => x.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean);
+    const acc = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `mig36_${tag}`, personaId: brand.id });
+    const [content] = await db.insert(schema.contents).values({ userId: A.id, title: `ai ${tag}`, body: 'x', stage: 'draft', status: 'draft', platformHints: {},
+      aiGenerated: { model: 'm', requestedModel: 'm', personaId: brand.id, personaName: 'Brand', taskId: null, generatedAt: new Date().toISOString(), mediaTags: [] } }).returning();
+    const legacyT = (await db.insert(TPL).values({ userId: A.id, kind: 'post', name: `legacy36 ${tag}`, text: 'x', persona: 'Some legacy' }).returning())[0]!;
+    templateIds.push(legacyT.id);
+    const ROLLBACK = new Error('rollback');
+    let seen: Record<string, number> = {};
+    try {
+      await sqlClient.begin(async (tx) => {
+        const before = (await tx`select (select count(*) from personas)::int p, (select count(*) from comment_templates where persona_id is not null)::int t`)[0]!;
+        for (const st of stmts) await tx.unsafe(st);
+        const after = (await tx`select (select count(*) from personas)::int p, (select count(*) from comment_templates where persona_id is not null)::int t,
+          (select count(*) from social_accounts where persona_id is not null or group_id is not null)::int a, (select count(*) from comment_templates where persona is not null)::int legacy,
+          (select count(*) from contents where id = ${content!.id} and ai_generated->>'personaId' = ${brand.id})::int ai,
+          (select count(*) from comment_templates where id = ${legacyT.id})::int kept`)[0]!;
+        seen = { beforeP: before.p, beforeT: before.t, ...after };
+        throw ROLLBACK;
+      });
+    } catch (e) { if (e !== ROLLBACK) throw e; }
+    const still = await db.select().from(P).where(eq(P.id, brand.id));
+    check('migration 0037: personas, their templates, 账号人设/groups and legacy texts cleared; templates without persona and contents.ai_generated kept (then rolled back)',
+      acc.status === 201 && seen.beforeP! > 0 && seen.beforeT! > 0 && seen.p === 0 && seen.t === 0 && seen.a === 0 && seen.legacy === 0 && seen.ai === 1 && seen.kept === 1 && still.length === 1,
+      JSON.stringify(seen));
+    await db.delete(schema.contents).where(eq(schema.contents.id, content!.id));
+  }
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack ?? (err as Error).message}`, false);
 } finally {

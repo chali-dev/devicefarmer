@@ -2,9 +2,10 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'd
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { CONTENT_STATUSES, POST_TYPES } from '../../db/schema.js';
+import { CONTENT_STATUSES, POST_TYPES, type ContentPlatformHints } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
+import { accountPersonaIds, assertNoBannedWords } from '../comments/persona-style.js';
 import { distribute } from '../publish/publish.js';
 import { csv, toPublishItems } from '../publish/routes.js';
 import { BATCH_ACTIONS, BATCH_MAX, batchContents } from './batch.js';
@@ -56,6 +57,21 @@ const Editable = {
   stage: z.enum(['draft', 'ready', 'archived']).optional(),
 };
 const CreateBody = z.object({ ...Editable, ownerId: z.string().uuid().optional() });
+
+/** Text values of platform hints (titles, descriptions, captions; not options such as privacy). */
+const hintTexts = (h: ContentPlatformHints | undefined) =>
+  Object.values(h ?? {}).flatMap((v) => Object.entries(v ?? {}).flatMap(([k, x]) => (k !== 'privacy' && typeof x === 'string' ? [x] : [])));
+
+/**
+ * 人设禁用词 (persona.banned_word): the personas of the content = its target accounts' 账号人设 (+ the persona of an AI
+ * draft). Checked whenever texts or targets are saved, and for translations.
+ */
+async function assertContentWords(contentId: string | null, targetIds: string[] | null, aiPersonaId: string | null | undefined, texts: (string | null | undefined)[]) {
+  const ids = targetIds ?? (contentId
+    ? (await db.select({ id: schema.contentTargets.accountId }).from(schema.contentTargets).where(eq(schema.contentTargets.contentId, contentId))).map((r) => r.id)
+    : []);
+  await assertNoBannedWords([...await accountPersonaIds(ids), aiPersonaId], texts);
+}
 const UpdateBody = z.object({ ...Editable, title: Editable.title.optional() });
 
 const ListQuery = z.object({
@@ -145,6 +161,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const stage = b.stage ?? 'draft';
     if (stage === 'archived') throw badRequest('新内容不能直接归档', 'content.bad_stage');
     if (b.lang && b.lang !== SOURCE_LANG) throw badRequest('原文语言固定为中文', 'content.source_lang_fixed', { lang: b.lang });
+    await assertContentWords(null, targets, null, [b.title, b.body, ...hintTexts(b.platformHints)]);
     const row = await db.transaction(async (tx) => {
       const [r] = await tx.insert(c).values({
         userId: owner.id, title: b.title, body: b.body ?? '', categoryId: category?.id ?? null, stage, status: stage,
@@ -198,6 +215,10 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const targets = b.targetIds ? await assertTargetAccounts(req.user, cur.userId, b.targetIds) : null;
     const category = b.categoryId ? await assertCategoryFor(cur.userId, b.categoryId) : null;
     if (req.audit && b.categoryId !== undefined) req.audit.extra = { category: category?.name ?? null };
+    if (b.title !== undefined || b.body !== undefined || b.platformHints !== undefined || targets) {
+      await assertContentWords(cur.id, targets, cur.aiGenerated?.personaId,
+        [b.title ?? cur.title, b.body ?? cur.body, ...hintTexts(b.platformHints ?? cur.platformHints)]);
+    }
     await db.transaction(async (tx) => {
       const locked = await visibleContent(req.user, cur.id, tx, true);
       const set: Partial<typeof c.$inferInsert> = {};
@@ -260,6 +281,8 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/contents/:id/translations/:lang', { schema: { params: LangParams, body: TranslationBody } }, async (req, reply) => {
     const { lang } = req.params;
     const b = req.body;
+    const pre = await visibleContent(req.user, req.params.id);
+    await assertContentWords(pre.id, null, pre.aiGenerated?.personaId, [b.title, b.body, ...hintTexts(b.platformHints)]);
     const row = await db.transaction(async (tx) => {
       const cur = await visibleContent(req.user, req.params.id, tx, true);
       if (cur.lang === lang) throw badRequest('译文语言不能与原文语言相同', 'content.translation_same_lang', { lang });

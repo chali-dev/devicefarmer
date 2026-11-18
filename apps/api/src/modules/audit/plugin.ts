@@ -334,13 +334,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment' }) },
   'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
-  // 人设: names only (no descriptions); the route adds the persona name of a template and the merge target.
-  'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
+  // 人设: names only (no 定位, no style texts: only which fields changed); the route adds draftEnabled/draftsPerDay, the
+  // persona name of a template and the merge target.
+  'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },
-  'POST /api/personas/:id/merge': { action: 'persona.merge' },
-  // 人设每日草稿 (AI): the brief is not recorded, only which fields changed.
-  'PUT /api/personas/:id/drafts': { action: 'persona.draft_settings', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'POST /api/personas/:id/drafts/generate': { action: 'persona.draft_generate' },
   // 内容分类: names only (no descriptions); the merge route adds the target name.
   'POST /api/content-categories': { action: 'content_category.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
