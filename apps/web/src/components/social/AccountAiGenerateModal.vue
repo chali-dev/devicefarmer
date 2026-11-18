@@ -184,7 +184,7 @@ const close = () => emit('update:open', false)
               </a-form-item>
             </template>
             <a-alert v-if="trLang && trMissing && mode !== 'draft'" type="warning" show-icon class="gap-b"
-              :message="t('content.lang.missing', { langs: langName(trLang) })" :description="t('social.aiDrafts.trMissingHint')" />
+              :message="`${t('content.lang.missingOne')}：${langName(trLang)}`" :description="t('social.aiDrafts.trMissingHint')" />
             <a-form-item :label="t('content.fieldMedia', { n: media.length })">
               <MediaStrip :media="media" :size="72" editable @move="moveMedia" @remove="(i: number) => media.splice(i, 1)" />
               <a-space style="margin-top: 8px" wrap>
