@@ -82,6 +82,13 @@ const EXACT: Record<string, string> = {
   'alert channel deleted: not sent': 'channelDeleted',
   'alert channel disabled: not sent': 'channelDisabled',
   'alert message sent': 'channelSent',
+  'collector: profile link opened': 'collectorOpened',
+  'collector: profile read': 'collectorRead',
+  'collector: profile header could not be parsed': 'collectorParseFailed',
+  'collector: challenge screen, collection halted': 'collectorChallenge',
+  'collector: Instagram is not logged in': 'collectorLoggedOut',
+  'collector: profile not available': 'collectorUnavailable',
+  'collector: profile did not show in time': 'collectorTimeout',
 }
 
 const RULES: Rule[] = [
@@ -110,6 +117,8 @@ const RULES: Rule[] = [
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点
   [/^scheduled refresh skipped: (\S+)$/, 'scheduledSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^deferred: (\S+)$/, 'deferred', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^collector: visit started$/, 'collectorVisit', (_m, d) => ({ device: typeof d?.device === 'string' ? d.device : '' })],
   [/^stored (\d+) trending videos for (\w+)$/, 'trendingStored', (m) => ({ n: m[1]!, region: m[2]! })],
   [/^collection: (\d+) tracked refreshes queued, (\d+) skipped; (\d+) trending refreshes queued; (\d+) old trending snapshots deleted$/, 'collectionTick',
     (m) => ({ queued: m[1]!, skipped: m[2]!, trending: m[3]!, purged: m[4]! })],

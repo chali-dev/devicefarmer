@@ -53,6 +53,13 @@ export async function connectionChanged(conn: Pick<PlatformConnection, 'socialAc
   else await notify(a);
 }
 
+/** The tracked-account collector device stopped on a challenge screen (blocked) or was resumed / read fine again. */
+export async function collectorBlocked(inst: Pick<Instance, 'id' | 'name'>, platform: string, blocked: boolean, code?: string): Promise<void> {
+  const a = { kind: 'collector.blocked' as const, refId: inst.id, key: `${inst.id}:${platform}`, params: { name: inst.name, platform, code } };
+  if (blocked) await notify(a);
+  else await recover(a);
+}
+
 /** A publish run ended failed (one alert per round). */
 export async function publishFailed(row: Pick<PublishTask, 'id' | 'attemptNo' | 'platform' | 'accountId' | 'contentId' | 'errorCode'>): Promise<void> {
   const acc = await accountOf(row.accountId).catch(() => undefined);

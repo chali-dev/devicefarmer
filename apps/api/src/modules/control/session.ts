@@ -40,6 +40,14 @@ const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redr
 
 const MAX_BUFFERED = 2 * 1024 * 1024; // drop frames for slow clients instead of queueing
 
+/** Authenticated remote-control sessions per device in this process (the tracked-account collector waits while > 0). */
+const openSessions = new Map<string, number>();
+export const controlSessionCount = (instanceId: string) => openSessions.get(instanceId) ?? 0;
+function countSession(instanceId: string, delta: 1 | -1) {
+  const n = controlSessionCount(instanceId) + delta;
+  if (n > 0) openSessions.set(instanceId, n); else openSessions.delete(instanceId);
+}
+
 function screenUrl(url: string): string {
   if (!config.STF_SCREEN_HOST) return url;
   const u = new URL(url);
@@ -106,6 +114,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           adbPort = inst.adbPort;
           external = !!inst.sourceId;
           authed = true;
+          countSession(instanceId, 1);
           clearTimeout(authTimer);
           req.log.info({ instanceId, user: user.username }, 'control session opened');
 
@@ -220,6 +229,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
 
     client.on('close', () => {
       clearTimeout(authTimer);
+      if (authed) countSession(instanceId, -1);
       upstream?.close();
       secureStream?.destroy();
       leaveScrcpy();

@@ -7,6 +7,7 @@ import { migrateTelegramSettings } from './alert-channel-migration.js';
 import { migratePersonaTexts } from './persona-data-migration.js';
 import { migrateContentCategoryTexts } from './content-category-data-migration.js';
 import { migrateSocialGroups } from './social-group-data-migration.js';
+import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
 
 // Data migration around the schema migrations (see proxy-data-migration.ts); both steps are idempotent.
 const stashed = await stashInlineProxies(sqlClient);
@@ -19,5 +20,6 @@ await migrateTelegramSettings(sqlClient);
 await migratePersonaTexts(sqlClient);
 await migrateContentCategoryTexts(sqlClient);
 await migrateSocialGroups(sqlClient);
+await migrateTrackedIgSchedule(sqlClient);
 console.log('migrations applied');
 await sqlClient.end();

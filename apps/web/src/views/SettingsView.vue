@@ -12,6 +12,7 @@ import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vu
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import SystemInfo from '../components/settings/SystemInfo.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
+import TrackedCollectorSettings from '../components/settings/TrackedCollectorSettings.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import { usePlatformsStore } from '../stores/platforms'
 
@@ -58,7 +59,11 @@ const envGroups = computed(() => {
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
         <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
         <a-tab-pane key="platforms" :tab="t('settings.tabs.platforms')"><PlatformSettings /></a-tab-pane>
-        <a-tab-pane v-if="platforms.scope.features.youtubeKey" key="tracked" :tab="t('settings.tabs.tracked')"><YoutubeKeySettings /></a-tab-pane>
+        <a-tab-pane v-if="platforms.scope.features.youtubeKey || platforms.scope.features.trackedCollector" key="tracked" :tab="t('settings.tabs.tracked')">
+          <TrackedCollectorSettings v-if="platforms.scope.features.trackedCollector" />
+          <a-divider v-if="platforms.scope.features.youtubeKey && platforms.scope.features.trackedCollector" />
+          <YoutubeKeySettings v-if="platforms.scope.features.youtubeKey" />
+        </a-tab-pane>
         <a-tab-pane key="social" :tab="t('settings.tabs.social')"><SocialLimitsSettings /></a-tab-pane>
         <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
           <div class="settings-pane">

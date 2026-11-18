@@ -4,10 +4,13 @@ import type { TrackedAccount } from '../../db/schema.js';
 
 /**
  * Platform registry for tracked accounts (追踪账号). Adding a platform = one entry here
- * (URL/handle normalisation + optional official-API data source).
+ * (URL/handle normalisation + optional data source).
  *
- * Compliance: a data source must be an official API used with credentials the owner configured.
- * No scraping of public pages. Platforms without a source are "manual only".
+ * Data sources: an official API used with credentials the owner configured (`kind: 'api'`, YouTube), or —
+ * by the owner's decision of 2026-11-18, Instagram only — reading the profile header in the platform's app
+ * on the admin-configured collector device (`kind: 'device'`, instagram-device.ts: navigation + screen reads,
+ * paced, stops on any challenge). No other scraping (no web pages, no other platforms). Manual entry was
+ * removed; a platform without a source has no data mode (`manual_only` = no source, legacy rows only).
  */
 
 export interface ParsedProfile {
@@ -31,6 +34,18 @@ export interface ProfileData {
   views: number | null;
   /** Source-specific values a later call of the same refresh needs (e.g. the YouTube uploads playlist). */
   meta?: Record<string, string>;
+  /** Metrics the source only knows approximately (the app abbreviated them). */
+  approx?: Metric[];
+  /** Verified badge, when the source shows it. */
+  verified?: boolean | null;
+  /** Private profile (counters may still be visible). */
+  private?: boolean;
+}
+
+/** What a refresh passes to its source (task log, cancel signal). */
+export interface SourceContext {
+  log?: (level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>) => Promise<void>;
+  signal?: AbortSignal;
 }
 
 export interface PostData {
@@ -45,14 +60,16 @@ export interface PostData {
 
 export type Metric = 'followers' | 'following' | 'posts' | 'views';
 
-/** Official-API data source of one platform. */
+/** Data source of one platform: an official API, or the app on the collector device. */
 export interface TrackedSource {
+  /** Snapshot source written by a refresh. */
+  kind: 'api' | 'device';
   capabilities: { profile: boolean; recentPosts: boolean; metrics: Metric[] };
-  /** Whether the credentials it needs are configured (e.g. the YouTube API key). */
+  /** Whether what it needs is configured (the YouTube API key, the collector device). */
   isConfigured(): Promise<boolean>;
-  /** Throws the coded "not configured" error (e.g. tracked.youtube_no_api_key). */
+  /** Throws the coded "can't run" error (tracked.youtube_no_api_key, tracked.collector_unset / collector_halted). */
   requireConfigured(): Promise<void>;
-  fetchProfile(account: Pick<TrackedAccount, 'handle' | 'externalId'>): Promise<ProfileData>;
+  fetchProfile(account: Pick<TrackedAccount, 'handle' | 'externalId'>, ctx?: SourceContext): Promise<ProfileData>;
   /** `profile` is the result of fetchProfile in the same refresh (sources may reuse what it found). */
   fetchRecentPosts(account: Pick<TrackedAccount, 'handle' | 'externalId'>, profile: ProfileData, limit: number): Promise<PostData[]>;
 }
@@ -61,7 +78,7 @@ export interface PlatformDef {
   id: string;
   label: string;
   hosts: string[];
-  /** Metrics that make sense for manual entry on this platform. */
+  /** Metrics shown for this platform. */
   metrics: Metric[];
   /** Path of a profile URL (already decoded, without query/hash) → identity, or null if it is not a profile. */
   fromPath(path: string): Omit<ParsedProfile, 'platform' | 'profileUrl'> | null;
@@ -132,7 +149,7 @@ export function platformDef(id: string): PlatformDef {
   return p;
 }
 
-/** Registers the official-API source of a platform (keeps the YouTube client out of this module). */
+/** Registers the data source of a platform (keeps the clients out of this module). */
 export function registerSource(id: string, source: TrackedSource): void {
   platformDef(id).source = source;
 }
@@ -178,6 +195,6 @@ function parse(input: string, platform?: string): ParsedProfile {
 export async function platformInfo() {
   return Promise.all(PLATFORMS.filter((p) => isPlatformEnabled(p.id)).map(async (p) => ({
     id: p.id, label: p.label, metrics: p.metrics,
-    api: p.source ? { ...p.source.capabilities, configured: await p.source.isConfigured() } : null,
+    api: p.source ? { ...p.source.capabilities, kind: p.source.kind, configured: await p.source.isConfigured() } : null,
   })));
 }

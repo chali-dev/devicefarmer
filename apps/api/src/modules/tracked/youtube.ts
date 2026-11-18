@@ -78,6 +78,7 @@ interface Channel {
 }
 
 export const youtubeSource: TrackedSource = {
+  kind: 'api',
   capabilities: { profile: true, recentPosts: true, metrics: ['followers', 'posts', 'views'] },
   isConfigured: async () => Boolean((await load()).apiKeyEnc),
   requireConfigured: async () => { await apiKey(); },

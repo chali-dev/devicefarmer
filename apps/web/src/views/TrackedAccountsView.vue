@@ -20,7 +20,7 @@ import StatusTag from '../components/common/StatusTag.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 
-/** 追踪账号: external public accounts the user observes (official API or manual data only). */
+/** 追踪账号: external public accounts the user observes (official API, or the collector phone for Instagram). */
 const { t } = useI18n()
 const URL_HINT = 'https://'
 const ADD_HINT = 'https://www.instagram.com/handle/'
@@ -126,10 +126,15 @@ async function toggleFavorite(a: TrackedAccount) {
   try { replace((await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${a.id}`, { favorite: !a.favorite })).account) } catch (e) { message.error(errorText(e)) }
 }
 /**
- * Refresh / 定时采集 exist only for platforms with an official API source (YouTube). Manual-only platforms
- * (Instagram, TikTok) get no refresh action and no schedule controls: their numbers are entered by hand.
+ * Refresh / 定时采集 exist for platforms with a data source: YouTube (official API) and Instagram (collector
+ * phone). Platforms without one (TikTok) get no refresh action and no schedule controls (manual entry was removed).
  */
 const canCollect = (a: TrackedAccount) => a.dataMode !== 'manual_only'
+const unconfigured = (a: TrackedAccount) => a.dataMode.endsWith('_unconfigured')
+const refreshTip = (a: TrackedAccount) => (a.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint')
+  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : undefined)
+const approxPrefix = (a: TrackedAccount) => (a.latest?.approx?.includes('followers') ? `${t('tracked.approx')} ` : '')
+const hasDeviceSource = computed(() => platforms.value.some((p) => p.api?.kind === 'device'))
 const collectable = computed(() => items.value.filter(canCollect))
 const selectedCollectable = computed(() => collectable.value.filter((a) => selectedKeys.value.includes(a.id)).length)
 async function refreshOne(a: TrackedAccount) {
@@ -241,6 +246,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
   <PageContainer :title="t('tracked.title')">
     <template #extra>
       <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
+      <a-button v-if="auth.isAdmin && hasDeviceSource" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.collector.title') }}</a-button>
       <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('tracked.add') }}</a-button>
     </template>
@@ -299,8 +305,8 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
             <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
           </template>
           <template v-else-if="column.key === 'followers'">
-            <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString(dateLocale()) : undefined">
-              <span class="num">{{ compactNumber(record.followers) }}</span>
+            <a-tooltip :title="record.followers !== null ? approxPrefix(record as TrackedAccount) + record.followers.toLocaleString(dateLocale()) + (approxPrefix(record as TrackedAccount) ? ` · ${t('tracked.approxHint')}` : '') : undefined">
+              <span class="num">{{ approxPrefix(record as TrackedAccount) }}{{ compactNumber(record.followers) }}</span>
             </a-tooltip>
             <div v-if="record.followersDelta !== null" :class="['delta small', record.followersDelta >= 0 ? 'up' : 'down']">
               {{ record.followersDelta >= 0 ? '+' : '' }}{{ compactNumber(record.followersDelta) }}
@@ -330,8 +336,8 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button size="small" type="link" @click="openDetail(record as TrackedAccount)">{{ t('common.view') }}</a-button>
-              <a-tooltip v-if="canCollect(record as TrackedAccount)" :title="record.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint') : record.status === 'paused' ? t('errors.tracked.paused') : undefined">
-                <a-button size="small" type="link" :disabled="record.status === 'paused' || record.dataMode === 'api_unconfigured'" :loading="busy(record as TrackedAccount)"
+              <a-tooltip v-if="canCollect(record as TrackedAccount)" :title="refreshTip(record as TrackedAccount)">
+                <a-button size="small" type="link" :disabled="record.status === 'paused' || unconfigured(record as TrackedAccount)" :loading="busy(record as TrackedAccount)"
                   @click="refreshOne(record as TrackedAccount)">{{ t('common.refresh') }}</a-button>
               </a-tooltip>
               <a-dropdown>

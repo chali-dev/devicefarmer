@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
+import { upsertDay } from '../src/modules/analytics/analytics.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -119,9 +120,10 @@ try {
   const publishIds = [dA.body.created[0].id, ptB, ptX];
 
   const today = new Date().toISOString().slice(0, 10);
-  r = await http('POST', `/api/analytics/accounts/${a.account}/stats`, A, { followers: 100, posts: 3 });
-  const rb = await http('POST', `/api/analytics/accounts/${b.account}/stats`, B, { followers: 777, posts: 9 });
-  check('setup: manual analytics stats for A and B', r.status === 201 && rb.status === 201, r.text + rb.text);
+  // Manual stats entry was removed: the rows are seeded through the real upsert.
+  const sa = await upsertDay(db, a.account, today, { followers: 100, posts: 3 }, 'manual');
+  const sb = await upsertDay(db, b.account, today, { followers: 777, posts: 9 }, 'manual');
+  check('setup: analytics stats rows for A and B (seeded)', !!sa.id && !!sb.id);
 
   const cmA = await http('POST', '/api/comments', A, { accountId: a.account, text: `ava comment ${tag}`, authorName: 'Viewer A', externalPostId: 'post-a' });
   const cmB = await http('POST', '/api/comments', B, { accountId: b.account, text: `avb comment ${tag}`, authorName: 'Viewer B', externalPostId: `avbpost${tag}` });
@@ -208,8 +210,6 @@ try {
   await clean('/api/analytics/summary?ownerId=<B>', `/api/analytics/summary?days=7&ownerId=${uB}`);
   check('A: analytics summary has no 777 followers (B\'s)', !r.text.includes('777'));
   await clean('/api/analytics/accounts/<B>', `/api/analytics/accounts/${b.account}`, 404);
-  await deny('POST stats on B\'s account', 'POST', `/api/analytics/accounts/${b.account}/stats`, { followers: 1 });
-  await deny('DELETE B\'s stats day', 'DELETE', `/api/analytics/accounts/${b.account}/stats/${today}`);
   await deny('refresh B\'s analytics', 'POST', `/api/analytics/accounts/${b.account}/refresh`);
 
   // platform connections

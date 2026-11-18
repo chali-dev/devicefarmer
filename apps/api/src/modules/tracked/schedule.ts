@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
 import { and, eq, isNotNull, lte } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { createTask } from '../tasks/core.js';
 import { platformDef } from './platforms.js';
+import { firstSlot, HOUR_MS as HOUR } from './slots.js';
 import { display, pendingRefreshes, REF_TYPE, refreshRefusal } from './tracked.js';
 
 /**
@@ -12,23 +12,15 @@ import { display, pendingRefreshes, REF_TYPE, refreshRefusal } from './tracked.j
  * (a conditional update, so concurrent ticks claim a slot once) and creates a `tracked-refresh` task with
  * `runAt` = the slot and idempotency key `scheduled:<account>:<slot>` (at most one task per slot, ever).
  * Slots carry a per-account minute offset, so runs are spread over the hour. Accounts refused exactly like
- * a manual refresh (paused, refresh in progress, API not configured) and manual-only platforms are skipped
- * for that slot with a code in `schedule_skip_code`. No catch-up: missed slots are not replayed.
+ * a manual refresh (paused, refresh in progress, API not configured, collector device unset / halted) and
+ * platforms without a data source are skipped for that slot with a code in `schedule_skip_code` (no task, no
+ * alert). No catch-up: missed slots are not replayed. Instagram accounts are read on the collector device:
+ * their scheduled tasks go through the same device pace (collector.ts: serial, minimum interval, hourly cap),
+ * which defers rather than drops. New Instagram accounts get a 24 h interval by default.
  */
 export const SCHEDULE_INTERVALS = [1, 2, 3, 6, 12, 24, 48, 72, 168];
-const HOUR = 3600_000;
 const ta = schema.trackedAccounts;
-
-/** Stable 0–59 minute offset per account (spreads the API calls). */
-const offsetMinutes = (id: string) => createHash('sha256').update(id).digest().readUInt16BE(0) % 60;
-
-/** First slot after enabling: within the next hour, at the account's minute offset. */
-export function firstSlot(id: string, now = new Date()): Date {
-  const hourStart = Math.floor(now.getTime() / HOUR) * HOUR;
-  let t = hourStart + offsetMinutes(id) * 60_000;
-  if (t <= now.getTime()) t += HOUR;
-  return new Date(t);
-}
+export { firstSlot };
 
 /** Next slot strictly after `now`, keeping the slot's phase. */
 function advance(slot: Date, hours: number, now: Date): Date {

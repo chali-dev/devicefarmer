@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { dateLocale } from '../../i18n'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import {
@@ -14,12 +13,11 @@ import StatusTag from '../common/StatusTag.vue'
 import PlatformTag from '../social/PlatformTag.vue'
 import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
-/** Detail of one tracked account: follower history chart + table, public posts, manual entry, refresh. */
+/** Detail of one tracked account: follower history chart + table, public posts, refresh (manual entry was removed). */
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ account: TrackedAccount | null; platforms: TrackedPlatform[] }>()
 const emit = defineEmits<{ changed: [TrackedAccount]; edit: [TrackedAccount]; refresh: [TrackedAccount] }>()
 const { t } = useI18n()
-const URL_HINT = 'https://'
 
 const acc = computed(() => props.account)
 const platform = computed(() => props.platforms.find((p) => p.id === acc.value?.platform) ?? null)
@@ -62,6 +60,9 @@ const metric = ref<TrackedMetric>('followers')
 const metricText = (m: TrackedMetric) => t(`tracked.metrics.${m}`)
 const series = computed(() => snapshots.value.filter((s) => s[metric.value] !== null).map((s) => ({ t: new Date(s.capturedAt).getTime(), v: s[metric.value]! })))
 const fmtFull = (n: number | null) => (n === null ? '—' : n.toLocaleString(dateLocale()))
+/** Metrics the app abbreviated (e.g. "3.2万") are approximate: shown with 约 / ≈ in front. */
+const isApprox = (approx: string[] | null | undefined, m: string) => !!approx?.includes(m)
+const approxText = (approx: string[] | null | undefined, m: string) => (isApprox(approx, m) ? `${t('tracked.approx')} ` : '')
 
 const snapColumns = computed(() => [
   { title: t('tracked.capturedAt'), key: 'capturedAt', width: 170 },
@@ -71,31 +72,6 @@ const snapColumns = computed(() => [
 ])
 const snapRows = computed(() => [...snapshots.value].reverse())
 
-// ---- manual snapshot
-const snapOpen = ref(false)
-const snapSaving = ref(false)
-const snapForm = reactive({ capturedAt: null as Dayjs | null, followers: null as number | null, following: null as number | null, posts: null as number | null, views: null as number | null })
-function openSnap() {
-  const l = acc.value?.latest
-  Object.assign(snapForm, { capturedAt: null, followers: l?.followers ?? null, following: l?.following ?? null, posts: l?.posts ?? null, views: l?.views ?? null })
-  snapOpen.value = true
-}
-async function saveSnap() {
-  if (!acc.value) return
-  const body: Record<string, unknown> = {}
-  for (const m of metrics.value) if (snapForm[m] !== null && snapForm[m] !== undefined) body[m] = snapForm[m]
-  if (!Object.keys(body).length) { message.warning(t('errors.tracked.snapshot_empty')); return }
-  if (snapForm.capturedAt) body.capturedAt = snapForm.capturedAt.toISOString()
-  snapSaving.value = true
-  try {
-    await api('POST', `/api/tracked-accounts/${acc.value.id}/snapshots`, body)
-    snapOpen.value = false
-    message.success(t('common.saved'))
-    await loadSnapshots()
-    await reloadAccount()
-  } catch (e) { message.error(errorText(e)) }
-  finally { snapSaving.value = false }
-}
 function removeSnap(s: TrackedSnapshot) {
   confirmDanger({
     title: t('tracked.confirmDeleteSnapshot'),
@@ -117,32 +93,6 @@ const postColumns = computed(() => [
   { title: t('tracked.postMetrics'), key: 'metrics', width: 170 },
   { title: t('common.action'), key: 'ops', width: 70 },
 ])
-const postOpen = ref(false)
-const postSaving = ref(false)
-const postForm = reactive({ url: '', externalId: '', title: '', publishedAt: null as Dayjs | null, views: null as number | null, likes: null as number | null, comments: null as number | null })
-function openPost() {
-  Object.assign(postForm, { url: '', externalId: '', title: '', publishedAt: null, views: null, likes: null, comments: null })
-  postOpen.value = true
-}
-async function savePost() {
-  if (!acc.value) return
-  if (!postForm.url.trim() && !postForm.externalId.trim()) { message.warning(t('errors.tracked.post_id_required')); return }
-  const body: Record<string, unknown> = {}
-  if (postForm.url.trim()) body.url = postForm.url.trim()
-  if (postForm.externalId.trim()) body.externalId = postForm.externalId.trim()
-  if (postForm.title.trim()) body.title = postForm.title.trim()
-  if (postForm.publishedAt) body.publishedAt = postForm.publishedAt.toISOString()
-  for (const k of ['views', 'likes', 'comments'] as const) if (postForm[k] !== null && postForm[k] !== undefined) body[k] = postForm[k]
-  postSaving.value = true
-  try {
-    const r = await api<{ created: boolean }>('POST', `/api/tracked-accounts/${acc.value.id}/posts`, body)
-    postOpen.value = false
-    message.success(r.created ? t('tracked.postAdded') : t('tracked.postUpdated'))
-    await loadPosts()
-    await reloadAccount()
-  } catch (e) { message.error(errorText(e)) }
-  finally { postSaving.value = false }
-}
 function removePost(p: TrackedPost) {
   confirmDanger({
     title: t('tracked.confirmDeletePost'),
@@ -160,7 +110,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
     <template v-if="acc" #extra>
       <a-space>
         <a-button @click="emit('edit', acc)">{{ t('common.edit') }}</a-button>
-        <a-button v-if="acc.dataMode !== 'manual_only'" type="primary" :disabled="acc.status === 'paused' || acc.dataMode === 'api_unconfigured'"
+        <a-button v-if="acc.dataMode !== 'manual_only'" type="primary" :disabled="acc.status === 'paused' || acc.dataMode.endsWith('_unconfigured')"
           :loading="['pending', 'scheduled', 'running'].includes(acc.lastRefresh?.status ?? '')" @click="emit('refresh', acc)">
           {{ t('tracked.refreshNow') }}
         </a-button>
@@ -175,6 +125,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <PlatformTag :platform="acc.platform" :name="platform?.label" />
             <a :href="acc.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(acc) }}</a>
             <StatusTag kind="tracked" :status="acc.status" />
+            <a-tag v-if="acc.verified" color="blue">{{ t('tracked.verified') }}</a-tag>
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
           </a-space>
           <div class="muted small">
@@ -189,10 +140,11 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
       <a-alert v-if="acc.status === 'error' && acc.lastError" type="error" show-icon class="note"
         :message="codeText(acc.lastErrorCode, undefined, acc.lastError)" />
       <a-alert v-if="acc.dataMode === 'api_unconfigured'" type="warning" show-icon class="note" :message="t('tracked.apiUnconfiguredHint')" />
+      <a-alert v-if="acc.dataMode === 'device_unconfigured'" type="warning" show-icon class="note" :message="t('tracked.deviceUnconfiguredHint')" />
 
       <a-row :gutter="12" class="stats">
         <a-col v-for="m in metrics" :key="m" :xs="12" :sm="6">
-          <a-statistic :title="metricText(m)" :value="acc.latest?.[m] ?? undefined" :formatter="({ value }: any) => fmtFull(value ?? null)" />
+          <a-statistic :title="metricText(m)" :value="acc.latest?.[m] ?? undefined" :formatter="({ value }: any) => approxText(acc?.latest?.approx, m) + fmtFull(value ?? null)" />
           <div v-if="m === 'followers' && acc.followersDelta !== null" :class="['delta', acc.followersDelta >= 0 ? 'up' : 'down']">
             {{ acc.followersDelta >= 0 ? '+' : '' }}{{ acc.followersDelta.toLocaleString(dateLocale()) }}
           </div>
@@ -205,7 +157,6 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <a-radio-group v-model:value="metric" size="small" button-style="solid">
               <a-radio-button v-for="m in metrics" :key="m" :value="m">{{ metricText(m) }}</a-radio-button>
             </a-radio-group>
-            <a-button size="small" @click="openSnap">{{ t('tracked.addSnapshot') }}</a-button>
           </a-space>
           <a-spin :spinning="loading">
             <LineChart v-if="series.length" :points="series" :format="(v: number) => compactNumber(v)" :aria-label="metricText(metric)" />
@@ -219,13 +170,15 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
               <template v-else-if="column.key === 'ops'">
                 <a-button size="small" type="link" danger @click="removeSnap(record as TrackedSnapshot)">{{ t('common.delete') }}</a-button>
               </template>
-              <template v-else>{{ fmtFull(record[column.key as TrackedMetric]) }}</template>
+              <template v-else>
+                <a-tooltip v-if="isApprox(record.approx, column.key as string)" :title="t('tracked.approxHint')">{{ t('tracked.approx') }} {{ fmtFull(record[column.key as TrackedMetric]) }}</a-tooltip>
+                <template v-else>{{ fmtFull(record[column.key as TrackedMetric]) }}</template>
+              </template>
             </template>
           </a-table>
         </a-tab-pane>
 
         <a-tab-pane key="posts" :tab="`${t('tracked.posts')} (${postsTotal})`">
-          <a-button size="small" style="margin-bottom: 8px" @click="openPost">{{ t('tracked.addPost') }}</a-button>
           <a-table :data-source="posts" :columns="postColumns" row-key="id" size="small" :loading="loading"
             :pagination="pagination({ current: postsPage, pageSize: 20, total: postsTotal, showSizeChanger: false, hideOnSinglePage: true, onChange: (p: number) => { postsPage = p; loadPosts() } })">
             <template #bodyCell="{ column, record }">
@@ -249,32 +202,6 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
     </template>
   </a-drawer>
 
-  <a-modal v-model:open="snapOpen" :title="t('tracked.addSnapshot')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="snapSaving" @ok="saveSnap">
-    <a-form layout="vertical" :model="snapForm">
-      <a-form-item :label="t('tracked.capturedAt')">
-        <a-date-picker v-model:value="snapForm.capturedAt" show-time :placeholder="t('tracked.capturedAtHint')" style="width: 100%" />
-      </a-form-item>
-      <a-row :gutter="12">
-        <a-col v-for="m in metrics" :key="m" :xs="24" :sm="12">
-          <a-form-item :label="metricText(m)"><a-input-number v-model:value="snapForm[m]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
-        </a-col>
-      </a-row>
-    </a-form>
-  </a-modal>
-
-  <a-modal v-model:open="postOpen" :title="t('tracked.addPost')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="postSaving" @ok="savePost">
-    <a-form layout="vertical" :model="postForm">
-      <a-form-item :label="t('tracked.postUrl')"><a-input v-model:value="postForm.url" :placeholder="URL_HINT" :maxlength="1000" /></a-form-item>
-      <a-form-item :label="t('tracked.postId')"><a-input v-model:value="postForm.externalId" :maxlength="200" :placeholder="t('tracked.postIdHint')" /></a-form-item>
-      <a-form-item :label="t('tracked.postTitle')"><a-textarea v-model:value="postForm.title" :maxlength="500" :auto-size="{ minRows: 1, maxRows: 4 }" /></a-form-item>
-      <a-form-item :label="t('tracked.publishedAt')"><a-date-picker v-model:value="postForm.publishedAt" show-time style="width: 100%" /></a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.views')"><a-input-number v-model:value="postForm.views" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.likes')"><a-input-number v-model:value="postForm.likes" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
-        <a-col :xs="24" :sm="8"><a-form-item :label="t('tracked.comments')"><a-input-number v-model:value="postForm.comments" :min="0" :precision="0" style="width: 100%" /></a-form-item></a-col>
-      </a-row>
-    </a-form>
-  </a-modal>
 </template>
 
 <style scoped>

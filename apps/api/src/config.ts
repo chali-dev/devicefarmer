@@ -122,6 +122,15 @@ const Env = z.object({
   /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
   YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
   /**
+   * Tracked accounts read on the collector device (Instagram app): pace per device. At least this many
+   * seconds between two profile visits, at most this many visits per rolling hour; refreshes over the
+   * limit are deferred (a new scheduled task), never dropped.
+   */
+  TRACKED_DEVICE_MIN_INTERVAL_SEC: z.coerce.number().int().min(1).max(3600).default(30),
+  TRACKED_DEVICE_MAX_PER_HOUR: z.coerce.number().int().min(1).max(600).default(60),
+  /** Someone is viewing/controlling the collector device: the refresh is deferred by this many seconds. */
+  TRACKED_DEVICE_BUSY_RETRY_SEC: z.coerce.number().int().min(5).max(86_400).default(300),
+  /**
    * Official platform integrations (modules/platforms). OAuth redirect URIs are
    * `${PUBLIC_BASE_URL}/api/platforms/<platform>/callback` (default: WEB_ORIGIN, whose /api is the API).
    * Meta and TikTok only accept https redirect URIs, Google also allows http://localhost.

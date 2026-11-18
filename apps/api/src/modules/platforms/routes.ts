@@ -52,7 +52,7 @@ export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
         return { id: a.id, name: a.name, configured: s.configured, capabilities: a.capabilities(s.options), scopes: a.oauth.scopes(s.options), pkce: a.oauth.pkce };
       }),
       enabled: enabledPlatforms().map((p) => ({ id: p.id, name: p.name })),
-      features: { trending: trendingAvailable(), youtubeKey: isPlatformEnabled('youtube') },
+      features: { trending: trendingAvailable(), youtubeKey: isPlatformEnabled('youtube'), trackedCollector: isPlatformEnabled('instagram') },
     };
   });
 

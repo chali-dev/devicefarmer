@@ -18,6 +18,12 @@ export const ALERT_KINDS = {
   /** Any other task-centre task failed after its last attempt (off by default). Params: type, label[, code]. */
   'task.failed': { severity: 'warning', refType: 'task', recoverable: false, defaultOn: false, channel: true },
   /**
+   * The tracked-account collector device (追踪账号采集设备) hit a challenge / verification / rate-limit screen:
+   * collection on it stopped until an admin resumes it. Recovered by the resume or the next successful read.
+   * Params: name (device), platform[, code].
+   */
+  'collector.blocked': { severity: 'error', refType: 'instance', recoverable: true, defaultOn: true, channel: true },
+  /**
    * An alert channel failed to deliver (final failure of its notify-<type> task); recovered by its next
    * successful delivery or test. In-app only and to admins only, so a broken channel never alerts itself.
    * Params: name[, code].
