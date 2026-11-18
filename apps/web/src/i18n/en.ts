@@ -2672,7 +2672,7 @@ const en: Messages = {
     moreComments: 'Load more comments',
     reply: 'Reply',
     comment: 'Comment',
-    replyTitle: 'Reply to @{author}',
+    replyTitle: "Reply to {'@'}{author}",
     commentTitle: 'Comment on the post',
     text: 'Text',
     textHint: 'Only text you wrote yourself; nothing is generated or sent in bulk.',

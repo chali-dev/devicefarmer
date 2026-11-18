@@ -2675,7 +2675,7 @@ const zhCN = {
     moreComments: '加载更多评论',
     reply: '回复',
     comment: '评论',
-    replyTitle: '回复 @{author}',
+    replyTitle: "回复 {'@'}{author}",
     commentTitle: '在帖子下评论',
     text: '内容',
     textHint: '只能发你自己写的文字；不会自动生成，也不会群发。',
