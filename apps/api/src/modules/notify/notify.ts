@@ -138,6 +138,25 @@ export async function markAllRead(userId: string): Promise<number> {
   return rows.length;
 }
 
+/**
+ * Deletes the given notifications of `userId`, all or nothing: returns null (and deletes nothing) when any id is
+ * not one of the user's notifications. Rows are locked first, so a concurrent delete can't make it partial.
+ */
+export async function deleteOwn(userId: string, ids: string[]): Promise<number | null> {
+  const unique = [...new Set(ids)];
+  return db.transaction(async (tx) => {
+    const own = await tx.select({ id: N.id }).from(N).where(and(eq(N.userId, userId), inArray(N.id, unique))).for('update');
+    if (own.length !== unique.length) return null;
+    const rows = await tx.delete(N).where(and(eq(N.userId, userId), inArray(N.id, unique))).returning({ id: N.id });
+    return rows.length;
+  });
+}
+
+export async function deleteAllRead(userId: string): Promise<number> {
+  const rows = await db.delete(N).where(and(eq(N.userId, userId), sql`${N.readAt} is not null`)).returning({ id: N.id });
+  return rows.length;
+}
+
 // ---------------------------------------------------------------- retention
 
 export const NOTIFY_CLEANUP_TASK = 'notifications-cleanup';

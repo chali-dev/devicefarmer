@@ -38,11 +38,13 @@ export const MENU_GROUPS: MenuGroup[] = [
 ]
 
 export const MENU_KEYS = ['dashboard', ...MENU_GROUPS.flatMap((g) => g.items.map((it) => it.key))]
+/** Pages outside the sidebar (opened from the header, e.g. the user menu's 通知中心): own title, no group. */
+const PAGE_KEYS = [...MENU_KEYS, 'notifications']
 
 /** Menu position of the current route: `/instances/abc` → group devices, item instances (null = dashboard / unknown). */
 export function useMenuLocation() {
   const route = useRoute()
-  const itemKey = computed(() => MENU_KEYS.find((k) => route.path === `/${k}` || route.path.startsWith(`/${k}/`)) ?? 'dashboard')
+  const itemKey = computed(() => PAGE_KEYS.find((k) => route.path === `/${k}` || route.path.startsWith(`/${k}/`)) ?? 'dashboard')
   const group = computed(() => MENU_GROUPS.find((g) => g.items.some((it) => it.key === itemKey.value)) ?? null)
   /** Default page title: the menu label of the current item. */
   const title = computed(() => t(`nav.${itemKey.value}`))

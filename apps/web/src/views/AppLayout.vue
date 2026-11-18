@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import {
-  CheckOutlined, CloudOutlined, DashboardOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined, WarningOutlined,
+  BellOutlined, CheckOutlined, CloudOutlined, DashboardOutlined, GlobalOutlined, LockOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined, WarningOutlined,
 } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
@@ -15,12 +15,14 @@ import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
+import { useNotificationsStore } from '../stores/notifications'
 import { MENU_GROUPS, useMenuLocation } from '../components/common/menu'
 import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
 const store = useInstancesStore()
 const platforms = usePlatformsStore()
+const notes = useNotificationsStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
@@ -62,7 +64,8 @@ const shownName = computed(() => auth.user?.displayName || auth.user?.username |
 const avatarText = computed(() => shownName.value.charAt(0).toUpperCase())
 
 function onMenu({ key }: { key: string | number }) {
-  if (key === 'profile') openProfile()
+  if (key === 'notifications') void router.push('/notifications')
+  else if (key === 'profile') openProfile()
   else if (key === 'password') openPassword()
   else if (key === 'logout') logout()
 }
@@ -203,6 +206,9 @@ async function savePassword() {
           </a>
           <template #overlay>
             <a-menu @click="onMenu">
+              <a-menu-item key="notifications">
+                <span class="menu-note"><span><BellOutlined /> {{ t('header.notifications') }}</span><a-badge :count="notes.unread" :overflow-count="99" size="small" /></span>
+              </a-menu-item>
               <a-menu-item key="profile"><UserOutlined /> {{ t('header.profile') }}</a-menu-item>
               <a-menu-item key="password"><LockOutlined /> {{ t('header.changePassword') }}</a-menu-item>
               <a-menu-divider />
@@ -275,6 +281,7 @@ async function savePassword() {
 .conn-lost { color: var(--cp-warning); font-size: 16px; }
 .avatar { background: var(--cp-primary); flex: none; }
 .who { font-size: 13px; }
+.menu-note { display: inline-flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 140px; }
 .content { padding: var(--cp-page-padding); min-width: 0; }
 @media (max-width: 640px) {
   .header { padding: 0 8px 0 4px; gap: 4px; }

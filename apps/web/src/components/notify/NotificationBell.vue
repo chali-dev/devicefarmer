@@ -8,32 +8,35 @@ import { api, errorText } from '../../api/client'
 import { alertDetail, alertLink, alertText } from '../../api/alerts'
 import type { AppNotification } from '../../api/types'
 import { dateLocale } from '../../i18n'
-import { useInstancesStore } from '../../stores/instances'
+import { useNotificationsStore } from '../../stores/notifications'
 
-/** Header bell (告警通知): unread count, live via /api/events, and a drawer with the latest alerts. */
+/**
+ * Header bell (告警通知): unread count (shared store, live via /api/events) and a drawer with only the latest
+ * 5 alerts (the latest 5 unread ones with 只看未读), no paging; 查看更多 opens the 通知中心 page (/notifications) with the same filter.
+ */
+const LATEST = 5
 const { t } = useI18n()
 const router = useRouter()
-const store = useInstancesStore()
+const notes = useNotificationsStore()
 const open = ref(false)
 const loading = ref(false)
 const onlyUnread = ref(false)
 const items = ref<AppNotification[]>([])
-const unread = ref(0)
+const unread = computed(() => notes.unread)
 
 async function load() {
   loading.value = true
   try {
-    const r = await api<{ notifications: AppNotification[]; unread: number }>('GET', `/api/notifications?limit=50${onlyUnread.value ? '&unread=1' : ''}`)
+    const r = await api<{ notifications: AppNotification[]; unread: number }>('GET', `/api/notifications?limit=${LATEST}${onlyUnread.value ? '&read=unread' : ''}`)
     items.value = r.notifications
-    unread.value = r.unread
+    notes.setUnread(r.unread)
   } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
 onMounted(load)
-const off = store.onNotification((ev) => {
-  if (items.value.some((x) => x.id === ev.notification.id)) return
-  items.value = [ev.notification, ...items.value].slice(0, 50)
-  unread.value++
+const off = notes.onCreated((n) => {
+  if (items.value.some((x) => x.id === n.id)) return
+  items.value = [n, ...items.value].slice(0, LATEST)
 })
 onBeforeUnmount(off)
 
@@ -44,7 +47,7 @@ async function markRead(n: AppNotification) {
   try {
     const r = await api<{ notification: AppNotification; unread: number }>('POST', `/api/notifications/${n.id}/read`)
     n.readAt = r.notification.readAt
-    unread.value = r.unread
+    notes.setUnread(r.unread)
   } catch (e) { message.error(errorText(e)) }
 }
 async function markAll() {
@@ -52,7 +55,7 @@ async function markAll() {
     await api('POST', '/api/notifications/read-all')
     const now = new Date().toISOString()
     items.value.forEach((n) => { n.readAt ??= now })
-    unread.value = 0
+    notes.setUnread(0)
   } catch (e) { message.error(errorText(e)) }
 }
 async function go(n: AppNotification) {
@@ -60,6 +63,7 @@ async function go(n: AppNotification) {
   const to = alertLink(n)
   if (to) { open.value = false; void router.push(to) }
 }
+function viewMore() { open.value = false; void router.push({ path: '/notifications', query: onlyUnread.value ? { read: 'unread' } : {} }) }
 const label = computed(() => (unread.value ? t('alerts.bellUnread', { n: unread.value }) : t('alerts.bell')))
 </script>
 
@@ -100,6 +104,9 @@ const label = computed(() => (unread.value ? t('alerts.bellUnread', { n: unread.
         </template>
       </a-list>
     </a-spin>
+    <template v-if="items.length" #footer>
+      <a-button type="link" block @click="viewMore">{{ t('alerts.viewMore') }}</a-button>
+    </template>
   </a-drawer>
 </template>
 

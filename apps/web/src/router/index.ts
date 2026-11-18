@@ -23,6 +23,7 @@ const router = createRouter({
         { path: 'comments', name: 'comments', component: () => import('../views/CommentsView.vue') },
         { path: 'scripts', name: 'scripts', component: () => import('../views/ScriptsView.vue') },
         { path: 'trending', name: 'trending', component: () => import('../views/TrendingView.vue') },
+        { path: 'notifications', name: 'notifications', component: () => import('../views/NotificationsView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
         { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue'), meta: { admin: true } },
         // Platform integrations (official APIs) were removed on 2026-11-18; old links land on Settings.
