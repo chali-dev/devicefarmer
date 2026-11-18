@@ -6,7 +6,10 @@ import { openSecret, sealSecret } from '../../lib/secret-box.js';
 /**
  * AI settings (设置 → AI, admin): settings key `ai`. The Anthropic API key is entered by an admin, stored sealed with
  * secret-box and write-only (the API only reports `keySet`, like the YouTube key); it is never put in task payloads,
- * logs or audit entries. Used only by 人设每日草稿 (drafts.ts).
+ * logs or audit entries. Used only by AI drafts (drafts.ts). There is no global on/off (removed 2026-11-18, owner:
+ * 「系统配置 AI KEY 模型；启用放在媒体号里」): only the key decides, drafts are switched on per social account
+ * (`social_accounts.ai_drafts_enabled`). A stored `enabled` of an older release is ignored (a stored false blocks
+ * nothing) and dropped on the next save; a PUT with it from an older page is accepted and ignores it (zod strips it).
  */
 const KEY = 'ai';
 
@@ -16,7 +19,7 @@ export type AiModel = (typeof AI_MODELS)[number];
 export const DEFAULT_AI_MODEL: AiModel = 'claude-opus-5-5';
 export const DEFAULT_AI_HOUR = 6;
 
-interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel; hour?: number; enabled?: boolean }
+interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel; hour?: number; /** LEGACY: ignored, dropped on save */ enabled?: boolean }
 
 /**
  * `workspaceId`: an Anthropic API key that isn't scoped to a workspace (personal / service account key created for "all
@@ -24,7 +27,7 @@ interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel; 
  * "This API key is not scoped to a workspace…" (seen on the owner's key, 2026-11-18). Not secret (an id like
  * wrkspc_01…, Console → Settings → Workspaces → ID column); null = key scoped to one workspace, no header.
  */
-export interface AiSettings { enabled: boolean; keySet: boolean; workspaceId: string | null; model: AiModel; hour: number; updatedAt: Date | null }
+export interface AiSettings { keySet: boolean; workspaceId: string | null; model: AiModel; hour: number; updatedAt: Date | null }
 
 export const AiSettingsInput = z.object({
   /** undefined keeps the stored key, null clears it. Format only (sk-ant-…); the key is not tested here. */
@@ -34,7 +37,7 @@ export const AiSettingsInput = z.object({
   model: z.enum(AI_MODELS).optional(),
   /** Daily generation hour, API host local time. */
   hour: z.number().int().min(0).max(23).optional(),
-  enabled: z.boolean().optional(),
+  // `enabled` (removed): not listed, so zod strips it from an older page's body.
 });
 export type AiSettingsInput = z.infer<typeof AiSettingsInput>;
 
@@ -44,7 +47,6 @@ async function load(): Promise<{ value: StoredAi; updatedAt: Date | null }> {
 }
 
 const shape = (v: StoredAi, updatedAt: Date | null): AiSettings => ({
-  enabled: v.enabled ?? true,
   keySet: Boolean(v.apiKeyEnc),
   workspaceId: v.workspaceId ?? null,
   model: v.model && (AI_MODELS as readonly string[]).includes(v.model) ? v.model : DEFAULT_AI_MODEL,
@@ -66,7 +68,7 @@ export async function saveAiSettings(input: AiSettingsInput): Promise<AiSettings
   else if (input.workspaceId !== undefined) next.workspaceId = input.workspaceId;
   if (input.model !== undefined) next.model = input.model;
   if (input.hour !== undefined) next.hour = input.hour;
-  if (input.enabled !== undefined) next.enabled = input.enabled;
+  delete next.enabled;
   await db.insert(schema.settings).values({ key: KEY, value: next })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
   return getAiSettings();

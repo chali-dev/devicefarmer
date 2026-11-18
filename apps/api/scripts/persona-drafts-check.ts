@@ -7,23 +7,26 @@
  *   words, Language zh-CN, the persona's oldest 5 post examples (in its own scope; not comment examples, not other
  *   users' templates).
  * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/hour/workspace validation;
+ *   no global on/off any more (removed 2026-11-18): GET never returns `enabled`, a stored `enabled: false` written into
+ *   the row is ignored (preview, daily schedule and manual runs all reach the real API → ai.key_invalid), a PUT with
+ *   `enabled` from an older page is accepted, ignored and drops the stored value;
  *   mapApiError turns the documented workspace errors into ai.workspace_required/_invalid/_not_found.
  * - 社交号 → AI 草稿 (GET/PUT /api/social/accounts/:id/ai-drafts): owner/admin, others 404; per day 1..10; switching on
  *   needs a persona (ai.account_no_persona) and an enabled platform; list items carry aiDraftsEnabled/aiDraftsPerDay; audit.
  * - AI测试 preview (POST /api/personas/:id/drafts/preview {topic?}): a pure style test: RBAC (other user 404, public
- *   persona as user 403), no key → 400 ai.not_configured, switched off → 400 ai.disabled, topic > 200 chars → 400, topic
+ *   persona as user 403), no key → 400 ai.not_configured, topic > 200 chars → 400, topic
  *   with a banned word → 400 persona.banned_word (not counted), a REAL call with an invalid key → 502 ai.key_invalid
  *   with no content, rate limit PREVIEW_LIMIT per persona per 10 min (429 ai.rate_limited {seconds, limit}), the former
  *   save endpoint POST …/drafts/save is gone (404), audit persona.draft_preview with requested model / ok / error code /
  *   topic given (boolean) and no texts.
  * - The prompt with a topic names it ("Requested topic …"), without one it doesn't.
  * - 「AI生成草稿」 (POST /api/social/accounts/:id/ai-drafts/generate {count?, topic?}): owner/admin (others 404), no key
- *   ai.not_configured, switched off ai.disabled, no persona ai.account_no_persona, platform.disabled, count 1..10, topic
+ *   ai.not_configured, no persona ai.account_no_persona, platform.disabled, count 1..10, topic
  *   ≤ 200 + banned word persona.banned_word, 202 + an account-drafts task (payload trigger manual + count + topic,
  *   key account-drafts-manual:<id>:<uuid>, created by the caller) also when the daily switch is off, a second request
  *   within MANUAL_WINDOW_SEC → 429 ai.rate_limited {seconds}; the run reaches the REAL API with the invalid key → failed
  *   ai.key_invalid after 1 attempt; GET …/ai-drafts shows it as the last run (trigger manual); audit count + topic flag.
- * - Daily schedule per social account (`account-drafts`): not before the hour, nothing when switched off or without a
+ * - Daily schedule per social account (`account-drafts`): not before the hour, nothing without a
  *   key; one task per switched-on account with a persona per local day (count = its per day, owner = account owner),
  *   idempotent; skips disabled owners (ai.owner_disabled) and disabled platforms; switched-off accounts get none; the
  *   runs reach the real API with the invalid key and fail ai.key_invalid after 1 attempt (no key in payload/logs); the
@@ -154,9 +157,11 @@ try {
   // ================================================================ AI settings (admin, key write-only)
   r = await http('GET', '/api/settings/ai', A.token);
   check('users cannot read the AI settings (403)', r.status === 403);
-  await http('PUT', '/api/settings/ai', T, { apiKey: null, enabled: true, model: 'claude-opus-5-5', hour: 6, workspaceId: null });
+  const rOld = await http('PUT', '/api/settings/ai', T, { apiKey: null, enabled: true, model: 'claude-opus-5-5', hour: 6, workspaceId: null });
   r = await http('GET', '/api/settings/ai', T);
-  check('defaults: no key, model claude-opus-5-5, hour 6, on', r.status === 200 && r.body.ai.keySet === false && r.body.ai.model === 'claude-opus-5-5' && r.body.ai.hour === 6 && r.body.ai.enabled === true);
+  check('defaults: no key, model claude-opus-5-5, hour 6; no `enabled` returned (global switch removed); an older page\'s PUT with enabled → 200',
+    rOld.status === 200 && !('enabled' in rOld.body.ai) && r.status === 200 && r.body.ai.keySet === false && r.body.ai.model === 'claude-opus-5-5' && r.body.ai.hour === 6 && !('enabled' in r.body.ai),
+    JSON.stringify(r.body.ai));
   const r7 = await http('PUT', '/api/settings/ai', T, { hour: 24 });
   const r8 = await http('PUT', '/api/settings/ai', T, { apiKey: 'short' });
   const r9 = await http('PUT', '/api/settings/ai', A.token, { enabled: false });
@@ -223,7 +228,12 @@ try {
 
   // ================================================================ AI测试 preview with an invalid key (real calls)
   r = await http('PUT', '/api/settings/ai', T, { apiKey: INVALID_KEY });
+  // An older release's global switch, stored OFF directly in the row: it must be ignored from here on (every preview,
+  // daily schedule and manual run below reaches the real API with the invalid key).
+  await sqlClient`update settings set value = value || '{"enabled": false}'::jsonb where key = 'ai'`;
+  const storedOff = async () => ((await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value as any)?.enabled === false;
   const gs = await http('GET', '/api/settings/ai', T);
+  check('a stored enabled:false (older release) is not returned by GET', await storedOff() && gs.status === 200 && !('enabled' in gs.body.ai), JSON.stringify(gs.body.ai));
   const stored = JSON.stringify((await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value ?? {});
   check('key saved write-only: keySet, never echoed, sealed in the DB', r.body.ai.keySet === true && !r.text.includes(INVALID_KEY) && !gs.text.includes(INVALID_KEY) && !stored.includes(INVALID_KEY) && stored.includes('"apiKeyEnc":"v1:'));
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, B.token);
@@ -241,7 +251,7 @@ try {
   const tStart = Date.now();
   r = await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token);
   const ms = Date.now() - tStart;
-  check('REAL Anthropic call with an invalid key: preview → 502 ai.key_invalid, synchronous', r.status === 502 && r.body.code === 'ai.key_invalid' && !r.text.includes(INVALID_KEY),
+  check('REAL Anthropic call with an invalid key (stored enabled:false ignored): preview → 502 ai.key_invalid, synchronous', r.status === 502 && r.body.code === 'ai.key_invalid' && !r.text.includes(INVALID_KEY),
     `${r.status} ${r.body?.code} ${ms} ms`);
   const statuses: number[] = [];
   for (let k = 2; k <= PREVIEW_LIMIT; k++) statuses.push((await http('POST', `/api/personas/${pA.id}/drafts/preview`, A.token)).status);
@@ -252,18 +262,13 @@ try {
   const rOther = await http('POST', `/api/personas/${pA2.id}/drafts/preview`, A.token, { topic: '咖啡豆保存' });
   check('rate limit is per persona (another persona, with a topic, still reaches the API)', rOther.status === 502 && rOther.body.code === 'ai.key_invalid', `${rOther.status}`);
   check('no content created by any preview', await contentCount() === before);
-  await http('PUT', '/api/settings/ai', T, { enabled: false });
   r = await http('POST', `/api/personas/${pP.id}/drafts/preview`, T);
-  check('preview while AI is switched off → 400 ai.disabled', r.status === 400 && r.body.code === 'ai.disabled');
-  r = await http('POST', `/api/social/accounts/${igA.id}/ai-drafts/generate`, A.token, {});
-  check('AI生成草稿 while AI is switched off → 400 ai.disabled', r.status === 400 && r.body.code === 'ai.disabled', `${r.status} ${r.body?.code}`);
-  sch = await scheduleAccountDrafts(localAt(23));
-  check('schedule while switched off: reason ai.disabled', sch.reason === 'ai.disabled' && sch.created === 0);
-  await http('PUT', '/api/settings/ai', T, { enabled: true });
+  check('preview as admin of the public persona with the stored enabled:false → reaches the API, 502 ai.key_invalid (no ai.disabled)', await storedOff() && r.status === 502 && r.body.code === 'ai.key_invalid', `${r.status} ${r.body?.code}`);
 
   // ================================================================ daily schedule per account (real calls, invalid key)
   sch = await scheduleAccountDrafts(localAt(3));
   check('before the configured hour (06:00): reason ai.not_due', sch.reason === 'ai.not_due' && sch.created === 0);
+  check('the stored enabled:false is still in the row for the schedule and the manual runs below', await storedOff());
   sch = await scheduleAccountDrafts(localAt(23));
   const mineAcc = [igA.id, igAen.id, igA2.id, igB.id, igC.id, ytA!.id];
   const accTasks = async () => db.select().from(schema.tasks).where(and(eq(schema.tasks.type, ACCOUNT_DRAFT_TASK), inArray(schema.tasks.refId, mineAcc), gte(schema.tasks.createdAt, t0)));
@@ -339,6 +344,17 @@ try {
     r = await http('GET', `/api/social/accounts/${igAen.id}/ai-drafts`, A.token);
     check('GET ai-drafts: the manual run is the last run (trigger manual, failed ai.key_invalid)', r.body.runs[0]?.id === mt!.id && r.body.runs[0].trigger === 'manual' && r.body.runs[0].errorCode === 'ai.key_invalid',
       JSON.stringify(r.body.runs?.[0]));
+    check('GET ai-drafts: ai = {keySet, hour} only (no enabled)', r.body.ai?.keySet === true && r.body.ai?.hour === 6 && !('enabled' in r.body.ai), JSON.stringify(r.body.ai));
+  }
+  {
+    // An older page's PUT with enabled:false: accepted, ignored, and the stored legacy value is dropped on this save.
+    const wasOff = await storedOff();
+    const put = await http('PUT', '/api/settings/ai', T, { hour: 6, enabled: false });
+    const row = (await db.select().from(schema.settings).where(eq(schema.settings.key, 'ai')))[0]?.value as Record<string, unknown>;
+    check('PUT with enabled:false (older page) → 200, not returned, stored `enabled` dropped, key kept', wasOff && put.status === 200 && !('enabled' in put.body.ai) && put.body.ai.keySet === true
+      && !('enabled' in row) && typeof row.apiKeyEnc === 'string', `${put.status} ${JSON.stringify(Object.keys(row))}`);
+    const pv = await http('POST', `/api/personas/${pA2.id}/drafts/preview`, A.token);
+    check('after that save a preview still reaches the API (502 ai.key_invalid)', pv.status === 502 && pv.body.code === 'ai.key_invalid', `${pv.status} ${pv.body?.code}`);
   }
 
   // ================================================================ saveDrafts from a hand-made structured result (no model)
