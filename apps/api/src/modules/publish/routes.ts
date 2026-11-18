@@ -19,7 +19,8 @@ const NONE = '00000000-0000-0000-0000-000000000000';
 const idsOf = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string => !!x))].concat(NONE);
 const HttpUrl = z.string().trim().max(1000).regex(/^https?:\/\/\S+$/i, 'http(s) URL');
 
-const csv = <E extends z.ZodType<string, string>>(item: E) => z.string().max(500).transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean))
+/** Comma-separated list query param (also used by GET /api/contents?status=). */
+export const csv = <E extends z.ZodType<string, string>>(item: E) => z.string().max(500).transform((s) => s.split(',').map((x) => x.trim()).filter(Boolean))
   .pipe(z.array(item).max(20));
 
 const ListQuery = z.object({

@@ -294,6 +294,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
     detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), stage: body.stage, categoryId: body.categoryId, tags: body.tags, mediaIds: body.mediaIds ? ids(body.mediaIds) : undefined, targetIds: body.targetIds ? ids(body.targetIds) : undefined, lang: body.lang }),
   },
   'DELETE /api/contents/:id': { action: 'content.delete' },
+  // 批量操作: action + ids only (the route adds ok/skipped/changed counts), never texts.
+  'POST /api/contents/batch': {
+    action: ({ body }) => `content.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
+    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, categoryId: body.categoryId, tags: body.tags }),
+  },
   // 多语言内容: only the language is recorded, never the translated texts.
   'PUT /api/contents/:id/translations/:lang': { action: 'content.translation_save', detail: ({ params }) => ({ lang: params.lang }) },
   'DELETE /api/contents/:id/translations/:lang': { action: 'content.translation_delete', detail: ({ params }) => ({ lang: params.lang }) },
