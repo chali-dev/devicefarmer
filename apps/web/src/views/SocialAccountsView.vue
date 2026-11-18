@@ -447,10 +447,10 @@ async function submitBatchForm() {
             <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
           </template>
           <template v-else-if="column.key === 'checked'">
-            <template v-if="record.lastCheckCode">
-              <a-tooltip :title="record.lastCheckDetail ?? undefined"><a-tag :color="CHECK_COLOR[record.lastCheckCode]">{{ checkText(record.lastCheckCode) }}</a-tag></a-tooltip>
-              <div class="muted small">{{ fmt(record.lastCheckedAt) }}</div>
-            </template>
+            <!-- time only; the result (正常 / 已退出登录 …) is in the tooltip and in the status column / drawer -->
+            <a-tooltip v-if="record.lastCheckCode" :title="[checkText(record.lastCheckCode), record.lastCheckDetail].filter(Boolean).join(' · ')">
+              <span class="nowrap">{{ fmt(record.lastCheckedAt) }}</span>
+            </a-tooltip>
             <span v-else-if="record.autoCheckUnsupported" class="muted small">{{ t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) }}</span>
             <span v-else class="muted small">{{ record.lastCheckedAt ? fmt(record.lastCheckedAt) : t('social.notChecked') }}</span>
           </template>
