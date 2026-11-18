@@ -15,6 +15,7 @@ import PlatformTextTabs from '../content/PlatformTextTabs.vue'
 import { textMax } from '../social/platformMeta'
 import PlatformTag from '../social/PlatformTag.vue'
 import PostTypeTag from './PostTypeTag.vue'
+import EvidenceModal from '../feed/EvidenceModal.vue'
 
 /** Publish task detail + actions: cancel, reschedule, retry, edit texts, push media, record the manual outcome. */
 const props = defineProps<{ open: boolean; taskId: string | null }>()
@@ -43,8 +44,10 @@ defineExpose({ reload: load })
 
 const s = computed(() => task.value?.status)
 const canCancel = computed(() => s.value === 'pending' || s.value === 'scheduled' || s.value === 'awaiting_operator')
-const canReschedule = computed(() => s.value === 'pending' || s.value === 'scheduled')
-const canRetry = computed(() => s.value === 'failed' || s.value === 'cancelled')
+// A test-mode run (dry_run) can run again: now (retry) or at another time (reschedule).
+const canReschedule = computed(() => s.value === 'pending' || s.value === 'scheduled' || s.value === 'dry_run')
+const canRetry = computed(() => s.value === 'failed' || s.value === 'cancelled' || s.value === 'dry_run')
+const evidenceOpen = ref(false)
 const canOutcome = computed(() => s.value === 'awaiting_operator')
 const errorMsg = computed(() => (task.value?.errorCode ? codeText(task.value.errorCode, undefined, task.value.error ?? task.value.errorCode) : null))
 
@@ -136,7 +139,8 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-button v-if="canOutcome" type="primary" :disabled="busy" @click="openOutcome">{{ t('publish.outcome') }}</a-button>
           <a-button v-if="task.instance?.accessible" @click="$router.push(`/instances/${task.instance.id}`)">{{ t('publish.openDevice') }}</a-button>
           <a-button v-if="task.instance?.accessible && task.mediaIds.length && (canOutcome || canReschedule)" :disabled="busy || !task.instance.online" @click="pushMedia">{{ t('publish.pushMedia') }}</a-button>
-          <a-button v-if="canReschedule && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
+          <a-button v-if="task.hasEvidence" @click="evidenceOpen = true">{{ t('publish.evidence') }}</a-button>
+          <a-button v-if="canReschedule && s !== 'dry_run' && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
           <a-button v-if="canReschedule" :disabled="busy" @click="openTime('reschedule')">{{ t('publish.reschedule') }}</a-button>
           <a-button v-if="canRetry" :disabled="busy" @click="openTime('retry')">{{ t('publish.retry') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
@@ -144,6 +148,9 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-alert v-if="canOutcome" type="warning" show-icon :message="t('publish.operatorHint')" style="margin-bottom: 16px">
           <template v-if="task.postType !== 'feed'" #description><b>{{ t('publish.operatorType', { type: t(`publish.type.${task.postType}`) }) }}</b></template>
         </a-alert>
+        <a-alert v-if="s === 'dry_run'" type="info" show-icon :message="t('publish.dryRunHint')" style="margin-bottom: 16px" />
+        <a-alert v-if="errorMsg && s === 'scheduled'" type="warning" show-icon :message="errorMsg" style="margin-bottom: 16px" />
+        <a-alert v-if="errorMsg && canOutcome && task.method === 'device'" type="error" show-icon :message="errorMsg" style="margin-bottom: 16px" />
         <a-alert v-if="errorMsg && (s === 'failed' || s === 'pending')" type="error" show-icon :message="errorMsg" :description="task.error && task.error !== errorMsg ? task.error : undefined" style="margin-bottom: 16px" />
 
         <a-descriptions :column="1" size="small" bordered>
@@ -186,6 +193,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
             <a v-if="task.text" @click="copy(task.text)">{{ t('common.copy') }}</a>
           </a-descriptions-item>
           <a-descriptions-item v-if="task.options.privacy" :label="t('distribute.privacy')">{{ t(`distribute.privacyOpt.${task.options.privacy}`) }}</a-descriptions-item>
+          <a-descriptions-item v-if="task.evidence?.inputText" :label="t('publish.readBack')"><div class="text">{{ task.evidence.inputText }}</div></a-descriptions-item>
           <a-descriptions-item :label="t('publish.media')"><MediaStrip :media="task.media" :size="64" /></a-descriptions-item>
           <a-descriptions-item :label="t('publish.colAttempt')">{{ t('publish.roundOf', { n: task.attemptNo, max: task.maxAttempts }) }}</a-descriptions-item>
           <a-descriptions-item v-if="task.ownerName" :label="t('content.colOwner')">{{ task.ownerName }}</a-descriptions-item>
@@ -251,6 +259,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
       </a-form>
     </a-modal>
   </a-drawer>
+  <EvidenceModal v-model:open="evidenceOpen" :url="task?.hasEvidence ? `/api/publish/tasks/${task.id}/evidence` : null" :title="t('publish.evidenceTitle')" />
 </template>
 
 <style scoped>

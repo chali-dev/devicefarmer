@@ -3,7 +3,8 @@
  * (BullMQ worker in the API), real media processing (sharp / ffmpeg). No mocks.
  * - Devices are placeholder `instances` rows (no Android container): "online" = status running + adb state device,
  *   held by a test-only trigger against the monitor (created and dropped by this script).
- *   Pushing media to a real phone is not covered here.
+ *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
+ *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
  * - The device-offline retry path waits for one retry backoff (PUBLISH_RETRY_BACKOFF_MS, default 30 s).
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
  */
@@ -223,7 +224,7 @@ try {
   const msgs = d.logs.map((l: any) => l.message as string);
   check('publish logs record every check', ['check: account owner ok', 'check: account active', 'check: media ready and valid for the platform', 'check: not published before on this account',
     'check: device online', 'check: account logged in on the device', 'handed over to an operator: publish by hand on the bound device, then record the outcome', 'awaiting operator'].every((m) => msgs.includes(m))
-    && !msgs.some((m: string) => /^(method |publishing via|check: method|publish request sent)/.test(m)), msgs.join(' | '));
+    && !msgs.some((m: string) => /^(method api|publishing via|check: method|publish request sent)/.test(m)), msgs.join(' | '));
   check('scheduler task ended success with result awaiting_operator', d.runs.length === 1 && d.runs[0].status === 'success' && d.runs[0].result?.state === 'awaiting_operator');
   const tlogs = await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, d.runs[0].id));
   check('the same checks are in the task-centre log (ctx.log)', tlogs.some((l) => l.message === 'check: device online'));

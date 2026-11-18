@@ -4,8 +4,8 @@
  * with the default ENABLED_PLATFORMS).
  * - Devices are placeholder `instances` rows (no Android container) kept "online" by a test-only trigger, as in
  *   publish-check.ts. Accounts without a device fail the manual precheck (publish.no_device).
- * - Publishing is manual only (official-API publishing removed on 2026-11-18): every run ends awaiting_operator
- *   with method manual and logs no API method lines; a 1 s story video (formerly refused by the API-only 3 s limit)
+ * - No official-API publishing (removed on 2026-11-18): every run ends awaiting_operator with method manual and logs
+ *   no API method lines (the `device` method is tried first and finds that adb doesn't see the placeholder phone); a 1 s story video (formerly refused by the API-only 3 s limit)
  *   is handed over like any other story.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-types-check.ts
  */
@@ -258,7 +258,7 @@ try {
   r = await dist(A, cV5, [{ accountId: igApi.id, postType: 'reel' }]);
   const manReel = r.body.created?.[0];
   d = await waitStatus(A, manReel.id, ['awaiting_operator', 'failed', 'published']);
-  const noApi = (x: any) => !x.logs.some((l: any) => /^(method |publishing via|check: method|publish request sent)/.test(l.message));
+  const noApi = (x: any) => !x.logs.some((l: any) => /^(method api|publishing via|check: method|publish request sent)/.test(l.message));
   check('reel → manual → awaiting_operator, no API method lines in the log', d.task.status === 'awaiting_operator' && d.task.method === 'manual' && noApi(d),
     JSON.stringify(d.logs.map((l: any) => l.message)));
   remember(d.task);

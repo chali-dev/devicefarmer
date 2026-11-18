@@ -127,7 +127,8 @@ export async function setContentTags(tx: Tx, contentId: string, names: string[])
 export function deriveStatus(stage: Content['stage'], counts: Partial<Record<PublishStatus, number>>): ContentStatus {
   if (stage === 'archived') return 'archived';
   const n = (s: PublishStatus) => counts[s] ?? 0;
-  const total = (Object.keys(counts) as PublishStatus[]).filter((s) => s !== 'cancelled').reduce((a, s) => a + n(s), 0);
+  // Cancelled rows and test-mode rehearsals (dry_run: nothing was posted) don't count.
+  const total = (Object.keys(counts) as PublishStatus[]).filter((s) => s !== 'cancelled' && s !== 'dry_run').reduce((a, s) => a + n(s), 0);
   if (!total) return stage;
   if (n('published') === total) return 'published';
   if (n('published') > 0) return 'partially_published';

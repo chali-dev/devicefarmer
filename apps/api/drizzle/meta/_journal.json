@@ -253,6 +253,13 @@
       "when": 1794987059171,
       "tag": "0035_account_feed",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794988653225,
+      "tag": "0036_device_publish",
+      "breakpoints": true
     }
   ]
 }

@@ -219,9 +219,11 @@ export class AdbAdapter {
    * Copies a file to shared storage and registers it with MediaStore so Gallery and
    * app pickers (e.g. Instagram) see it immediately.
    */
-  async pushMedia(adbPort: number, localPath: string, remotePath: string): Promise<void> {
+  async pushMedia(adbPort: number, localPath: string, remotePath: string): Promise<string> {
     if (!/^\/sdcard\/(Pictures|Movies|Download)\/[\p{L}\p{N}._\- ]{1,120}$/u.test(remotePath)) throw new Error('invalid target path');
     await this.push(adbPort, localPath, remotePath);
+    // adb sync keeps the local file's mtime: stamp "now" so galleries sorted by date list the file first.
+    await this.shell(adbPort, `touch '${remotePath}'`);
     // Files written through adb sync get indexed as pending (hidden from other apps, no metadata).
     // Selection on _data is not honoured for shell callers, so locate the row by name + folder
     // (names are unique: timestamp prefix), clear is_pending by _id, then rescan for width/height/date.
@@ -236,6 +238,15 @@ export class AdbAdapter {
     await this.shell(adbPort, `content call --uri content://media --method scan_file --arg '${remotePath}' >/dev/null`);
     const row = await this.shell(adbPort, `content query --uri content://media/external/file/${id} --projection is_pending`);
     if (!/is_pending=0/.test(row)) throw new Error(`file uploaded but not visible to apps: ${row.trim()}`);
+    return id;
+  }
+
+  /** Removes a file pushed by pushMedia: its MediaStore row (by _id) and the file itself. Never throws. */
+  async deleteMedia(adbPort: number, id: string | null, remotePath: string): Promise<boolean> {
+    if (!/^\/sdcard\/(Pictures|Movies|Download)\/[\p{L}\p{N}._\- ]{1,120}$/u.test(remotePath)) return false;
+    if (id && /^\d+$/.test(id)) await this.shell(adbPort, `content delete --uri content://media/external/file/${id}`).catch(() => undefined);
+    const out = await this.shell(adbPort, `rm -f '${remotePath}'; ls '${remotePath}' 2>/dev/null | wc -l`).catch(() => '1');
+    return out.trim() === '0';
   }
 
   /** Running capture helpers: one foreground adb shell stream per device keeps the helper alive. */

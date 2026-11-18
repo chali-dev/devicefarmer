@@ -11,8 +11,12 @@ import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../co
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
-import { MANUAL_METHOD, type PublishInput, type PublishLogLevel } from './methods.js';
+import { onDeviceResumed } from '../tracked/collector.js';
+import './device.js'; // registers the `device` method (云手机发帖)
+import { MANUAL_METHOD, PublishCheckError, publishMethods, type PublishInput, type PublishLogLevel, type PublishMethodResult } from './methods.js';
 import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
+
+export { PublishCheckError };
 
 /**
  * Publish scheduler (定时发布). One publish_tasks row per (content, account); each scheduling round
@@ -22,21 +26,19 @@ import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './
  * A run: claim the publish task (only the task-centre task it currently points at may run it), then the
  * checks — account owner, account status, media still ready and valid for the platform, no earlier
  * successful publish of the same content on the same account (unless re-publish), device linked + online
- * and account logged in — each written to publish_logs and the task log. Then the task is handed to an
- * operator (awaiting_operator; the task-centre task ends success), who publishes by hand on the device
- * and records the outcome. Publishing through official platform APIs was removed on 2026-11-18 (owner
- * decision). Checks that can't change by waiting fail at once (PublishCheckError, no retry); device
- * offline is retried with backoff.
+ * and account logged in — each written to publish_logs and the task log. Then the registered methods are tried
+ * in order (methods.ts): `device` (云手机发帖, device.ts: the account's cloud phone publishes in the app; test mode
+ * → dry_run) when available, else the task is handed to an operator (`manual`, awaiting_operator; the reason the
+ * phone couldn't take it is logged), who publishes by hand on the device and records the outcome. Publishing
+ * through official platform APIs was removed on 2026-11-18 (owner decision). Checks that can't change by waiting
+ * fail at once (PublishCheckError, no retry); device offline is retried with backoff. A deferred device run (daily
+ * cap, min gap, busy / paced phone) is a new round at the allowed time; a run on a halted phone is parked
+ * (scheduled without a task) until the phone is resumed on the 风控 page.
  */
 
 const pt = schema.publishTasks;
 export const REF_TYPE = 'publish';
 export const TASK_TYPE = 'publish';
-
-/** Check failure that retrying won't fix: fails the run at once (no further attempts). */
-export class PublishCheckError extends UnrecoverableError {
-  constructor(readonly code: string, message: string, readonly params: Record<string, unknown> = {}) { super(message); }
-}
 
 // ---------------------------------------------------------------- logs
 
@@ -188,9 +190,10 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
       const [done] = await tx.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, cur.contentId), eq(pt.accountId, cur.accountId), eq(pt.status, 'published'), ne(pt.id, cur.id)));
       if (done) throw conflict('该内容已发布到这个账号', 'publish.already_published', { account: cur.accountId });
     }
+    const fresh = action === 'retried' || cur.status === 'dry_run';
     const [n] = await tx.update(pt).set({
       status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null,
-      error: action === 'retried' ? null : cur.error, errorCode: action === 'retried' ? null : cur.errorCode, method: action === 'retried' ? null : cur.method,
+      error: fresh ? null : cur.error, errorCode: fresh ? null : cur.errorCode, method: fresh ? null : cur.method,
     }).where(eq(pt.id, id)).returning().catch((err) => {
       const e = err as { code?: string; cause?: { code?: string } };
       if (e.code === '23505' || e.cause?.code === '23505') throw conflict('该内容在这个账号上已有未完成的发布任务', 'publish.duplicate_unfinished');
@@ -206,8 +209,9 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
   return row;
 }
 
-export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled'], at, 'rescheduled');
-export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled'], at, 'retried');
+// A test-mode run (dry_run) can be run again (retry) or at another time (reschedule).
+export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled', 'dry_run'], at, 'rescheduled');
+export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled', 'dry_run'], at, 'retried');
 
 /** Cancel while waiting (pending/scheduled) or while handed to an operator. */
 export async function cancelPublish(user: AuthUser, row: PublishTask): Promise<PublishTask> {
@@ -294,11 +298,21 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   try {
     const input = await preflight(row, log);
     if (ctx.signal.aborted) throw ctx.signal.reason;
-    await log('info', 'handed over to an operator: publish by hand on the bound device, then record the outcome', { postType: input.postType });
+    const reasons: Record<string, string> = {};
+    for (const m of publishMethods()) {
+      const why = await m.unavailable(input, row);
+      if (why) { reasons[m.id] = why; await log('info', `method ${m.id} not available: ${why}`, { code: why }); continue; }
+      await db.update(pt).set({ method: m.id }).where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
+      await log('info', `method ${m.id}`, { postType: input.postType });
+      const r = await m.run(input, { row, task: ctx as TaskContext<unknown>, log });
+      if (r.state === 'unavailable') { reasons[m.id] = r.reason; await log('info', `method ${m.id} not available: ${r.reason}`, { code: r.reason }); continue; }
+      return await applyResult(row, ctx, m.id, r, log);
+    }
+    await log('info', 'handed over to an operator: publish by hand on the bound device, then record the outcome', { postType: input.postType, ...(Object.keys(reasons).length ? { reasons } : {}) });
     const [done] = await db.update(pt).set({ status: 'awaiting_operator', method: MANUAL_METHOD })
       .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
     await log('info', 'awaiting operator', { method: MANUAL_METHOD, recorded: !!done });
-    return { state: 'awaiting_operator', method: MANUAL_METHOD };
+    return { state: 'awaiting_operator', method: MANUAL_METHOD, ...(Object.keys(reasons).length ? { reasons } : {}) };
   } catch (err) {
     const e = err as { code?: string; message?: string; params?: Record<string, unknown> };
     const code = typeof e.code === 'string' ? e.code : 'publish.failed';
@@ -317,6 +331,53 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
 }
 
 type Log = (level: PublishLogLevel, message: string, data?: Record<string, unknown>) => Promise<void>;
+
+/** Writes what a method returned onto the publish task (only while this task still drives it). */
+async function applyResult(row: PublishTask, ctx: TaskContext<Payload>, method: string, r: PublishMethodResult, log: Log): Promise<unknown> {
+  const mine = and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running'));
+  switch (r.state) {
+    case 'published': {
+      await db.update(pt).set({ status: 'published', method, externalId: r.externalId, url: r.url, publishedAt: r.publishedAt ?? new Date(), evidence: r.evidence ?? null, error: null, errorCode: null }).where(mine);
+      await log('info', 'published from the cloud phone and seen on the profile', { externalId: r.externalId, url: r.url, ...(r.data ?? {}) });
+      return { state: 'published', method, externalId: r.externalId, url: r.url };
+    }
+    case 'dry_run': {
+      await db.update(pt).set({ status: 'dry_run', method, evidence: r.evidence ?? null, error: null, errorCode: 'publish.test_mode' }).where(mine);
+      await log('info', 'test mode: rehearsed on the cloud phone up to sharing, nothing posted (draft discarded)', r.data);
+      return { state: 'dry_run', method, evidence: { key: r.evidence?.key ?? null } };
+    }
+    case 'awaiting_operator': {
+      await db.update(pt).set({ status: 'awaiting_operator', method, evidence: r.evidence ?? null, error: r.message.slice(0, 1000), errorCode: r.code }).where(mine);
+      await log('warn', `handed over to an operator: ${r.message}`, { code: r.code });
+      return { state: 'awaiting_operator', method, code: r.code };
+    }
+    case 'deferred': {
+      const [n] = await db.update(pt).set({ status: 'scheduled', scheduledAt: r.at, attemptNo: row.attemptNo + 1, taskId: null, errorCode: r.code, error: null }).where(mine).returning();
+      await log('warn', `${r.message}, deferred`, { code: r.code, retryAt: r.at.toISOString(), ...(r.data ?? {}) });
+      const next = n ? await scheduleRun(n, null) : null;
+      return { deferred: true, code: r.code, retryAt: r.at.toISOString(), nextTaskId: next?.taskId ?? null };
+    }
+    case 'unavailable': return { state: 'unavailable', reason: r.reason };
+    case 'parked': {
+      await db.update(pt).set({ status: 'scheduled', taskId: null, errorCode: r.code, error: null }).where(mine);
+      await log('warn', 'device halted (risk control): waiting until an admin resumes it', { code: r.code, device: r.device });
+      return { parked: true, code: r.code };
+    }
+  }
+}
+
+/** After 恢复 on the 风控 page: every publish task parked for that phone gets a new round now. */
+export async function resumeParkedPublishes(instanceId: string): Promise<number> {
+  const rows = await db.select({ p: pt }).from(pt).innerJoin(schema.socialAccounts, eq(schema.socialAccounts.id, pt.accountId))
+    .where(and(eq(schema.socialAccounts.instanceId, instanceId), eq(pt.status, 'scheduled'), isNull(pt.taskId), eq(pt.errorCode, 'publish.device_halted')));
+  for (const { p } of rows) {
+    const [n] = await db.update(pt).set({ attemptNo: p.attemptNo + 1, errorCode: null, scheduledAt: new Date() })
+      .where(and(eq(pt.id, p.id), eq(pt.status, 'scheduled'), isNull(pt.taskId))).returning();
+    if (n) { await publishLog(n, 'info', 'device resumed: queued again'); await scheduleRun(n, null); }
+  }
+  return rows.length;
+}
+onDeviceResumed(resumeParkedPublishes);
 
 async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
   if (!isPlatformEnabled(row.platform)) throw new PublishCheckError('platform.disabled', `platform ${row.platform} is disabled`, { platform: row.platform });

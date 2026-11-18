@@ -357,11 +357,11 @@ export const CONTENT_STATUSES: ContentStatus[] = ['draft', 'ready', 'scheduled',
 export const CONTENT_STATUS_COLOR: Record<ContentStatus, string> = {
   draft: 'default', ready: 'blue', scheduled: 'purple', partially_published: 'gold', published: 'success', failed: 'error', archived: 'default',
 }
-export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled'
-export const PUBLISH_STATUSES: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled']
+export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled' | 'dry_run'
+export const PUBLISH_STATUSES: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled', 'dry_run']
 export const PUBLISH_UNFINISHED: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
 export const PUBLISH_STATUS_COLOR: Record<PublishStatus, string> = {
-  pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default',
+  pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default', dry_run: 'cyan',
 }
 export interface ContentMedia {
   id: string; name: string; fileType: 'image' | 'video'; status: MediaStatus; ownerType: 'public' | 'user'
@@ -413,9 +413,11 @@ export interface ContentLanguages { source: string; configured: string[]; langua
 export interface PublishTaskItem {
   id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
   title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
-  scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | null; attemptNo: number; maxAttempts: number; taskId: string | null
+  scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | 'device' | null; attemptNo: number; maxAttempts: number; taskId: string | null
   republish: boolean; externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
   postType: PostType
+  /** 云手机发帖: what the phone showed before 分享 (the screenshot via GET /api/publish/tasks/:id/evidence). */
+  evidence: { at: string; inputText: string | null; excerpt: string | null } | null; hasEvidence: boolean
   /** Language of the snapshot texts (account language when translated, else the source); null = unknown (older rows). */
   lang: string | null
   createdAt: string; updatedAt: string
@@ -513,6 +515,8 @@ export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default', dry_run: 'cyan',
 }
 /** comments.rules; sendsPerDay / minGapSec / testMode = 云手机发评论 (device sends). */
+/** 风控 → 云手机发帖 (GET/PUT /api/publish/device-settings). */
+export interface DevicePublishRules { enabled: boolean; postsPerDay: number; minGapMin: number; testMode: boolean }
 export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number; sendsPerDay: number; minGapSec: number; testMode: boolean }
 export interface CommentAccount {
   id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
@@ -708,11 +712,11 @@ export interface RiskDevice {
   collectorFor: string[]
   /** Social accounts on this phone that the automatic check covers. */
   checkedAccounts: number
-  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
+  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
   visitsLastHour: number; lastVisitAt: string | null
 }
 export interface RiskEvent {
-  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check' | 'feed' | 'reply'; code: string; detail: string | null
+  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; code: string; detail: string | null
   socialAccountId: string | null; trackedAccountId: string | null; userId: string | null
   socialHandle: string | null; trackedHandle: string | null; username: string | null
 }
