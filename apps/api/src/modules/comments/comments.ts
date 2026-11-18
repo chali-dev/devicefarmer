@@ -3,9 +3,9 @@ import { Readable } from 'node:stream';
 import { UnrecoverableError } from 'bullmq';
 import { and, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
-import type { Comment, CommentReplyStatus, CommentTask, Instance, ReplyEvidence, SocialAccount, Task } from '../../db/schema.js';
+import type { Comment, CommentReplyStatus, CommentTask, Instance, ReplyEvidence, SocialAccount, Task, TrackedPost, TrackedPostComment } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
-import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
+import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { sendIgComment, ReplyDeviceError } from '../feed/device.js';
 import { commentKey, pkOfShortcode, shortcodeOf, shortcodeOfUrl } from '../feed/ig-ui.js';
@@ -404,6 +404,20 @@ async function planReply(r: CommentTask): Promise<ReplyPlan> {
     const [p] = await db.select().from(P).where(and(eq(P.id, r.postId), eq(P.socialAccountId, acc.id)));
     if (!p) return { kind: 'manual', reason: 'comment.post_gone' };
     shortcode = shortcodeOfUrl(p.permalink) ?? (p.source === 'device' ? shortcodeOf(p.externalId) : null);
+  } else if (r.trackedCommentId || r.trackedPostId) {
+    // 评论追踪账号的帖子: the tracked post (link) and, for a reply, the tracked comment as read on the collector phone.
+    const [k] = r.trackedCommentId ? await db.select().from(schema.trackedPostComments).where(eq(schema.trackedPostComments.id, r.trackedCommentId)) : [null];
+    if (r.trackedCommentId && !k) return { kind: 'manual', reason: 'comment.comment_gone' };
+    const postId = k?.trackedPostId ?? r.trackedPostId;
+    const [p] = postId ? await db.select().from(schema.trackedPosts).where(eq(schema.trackedPosts.id, postId)) : [];
+    if (!p) return { kind: 'manual', reason: 'comment.post_gone' };
+    shortcode = shortcodeOfUrl(p.url) ?? (p.source === 'device' && /^\d{10,}$/.test(p.externalId) ? shortcodeOf(p.externalId) : null);
+    if (k) {
+      const author = k.authorHandle?.replace(/^@/, '').trim();
+      if (!author) return { kind: 'manual', reason: 'comment.device_no_author' };
+      const pk = shortcode ? pkOfShortcode(shortcode) : null;
+      if (pk) replyTo = { author, text: k.text, key: k.externalId };
+    }
   } else if (r.commentId) {
     const [c] = await db.select().from(C).where(eq(C.id, r.commentId));
     if (!c) return { kind: 'manual', reason: 'comment.comment_gone' };
@@ -544,7 +558,16 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
         await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.already_replied', message: 'the comment was already replied to', data: { existing: sent.id }, taskId: ctx.task.id });
         throw new ReplyCheckError('comment.already_replied', 'the comment was already replied to');
       }
-    } else if (!r.postId) throw new ReplyCheckError('comment.comment_gone', 'the reply has neither a comment nor a post');
+    } else if (r.trackedCommentId) {
+      const K = schema.trackedPostComments;
+      const [k] = await db.select({ id: K.id }).from(K).where(eq(K.id, r.trackedCommentId));
+      if (!k) throw new ReplyCheckError('comment.comment_gone', 'the comment no longer exists');
+      const [sent] = await db.select({ id: R.id }).from(R).where(and(eq(R.trackedCommentId, r.trackedCommentId), eq(R.status, 'sent'), ne(R.id, r.id)));
+      if (sent) {
+        await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.already_replied', message: 'the comment was already replied to', data: { existing: sent.id }, taskId: ctx.task.id });
+        throw new ReplyCheckError('comment.already_replied', 'the comment was already replied to');
+      }
+    } else if (!r.postId && !r.trackedPostId) throw new ReplyCheckError('comment.comment_gone', 'the reply has neither a comment nor a post');
     if (ctx.signal.aborted) throw ctx.signal.reason;
     if (plan.kind === 'manual') return await handOver(plan.reason);
 
@@ -635,6 +658,56 @@ export async function createPostComment(user: AuthUser, acc: SocialAccount, post
   }).returning();
   await replyLog(row!, { action: 'created', message: 'post comment written', data: { postId: post.id }, actor: user });
   return submitReply(user, row!, b.scheduledAt);
+}
+
+// ---------------------------------------------------------------- 评论追踪账号的帖子 (own account on a tracked post)
+
+/**
+ * The own account that comments on a tracked account's post: visible to the caller (users: their own, others 404;
+ * admins: anyone's), same platform as the tracked account, a platform the cloud phone can send on, linked to a phone.
+ */
+export async function replyAccountFor(user: AuthUser, accountId: string, platform: string): Promise<SocialAccount> {
+  const acc = await visibleAccount(user, accountId);
+  if (acc.platform !== platform) throw badRequest('所选社交号与追踪账号不是同一个平台', 'comment.account_platform_mismatch', { platform: acc.platform, expected: platform });
+  assertPlatformEnabled(acc.platform);
+  if (!platformById(acc.platform)?.deviceCheck) throw badRequest('该平台不支持云手机发评论', 'comment.account_unsupported_platform', { platform: acc.platform });
+  if (!acc.instanceId) throw badRequest('所选社交号没有绑定云手机', 'comment.account_no_device');
+  return acc;
+}
+
+/**
+ * A comment under a tracked post (`comment` null) or a reply to one of its comments (comments are top level as read
+ * on the phone), written by a person and sent by `acc`'s cloud phone (same flow, rules and test mode as the
+ * account's own posts). One active reply per tracked comment; no bulk: one post / comment and one account per call.
+ */
+export async function createTrackedComment(user: AuthUser, acc: SocialAccount, post: TrackedPost, comment: TrackedPostComment | null, b: { text: string; scheduledAt?: Date | null }): Promise<CommentTask> {
+  const text = b.text.trim();
+  if (!text) throw badRequest('评论内容不能为空', 'comment.text_empty');
+  let row: CommentTask;
+  try {
+    row = await db.transaction(async (tx) => {
+      if (comment) {
+        await lockKey(tx, `comment-reply:tracked:${comment.id}`);
+        const [prior] = await tx.select({ id: R.id, status: R.status }).from(R).where(and(eq(R.trackedCommentId, comment.id), inArray(R.status, REPLY_ACTIVE)));
+        if (prior) {
+          throw await blocked({ accountId: acc.id }, user,
+            conflict('这条评论已有回复（每条评论只能回复一次，除非之前的回复失败或被取消）', 'comment.already_replied', { status: prior.status }), { existing: prior.id, status: prior.status, trackedCommentId: comment.id });
+        }
+      }
+      const [r] = await tx.insert(R).values({
+        userId: acc.userId, accountId: acc.id, commentId: null, postId: null, trackedPostId: post.id, trackedCommentId: comment?.id ?? null,
+        platform: acc.platform, text, textHash: textHash(text), status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS,
+        authorId: user.id, authorName: user.username,
+      }).returning();
+      await replyLog(r!, { action: 'created', message: comment ? 'draft written' : 'post comment written',
+        data: { trackedAccountId: post.trackedAccountId, trackedPostId: post.id, trackedCommentId: comment?.id ?? null }, actor: user }, tx);
+      return r!;
+    });
+  } catch (err) {
+    if (isUnique(err)) throw await blocked({ accountId: acc.id }, user, conflict('这条评论已有回复', 'comment.already_replied', { status: 'unknown' }));
+    throw err;
+  }
+  return submitReply(user, row, b.scheduledAt);
 }
 
 // ---------------------------------------------------------------- templates

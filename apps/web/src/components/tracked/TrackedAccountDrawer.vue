@@ -6,12 +6,15 @@ import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import {
   compactNumber, trackedHandle,
-  type TrackedAccount, type TrackedMetric, type TrackedPlatform, type TrackedSnapshot,
+  type FeedComment, type FeedPost, type TrackedAccount, type TrackedMetric, type TrackedPlatform, type TrackedSnapshot,
 } from '../../api/types'
 import LineChart from './LineChart.vue'
 import FeedActivity from '../feed/FeedActivity.vue'
 import FeedCollectBar from '../feed/FeedCollectBar.vue'
 import FeedPosts from '../feed/FeedPosts.vue'
+import EvidenceModal from '../feed/EvidenceModal.vue'
+import FeedReplyModal, { type ReplyTarget } from '../feed/FeedReplyModal.vue'
+import FeedReplyTable from '../feed/FeedReplyTable.vue'
 import { useAccountFeed } from '../feed/useAccountFeed'
 import StatusTag from '../common/StatusTag.vue'
 import PlatformTag from '../social/PlatformTag.vue'
@@ -19,7 +22,8 @@ import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
 /**
  * Detail of one tracked account: 动态 (counter changes, new posts, collection runs), follower history chart + table,
- * 帖子 (posts read on the collector phone with their comments folded under each, read only), refresh.
+ * 帖子 (posts read on the collector phone with their comments folded under each; 「评论」 / 「回复」 with one of the
+ * viewer's own accounts → sent by that account's cloud phone), 回复记录 (own comments / replies on these posts), refresh.
  */
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{ account: TrackedAccount | null; platforms: TrackedPlatform[] }>()
@@ -53,8 +57,25 @@ async function reloadAccount() {
   try { emit('changed', (await api<{ account: TrackedAccount }>('GET', `/api/tracked-accounts/${acc.value.id}`)).account) } catch { /* list refresh shows it */ }
 }
 watch(() => [open.value, acc.value?.id], ([o], prev) => {
-  if (o && acc.value && (prev?.[1] !== acc.value.id || !prev?.[0])) { feedApi.reset(); tab.value = 'posts'; void loadAll() }
+  if (o && acc.value && (prev?.[1] !== acc.value.id || !prev?.[0])) { feedApi.reset(); tab.value = 'posts'; rTotal.value = 0; void loadAll() }
 })
+
+// ---- 评论 / 回复 on a tracked post with an own account (FeedReplyModal picks the account), 回复记录
+const composeOpen = ref(false)
+const target = ref<ReplyTarget | null>(null)
+function commentOn(p: FeedPost) { if (acc.value) { target.value = { kind: 'tracked-post', trackedAccountId: acc.value.id, postId: p.id, caption: p.caption }; composeOpen.value = true } }
+function replyTo(c: FeedComment, p: FeedPost) {
+  if (!acc.value) return
+  target.value = { kind: 'tracked-comment', trackedAccountId: acc.value.id, postId: p.id, commentId: c.id, author: c.authorHandle ?? null, text: c.text }
+  composeOpen.value = true
+}
+const rTotal = ref(0)
+const replyTable = ref<InstanceType<typeof FeedReplyTable> | null>(null)
+const replyFilter = computed(() => (open.value && acc.value ? `trackedAccountId=${acc.value.id}` : null))
+const afterReply = () => { void loadPosts(); void replyTable.value?.reload() }
+const evidenceOpen = ref(false)
+const evidenceId = ref<string | null>(null)
+function showEvidence(id: string) { evidenceId.value = id; evidenceOpen.value = true }
 // A finished refresh brings new data.
 watch(() => acc.value?.lastRefresh?.status, (s, old) => { if (open.value && s && s !== old && (s === 'success' || s === 'failed')) void loadAll() })
 
@@ -178,12 +199,17 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 
         <a-tab-pane key="posts" :tab="`${t('tracked.posts')} (${feed?.posts.total ?? 0})`">
           <FeedPosts kind="tracked" :account-id="acc.id" :posts="feed?.posts.items ?? []" :total="feed?.posts.total ?? 0" :page="postsPage" :page-size="postsPageSize"
-            :loading="feedLoading" readonly deletable @page="(n) => loadPosts(n)" @remove="removePost" />
+            :loading="feedLoading" :readonly="!feed?.send?.deviceCapable" deletable @page="(n) => loadPosts(n)" @remove="removePost"
+            @comment="commentOn" @reply="replyTo" @evidence="showEvidence" />
+        </a-tab-pane>
+        <a-tab-pane key="replies" force-render :tab="`${t('feed.tabs.replies')} (${rTotal})`">
+          <FeedReplyTable ref="replyTable" :filter="replyFilter" show-account @total="(n) => (rTotal = n)" @evidence="showEvidence" />
         </a-tab-pane>
       </a-tabs>
     </template>
   </a-drawer>
-
+  <FeedReplyModal v-model:open="composeOpen" :target="target" :halted="false" :test-mode="feed?.send?.testMode ?? null" @done="afterReply" />
+  <EvidenceModal v-model:open="evidenceOpen" :reply-id="evidenceId" />
 </template>
 
 <style scoped>
