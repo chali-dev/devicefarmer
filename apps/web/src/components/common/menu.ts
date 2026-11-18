@@ -2,7 +2,7 @@ import { computed, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ClusterOutlined, ControlOutlined, DatabaseOutlined,
-  FileSearchOutlined, FileTextOutlined, FireOutlined, IdcardOutlined, MobileOutlined, PictureOutlined, ReadOutlined, RiseOutlined, SafetyOutlined,
+  FileSearchOutlined, FileTextOutlined, FireOutlined, IdcardOutlined, MobileOutlined, PictureOutlined, ReadOutlined, RiseOutlined, 
   ScheduleOutlined, SecurityScanOutlined, SettingOutlined, ShareAltOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons-vue'
 import { t } from '../../i18n'
@@ -31,7 +31,7 @@ export const MENU_GROUPS: MenuGroup[] = [
     { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
   ] },
   { key: 'system', icon: ControlOutlined, items: [
-    { key: 'users', icon: UserOutlined }, { key: 'permissions', icon: SafetyOutlined }, { key: 'audit', icon: FileSearchOutlined },
+    { key: 'users', icon: UserOutlined }, { key: 'audit', icon: FileSearchOutlined },
     { key: 'system', icon: DatabaseOutlined }, { key: 'settings', icon: SettingOutlined }, { key: 'risk', icon: SecurityScanOutlined },
     { key: 'alert-channels', icon: AlertOutlined }, { key: 'tasks', icon: ScheduleOutlined },
   ] },

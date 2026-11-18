@@ -36,7 +36,8 @@ const router = createRouter({
         { path: 'risk', name: 'risk', component: () => import('../views/RiskView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
-        { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
+        // 权限管理 only assigned devices; that moved to 我的云机 (分配, owner decision 2026-11-18).
+        { path: 'permissions', redirect: '/instances' },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
         { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue'), meta: { admin: true } },
         { path: 'system', name: 'system', component: () => import('../views/SystemView.vue'), meta: { admin: true } },
