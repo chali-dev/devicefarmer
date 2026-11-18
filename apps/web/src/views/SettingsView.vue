@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api/client'
 import type { SettingsConfig } from '../api/types'
+import AiSettings from '../components/settings/AiSettings.vue'
 import AlertSettings from '../components/settings/AlertSettings.vue'
 import LanguageSettings from '../components/settings/LanguageSettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
@@ -24,7 +25,7 @@ const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['storage', 'tracked', 'social', 'publish', 'languages', 'retention', 'system', 'alerts'] as const
+const TABS = ['storage', 'tracked', 'social', 'publish', 'languages', 'ai', 'retention', 'system', 'alerts'] as const
 type Tab = (typeof TABS)[number]
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'storage'),
@@ -76,6 +77,7 @@ const envGroups = computed(() => {
           </div>
         </a-tab-pane>
         <a-tab-pane key="languages" :tab="t('settings.tabs.languages')"><LanguageSettings /></a-tab-pane>
+        <a-tab-pane key="ai" :tab="t('settings.tabs.ai')"><AiSettings /></a-tab-pane>
         <a-tab-pane key="retention" :tab="t('settings.tabs.retention')"><RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" /></a-tab-pane>
         <a-tab-pane key="system" :tab="t('settings.tabs.system')"><SystemInfo /></a-tab-pane>
         <a-tab-pane key="alerts" :tab="t('alerts.settings.tab')"><AlertSettings /></a-tab-pane>

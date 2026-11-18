@@ -68,6 +68,7 @@ const EXACT: Record<string, string> = {
   'collector: Instagram is not logged in': 'collectorLoggedOut',
   'collector: profile not available': 'collectorUnavailable',
   'collector: profile did not show in time': 'collectorTimeout',
+  'drafts: skipped (switched off)': 'draftsSkipped',
 }
 
 const RULES: Rule[] = [
@@ -95,6 +96,11 @@ const RULES: Rule[] = [
   [/^collection: (\d+) tracked refreshes queued, (\d+) skipped; (\d+) trending refreshes queued; (\d+) old trending snapshots deleted$/, 'collectionTick',
     (m) => ({ queued: m[1]!, skipped: m[2]!, trending: m[3]!, purged: m[4]! })],
   [/^deleted (\d+) read and (\d+) unread notifications, (\d+) alert states$/, 'notificationsDeleted', (m) => ({ read: m[1]!, unread: m[2]!, states: m[3]! })],
+  // 人设每日草稿 (AI)
+  [/^drafts: requesting (\d+) from (\S+)$/, 'draftsRequest', (m) => ({ n: m[1]!, model: m[2]! })],
+  [/^drafts: the model declined \(category (\S+)\)$/, 'draftsDeclined', (m) => ({ category: m[1]! })],
+  [/^drafts: (\d+) drafts written for (\S+) \(served by (\S+)\)$/, 'draftsWritten', (m) => ({ n: m[1]!, user: m[2]!, model: m[3]! })],
+  [/^drafts: (\d+) dropped for a banned word$/, 'draftsDropped', (m) => ({ n: m[1]! })],
   [/^(\w+) → (\w+)$/, 'commentStatus', (m) => ({ from: status('comments', m[1]!), to: status('comments', m[2]!) })],
 ]
 

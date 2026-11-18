@@ -25,6 +25,9 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 
 type Exec = Pick<typeof db, 'select'>;
 
+/** A persona row for lists/responses: the 内容设定 (brief, draft owner) is only returned by GET /api/personas/:id/drafts. */
+export const publicPersona = ({ brief: _b, draftOwnerId: _o, ...p }: Persona) => p;
+
 /** A public persona fits everything; a personal one only things owned by its owner (`ownerUserId`, null = shared). */
 export const personaFits = (p: Persona, ownerUserId: string | null) => scoped.fits(p, ownerUserId);
 
@@ -49,7 +52,7 @@ async function logAccountPersona(tx: Parameters<Parameters<typeof db.transaction
 
 const findPersona = async (id: string) => (await db.select().from(P).where(eq(P.id, id)))[0];
 const visiblePersona = async (user: AuthUser, id: string) => scoped.visible(user, await findPersona(id));
-const manageablePersona = async (user: AuthUser, id: string) => scoped.manageable(user, await findPersona(id));
+export const manageablePersona = async (user: AuthUser, id: string) => scoped.manageable(user, await findPersona(id));
 
 export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
@@ -73,7 +76,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       .where(where).orderBy(...(scope === 'all-users' ? [asc(schema.users.username)] : []), asc(P.sort), asc(P.name));
     return {
       personas: rows.map((r) => ({
-        ...r.p, ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: r.p.ownerType === 'user' || isAdmin(req.user),
+        ...publicPersona(r.p), ownerName: r.ownerName ?? null, count: r.count, accounts: r.accounts, writable: r.p.ownerType === 'user' || isAdmin(req.user),
       })),
     };
   });
@@ -87,7 +90,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     }).returning());
     if (req.audit) req.audit.extra = { id: row!.id };
     reply.code(201);
-    return { persona: row };
+    return { persona: publicPersona(row!) };
   });
 
   app.patch('/api/personas/:id', {
@@ -96,7 +99,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
     const p = await manageablePersona(req.user, req.params.id);
     const set = scoped.patchSet(req.body);
     const [row] = await scoped.uniqueName(req.body.name ?? p.name, () => db.update(P).set(set).where(eq(P.id, p.id)).returning());
-    return { persona: row };
+    return { persona: publicPersona(row!) };
   });
 
   /** Templates and accounts using it become 未设人设 (templates' legacy text is cleared too, see persona-data-migration.ts). */
@@ -129,6 +132,6 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       return { templates: rows.length, accounts: accounts.length };
     });
     if (req.audit) req.audit.extra = { into: dst.name, ...moved };
-    return { persona: dst, moved: moved.templates, movedAccounts: moved.accounts };
+    return { persona: publicPersona(dst), moved: moved.templates, movedAccounts: moved.accounts };
   });
 };

@@ -42,6 +42,8 @@ import { contentRoutes } from './modules/content/routes.js';
 import { publishRoutes } from './modules/publish/routes.js';
 import './modules/publish/publish.js'; // registers the publish task handler (manual publishing)
 import { personaRoutes } from './modules/comments/personas.js';
+import { aiRoutes } from './modules/ai/routes.js';
+import { schedulePersonaDrafts } from './modules/ai/drafts.js'; // 人设每日草稿 (AI): persona-drafts task handler + daily schedule
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-reply task handler
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { analyticsRoutes } from './modules/analytics/routes.js';
@@ -98,6 +100,7 @@ await app.register(contentCategoryRoutes);
 await app.register(publishRoutes);
 await app.register(commentRoutes);
 await app.register(personaRoutes);
+await app.register(aiRoutes);
 await app.register(analyticsRoutes);
 await app.register(trendingRoutes);
 await app.register(auditRoutes);
@@ -157,6 +160,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     alertsHourly(app.log);
   };
   const firstRun = setTimeout(() => {
@@ -164,6 +168,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    void schedulePersonaDrafts().catch((err) => app.log.warn({ err }, 'persona draft scheduling failed'));
     alertsHourly(app.log);
   }, 10_000);
   firstRun.unref();

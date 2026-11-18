@@ -341,6 +341,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },
   'POST /api/personas/:id/merge': { action: 'persona.merge' },
+  // 人设每日草稿 (AI): the brief is not recorded, only which fields changed.
+  'PUT /api/personas/:id/drafts': { action: 'persona.draft_settings', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
+  'POST /api/personas/:id/drafts/generate': { action: 'persona.draft_generate' },
   // 内容分类: names only (no descriptions); the merge route adds the target name.
   'POST /api/content-categories': { action: 'content_category.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
   'PATCH /api/content-categories/:id': { action: 'content_category.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
@@ -356,6 +359,11 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/settings/languages': { action: 'settings.languages', detail: ({ body }) => ({ languages: body.languages, defaultSource: body.defaultSource }) },
   'PUT /api/settings/tracked-collectors/:platform': {
     action: 'settings.tracked_collector', detail: ({ params, body }) => ({ platform: params.platform, instanceId: body.instanceId, resume: body.resume }),
+  },
+  // Never the key itself: only whether one was set or cleared.
+  'PUT /api/settings/ai': {
+    action: 'settings.ai',
+    detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, model: body.model, hour: body.hour, enabled: body.enabled }),
   },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   // alerts (告警通知): rules

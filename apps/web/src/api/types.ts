@@ -360,8 +360,15 @@ export interface Content {
   targets: ContentTarget[]
   /** 媒体号 of the publish tasks the viewer may see (latest task per account), next due time of an unfinished task, latest published time. */
   publishAccounts: ContentPublishAccount[]; nextPublishAt: string | null; lastPublishedAt: string | null
+  /** 人设每日草稿: set when the content was written as an AI draft (must be reviewed and edited by a person). */
+  aiGenerated?: ContentAiInfo | null
   createdAt: string; updatedAt: string
 }
+export interface ContentAiInfo {
+  model: string; requestedModel: string; personaId: string; personaName: string; taskId: string | null; generatedAt: string; mediaTags: string[]
+}
+/** Tag set on every AI draft (shown as 「AI 草稿」). */
+export const AI_DRAFT_TAG = 'ai-draft'
 export interface ContentPublishAccount {
   id: string; platform: string; handle: string; displayName: string | null
   status: PublishStatus; postType: PostType; scheduledAt: string; publishedAt: string | null
@@ -518,7 +525,21 @@ export interface ScopedItem extends PersonaRef {
   count: number; writable: boolean; ownerName: string | null
   /** 人设 only: social accounts with this 账号人设 that the viewer can see. */
   accounts?: number
+  /** 人设 only: 人设每日草稿 (AI) on and drafts per day. */
+  draftEnabled?: boolean; draftsPerDay?: number
 }
+/** 人设内容设定 (GET/PUT /api/personas/:id/drafts). */
+export interface PersonaBrief {
+  tone?: string; topics?: string[]; audience?: string; lang?: string | null; hashtags?: string[]; bannedWords?: string[]
+  exampleTemplateIds?: string[]; notes?: string
+}
+export interface PersonaDraftSettings {
+  id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null
+  draftEnabled: boolean; draftsPerDay: number; brief: PersonaBrief
+  draftOwnerId: string | null; draftOwnerName: string | null; draftOwnerDisabled: boolean | null
+  runs: { id: string; status: TaskStatus; errorCode: string | null; createdAt: string; finishedAt: string | null; trigger: string | null; created: number | null }[]
+}
+export interface AiSettingsState { enabled: boolean; keySet: boolean; model: string; hour: number; updatedAt: string | null }
 /** 人设 (count = templates using it). */
 export type Persona = ScopedItem
 /** 内容分类 (count = contents using it). */

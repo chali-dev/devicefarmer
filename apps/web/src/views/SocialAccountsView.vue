@@ -15,7 +15,7 @@ import {
   type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import ScopedListManager from '../components/common/ScopedListManager.vue'
+import PersonaManager from '../components/comments/PersonaManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
@@ -512,7 +512,7 @@ function personasChanged() { void loadMeta(); void load() }
     </a-spin>
   </a-drawer>
 
-  <ScopedListManager v-model:open="personasOpen" path="/api/personas" list-key="personas" texts="scripts.personas" @changed="personasChanged" />
+  <PersonaManager v-model:open="personasOpen" @changed="personasChanged" />
 </template>
 
 <style scoped>

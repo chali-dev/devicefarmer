@@ -9,7 +9,7 @@ import { queryParam } from '../api/query'
 import { api, errorText } from '../api/client'
 import type { CommentTemplate, Persona, TemplateKind } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
-import ScopedListManager from '../components/common/ScopedListManager.vue'
+import PersonaManager from '../components/comments/PersonaManager.vue'
 import VNodes from '../components/common/VNodes'
 import SearchBar from '../components/common/SearchBar.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
@@ -277,7 +277,7 @@ function remove(x: CommentTemplate) {
         </a-form-item>
       </a-form>
     </a-modal>
-    <ScopedListManager v-model:open="managerOpen" path="/api/personas" list-key="personas" texts="scripts.personas" @changed="personasChanged" />
+    <PersonaManager v-model:open="managerOpen" @changed="personasChanged" />
   </PageContainer>
 </template>
 
