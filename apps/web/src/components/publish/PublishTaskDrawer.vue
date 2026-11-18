@@ -148,7 +148,7 @@ async function pushMedia() {
 }
 const runColumns = computed(() => [
   { title: t('publish.round'), key: 'n', width: 70 }, { title: t('common.status'), key: 'status', width: 100 },
-  { title: t('publish.colTime'), key: 'runAt' }, { title: t('taskCenter.attempts'), key: 'attempts', width: 90 }, { title: t('common.error'), key: 'error' },
+  { title: t('publish.colTime'), key: 'runAt' }, { title: t('common.error'), key: 'error' },
 ])
 const copy = async (text: string) => { try { await navigator.clipboard.writeText(text); message.success(t('publish.copied')) } catch { message.error(t('publish.copyFailed')) } }
 </script>
@@ -216,7 +216,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-descriptions-item v-if="task.options.privacy" :label="t('distribute.privacy')">{{ t(`distribute.privacyOpt.${task.options.privacy}`) }}</a-descriptions-item>
           <a-descriptions-item v-if="task.evidence?.inputText" :label="t('publish.readBack')"><div class="text">{{ task.evidence.inputText }}</div></a-descriptions-item>
           <a-descriptions-item :label="t('publish.media')"><MediaStrip :media="task.media" :size="64" /></a-descriptions-item>
-          <a-descriptions-item :label="t('publish.colAttempt')">{{ t('publish.roundOf', { n: task.attemptNo }) }}</a-descriptions-item>
           <a-descriptions-item v-if="task.ownerName" :label="t('content.colOwner')">{{ task.ownerName }}</a-descriptions-item>
         </a-descriptions>
 
@@ -226,7 +225,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
             <template v-if="column.key === 'n'">{{ index + 1 }}</template>
             <template v-else-if="column.key === 'status'"><StatusTag kind="task" :status="record.status" /></template>
             <template v-else-if="column.key === 'runAt'">{{ fmt(record.startedAt ?? record.runAt ?? record.createdAt) }}</template>
-            <template v-else-if="column.key === 'attempts'">{{ record.attempts }}/{{ record.maxAttempts }}</template>
             <template v-else-if="column.key === 'error'">
               <a-typography-text v-if="record.errorCode" type="danger" class="small">{{ codeText(record.errorCode, undefined, record.error ?? record.errorCode) }}</a-typography-text>
               <span v-else-if="(record.result as any)?.state" class="muted small">{{ t(`publish.status.${(record.result as any).state}`) }}</span>

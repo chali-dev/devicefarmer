@@ -15,7 +15,8 @@ import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFiel
  * `uploaded` fires when the queue is idle again, with the assets uploaded since the last time, in the order they were saved
  * (still `processing`).
  */
-const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
+/** ownerId (admin, scope mine): upload into that user's personal media. */
+const props = defineProps<{ scope: 'public' | 'mine'; ownerId?: string; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ uploaded: [items: MediaItem[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
@@ -80,7 +81,7 @@ async function start(e: Entry) {
   e.state = 'uploading'
   e.pct = 0
   e.error = ''
-  const fields: Record<string, string> = { scope: props.scope, ...(e.meta ? metaFields(e.meta) : {}) }
+  const fields: Record<string, string> = { scope: props.scope, ...(props.ownerId ? { ownerId: props.ownerId } : {}), ...(e.meta ? metaFields(e.meta) : {}) }
   if (e.process) fields.process = JSON.stringify(e.process)
   const up = xhrUpload(fields, e.file, (p) => { e.pct = p })
   e.abort = up.abort
@@ -166,7 +167,7 @@ onBeforeUnmount(() => {
     </div>
   </a-modal>
   <MediaEditor
-    v-model:open="editorOpen" :items="pending" :scope="scope" :categories="categories" :tag-options="tagOptions"
+    v-model:open="editorOpen" :items="pending" :scope="scope" :owner-id="ownerId" :categories="categories" :tag-options="tagOptions"
     @save="save" @discard="dropPending" @categories-changed="emit('categoriesChanged')"
   />
 </template>

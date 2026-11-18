@@ -49,8 +49,11 @@ const items = ref<Content[]>([])
 const total = ref(0)
 const loading = ref(false)
 const page = reactive({ current: 1, pageSize: 20 })
-const filters = reactive({ q: '', categoryId: undefined as string | undefined, tag: undefined as string | undefined, lang: undefined as string | undefined, ownerId: undefined as string | undefined })
-const facets = ref<{ tags: string[] }>({ tags: [] })
+/** `tag` = the system tag filter only (「AI 草稿」 quick filter = `ai-draft`; also read from `?tag=`): manual tags have no UI. */
+const filters = reactive({
+  q: '', categoryId: undefined as string | undefined, tag: (typeof route.query.tag === 'string' && route.query.tag) || undefined as string | undefined,
+  lang: undefined as string | undefined, ownerId: undefined as string | undefined,
+})
 const users = ref<ManagedUser[]>([])
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`content.status.${s}`)
@@ -102,14 +105,18 @@ async function load() {
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
-async function loadFacets() {
-  try {
-    facets.value = await api('GET', `/api/contents/facets${filters.ownerId ? `?ownerId=${filters.ownerId}` : ''}`)
-    if (auth.isAdmin && !users.value.length) users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users
-  } catch (e) { message.error(errorText(e)) }
+async function loadUsers() {
+  if (!auth.isAdmin || users.value.length) return
+  try { users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch (e) { message.error(errorText(e)) }
 }
 const search = () => { page.current = 1; void load() }
-function reset() { Object.assign(filters, { q: '', categoryId: undefined, tag: undefined, lang: undefined, ownerId: undefined }); search(); void loadCategories() }
+/** 「AI 草稿」 quick filter (system tag `ai-draft`); kept in `?tag=` so links like /content?status=draft&tag=ai-draft work. */
+function setTagFilter(tag: string | undefined) {
+  filters.tag = tag
+  void router.replace({ query: { ...route.query, tag } })
+  search()
+}
+function reset() { Object.assign(filters, { q: '', categoryId: undefined, lang: undefined, ownerId: undefined }); setTagFilter(undefined); void loadCategories() }
 
 // ---------------------------------------------------------------- 内容分类: public + personal (admins: every user's, or the owner filter's)
 const myId = computed(() => auth.user?.id)
@@ -141,7 +148,7 @@ const SOURCE_LANG = 'zh-CN'
 const langCfg = ref<ContentLanguages>({ source: SOURCE_LANG, configured: [], languages: [SOURCE_LANG] })
 async function loadLangs() { try { langCfg.value = await api<ContentLanguages>('GET', '/api/contents/languages') } catch { /* filter offers Chinese only */ } }
 const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
-onMounted(() => { void load(); void loadFacets(); void loadLangs(); void loadCategories(); void openFromQuery() })
+onMounted(() => { void load(); void loadUsers(); void loadLangs(); void loadCategories(); void openFromQuery() })
 
 /**
  * 编辑后重新发布 (from a failed publish task: `?edit=<content>&account=<account>&postType=`): opens the content in the
@@ -178,13 +185,10 @@ const shortFmt = (d: string) => {
   const x = new Date(d)
   return x.toLocaleString(dateLocale(), { ...(x.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' as const } : {}), month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
-const TAG_MAX = 3
-/** 人设每日草稿: the `ai-draft` tag is shown as 「AI 草稿」 (tooltip: persona, model, time). */
-const tagLabel = (x: string) => (x === AI_DRAFT_TAG ? t('content.aiDraft') : x)
+/** AI 草稿 (system tag `ai-draft`) are marked 「AI 草稿」 (tooltip: persona, model, time). */
 const aiInfo = (c: Content) => (c.aiGenerated
   ? t('content.aiDraftInfo', { persona: c.aiGenerated.personaName, model: c.aiGenerated.model, at: fmt(c.aiGenerated.generatedAt) })
   : '')
-const publishTotal = (c: Content) => Object.entries(c.publishCounts).filter(([s]) => s !== 'cancelled').reduce((a, [, n]) => a + (n ?? 0), 0)
 
 // ---------------------------------------------------------------- editor
 const editorOpen = ref(false)
@@ -194,7 +198,7 @@ const editorTasks = ref<PublishTaskItem[]>([])
 /** Platform hints as plain records; hints of platforms without a tab stay as loaded (and are saved again). */
 type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
-  title: '', categoryId: undefined as string | undefined, tags: [] as string[], media: [] as ContentMedia[], ownerId: undefined as string | undefined,
+  title: '', categoryId: undefined as string | undefined, media: [] as ContentMedia[], ownerId: undefined as string | undefined,
   texts: {} as Record<string, string>, hints: {} as Hints, targets: [] as string[],
 })
 const pickerOpen = ref(false)
@@ -352,7 +356,7 @@ function fillForm(c: Content | null) {
   hints.youtube ??= {}
   sourceLang.value = c ? (c.lang ?? undefined) : SOURCE_LANG
   Object.assign(form, {
-    title: c?.title ?? '', categoryId: c?.category?.id ?? undefined, tags: [...(c?.tags ?? [])], media: [...(c?.media ?? [])],
+    title: c?.title ?? '', categoryId: c?.category?.id ?? undefined, media: [...(c?.media ?? [])],
     ownerId: !c && auth.isAdmin ? auth.user?.id : undefined, targets: (c?.targets ?? []).map((x) => x.id),
     texts: splitTexts(c?.body ?? '', hints), hints,
   })
@@ -410,15 +414,16 @@ const personaText = computed(() => [form.title, ...Object.values(form.texts), ..
 const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...picked.filter((p) => !form.media.some((m) => m.id === p.id))] }
 
 /**
- * 上传: the editor uploads into the caller's personal media; a content may only use its owner's private media
- * (content.media_not_usable), so it is blocked with a hint on someone else's content. New assets are appended in order
+ * 上传: the editor uploads into the content owner's personal media (an admin on someone else's content via ownerId);
+ * a content may only use its owner's private media (content.media_not_usable), so non-admins are blocked with a hint there. New assets are appended in order
  * while they are still processing (the API accepts that; publishing waits for ready: publish.media_not_ready) and are
  * polled until the media-process task has finished.
  */
 const MAX_MEDIA = 20
 const otherOwner = computed(() => Boolean(targetOwner.value && targetOwner.value !== myId.value))
-/** Admin on another user's content: uploads go to public media (usable by every content); others are blocked. */
-const uploadScope = computed<'mine' | 'public'>(() => (otherOwner.value && auth.isAdmin ? 'public' : 'mine'))
+/** Admin on another user's content: uploads go to that owner's personal media (ownerId); others are blocked. */
+const uploadOwner = computed(() => (otherOwner.value && auth.isAdmin ? targetOwner.value : undefined))
+const uploadOwnerName = computed(() => editing.value?.ownerName ?? users.value.find((u) => u.id === targetOwner.value)?.username ?? null)
 const uploadBlocked = computed(() => (otherOwner.value && !auth.isAdmin ? t('content.uploadOtherOwner') : ''))
 function onUploaded(items: ContentMedia[]) {
   const fresh = items.filter((p) => !form.media.some((m) => m.id === p.id))
@@ -454,7 +459,7 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
   try {
     const { body: text, platformHints } = joinTexts(form.texts, form.hints)
     const body = {
-      title: form.title.trim(), body: text, categoryId: form.categoryId ?? null, tags: form.tags, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
+      title: form.title.trim(), body: text, categoryId: form.categoryId ?? null, mediaIds: form.media.map((m) => m.id), platformHints: platformHints as ContentHints,
       targetIds: form.targets,
       ...(editing.value?.stage === 'archived' ? {} : { stage }),
     }
@@ -478,7 +483,7 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
     }
     message.success(t('common.saved'))
     editorOpen.value = false
-    void load(); void loadFacets()
+    void load()
     return saved
   } catch (e) { message.error(errorText(e)); return null } finally { saving.value = false }
 }
@@ -514,11 +519,10 @@ function remove(c: Content) {
 const hasUnfinished = (c: Content) => PUBLISH_UNFINISHED.some((s) => (c.publishCounts[s] ?? 0) > 0)
 
 // ---------------------------------------------------------------- batch (批量操作, POST /api/contents/batch)
-type BatchAction = 'delete' | 'archive' | 'unarchive' | 'cancel-publish' | 'set-category' | 'add-tags' | 'remove-tags'
+type BatchAction = 'delete' | 'archive' | 'unarchive' | 'cancel-publish' | 'set-category'
 interface BatchResult { ok: string[]; skipped: { id: string; code: string; params?: ErrorParams }[]; changed: number; cancelledTasks?: number }
 const selectedKeys = ref<string[]>([])
 const batchCategory = ref<string | undefined>()
-const batchTags = ref<string[]>([])
 const batchCategoryOptions = computed(() => [{ value: 'none', label: t('content.batch.clearCategory') }, ...categoryGroups(publicCats.value, personalCats.value)])
 /** Only the actions that make sense in the current tab. */
 const batchShows = computed(() => ({
@@ -535,7 +539,6 @@ function batch(action: BatchAction) {
     try {
       const body: Record<string, unknown> = { ids, action }
       if (action === 'set-category') body.categoryId = batchCategory.value === 'none' ? null : batchCategory.value
-      if (action === 'add-tags' || action === 'remove-tags') body.tags = batchTags.value
       const r = await api<BatchResult>('POST', '/api/contents/batch', body)
       const done = action === 'cancel-publish' ? t('content.batch.doneCancel', { tasks: r.cancelledTasks ?? 0, n: r.ok.length }) : t('content.batch.done', { n: r.ok.length })
       if (r.skipped.length) {
@@ -549,7 +552,7 @@ function batch(action: BatchAction) {
         })
       } else message.success(done)
       selectedKeys.value = []
-      void load(); void loadFacets(); void loadCategories()
+      void load(); void loadCategories()
     } catch (e) { message.error(errorText(e)) }
   }
   const n = ids.length
@@ -558,17 +561,14 @@ function batch(action: BatchAction) {
   else if (action === 'archive') confirmAction({ title: t('content.batch.confirmArchive', { n }), content: t('content.batch.archiveHint'), onOk: run })
   else return run()
 }
-/** 批量操作 menu; category and tag actions first ask for the value in a small dialog. */
-type BatchFormAction = 'set-category' | 'add-tags' | 'remove-tags'
+/** 批量操作 menu; 设置分类 first asks for the category in a small dialog. */
+type BatchFormAction = 'set-category'
 const batchForm = ref<BatchFormAction | null>(null)
 const batchFormBusy = ref(false)
-const batchFormLabel = (a: BatchFormAction) => t(`content.batch.${a === 'set-category' ? 'setCategory' : a === 'add-tags' ? 'addTags' : 'removeTags'}`)
-const batchFormReady = computed(() => (batchForm.value === 'set-category' ? !!batchCategory.value : batchTags.value.length > 0))
+const batchFormReady = computed(() => !!batchCategory.value)
 const batchItems = computed<BatchItem[]>(() => [
   ...(batchShows.value.publish ? [{ key: 'publish', label: t('content.batch.publish') }] : []),
   { key: 'set-category', label: t('content.batch.setCategory') },
-  { key: 'add-tags', label: t('content.batch.addTags') },
-  { key: 'remove-tags', label: t('content.batch.removeTags') },
   ...(batchShows.value.archive ? [{ key: 'archive', label: t('content.batch.archive') }] : []),
   ...(batchShows.value.unarchive ? [{ key: 'unarchive', label: t('content.batch.unarchive') }] : []),
   ...(batchShows.value.cancel ? [{ key: 'cancel-publish', label: t('content.batch.cancelPublish'), danger: true }] : []),
@@ -581,8 +581,8 @@ const batchTitles = computed(() => new Map(items.value.map((i) => [i.id, i.title
 function onBatchPublished() { selectedKeys.value = []; void load() }
 function onBatch(key: string) {
   if (key === 'publish') { batchPublishIds.value = [...selectedKeys.value]; batchPublishOpen.value = true; return }
-  if (key === 'set-category' || key === 'add-tags' || key === 'remove-tags') {
-    batchCategory.value = undefined; batchTags.value = []
+  if (key === 'set-category') {
+    batchCategory.value = undefined
     batchForm.value = key
   } else void batch(key as BatchAction)
 }
@@ -607,20 +607,19 @@ async function submitBatchForm() {
         <a-select v-model:value="filters.categoryId" :placeholder="t('content.colCategory')" allow-clear show-search option-filter-prop="label" style="width: 160px"
           :options="filterCategoryOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
-        <a-select v-model:value="filters.tag" :placeholder="t('content.colTags')" allow-clear show-search style="width: 140px" :options="facets.tags.map((x) => ({ value: x, label: tagLabel(x) }))" @change="search" />
+        <a-checkable-tag :checked="filters.tag === AI_DRAFT_TAG" class="ai-filter" @change="(v: boolean) => setTagFilter(v ? AI_DRAFT_TAG : undefined)">{{ t('content.aiDraft') }}</a-checkable-tag>
+        <a-tag v-if="filters.tag && filters.tag !== AI_DRAFT_TAG" closable @close="setTagFilter(undefined)">#{{ filters.tag }}</a-tag>
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadFacets(); loadCategories()" />
+          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadCategories()" />
         <template #actions>
           <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>
       </SearchBar>
 
-      <BatchFormModal :open="!!batchForm" :title="batchForm ? batchFormLabel(batchForm) : ''" :note="t('content.selected', { n: selectedKeys.length })"
+      <BatchFormModal :open="!!batchForm" :title="t('content.batch.setCategory')" :note="t('content.selected', { n: selectedKeys.length })"
         :ready="batchFormReady" :busy="batchFormBusy" @ok="submitBatchForm" @update:open="(v: boolean) => { if (!v) batchForm = null }">
-        <a-select v-if="batchForm === 'set-category'" v-model:value="batchCategory" :placeholder="t('content.batch.category')" show-search option-filter-prop="label"
+        <a-select v-model:value="batchCategory" :placeholder="t('content.batch.category')" show-search option-filter-prop="label"
           style="width: 100%" :options="batchCategoryOptions" />
-        <a-select v-else v-model:value="batchTags" mode="tags" :placeholder="t('content.batch.tags')" style="width: 100%"
-          :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
       </BatchFormModal>
 
       <a-tabs :active-key="tab" size="small" class="status-tabs" @change="(k: string | number) => setTab(k as Tab)">
@@ -636,13 +635,9 @@ async function submitBatchForm() {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'title'">
             <a class="title-link ellipsis" :title="record.title" @click="openEdit(record)">{{ record.title }}</a>
-            <div v-if="record.category || record.tags.length || record.lang || record.translations.length" class="meta">
+            <div v-if="record.category || record.aiGenerated || record.lang || record.translations.length" class="meta">
               <a-tag v-if="record.category" color="blue" class="chip">{{ record.category.name }}</a-tag>
               <a-tooltip v-if="record.aiGenerated" :title="aiInfo(record)"><a-tag color="purple" class="chip">{{ t('content.aiDraft') }}</a-tag></a-tooltip>
-              <a-tag v-for="tg in record.tags.filter((x: string) => x !== AI_DRAFT_TAG).slice(0, TAG_MAX)" :key="tg" class="chip">#{{ tg }}</a-tag>
-              <a-tooltip v-if="record.tags.length > TAG_MAX" :title="record.tags.slice(TAG_MAX).map((x: string) => `#${x}`).join(' ')">
-                <a-tag class="chip">+{{ record.tags.length - TAG_MAX }}</a-tag>
-              </a-tooltip>
               <a-tooltip v-if="record.lang" :title="`${t('content.lang.source')} · ${langName(record.lang)}`"><a-tag class="chip lang">{{ record.lang }}</a-tag></a-tooltip>
               <a-tooltip v-for="l in record.translations" :key="l" :title="langName(l)"><a-tag class="chip lang">{{ l }}</a-tag></a-tooltip>
             </div>
@@ -654,9 +649,6 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'status'">
             <div class="status-cell">
               <StatusTag kind="content" :status="record.status" />
-              <a-tooltip v-if="publishTotal(record)" :title="t('content.publishSummary', { published: record.publishCounts.published ?? 0, total: publishTotal(record) })">
-                <a class="small count" @click="router.push({ path: '/publish', query: { tab: 'queue', contentId: record.id } })">{{ record.publishCounts.published ?? 0 }}/{{ publishTotal(record) }}</a>
-              </a-tooltip>
             </div>
           </template>
           <template v-else-if="column.key === 'publishAt'">
@@ -788,19 +780,14 @@ async function submitBatchForm() {
             </a-select>
           </a-form-item>
         </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('content.fieldTags')">
-            <a-select v-model:value="form.tags" mode="tags" :options="facets.tags.map((x) => ({ value: x }))" :token-separators="[',']" />
-          </a-form-item>
-        </a-col>
       </a-row>
       <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
         <a-space style="margin-top: 8px" wrap>
           <a-button :disabled="form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :scope="uploadScope" @uploaded="onUploaded" />
+          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
         </a-space>
-        <div v-if="uploadBlocked || uploadScope === 'public'" class="muted small media-hint">{{ uploadBlocked || t('content.uploadPublicHint') }}</div>
+        <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
         <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
       </a-form-item>
     </a-form>
@@ -868,7 +855,6 @@ async function submitBatchForm() {
 .meta .chip.lang { color: var(--cp-text-secondary); }
 .status-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .status-cell :deep(.ant-tag) { margin: 0; }
-.status-cell .count { font-variant-numeric: tabular-nums; }
 .author { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; }
 .author .avatar { background: var(--cp-primary); flex: none; font-size: 11px; }
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
@@ -882,4 +868,5 @@ async function submitBatchForm() {
 .status-tabs { margin-bottom: 4px; }
 .tab-count { color: var(--cp-text-secondary); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
 .only-tag { margin-bottom: var(--cp-gap); }
+.ai-filter { margin: 0; padding-inline: 10px; line-height: 30px; border: 1px solid var(--cp-border); }
 </style>
