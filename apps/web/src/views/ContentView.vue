@@ -264,7 +264,17 @@ const trOrig = ref<Record<string, string>>({})
 const SRC = '_source'
 const langTab = ref(SRC)
 const currentTr = computed(() => trs.value.find((f) => f.lang === langTab.value))
-const trTabs = computed(() => textTabs(form.texts[primary.value]))
+/**
+ * A translation's text tabs: the body plus only the platforms that carry their own text in the source or in this
+ * translation (a platform without an override publishes the body, so its translation needs none either).
+ */
+const trTabs = computed(() => {
+  const own = (q: string) => Boolean(form.texts[q]?.trim() || currentTr.value?.texts[q]?.trim() || (q === 'youtube' && (form.hints.youtube?.title || currentTr.value?.hints.youtube?.title)))
+  return textTabs(form.texts[primary.value]).filter((tb, i) => i === 0 || own(tb.key))
+})
+watch([langTab, trTabs], () => {
+  if (currentTr.value && !trTabs.value.some((tb) => tb.key === textTab.value)) textTab.value = primary.value
+})
 /** Source language: zh-CN for new contents; older contents keep theirs (read-only). */
 const sourceLang = ref<string | undefined>()
 /** Key-order independent JSON, to tell changed versions apart. */
@@ -281,29 +291,42 @@ function fillTranslations(list: ContentTranslation[]) {
   trs.value = list.map(toTrForm)
   trOrig.value = Object.fromEntries(list.map((x) => [x.lang, stable({ title: x.title.trim(), body: x.body, platformHints: cleanHints(copyHints(x.platformHints)) })]))
   if (!trs.value.some((f) => f.lang === langTab.value)) langTab.value = SRC
+  syncLangs()
 }
 /**
  * Languages the content needs: those of its target accounts (publishing uses the translation in the account's language,
- * else the source), or the owner's 配置语系 when it has no targets. Missing ones are flagged in the editor.
+ * else the source), or the owner's 配置语系 when it has no targets. Each one gets a translation block automatically
+ * (`syncLangs`); an empty, never-saved block whose language is no longer needed is dropped again. Saved translations
+ * stay until they are deleted explicitly (closing their tab).
  */
 const wantedLangs = computed(() => {
   const fromTargets = [...new Set(targetAccounts.value.flatMap((a) => (a.lang ? [a.lang] : [])))]
   return (form.targets.length ? fromTargets : editorLangs.value).filter((l) => l !== sourceLang.value)
 })
-const missingLangs = computed(() => wantedLangs.value.filter((l) => !trs.value.some((f) => f.lang === l)))
-/** Chinese (for older contents in another source language), the wanted languages and the owner's 配置语系. */
-const addableLangs = computed(() => [...new Set([SOURCE_LANG, ...wantedLangs.value, ...editorLangs.value])]
-  .filter((l) => l !== sourceLang.value && !trs.value.some((f) => f.lang === l)))
-function addLang(lang: string) {
-  trs.value.push({ lang, title: '', texts: splitTexts('', {}), hints: { youtube: {} } })
-  langTab.value = lang
+const emptyTr = (f: TrForm) => !f.title.trim() && !Object.values(f.texts).some((x) => x.trim()) && !Object.values(cleanHints(f.hints)).length
+/** 已填 = title and text present; otherwise 缺少译文 (publishing to that language then uses the Chinese original). */
+const trFilled = (f: TrForm) => Boolean(f.title.trim() && Object.values(f.texts).some((x) => x.trim()))
+const isSaved = (lang: string) => lang in trOrig.value
+function syncLangs() {
+  const want = wantedLangs.value
+  const kept = trs.value.filter((f) => want.includes(f.lang) || isSaved(f.lang) || !emptyTr(f))
+  for (const l of want) if (!kept.some((f) => f.lang === l)) kept.push({ lang: l, title: '', texts: splitTexts('', {}), hints: { youtube: {} } })
+  if (kept.length !== trs.value.length || kept.some((f, i) => f !== trs.value[i])) trs.value = kept
+  if (langTab.value !== SRC && !kept.some((f) => f.lang === langTab.value)) langTab.value = SRC
 }
+watch(wantedLangs, syncLangs)
+/** Target accounts per language (tab tooltip). */
+const langAccounts = (lang: string) => targetAccounts.value.filter((a) => a.lang === lang).map((a) => `@${a.handle}`)
+/** A needed, never-saved block would come straight back, so only saved or no longer needed blocks can be closed. */
+const trClosable = (f: TrForm) => isSaved(f.lang) || !wantedLangs.value.includes(f.lang)
 function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
   if (action !== 'remove') return
   const lang = String(key)
+  const drop = () => { trs.value = trs.value.filter((f) => f.lang !== lang); if (langTab.value === lang) langTab.value = SRC; syncLangs() }
+  if (!isSaved(lang)) { drop(); return }
   confirmDanger({
     title: t('content.lang.removeConfirm', { lang: langName(lang) }), content: t('content.lang.removeHint'), okText: t('content.lang.remove'),
-    onOk() { trs.value = trs.value.filter((f) => f.lang !== lang); if (langTab.value === lang) langTab.value = SRC },
+    onOk: drop,
   })
 }
 
@@ -322,15 +345,15 @@ const platformsReady = () => platforms.load().catch(() => undefined)
 async function openNew() {
   await platformsReady()
   editing.value = null; editorTasks.value = []; langTab.value = SRC; textTab.value = primary.value
-  fillTranslations([]); fillForm(null); editorOpen.value = true
+  fillForm(null); fillTranslations([]); editorOpen.value = true
 }
 async function openEdit(c: Content) {
   await platformsReady()
   editing.value = c
   langTab.value = SRC
   textTab.value = primary.value
-  fillTranslations([])
   fillForm(c)
+  fillTranslations([])
   editorOpen.value = true
   try {
     const r = await api<{ content: Content; translations: ContentTranslation[]; publishTasks: PublishTaskItem[] }>('GET', `/api/contents/${c.id}`)
@@ -402,7 +425,9 @@ onBeforeUnmount(() => clearTimeout(mediaPoll))
 /** Saves the editor; resolves to the saved content, or null when validation or a request failed (already shown). */
 async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
   if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return null }
-  const untitled = trs.value.find((f) => !f.title.trim())
+  // Empty blocks that were never saved (added for a target language, nothing written yet) are not saved.
+  const toSave = trs.value.filter((f) => isSaved(f.lang) || !emptyTr(f))
+  const untitled = toSave.find((f) => !f.title.trim())
   if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return null }
   saving.value = true
   try {
@@ -417,11 +442,18 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
     if (editId) {
       for (const lang of Object.keys(trOrig.value)) if (!trs.value.some((f) => f.lang === lang)) await api('DELETE', `/api/contents/${editId}/translations/${lang}`)
       saved = (await api<{ content: Content }>('PUT', `/api/contents/${editId}`, body)).content
-    } else saved = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId && form.ownerId !== auth.user?.id ? { ownerId: form.ownerId } : {}) })).content
+    } else {
+      saved = (await api<{ content: Content }>('POST', '/api/contents', { ...body, ...(form.ownerId && form.ownerId !== auth.user?.id ? { ownerId: form.ownerId } : {}) })).content
+      // A new content's translations are saved right below; if one of them fails, saving again updates this content.
+      editing.value = saved
+    }
     const id = saved.id
-    for (const f of trs.value) {
+    for (const f of toSave) {
       const b = trBody(f)
-      if (trOrig.value[f.lang] !== stable(b)) await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
+      if (trOrig.value[f.lang] !== stable(b)) {
+        await api('PUT', `/api/contents/${id}/translations/${f.lang}`, b)
+        trOrig.value = { ...trOrig.value, [f.lang]: stable(b) }
+      }
     }
     message.success(t('common.saved'))
     editorOpen.value = false
@@ -660,33 +692,20 @@ async function submitBatchForm() {
     </a-alert>
     <a-row :gutter="24">
     <a-col :xs="24" :lg="15">
-    <a-alert v-if="missingLangs.length" type="warning" show-icon class="lang-missing" :message="t('content.lang.missing', { langs: missingLangs.map(langName).join('、') })">
-      <template #description>
-        <span class="muted small">{{ t('content.lang.missingHint') }}</span>
-        <a-space wrap :size="4" class="lang-missing-add">
-          <a-button v-for="l in missingLangs" :key="l" size="small" @click="addLang(l)"><template #icon><PlusOutlined /></template>{{ langName(l) }} ({{ l }})</a-button>
-        </a-space>
-      </template>
-    </a-alert>
     <a-alert v-if="sourceLang && sourceLang !== SOURCE_LANG" type="info" show-icon class="lang-missing" :message="t('content.lang.legacySource', { lang: langName(sourceLang) })" />
     <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
       <a-tab-pane :key="SRC" :closable="false">
         <template #tab>{{ sourceLang ? langName(sourceLang) : t('content.lang.source') }}<a-tag v-if="sourceLang" class="src-tag">{{ t('content.lang.source') }}</a-tag></template>
       </a-tab-pane>
-      <a-tab-pane v-for="f in trs" :key="f.lang">
-        <template #tab>{{ langName(f.lang) }}<a-tag v-if="wantedLangs.includes(f.lang)" class="src-tag">{{ t('content.lang.target') }}</a-tag></template>
+      <a-tab-pane v-for="f in trs" :key="f.lang" :closable="trClosable(f)">
+        <template #tab>
+          <a-tooltip :title="langAccounts(f.lang).length ? t('content.lang.usedBy', { accounts: langAccounts(f.lang).join('、') }) : undefined">
+            <span>{{ langName(f.lang) }}<a-tag :color="trFilled(f) ? 'success' : 'warning'" class="src-tag">{{ trFilled(f) ? t('content.lang.filled') : t('content.lang.missingOne') }}</a-tag></span>
+          </a-tooltip>
+        </template>
       </a-tab-pane>
-      <template #rightExtra>
-        <a-dropdown :disabled="!addableLangs.length" :trigger="['click']">
-          <a-button size="small"><template #icon><PlusOutlined /></template>{{ t('content.lang.add') }}</a-button>
-          <template #overlay>
-            <a-menu @click="({ key }: { key: string | number }) => addLang(String(key))">
-              <a-menu-item v-for="l in addableLangs" :key="l">{{ langName(l) }} ({{ l }})</a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
-      </template>
     </a-tabs>
+    <div v-if="trs.some((f) => !trFilled(f))" class="muted small lang-hint">{{ t('content.lang.missingHint') }}</div>
 
     <a-form v-if="currentTr" :key="currentTr.lang" layout="vertical">
       <a-form-item :label="t('content.fieldTitle')" required>
@@ -829,7 +848,7 @@ async function submitBatchForm() {
 .src-tag { margin-inline-start: 6px; margin-inline-end: 0; font-size: 11px; line-height: 16px; padding-inline: 4px; }
 .lang-tabs { margin-bottom: 12px; }
 .lang-missing { margin-bottom: 8px; }
-.lang-missing-add { display: flex; margin-top: 6px; }
+.lang-hint { margin: -4px 0 8px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 .new-category { display: flex; gap: 4px; padding: 4px 8px; }
