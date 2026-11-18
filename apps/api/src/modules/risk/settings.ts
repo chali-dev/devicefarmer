@@ -33,6 +33,8 @@ export const RiskDeviceInput = z.object({
    * not yet recorded is synced for the phone's only assigned user (else a notice). false = off.
    */
   accountDiscovery: z.boolean(),
+  /** 追踪中 (social/following.ts): interval in hours of reading each own Instagram account's following list on its phone; null = off. */
+  followingSyncHours: z.number().int().min(1).max(168).nullable(),
 });
 export type RiskDeviceSettings = z.infer<typeof RiskDeviceInput>;
 
@@ -46,6 +48,7 @@ export const riskDefaults = (): RiskDeviceSettings => ({
   feedPosts: 3,
   feedCommentsPerPost: 30,
   accountDiscovery: true,
+  followingSyncHours: 24,
 });
 
 let cache: { at: number; value: RiskDeviceSettings } | null = null;

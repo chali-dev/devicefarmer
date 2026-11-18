@@ -749,12 +749,15 @@ export interface RiskDeviceSettings {
   feedCollectHours: number | null; feedPosts: number; feedCommentsPerPost: number
   /** 自动发现: hourly `dumpsys account` on running phones finds Instagram accounts not yet in 社交号 (default on). */
   accountDiscovery: boolean
+  /** 追踪中: read each own Instagram account's following list on its phone every N hours (null = off). */
+  followingSyncHours: number | null
 }
 export interface RiskSettings { device: RiskDeviceSettings; defaults: RiskDeviceSettings; capacityPerHour: number; eventRetentionDays: number }
 /** GET /api/instances/automation: 风控暂停 / busy (an automatic operation holds the device lock), per device id. */
-export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish' | 'auto'
+export type DeviceOpKind = 'collect' | 'check' | 'feed' | 'reply' | 'publish' | 'following' | 'auto'
+export type RiskSource = 'collector' | 'account_check' | 'feed' | 'reply' | 'publish' | 'following'
 export interface DeviceAutomation {
-  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; platform: string } | null
+  halted: { at: string; code: string; source: RiskSource; platform: string } | null
   busy: { what: DeviceOpKind; since: string | null } | null
 }
 export interface RiskDevice {
@@ -763,11 +766,37 @@ export interface RiskDevice {
   collectorFor: string[]
   /** Social accounts on this phone that the automatic check covers. */
   checkedAccounts: number
-  halted: { at: string; code: string; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
+  halted: { at: string; code: string; source: RiskSource; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
   visitsLastHour: number; lastVisitAt: string | null
 }
 export interface RiskEvent {
-  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check' | 'feed' | 'reply' | 'publish'; code: string; detail: string | null
+  id: string; at: string; instanceId: string | null; instanceName: string | null; source: RiskSource; code: string; detail: string | null
   socialAccountId: string | null; trackedAccountId: string | null; userId: string | null
   socialHandle: string | null; trackedHandle: string | null; username: string | null
+}
+
+// ---------------------------------------------------------------- 我的媒体号 → 粉丝 / 追踪中
+/** GET /api/social/accounts/:id/followers: count readings of the automatic check / sync (no follower list). */
+export interface AccountFollowers {
+  account: { id: string; platform: string; handle: string }
+  lastCheckedAt: string | null; lastCheckCode: string | null
+  current: { followers: number; approx: boolean; day: string; at: string } | null
+  /** latest − the last reading at or before 1 / 7 / 30 days ago; null = not enough readings */
+  change: { today: number | null; d7: number | null; d30: number | null }
+  today: string
+  /** one entry per UTC day; null = no reading that day (a gap in the chart, never 0) */
+  series: { day: string; followers: number | null }[]
+}
+export interface FollowingEntry {
+  id: string; handle: string; displayName: string | null; verified: boolean | null; position: number | null
+  firstSeenAt: string; lastSeenAt: string; goneAt: string | null
+}
+export interface FollowingRun { taskId: string; status: string; at: string; errorCode: string | null; result: Record<string, unknown> | null }
+/** GET /api/social/accounts/:id/following */
+export interface AccountFollowing {
+  items: FollowingEntry[]; total: number; following: number; gone: number
+  unsupported: string | null; halted: boolean
+  settings: { hours: number | null; max: number }
+  last: FollowingRun | null; lastSynced: FollowingRun | null
+  pending: { taskId: string; status: string; runAt: string | null } | null
 }

@@ -49,7 +49,7 @@ export const MENU_API: MenuApiRule[] = [
   { methods: 'all', pattern: seg('/api/trending'), menus: ['trending'] },
   // 媒体管理 (/social): its tabs 追踪号 / 回文日志 and the account feed drawer.
   { methods: 'all', pattern: /^\/api\/(tracked-accounts|comments|comment-replies)(?:\/|$)/, menus: ['social'] },
-  { methods: 'all', pattern: /^\/api\/social\/accounts\/[^/]+\/(feed|logs|ai-drafts|posts|collect|check)(?:\/|$)/, menus: ['social'] },
+  { methods: 'all', pattern: /^\/api\/social\/accounts\/[^/]+\/(feed|logs|ai-drafts|posts|collect|check|following|followers)(?:\/|$)/, menus: ['social'] },
   { methods: 'write', pattern: seg('/api/social'), menus: ['social'] },
   // 人设管理: the 范例 are edited in the persona form only; reading personas is shared (accounts, editor, comment drawer).
   { methods: 'all', pattern: seg('/api/comment-templates'), menus: ['personas'] },

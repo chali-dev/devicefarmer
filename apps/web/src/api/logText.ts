@@ -157,6 +157,12 @@ const RULES: Rule[] = [
   [/^handed over to an operator: ([\s\S]+)$/, 'handedOverWhy', (m, d) => ({ msg: coded(m[1]!, d) })],
   [/^feed collection skipped: (\S+)$/, 'feedSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^feed collection failed: (\S+)$/, 'feedFailed', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  // 追踪中 (task account-following)
+  [/^following: own profile read$/, 'followingProfileRead', (_m, d) => ({ n: String(d?.following ?? '?') })],
+  [/^following: list stopped growing before its end$/, 'followingStalled', () => ({})],
+  [/^following sync skipped: (\S+)$/, 'followingSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^following sync failed: (\S+)$/, 'followingFailed', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^following list read: (\d+) accounts \((\d+) new, (\d+) gone\)$/, 'followingRead', (m) => ({ n: m[1]!, added: m[2]!, gone: m[3]! })],
   [/^feed collected: (\d+) posts \((\d+) new\), (\d+) comments \((\d+) new\)$/, 'feedCollected', (m) => ({ posts: m[1]!, newPosts: m[2]!, comments: m[3]!, newComments: m[4]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点

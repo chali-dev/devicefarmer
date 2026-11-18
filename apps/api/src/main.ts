@@ -55,6 +55,8 @@ import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // aler
 import { riskRoutes } from './modules/risk/routes.js'; // 风控: device pace, device halts, risk events
 import { scheduleAccountDeviceChecks } from './modules/social/check.js'; // 社交号自动检测 (task account-device-check)
 import { discoverDeviceAccounts } from './modules/social/sync.js'; // 从云手机同步 + 自动发现 (task account-device-sync)
+import { followingRoutes } from './modules/social/following-routes.js'; // 我的媒体号 → 粉丝 / 追踪中
+import { scheduleFollowingSyncs } from './modules/social/following.js'; // 追踪中 (task account-following)
 import { feedRoutes } from './modules/feed/routes.js'; // 帖子与评论 (account feed): feed API, collect now, post comments, reply evidence
 import { scheduleFeedCollects } from './modules/feed/collect.js'; // 帖子与评论采集 (task feed-collect)
 import { cleanupUploads } from './modules/apps/package.js';
@@ -117,6 +119,7 @@ await app.register(systemRoutes);
 await app.register(notifyRoutes);
 await app.register(riskRoutes);
 await app.register(feedRoutes);
+await app.register(followingRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
@@ -172,6 +175,7 @@ async function startBackground(): Promise<void> {
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
+    void scheduleFollowingSyncs().catch((err) => app.log.warn({ err }, 'following sync scheduling failed'));
     alertsHourly(app.log);
   };
   const firstRun = setTimeout(() => {
@@ -182,6 +186,7 @@ async function startBackground(): Promise<void> {
     void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     void discoverDeviceAccounts().catch((err) => app.log.warn({ err }, 'account discovery failed'));
     void scheduleFeedCollects().catch((err) => app.log.warn({ err }, 'feed collection scheduling failed'));
+    void scheduleFollowingSyncs().catch((err) => app.log.warn({ err }, 'following sync scheduling failed'));
     alertsHourly(app.log);
   }, 10_000);
   firstRun.unref();

@@ -81,7 +81,7 @@ export const riskRoutes: FastifyPluginAsyncZod = async (app) => {
       querystring: z.object({
         instanceId: z.string().uuid().optional(),
         code: z.string().trim().max(100).optional(),
-        source: z.enum(['collector', 'account_check', 'feed', 'reply', 'publish']).optional(),
+        source: z.enum(['collector', 'account_check', 'feed', 'reply', 'publish', 'following']).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(20),
         offset: z.coerce.number().int().min(0).default(0),
       }),

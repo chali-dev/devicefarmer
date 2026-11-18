@@ -1,0 +1,205 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="com.instagram.android:id/action_bar_root" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="android:id/content" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="com.instagram.android:id/swipe_navigation_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2374]">
+<node text="" resource-id="com.instagram.android:id/bottom_sheet_camera_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2230]"/>
+<node text="" resource-id="com.instagram.android:id/layout_container_center_right_coordinator_layout" class="android.view.ViewGroup" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/layout_container_right" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]"/>
+<node text="" resource-id="com.instagram.android:id/activity_and_camera_shared_views_main_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]"/>
+<node text="" resource-id="com.instagram.android:id/layout_container_main_panel" class="android.view.ViewGroup" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/layout_container_main_wrapper" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/layout_container_main" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]"/>
+<node text="" resource-id="com.instagram.android:id/swipeable_tab_view_pager" class="androidx.viewpager.widget.ViewPager" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/swipeable_nav_view_pager_inner_recycler_view" class="androidx.recyclerview.widget.RecyclerView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/layout_container_swipeable" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/main_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,240][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/unified_follow_list_tab_layout" class="android.widget.HorizontalScrollView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,240][1080,384]">
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,240][1080,384]">
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,240][270,384]">
+<node text="粉丝 (0)" resource-id="com.instagram.android:id/title" class="android.widget.Button" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[36,240][234,384]"/>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="true" bounds="[270,240][540,384]">
+<node text="关注 (6)" resource-id="com.instagram.android:id/title" class="android.widget.Button" package="com.instagram.android" content-desc="" clickable="true" selected="true" bounds="[306,240][504,384]"/>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[540,240][810,384]">
+<node text="订阅 (0)" resource-id="com.instagram.android:id/title" class="android.widget.Button" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[576,240][774,384]"/>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[810,240][1080,384]">
+<node text="已标记" resource-id="com.instagram.android:id/title" class="android.widget.Button" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[846,240][1044,384]"/>
+</node>
+</node>
+</node>
+<node text="" resource-id="com.instagram.android:id/unified_follow_list_view_pager_wrapper" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/unified_follow_list_view_pager" class="androidx.viewpager.widget.ViewPager" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="" class="androidx.recyclerview.widget.RecyclerView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="com.instagram.android:id/layout_listview_parent_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="android:id/list" class="android.widget.ListView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,2230]">
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,574]">
+<node text="" resource-id="" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,574]">
+<node text="搜索" resource-id="com.instagram.android:id/row_search_edit_text" class="android.widget.EditText" package="com.instagram.android" content-desc="#ff686f78" clickable="true" selected="false" bounds="[48,420][1032,538]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.view.ViewGroup" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,574][1080,728]">
+<node text="排序方式 - 默认" resource-id="com.instagram.android:id/sorting_entry_row_option" class="android.widget.TextView" package="com.instagram.android" content-desc="排序方式 - 默认标题" clickable="false" selected="false" bounds="[48,616][376,686]"/>
+<node text="" resource-id="com.instagram.android:id/sorting_entry_row_icon" class="android.widget.Button" package="com.instagram.android" content-desc="排序方式" clickable="true" selected="false" bounds="[960,615][1032,687]"/>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,728][1080,944]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,728][1080,944]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,737][246,935]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,752][231,920]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,776][612,895]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,776][551,830]">
+<node text="gigi.cassyy15" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,776][551,830]"/>
+</node>
+<node text="Cassy" resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,830][399,883]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[612,788][948,884]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,764][1080,908]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,944][1080,1160]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,944][1080,1160]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,953][246,1151]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,968][231,1136]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,992][612,1111]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,992][563,1046]">
+<node text="theweeknd" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,992][563,1046]"/>
+</node>
+<node text="Abel" resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1046][372,1099]"/>
+</node>
+<node text="发消息" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="发消息给Abel" clickable="true" selected="false" bounds="[612,1000][948,1103]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,980][1080,1124]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1160][1080,1376]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1160][1080,1376]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,1169][246,1367]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.view.View" package="com.instagram.android" content-desc="@2131975687" clickable="false" selected="false" bounds="[48,1169][246,1367]"/>
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,1184][231,1352]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,1182][612,1354]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1182][531,1236]">
+<node text="717_xiong" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1182][531,1236]"/>
+</node>
+<node text="Xiao Su" resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1236][430,1289]"/>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1289][576,1342]">
+<node text="4篇新帖" resource-id="com.instagram.android:id/unseen_posts_text" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1289][412,1342]"/>
+<node text="" resource-id="com.instagram.android:id/unseen_posts_blue_dot" class="android.widget.ImageView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[424,1309][442,1327]"/>
+</node>
+</node>
+<node text="发消息" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="发消息给Xiao Su" clickable="true" selected="false" bounds="[612,1216][948,1319]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,1196][1080,1340]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1376][1080,1592]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1376][1080,1592]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,1385][246,1583]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,1400][231,1568]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,1424][612,1543]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1424][576,1478]">
+<node text="baekhyunee_exo" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1424][576,1478]"/>
+</node>
+<node text="BaekHyun." resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1478][491,1531]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[612,1436][948,1532]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,1412][1080,1556]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1592][1080,1808]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1592][1080,1808]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,1601][246,1799]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.view.View" package="com.instagram.android" content-desc="@2131975687" clickable="false" selected="false" bounds="[48,1601][246,1799]"/>
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,1616][231,1784]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,1614][612,1786]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1614][405,1668]">
+<node text="thv" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1614][405,1668]"/>
+</node>
+<node text="V" resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1668][310,1721]"/>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1721][576,1774]">
+<node text="1篇新帖" resource-id="com.instagram.android:id/unseen_posts_text" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1721][405,1774]"/>
+<node text="" resource-id="com.instagram.android:id/unseen_posts_blue_dot" class="android.widget.ImageView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[417,1741][435,1759]"/>
+</node>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[612,1652][948,1748]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,1628][1080,1772]"/>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1808][1080,2024]">
+<node text="" resource-id="com.instagram.android:id/follow_list_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,1808][1080,2024]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="头像" clickable="true" selected="false" bounds="[48,1817][246,2015]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="头像" clickable="false" selected="false" bounds="[63,1832][231,2000]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/follow_list_content_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[246,1856][612,1975]">
+<node text="" resource-id="com.instagram.android:id/follow_list_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1856][576,1910]">
+<node text="elephantdee" resource-id="com.instagram.android:id/follow_list_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1856][576,1910]"/>
+</node>
+<node text="Dee" resource-id="com.instagram.android:id/follow_list_subtitle" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[282,1910][358,1963]"/>
+</node>
+<node text="发消息" resource-id="com.instagram.android:id/follow_list_row_large_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="发消息给Dee" clickable="true" selected="false" bounds="[612,1864][948,1967]"/>
+<node text="" resource-id="com.instagram.android:id/media_option_button" class="android.widget.ImageView" package="com.instagram.android" content-desc="更多选项" clickable="true" selected="false" bounds="[948,1844][1080,1988]"/>
+</node>
+</node>
+<node text="" resource-id="com.instagram.android:id/frame_header" class="android.view.ViewGroup" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,2024][1080,2168]">
+<node text="为你推荐" resource-id="com.instagram.android:id/row_header_textview" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,2024][1080,2168]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/recommended_user_row_content_identifier" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,2168][1080,2230]">
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[48,2192][1032,2230]">
+<node text="" resource-id="com.instagram.android:id/avatar_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[48,2192][216,2230]">
+<node text="" resource-id="com.instagram.android:id/row_recommended_user_imageview" class="android.widget.ImageView" package="com.instagram.android" content-desc="suggested" clickable="true" selected="false" bounds="[48,2192][216,2230]"/>
+</node>
+<node text="" resource-id="com.instagram.android:id/row_recommended_user_info_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[216,2216][660,2230]">
+<node text="suggested_1" resource-id="com.instagram.android:id/row_recommended_user_username" class="android.widget.TextView" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[252,2216][404,2230]"/>
+</node>
+<node text="关注" resource-id="com.instagram.android:id/row_recommended_user_follow_button" class="android.widget.TextView" package="com.instagram.android" content-desc="suggested" clickable="true" selected="false" bounds="[660,2228][948,2230]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node text="" resource-id="" class="android.view.View" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,384][1080,387]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node text="" resource-id="com.instagram.android:id/action_bar_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,240]">
+<node text="" resource-id="com.instagram.android:id/action_bar_wrapper" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,72][1080,240]">
+<node text="" resource-id="com.instagram.android:id/action_bar" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,72][1080,240]">
+<node text="" resource-id="com.instagram.android:id/action_bar_new_title_container" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[0,72][852,240]">
+<node text="" resource-id="com.instagram.android:id/action_bar_button_back" class="android.widget.ImageView" package="com.instagram.android" content-desc="返回" clickable="true" selected="false" bounds="[0,72][168,240]"/>
+<node text="" resource-id="" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[168,120][852,191]">
+<node text="" resource-id="com.instagram.android:id/action_bar_title_and_icons" class="android.widget.LinearLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[168,120][852,191]">
+<node text="conchadoroperto650" resource-id="com.instagram.android:id/action_bar_title" class="android.widget.TextView" package="com.instagram.android" content-desc="conchadoroperto650" clickable="true" selected="false" bounds="[216,120][816,191]"/>
+</node>
+</node>
+</node>
+<node text="" resource-id="" class="android.widget.Button" package="com.instagram.android" content-desc="好友中心" clickable="true" selected="false" bounds="[912,72][1056,240]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+<node text="" resource-id="com.instagram.android:id/overlay_layout_container" class="android.widget.FrameLayout" package="com.instagram.android" content-desc="" clickable="false" selected="false" bounds="[0,0][1080,2230]"/>
+</node>
+</node>
+</node>
+</node>
+</node>
+</node>
+</hierarchy>
