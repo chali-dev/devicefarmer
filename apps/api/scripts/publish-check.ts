@@ -105,6 +105,8 @@ try {
   const acc = async (token: string, body: Record<string, unknown>) => {
     const r = await http('POST', '/api/social/accounts', token, { handle: `pc_${tag}_${body.platform}_${randomBytes(2).toString('hex')}`, ...body });
     if (r.status !== 201) throw new Error(`account create failed ${r.status} ${r.text}`);
+    // login/account status are written by the automatic account check (风控) since 2026-11-18, not by the API: set them like that check would
+    if (body.loginStatus || body.accountStatus) await sqlClient`update social_accounts set login_status = coalesce(${(body.loginStatus as string) ?? null}, login_status), account_status = coalesce(${(body.accountStatus as string) ?? null}, account_status) where id = ${r.body.account.id}`;
     return r.body.account.id as string;
   };
   const ytA = await acc(A, { platform: 'youtube', instanceId: DON.id, loginStatus: 'logged_in' });

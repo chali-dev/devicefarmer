@@ -39,6 +39,7 @@ const EXACT: Record<string, string> = {
   'check: not published before on this account': 'checkNotPublished',
   'check: device online': 'checkDeviceOnline',
   'check: account logged in on the device': 'checkLoggedIn',
+  'check: account login not checked yet': 'checkLoginUnknown',
   distributed: 'distributed',
   'distributed (re-publish)': 'distributedRepublish',
   rescheduled: 'rescheduled',

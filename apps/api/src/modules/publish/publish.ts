@@ -367,8 +367,11 @@ async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
     throw new TaskError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
   }
   await log('info', 'check: device online', { device: inst.name });
-  if (acc.loginStatus !== 'logged_in') throw new PublishCheckError('publish.not_logged_in', `account login status is ${acc.loginStatus}`, { status: acc.loginStatus });
-  await log('info', 'check: account logged in on the device');
+  // `unknown` = not checked yet (the automatic account check runs every few hours): allowed; only a known bad state blocks.
+  if (acc.loginStatus === 'logged_out' || acc.loginStatus === 'needs_verification') {
+    throw new PublishCheckError('publish.not_logged_in', `account login status is ${acc.loginStatus}`, { status: acc.loginStatus });
+  }
+  await log('info', acc.loginStatus === 'logged_in' ? 'check: account logged in on the device' : 'check: account login not checked yet');
   return {
     publishTaskId: row.id, attemptNo: row.attemptNo, platform: row.platform, account: acc,
     title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags,

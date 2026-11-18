@@ -2039,6 +2039,7 @@ const zhCN = {
       checkNotPublished: '检查：该账号之前未发布过此内容',
       checkDeviceOnline: '检查：设备在线',
       checkLoggedIn: '检查：账号已在设备上登录',
+      checkLoginUnknown: '检查：账号登录状态尚未检测（允许发布）',
       distributed: '已分发',
       distributedRepublish: '已分发（重新发布）',
       rescheduled: '已改期',

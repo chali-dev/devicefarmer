@@ -2028,6 +2028,7 @@ const en: Messages = {
       checkNotPublished: 'Check: not published before on this account',
       checkDeviceOnline: 'Check: device online',
       checkLoggedIn: 'Check: account logged in on the device',
+      checkLoginUnknown: 'Check: account login not checked yet (allowed)',
       distributed: 'Distributed',
       distributedRepublish: 'Distributed (re-publish)',
       rescheduled: 'Rescheduled',
