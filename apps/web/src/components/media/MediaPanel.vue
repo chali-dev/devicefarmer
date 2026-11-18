@@ -11,6 +11,7 @@ import { api, errorText } from '../../api/client'
 import type { ManagedUser, MediaCategory, MediaItem, MediaLimits, MediaScope } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { useInstancesStore } from '../../stores/instances'
+import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
 import SearchBar from '../common/SearchBar.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
@@ -164,6 +165,16 @@ async function batchDelete() {
       } catch (e) { message.error(errMsg(e)) }
     },
   })
+}
+
+/** 批量操作 menu: push to devices, delete (only assets the viewer may manage; batchDelete confirms). */
+const batchItems = computed<BatchItem[]>(() => [
+  { key: 'push', label: t('media.pushToDevice') },
+  { key: 'delete', label: t('common.delete'), danger: true, disabled: !selectedItems.value.some((i) => i.canManage) },
+])
+function onBatch(key: string) {
+  if (key === 'push') openPush(selectedItems.value)
+  else if (key === 'delete') void batchDelete()
 }
 
 // ---------------------------------------------------------------- single actions
@@ -340,7 +351,12 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
         :options="tagOptions.map((x) => ({ value: x, label: x }))"
       />
       <a-select v-if="showStatus" v-model:value="status" :options="statusOptions" style="width: 130px" />
+      <a-checkbox
+        v-if="items.length && view === 'grid'" :checked="allChecked" :indeterminate="selected.length > 0 && !allChecked"
+        @change="(e: any) => (selected = e.target.checked ? items.map((i) => i.id) : [])"
+      >{{ t('media.selectAll') }}</a-checkbox>
       <template #actions>
+        <BatchActions :count="selected.length" :items="batchItems" @select="onBatch" @clear="selected = []" />
         <a-radio-group v-model:value="view" button-style="solid">
           <a-radio-button value="grid"><a-tooltip :title="t('media.gridView')"><AppstoreOutlined /></a-tooltip></a-radio-button>
           <a-radio-button value="list"><a-tooltip :title="t('media.listView')"><BarsOutlined /></a-tooltip></a-radio-button>
@@ -349,19 +365,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
         <a-button v-if="canUpload" type="primary" @click="uploadOpen = true"><template #icon><CloudUploadOutlined /></template>{{ t('media.upload') }}</a-button>
       </template>
     </SearchBar>
-
-    <div v-if="(items.length && view === 'grid') || selected.length" class="select-bar" :class="{ active: selected.length }">
-      <a-checkbox
-        v-if="items.length && view === 'grid'" :checked="allChecked" :indeterminate="selected.length > 0 && !allChecked"
-        @change="(e: any) => (selected = e.target.checked ? items.map((i) => i.id) : [])"
-      >{{ t('media.selectAll') }}</a-checkbox>
-      <template v-if="selected.length">
-        <span>{{ t('media.selectedN', { n: selected.length }) }}</span>
-        <a-button size="small" @click="openPush(selectedItems)"><template #icon><SendOutlined /></template>{{ t('media.pushToDeviceN', { n: selected.length }) }}</a-button>
-        <a-button v-if="selectedItems.some((i) => i.canManage)" size="small" danger @click="batchDelete"><template #icon><DeleteOutlined /></template>{{ t('media.batchDelete') }}</a-button>
-        <a-button size="small" type="link" @click="selected = []">{{ t('media.clearSelection') }}</a-button>
-      </template>
-    </div>
 
     <a-spin :spinning="loading">
       <a-empty v-if="!items.length && !loading" :description="tab === 'favorites' ? t('media.emptyFavorites') : t('media.empty')" style="margin: 32px 0" />
@@ -534,8 +537,6 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 </template>
 
 <style scoped>
-.select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: var(--cp-gap); padding: 6px 12px; border-radius: var(--cp-radius); }
-.select-bar.active { background: var(--cp-fill-alter); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--cp-gap); }
 .item { border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius-lg); overflow: hidden; background: var(--cp-bg-container); display: flex; flex-direction: column; min-width: 0; }
 .item.checked { border-color: var(--cp-primary); box-shadow: 0 0 0 1px var(--cp-primary); }
