@@ -110,11 +110,12 @@ try {
   check('admin: removed rule accountCheckHours → 400', r.status === 400);
   r = await http('PUT', '/api/settings/alerts', T, { kinds: { 'connection.expired': { inApp: true } } });
   check('admin: removed kind connection.expired → 400', r.status === 400);
-  const allOn = { 'device.down': { inApp: true }, 'account.problem': { inApp: true }, 'publish.failed': { inApp: true }, 'task.failed': { inApp: true }, 'collector.blocked': { inApp: true }, 'channel.failed': { inApp: true } };
+  const allOn = { 'device.down': { inApp: true }, 'account.problem': { inApp: true }, 'publish.failed': { inApp: true }, 'task.failed': { inApp: true }, 'collector.blocked': { inApp: true }, 'account.discovered': { inApp: true }, 'channel.failed': { inApp: true } };
   r = await http('PUT', '/api/settings/alerts', T, { kinds: allOn, cooldownMinutes: 60, notifyAdmins: true, recovered: true, retentionDays: 30 });
   check('admin: save rules', r.status === 200 && r.body.rules.cooldownMinutes === 60 && r.body.rules.kinds['task.failed'].inApp === true, r.text);
   r = await http('GET', '/api/settings/alerts', T);
-  check('admin: GET rules lists 6 kinds with severity/recoverable (no connection.expired, no accountCheckHours)', r.status === 200 && r.body.kinds.length === 6
+  check('admin: GET rules lists 7 kinds with severity/recoverable (incl. account.discovered; no connection.expired, no accountCheckHours)', r.status === 200 && r.body.kinds.length === 7
+    && r.body.kinds.some((k: any) => k.kind === 'account.discovered')
     && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable) && !r.body.kinds.some((k: any) => k.kind === 'connection.expired') && !('accountCheckHours' in r.body.rules), r.text.slice(0, 300));
 
   // ---------------------------------------------------------------- device.down through the real monitor

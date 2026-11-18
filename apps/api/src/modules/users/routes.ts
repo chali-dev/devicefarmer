@@ -173,7 +173,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
       const [u] = await tx.select({ id: schema.users.id, role: schema.users.role, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, to)).for('update');
       if (!u) throw badRequest('用户不存在', 'users.not_found');
       if (u.role !== 'user') throw badRequest('管理员可访问全部设备，无需授权', 'grants.admin_not_needed');
-      if (cur.length === 1 && cur[0] === to) return []; // same user: no-op (accounts already followed at assignment)
+      // same user: grants unchanged; still moves linked accounts that don't follow yet (data from before this rule)
+      if (cur.length === 1 && cur[0] === to) return moveDeviceAccounts(tx, req.user, inst.id, to);
       if (u.disabled && !cur.includes(to)) throw badRequest('用户已禁用，不能分配云手机', 'grants.user_disabled');
       await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
       await tx.insert(schema.instanceGrants).values({ userId: to, instanceId: inst.id });

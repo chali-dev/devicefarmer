@@ -16,7 +16,8 @@ import { writeLogs, type LogEntry, type Tx } from './social.js';
  *   - the account's local comment copies (`comments.user_id` = the account owner) move with it.
  * Refused with 409 `instances.assign_account_busy` (nothing changed) while the account has unfinished publish tasks or
  * comment replies (drafts included): they belong to the old owner's work. Finished publish tasks / replies stay with
- * the user who made them (history). Unassigning moves nothing; assigning the same user again is a no-op.
+ * the user who made them (history). Unassigning moves nothing; assigning the same user again changes no grant but still moves linked accounts that
+ * don't follow yet (accounts synced before this rule).
  */
 const SA = schema.socialAccounts;
 const REPLY_UNFINISHED = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator'] as const;
