@@ -42,7 +42,6 @@ const route = useRoute()
 const router = useRouter()
 
 const platforms = ref<SocialPlatform[]>([])
-const allTags = ref<string[]>([])
 /** 账号人设 options: public personas + personal ones (own; admins: every user's). */
 const personas = ref<Persona[]>([])
 const users = ref<ManagedUser[]>([])
@@ -64,7 +63,6 @@ const filters = reactive({
   loginStatus: queryParam<SocialLoginStatus>(route.query, 'loginStatus', ['unknown', 'logged_in', 'logged_out', 'needs_verification']),
   accountStatus: queryParam<SocialAccountStatus>(route.query, 'accountStatus', ['active', 'limited', 'suspended', 'disabled']),
   exception: queryParam(route.query, 'exception') === '1',
-  tags: [] as string[],
   ownerId: undefined as string | undefined,
   instanceId: (typeof route.query.instanceId === 'string' ? route.query.instanceId : undefined) as string | undefined,
 })
@@ -76,16 +74,14 @@ const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) 
 
 async function loadMeta() {
   try {
-    const [p, tg, pub, own, langs] = await Promise.all([
+    const [p, pub, own, langs] = await Promise.all([
       api<{ platforms: SocialPlatform[] }>('GET', '/api/social/platforms'),
-      api<{ tags: string[] }>('GET', '/api/social/tags'),
       api<{ personas: Persona[] }>('GET', '/api/personas?scope=public'),
       api<{ personas: Persona[] }>('GET', `/api/personas?scope=${auth.isAdmin ? 'all-users' : 'mine'}`),
       api<{ configured: string[] }>('GET', '/api/contents/languages'),
     ])
     accountLangs.value = langs.configured
     platforms.value = p.platforms
-    allTags.value = tg.tags
     personas.value = [...pub.personas, ...own.personas]
     if (auth.isAdmin && !users.value.length) users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users
   } catch (e) { message.error(errorText(e)) }
@@ -98,7 +94,6 @@ async function load() {
     if (filters.q.trim()) p.set('q', filters.q.trim())
     for (const k of ['platform', 'personaId', 'lang', 'loginStatus', 'accountStatus', 'ownerId', 'instanceId'] as const) if (filters[k]) p.set(k, filters[k]!)
     if (filters.exception) p.set('exception', 'true')
-    if (filters.tags.length) p.set('tags', filters.tags.join(','))
     const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
     items.value = r.items
     total.value = r.total
@@ -110,7 +105,7 @@ async function load() {
 }
 function search() { page.current = 1; void load() }
 function reset() {
-  Object.assign(filters, { q: '', platform: undefined, personaId: undefined, lang: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, tags: [], ownerId: undefined, instanceId: undefined })
+  Object.assign(filters, { q: '', platform: undefined, personaId: undefined, lang: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, ownerId: undefined, instanceId: undefined })
   if (route.query.instanceId) void router.replace({ query: { tab: route.query.tab } })
   search()
 }
@@ -130,7 +125,6 @@ const columns = computed(() => [
   ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 110 }] : []),
   { title: t('social.colPersona'), key: 'persona', width: 120 },
   { title: t('social.colLang'), key: 'lang', width: 110 },
-  { title: t('social.colTags'), key: 'tags', width: 160 },
   { title: t('social.colDevice'), key: 'device', width: 140 },
   { title: t('social.colCountry'), key: 'proxy', width: 140 },
   { title: t('social.colLogin'), key: 'login', width: 120 },
@@ -162,7 +156,7 @@ const editing = ref<SocialAccount | null>(null)
 const formRef = ref<FormInstance>()
 const blank = () => ({
   platform: undefined as string | undefined, ownerId: undefined as string | undefined, handle: '', displayName: '', profileUrl: '', externalId: '',
-  personaId: undefined as string | undefined, lang: null as string | null, tags: [] as string[], notes: '',
+  personaId: undefined as string | undefined, lang: null as string | null, notes: '',
 })
 const form = reactive(blank())
 const HANDLE_RE = /^@?[\p{L}\p{N}._-]{1,100}$/u
@@ -186,7 +180,7 @@ function openEdit(a: SocialAccount) {
   editing.value = a
   Object.assign(form, {
     ...blank(), platform: a.platform, handle: a.handle, displayName: a.displayName ?? '', profileUrl: a.profileUrl ?? '', externalId: a.externalId ?? '',
-    personaId: a.personaId ?? undefined, lang: a.lang, tags: [...a.tags], notes: a.notes ?? '',
+    personaId: a.personaId ?? undefined, lang: a.lang, notes: a.notes ?? '',
   })
   formRef.value?.clearValidate()
   editOpen.value = true
@@ -201,7 +195,7 @@ async function save() {
   saving.value = true
   const body: Record<string, unknown> = {
     handle: form.handle.trim(), displayName: form.displayName, profileUrl: form.profileUrl, externalId: form.externalId,
-    personaId: form.personaId ?? null, lang: form.lang, tags: form.tags, notes: form.notes,
+    personaId: form.personaId ?? null, lang: form.lang, notes: form.notes,
   }
   try {
     if (editing.value) {
@@ -286,7 +280,7 @@ function onSynced(accountId: string) {
   void loadMeta()
 }
 const filtersActive = computed(() => !!(filters.q.trim() || filters.platform || filters.personaId || filters.lang || filters.loginStatus || filters.accountStatus
-  || filters.exception || filters.tags.length || filters.ownerId || filters.instanceId))
+  || filters.exception || filters.ownerId || filters.instanceId))
 /** Three-step guide while the viewer has no account at all (not just none matching a filter). */
 const showGuide = computed(() => loaded.value && !loading.value && total.value === 0 && !filtersActive.value)
 
@@ -343,7 +337,6 @@ function logMessage(m: string) {
 const fieldText = (f: string | null) => (f ? t(`social.field.${f}`) : '')
 
 // ---------------------------------------------------------------- batch
-const batchTags = ref<string[]>([])
 const batchPersona = ref<string | undefined>(undefined)
 /** set-lang: a language, or 'none' (clears). */
 const batchLang = ref<string | null>(null)
@@ -356,7 +349,7 @@ const batchPersonaOptions = computed(() => [
   { value: 'none', label: t('social.noPersona') },
   ...personasFor(batchOwner.value).map((p) => ({ value: p.id, label: personaLabel(p) })),
 ])
-async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-tags' | 'unlink' | 'delete') {
+async function batch(action: 'set-persona' | 'set-lang' | 'unlink' | 'delete') {
   const ids = [...selectedKeys.value]
   if (!ids.length) return
   const run = async () => {
@@ -364,7 +357,6 @@ async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-t
       const body: Record<string, unknown> = { ids, action }
       if (action === 'set-persona') body.personaId = batchPersona.value === 'none' ? null : batchPersona.value
       if (action === 'set-lang') body.lang = batchLangNone.value ? null : batchLang.value
-      if (action === 'add-tags' || action === 'remove-tags') body.tags = batchTags.value
       const r = await api<{ changed: number; count: number }>('POST', '/api/social/accounts/batch', body)
       message.success(t('social.batchDone', { n: action === 'delete' ? r.count : r.changed }))
       if (action === 'delete') selectedKeys.value = []
@@ -376,29 +368,26 @@ async function batch(action: 'set-persona' | 'set-lang' | 'add-tags' | 'remove-t
   else if (action === 'unlink') confirmAction({ title: t('social.confirmBatchUnlink', { n: ids.length }), onOk: run })
   else await run()
 }
-/** 批量操作 menu; persona, language and tag actions first ask for the value in a small dialog. */
-type BatchFormAction = 'set-persona' | 'set-lang' | 'add-tags' | 'remove-tags'
-const BATCH_FORM_LABEL: Record<BatchFormAction, string> = { 'set-persona': 'setPersona', 'set-lang': 'setLang', 'add-tags': 'addTags', 'remove-tags': 'removeTags' }
+/** 批量操作 menu; persona and language actions first ask for the value in a small dialog. */
+type BatchFormAction = 'set-persona' | 'set-lang'
+const BATCH_FORM_LABEL: Record<BatchFormAction, string> = { 'set-persona': 'setPersona', 'set-lang': 'setLang' }
 const batchForm = ref<BatchFormAction | null>(null)
 const batchFormOpen = computed({ get: () => !!batchForm.value, set: (v: boolean) => { if (!v) batchForm.value = null } })
 const batchFormBusy = ref(false)
 const batchFormLabel = (a: BatchFormAction) => t(`social.${BATCH_FORM_LABEL[a]}`)
 const batchFormReady = computed(() => {
   if (batchForm.value === 'set-persona') return !!batchPersona.value
-  if (batchForm.value === 'set-lang') return !!batchLang.value || batchLangNone.value
-  return batchTags.value.length > 0
+  return !!batchLang.value || batchLangNone.value
 })
 const batchItems = computed<BatchItem[]>(() => [
   { key: 'set-persona', label: t('social.setPersona') },
   { key: 'set-lang', label: t('social.setLang') },
-  { key: 'add-tags', label: t('social.addTags') },
-  { key: 'remove-tags', label: t('social.removeTags') },
   { key: 'unlink', label: t('social.unlink') },
   { key: 'delete', label: t('common.delete'), danger: true },
 ])
 function onBatch(key: string) {
   if (key in BATCH_FORM_LABEL) {
-    batchPersona.value = undefined; batchLang.value = null; batchLangNone.value = false; batchTags.value = []
+    batchPersona.value = undefined; batchLang.value = null; batchLangNone.value = false
     batchForm.value = key as BatchFormAction
   } else void batch(key as 'unlink' | 'delete')
 }
@@ -458,10 +447,6 @@ async function submitBatchForm() {
           <a-select-option v-for="s in SOCIAL_ACCOUNT_STATUSES" :key="s" :value="s">{{ accountText(s) }}</a-select-option>
         </a-select>
         <a-select
-          v-model:value="filters.tags" mode="multiple" :placeholder="t('social.colTags')" allow-clear style="min-width: 150px; max-width: 280px"
-          :options="allTags.map((x) => ({ value: x, label: x }))" @change="search"
-        />
-        <a-select
           v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('social.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search"
         />
@@ -479,14 +464,10 @@ async function submitBatchForm() {
           <a-select v-model:value="batchPersona" :placeholder="t('social.colPersona')" show-search option-filter-prop="label" style="width: 100%" :options="batchPersonaOptions" />
           <div v-if="!batchOwner" class="muted small batch-hint">{{ t('social.batchPersonaPublicOnly') }}</div>
         </template>
-        <a-space v-else-if="batchForm === 'set-lang'" wrap>
+        <a-space v-else wrap>
           <LangSelect v-model="batchLang" :extra="accountLangs" :placeholder="t('social.colLang')" style="width: 220px" :disabled="batchLangNone" />
           <a-checkbox v-model:checked="batchLangNone">{{ t('social.noLang') }}</a-checkbox>
         </a-space>
-        <a-select
-          v-else v-model:value="batchTags" mode="tags" :placeholder="t('social.colTags')" style="width: 100%"
-          :options="allTags.map((x) => ({ value: x, label: x }))" :token-separators="[',']"
-        />
       </BatchFormModal>
 
       <a-table
@@ -511,10 +492,6 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'lang'">
             <a-tooltip v-if="record.lang" :title="record.lang"><a-tag>{{ langName(record.lang) }}</a-tag></a-tooltip>
             <span v-else class="muted">—</span>
-          </template>
-          <template v-else-if="column.key === 'tags'">
-            <a-tag v-for="tg in record.tags" :key="tg" style="margin-bottom: 2px">{{ tg }}</a-tag>
-            <span v-if="!record.tags.length" class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'device'">
             <template v-if="record.instance">
@@ -612,9 +589,6 @@ async function submitBatchForm() {
       </a-form-item>
       <a-form-item :label="t('social.colLang')" name="lang" :extra="t('social.langHint')">
         <LangSelect v-model="form.lang" :extra="accountLangs" :placeholder="t('social.noLang')" />
-      </a-form-item>
-      <a-form-item :label="t('social.colTags')" name="tags">
-        <a-select v-model:value="form.tags" mode="tags" :options="allTags.map((x) => ({ value: x, label: x }))" />
       </a-form-item>
       <!-- read only: the link is made by 从云手机同步 and removed by the batch 解除设备关联 -->
       <a-form-item :label="t('social.colDevice')" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
