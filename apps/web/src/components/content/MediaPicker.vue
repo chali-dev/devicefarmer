@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { ContentMedia, MediaItem } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
-import { fmtDuration, useThumbs } from '../media/media'
+import { fmtDuration, toContentMedia, useThumbs } from '../media/media'
 
 /** Picks ready assets from the media library (my media / public / favorites) for a content. */
 const props = defineProps<{ open: boolean; exclude: string[] }>()
@@ -56,9 +56,7 @@ function toggle(m: MediaItem) {
 }
 
 function ok() {
-  emit('pick', [...picked.value.values()].map((m) => ({
-    id: m.id, name: m.name, fileType: m.fileType, status: m.status, ownerType: m.ownerType, width: m.width, height: m.height, duration: m.duration, thumbnailUrl: m.thumbnailUrl,
-  })))
+  emit('pick', [...picked.value.values()].map(toContentMedia))
   emit('update:open', false)
 }
 </script>
