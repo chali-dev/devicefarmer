@@ -33,9 +33,12 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
   'POST /api/tracked-accounts/parse',
-  // Marking one's own notifications read is per-user UI state, not a configuration change.
+  // Marking one's own notifications read or deleting them is per-user inbox state, not a configuration change
+  // (only the caller's own rows; alert de-duplication in alert_states is untouched).
   'POST /api/notifications/:id/read',
   'POST /api/notifications/read-all',
+  'POST /api/notifications/delete',
+  'POST /api/notifications/delete-read',
 ]);
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);

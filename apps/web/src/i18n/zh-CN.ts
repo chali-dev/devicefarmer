@@ -62,6 +62,7 @@ const zhCN = {
   },
   nav: {
     dashboard: '概览',
+    notifications: '通知中心',
     settings: '系统设置',
     group: { devices: '云手机管理', matrix: '媒体矩阵', content: '内容中心', system: '系统管理' },
     instances: '云机管理',
@@ -91,6 +92,7 @@ const zhCN = {
     logout: '退出登录',
     collapseMenu: '收起菜单',
     expandMenu: '展开菜单',
+    notifications: '通知中心',
   },
   profile: {
     displayName: '显示名称',
@@ -2104,6 +2106,21 @@ const zhCN = {
       notificationsDeleted: '已删除 {read} 条已读、{unread} 条未读通知，{states} 条告警状态',
     },
   },
+  notifications: {
+    subtitle: '你收到的告警通知；删除只影响你自己的通知，不影响告警去重',
+    unread: '未读',
+    read: '已读',
+    content: '通知内容',
+    kind: '类型',
+    state: '状态',
+    selected: '已选 {n} 条',
+    deleteSelected: '批量删除',
+    deleteSelectedTitle: '删除选中的 {n} 条通知？',
+    deleteRead: '删除所有已读',
+    deleteReadTitle: '删除你所有已读通知？',
+    deleteHint: '删除后无法恢复。',
+    deleted: '已删除 {n} 条通知',
+  },
   alerts: {
     title: '告警通知',
     bell: '告警通知',
@@ -2112,6 +2129,7 @@ const zhCN = {
     onlyUnread: '只看未读',
     markRead: '标为已读',
     markAllRead: '全部已读',
+    viewMore: '查看更多',
     severity: {
       error: '严重',
       warning: '警告',

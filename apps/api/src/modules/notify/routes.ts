@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -7,7 +7,7 @@ import { ALERT_CHANNEL_MIN_SEVERITIES } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { scheduleAccountChecks } from '../platforms/check.js';
-import { markAllRead, markRead, scheduleNotifyCleanup, unreadCount } from './notify.js';
+import { deleteAllRead, deleteOwn, markAllRead, markRead, scheduleNotifyCleanup, unreadCount } from './notify.js';
 import { CHANNEL_TYPES, getChannel, publicChannel, testChannel, validChannelConfig } from './channels.js';
 import { ALERT_KIND_IDS, ALERT_KINDS, CHANNEL_KIND_IDS, getRules, LIMITS, saveRules } from './rules.js';
 import './triggers.js'; // registers the generic task-failure alert
@@ -34,14 +34,41 @@ async function channelOr404(id: string) {
 export const notifyRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
+  /**
+   * Own notifications, newest first. Filters: `read` all|unread|read (legacy `unread=1` = unread), `kind` (csv of
+   * alert kinds), `from` (inclusive) / `to` (exclusive) on created_at; paging by `offset` + `limit` (or the
+   * older keyset `before`). `total` counts the filtered rows, `unread` all of the user's unread ones.
+   */
   app.get('/api/notifications', {
-    schema: { querystring: z.object({ unread: z.enum(['0', '1']).optional(), limit: z.coerce.number().int().min(1).max(200).default(50), before: z.coerce.date().optional() }) },
+    schema: {
+      querystring: z.object({
+        unread: z.enum(['0', '1']).optional(),
+        read: z.enum(['all', 'unread', 'read']).optional(),
+        kind: z.string().max(400).optional().transform((v) => (v ? [...new Set(v.split(',').map((k) => k.trim()).filter(Boolean))] : []))
+          .pipe(z.array(z.enum(ALERT_KIND_IDS as [string, ...string[]])).max(ALERT_KIND_IDS.length)),
+        from: z.coerce.date().optional(),
+        to: z.coerce.date().optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+        offset: z.coerce.number().int().min(0).max(100_000).default(0),
+        before: z.coerce.date().optional(),
+      }),
+    },
   }, async (req) => {
     const q = req.query;
-    const rows = await db.select().from(N)
-      .where(and(eq(N.userId, req.user.id), q.unread === '1' ? sql`${N.readAt} is null` : undefined, q.before ? lt(N.createdAt, q.before) : undefined))
-      .orderBy(desc(N.createdAt)).limit(q.limit);
-    return { notifications: rows, unread: await unreadCount(req.user.id) };
+    const read = q.read ?? (q.unread === '1' ? 'unread' : 'all');
+    const where = and(
+      eq(N.userId, req.user.id),
+      read === 'unread' ? isNull(N.readAt) : read === 'read' ? isNotNull(N.readAt) : undefined,
+      q.kind.length ? inArray(N.kind, q.kind) : undefined,
+      q.from ? gte(N.createdAt, q.from) : undefined,
+      q.to ? lt(N.createdAt, q.to) : undefined,
+      q.before ? lt(N.createdAt, q.before) : undefined,
+    );
+    const [rows, [count]] = await Promise.all([
+      db.select().from(N).where(where).orderBy(desc(N.createdAt), desc(N.id)).limit(q.limit).offset(q.offset),
+      db.select({ n: sql<number>`count(*)::int` }).from(N).where(where),
+    ]);
+    return { notifications: rows, total: count?.n ?? 0, unread: await unreadCount(req.user.id) };
   });
 
   app.post('/api/notifications/:id/read', { schema: { params: Id } }, async (req) => {
@@ -51,6 +78,22 @@ export const notifyRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.post('/api/notifications/read-all', async (req) => ({ updated: await markAllRead(req.user.id), unread: 0 }));
+
+  /**
+   * Deletes own notifications (inbox clean-up). All or nothing: any id that is not one of the caller's
+   * notifications (someone else's, or already gone) makes the whole batch a 404 and nothing is deleted.
+   * Alert de-duplication lives in `alert_states`, so deleting a notification never re-triggers or silences an alert.
+   */
+  app.post('/api/notifications/delete', {
+    schema: { body: z.object({ ids: z.array(z.string().uuid()).min(1).max(500) }).strict() },
+  }, async (req) => {
+    const deleted = await deleteOwn(req.user.id, req.body.ids);
+    if (deleted === null) throw notFound('notification not found', 'alerts.not_found');
+    return { deleted, unread: await unreadCount(req.user.id) };
+  });
+
+  /** Deletes all of the caller's read notifications. */
+  app.post('/api/notifications/delete-read', async (req) => ({ deleted: await deleteAllRead(req.user.id), unread: await unreadCount(req.user.id) }));
 
   // ---------------------------------------------------------------- admin settings
 

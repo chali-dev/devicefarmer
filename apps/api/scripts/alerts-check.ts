@@ -21,6 +21,7 @@ import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
 import { sealSecret } from '../src/lib/secret-box.js';
 import { NOTIFY_CLEANUP_TASK, recover } from '../src/modules/notify/notify.js';
+import { ALERT_KIND_IDS } from '../src/modules/notify/rules.js';
 import { scheduleAccountChecks } from '../src/modules/platforms/check.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
@@ -114,7 +115,7 @@ try {
   r = await http('PUT', '/api/settings/alerts', T, { kinds: allOn, cooldownMinutes: 60, notifyAdmins: true, recovered: true, retentionDays: 30, accountCheckHours: 24 });
   check('admin: save rules', r.status === 200 && r.body.rules.cooldownMinutes === 60 && r.body.rules.kinds['task.failed'].inApp === true, r.text);
   r = await http('GET', '/api/settings/alerts', T);
-  check('admin: GET rules lists 6 kinds with severity/recoverable', r.status === 200 && r.body.kinds.length === 6 && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable), r.text.slice(0, 200));
+  check(`admin: GET rules lists all ${ALERT_KIND_IDS.length} kinds with severity/recoverable`, r.status === 200 && r.body.kinds.length === ALERT_KIND_IDS.length && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable), r.text.slice(0, 200));
 
   // ---------------------------------------------------------------- device.down through the real monitor
   await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));

@@ -61,6 +61,7 @@ const en: Messages = {
   },
   nav: {
     dashboard: 'Dashboard',
+    notifications: 'Notification center',
     settings: 'System settings',
     group: { devices: 'Cloud phones', matrix: 'Media matrix', content: 'Content centre', system: 'System' },
     instances: 'Cloud phones',
@@ -90,6 +91,7 @@ const en: Messages = {
     logout: 'Log out',
     collapseMenu: 'Collapse menu',
     expandMenu: 'Expand menu',
+    notifications: 'Notification center',
   },
   profile: {
     displayName: 'Display name',
@@ -2093,6 +2095,21 @@ const en: Messages = {
       notificationsDeleted: 'Deleted {read} read and {unread} unread notifications, {states} alert states',
     },
   },
+  notifications: {
+    subtitle: 'Alerts sent to you; deleting only affects your own notifications, not alert de-duplication',
+    unread: 'Unread',
+    read: 'Read',
+    content: 'Notification',
+    kind: 'Type',
+    state: 'Status',
+    selected: '{n} selected',
+    deleteSelected: 'Delete selected',
+    deleteSelectedTitle: 'Delete {n} selected notifications?',
+    deleteRead: 'Delete all read',
+    deleteReadTitle: 'Delete all your read notifications?',
+    deleteHint: 'This cannot be undone.',
+    deleted: 'Deleted {n} notifications',
+  },
   alerts: {
     title: 'Alerts',
     bell: 'Alerts',
@@ -2101,6 +2118,7 @@ const en: Messages = {
     onlyUnread: 'Unread only',
     markRead: 'Mark read',
     markAllRead: 'Mark all read',
+    viewMore: 'View more',
     severity: {
       error: 'Critical',
       warning: 'Warning',
