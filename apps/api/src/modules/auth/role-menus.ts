@@ -8,8 +8,8 @@ import { isAdmin, type AuthUser } from './rbac.js';
  * business menus the `user` role sees (settings key `rbac.userMenus` = `{ menus: string[] }`). Admins always see
  * everything. The default is exactly what users saw before (every grantable menu), so nothing changes until edited.
  *
- * Enforced in the web (sidebar + router guard) and here: `assertMenuAllowed` runs inside `app.authenticate` (the
- * preHandler of every authenticated route), so a disabled menu's own endpoints answer 403 `rbac.menu_disabled` for
+ * Enforced in the web (sidebar + router guard) and here: `assertMenuAllowed` runs in a global onRequest hook of the
+ * auth plugin (before body validation) for every path a MENU_API rule matches, so a disabled menu's own endpoints answer 403 `rbac.menu_disabled` for
  * users. `MENU_API` lists, per endpoint pattern, every menu whose page uses it: the request is refused only when the
  * user has none of them, so endpoints shared across pages (the content editor reads social accounts, personas and
  * media; the 媒体管理 page shows publish runs) keep working as long as one of their pages is on. Endpoints not listed
@@ -101,12 +101,15 @@ export async function menuEnabled(user: AuthUser, menu: GrantableMenu): Promise<
   return isAdmin(user) || (await getUserMenus()).menus.includes(menu);
 }
 
-/** 403 rbac.menu_disabled when every page using this endpoint is switched off for the user role. */
-export async function assertMenuAllowed(user: AuthUser, method: string, url: string): Promise<void> {
-  if (isAdmin(user)) return;
+/** The MENU_API rule of a request (first match), or null when the switch never blocks it. */
+export function menuRuleFor(method: string, url: string): MenuApiRule | null {
   const path = url.split('?')[0] ?? url;
-  const rule = MENU_API.find((r) => (r.methods === 'all' || (r.methods === 'read') === isRead(method)) && r.pattern.test(path));
-  if (!rule) return;
+  return MENU_API.find((r) => (r.methods === 'all' || (r.methods === 'read') === isRead(method)) && r.pattern.test(path)) ?? null;
+}
+
+/** 403 rbac.menu_disabled when every page using this endpoint is switched off for the user role. */
+export async function assertMenuAllowed(user: AuthUser, rule: MenuApiRule): Promise<void> {
+  if (isAdmin(user)) return;
   const { menus } = await getUserMenus();
   if (!rule.menus.some((m) => menus.includes(m))) {
     throw forbidden('该菜单未对用户角色开放', 'rbac.menu_disabled', { menu: rule.menus[0]! });

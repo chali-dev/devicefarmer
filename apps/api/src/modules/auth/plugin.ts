@@ -6,7 +6,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { forbidden, unauthorized } from '../../lib/errors.js';
 import type { AuthUser } from './rbac.js';
-import { assertMenuAllowed } from './role-menus.js';
+import { assertMenuAllowed, menuRuleFor } from './role-menus.js';
 
 declare module '@fastify/jwt' {
   interface FastifyJWT { payload: { sub: string }; user: AuthUser }
@@ -44,8 +44,20 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { throw unauthorized(); }
     req.user = await loadUser(payload.sub);
-    // 角色菜单权限 (role-menus.ts): a menu switched off for users closes its own endpoints.
-    await assertMenuAllowed(req.user, req.method, req.url);
+  });
+
+  // 角色菜单权限 (role-menus.ts): a menu switched off for users closes its own endpoints. onRequest, i.e. before body
+  // validation, so a refused request is a 403 whatever it carries; only for paths of a MENU_API rule. Without a valid
+  // token nothing happens here (the route's own authenticate answers 401).
+  app.addHook('onRequest', async (req) => {
+    const rule = menuRuleFor(req.method, req.url);
+    if (!rule) return;
+    let payload: { sub: string };
+    try { payload = await req.jwtVerify<{ sub: string }>(); } catch { return; }
+    const [u] = await db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role, disabled: schema.users.disabled })
+      .from(schema.users).where(eq(schema.users.id, payload.sub));
+    if (!u || u.disabled) return;
+    await assertMenuAllowed({ id: u.id, username: u.username, role: u.role }, rule);
   });
 
   app.decorate('requireAdmin', async (req: FastifyRequest) => {

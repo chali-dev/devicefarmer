@@ -5,7 +5,10 @@
  *   held by a test-only trigger against the monitor (created and dropped by this script).
  *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
  *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
- * - The device-offline retry path waits for one retry backoff (PUBLISH_RETRY_BACKOFF_MS, default 30 s).
+ * - 系统配置 → 发布重发 (`publish.retry`): set to 4 attempts / 2 s backoff for the run (validation 400s checked), so the
+ *   device-offline retry path waits 2 s: a default distribution gets 4 attempts, the TikTok round's scheduler task
+ *   carries backoff_ms 2000 and logs retryInMs 2000, and a retry after changing the setting to 5 gets 5 attempts.
+ *   The previous setting is restored at the end.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
  */
 import { execFile } from 'node:child_process';
@@ -35,7 +38,17 @@ async function http<T = any>(method: string, p: string, token?: string, body?: u
   });
   const text = await res.text();
   let json: any = null;
-  try { json = JSON.parse(text); } catch { /* 204 */ }
+  try {
+  // ---------------------------------------------------------------- 发布重发 setting (admin, strict)
+  {
+    const bad = await Promise.all([{ maxAttempts: 0, backoffSec: 2 }, { maxAttempts: 11, backoffSec: 2 }, { maxAttempts: 3, backoffSec: 0 }, { maxAttempts: 3, backoffSec: 3601 }, { ...RETRY, extra: 1 }, { maxAttempts: 3 }]
+      .map((b) => http('PUT', '/api/settings/publish-retry', T, b)));
+    check('publish retry setting: out-of-range / unknown / missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+    const ok = await http('PUT', '/api/settings/publish-retry', T, RETRY);
+    check('publish retry setting saved (4 attempts, 2 s)', ok.status === 200 && ok.body.retry.maxAttempts === 4 && ok.body.retry.backoffSec === 2 && ok.body.retry.backoffMs === 2000
+      && typeof ok.body.defaults.maxAttempts === 'number', ok.text.slice(0, 200));
+  }
+ json = JSON.parse(text); } catch { /* 204 */ }
   return { status: res.status, body: json as T, text };
 }
 async function login(username: string, password: string): Promise<string> {
@@ -67,6 +80,9 @@ const ptIds = new Set<string>();
 // (Docker Desktop VM drift): take the start time from the database.
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
+// 发布重发 for this run (restored in finally).
+const prevRetry = (await http('GET', '/api/settings/publish-retry', T)).body;
+const RETRY = { maxAttempts: 4, backoffSec: 2 };
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
 async function waitStatus(token: string, id: string, statuses: string[], ms = 60_000) {
@@ -252,7 +268,7 @@ try {
   const [ytRow0] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, ytTask.taskId));
   check('scheduler task: type publish, scheduled, runAt, idempotency key publish:<id>:1, ref publish',
     ytRow0?.type === 'publish' && ytRow0.status === 'scheduled' && Math.abs(ytRow0.runAt!.getTime() - runAt.getTime()) < 1000
-    && ytRow0.idempotencyKey === `publish:${ytTask.id}:1` && ytRow0.refType === 'publish' && ytRow0.refId === ytTask.id && ytRow0.maxAttempts === 3 && !!ytRow0.timeoutMs,
+    && ytRow0.idempotencyKey === `publish:${ytTask.id}:1` && ytRow0.refType === 'publish' && ytRow0.refId === ytTask.id && ytRow0.maxAttempts === RETRY.maxAttempts && ytTask.maxAttempts === RETRY.maxAttempts && ytRow0.backoffMs === 2000 && !!ytRow0.timeoutMs,
     `${ytRow0?.status} ${ytRow0?.idempotencyKey} max=${ytRow0?.maxAttempts} timeout=${ytRow0?.timeoutMs}`);
   check('content status after distribution: scheduled (stage ready)', await contentStatus(A, cVid.id) === 'scheduled');
 
@@ -420,9 +436,23 @@ try {
   check('offline device → retried (2/2 attempts) then failed with publish.device_offline', d.task.status === 'failed' && d.task.errorCode === 'publish.device_offline' && d.runs[0].attempts === 2,
     `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
   check('retry logged in publish_logs', d.logs.some((l: any) => /will retry/.test(l.message)) && d.logs.some((l: any) => l.level === 'error'));
+  {
+    const [ttRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
+    const lines = ttRun ? await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, ttRun.id)) : [];
+    const retryLine = lines.find((l) => /failed, retrying/.test(l.message));
+    check('发布重发 backoff applied: scheduler task backoff_ms 2000, retry logged with retryInMs 2000',
+      ttRun?.backoffMs === 2000 && (retryLine?.data as any)?.retryInMs === 2000, `${ttRun?.backoffMs} ${JSON.stringify(retryLine?.data)}`);
+  }
+  // A new round takes the current setting.
+  await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 5, backoffSec: 2 });
   await db.update(schema.instances).set({ status: 'running', adbState: 'device', image: PINNED }).where(eq(schema.instances.id, DOFF.id));
   r = await http('POST', `/api/publish/tasks/${ttTask.id}/retry`, A, {});
   d = await waitStatus(A, ttTask.id, ['awaiting_operator', 'failed']);
+  {
+    const [newRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
+    check('retry after changing 发布重发 to 5: the new round has 5 attempts (publish task + scheduler task)', d.task.maxAttempts === 5 && newRun?.maxAttempts === 5,
+      `${d.task.maxAttempts} ${newRun?.maxAttempts}`);
+  }
   check('device back online + manual retry → awaiting operator; new scheduler task retry_of the old one, key publish:<id>:2',
     d.task.status === 'awaiting_operator' && d.runs.length === 2 && d.runs[1].retryOf === d.runs[0].id && d.runs[1].idempotencyKey === `publish:${ttTask.id}:2`);
   await http('POST', `/api/publish/tasks/${ttTask.id}/outcome`, A, { result: 'published', url: 'https://www.tiktok.com/@x/video/1' });
@@ -476,6 +506,8 @@ try {
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
+  if (prevRetry?.retry?.updatedAt) await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: prevRetry.retry.maxAttempts, backoffSec: prevRetry.retry.backoffSec });
+  else await db.delete(schema.settings).where(eq(schema.settings.key, 'publish.retry'));
   // Users first: their contents, accounts, publish tasks and private media go with them.
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   for (const id of publicMedia) await http('DELETE', `/api/media/${id}`, T);
