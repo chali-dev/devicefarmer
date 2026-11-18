@@ -16,13 +16,21 @@ export type AiModel = (typeof AI_MODELS)[number];
 export const DEFAULT_AI_MODEL: AiModel = 'claude-opus-5-5';
 export const DEFAULT_AI_HOUR = 6;
 
-interface StoredAi { apiKeyEnc?: string; model?: AiModel; hour?: number; enabled?: boolean }
+interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel; hour?: number; enabled?: boolean }
 
-export interface AiSettings { enabled: boolean; keySet: boolean; model: AiModel; hour: number; updatedAt: Date | null }
+/**
+ * `workspaceId`: an Anthropic API key that isn't scoped to a workspace (personal / service account key created for "all
+ * workspaces") must name the workspace in the `anthropic-workspace-id` header on every request, or the API answers 400
+ * "This API key is not scoped to a workspace…" (seen on the owner's key, 2026-11-18). Not secret (an id like
+ * wrkspc_01…, Console → Settings → Workspaces → ID column); null = key scoped to one workspace, no header.
+ */
+export interface AiSettings { enabled: boolean; keySet: boolean; workspaceId: string | null; model: AiModel; hour: number; updatedAt: Date | null }
 
 export const AiSettingsInput = z.object({
   /** undefined keeps the stored key, null clears it. Format only (sk-ant-…); the key is not tested here. */
   apiKey: z.string().trim().min(20).max(300).regex(/^[A-Za-z0-9_-]+$/, 'invalid API key format').nullable().optional(),
+  /** undefined keeps, null/'' clears. */
+  workspaceId: z.union([z.string().trim().regex(/^wrkspc_[A-Za-z0-9]{8,64}$/, 'invalid workspace id'), z.literal(''), z.null()]).optional(),
   model: z.enum(AI_MODELS).optional(),
   /** Daily generation hour, API host local time. */
   hour: z.number().int().min(0).max(23).optional(),
@@ -38,6 +46,7 @@ async function load(): Promise<{ value: StoredAi; updatedAt: Date | null }> {
 const shape = (v: StoredAi, updatedAt: Date | null): AiSettings => ({
   enabled: v.enabled ?? true,
   keySet: Boolean(v.apiKeyEnc),
+  workspaceId: v.workspaceId ?? null,
   model: v.model && (AI_MODELS as readonly string[]).includes(v.model) ? v.model : DEFAULT_AI_MODEL,
   hour: v.hour ?? DEFAULT_AI_HOUR,
   updatedAt,
@@ -53,6 +62,8 @@ export async function saveAiSettings(input: AiSettingsInput): Promise<AiSettings
   const next: StoredAi = { ...cur };
   if (input.apiKey === null) delete next.apiKeyEnc;
   else if (input.apiKey !== undefined) next.apiKeyEnc = sealSecret(input.apiKey);
+  if (input.workspaceId === null || input.workspaceId === '') delete next.workspaceId;
+  else if (input.workspaceId !== undefined) next.workspaceId = input.workspaceId;
   if (input.model !== undefined) next.model = input.model;
   if (input.hour !== undefined) next.hour = input.hour;
   if (input.enabled !== undefined) next.enabled = input.enabled;

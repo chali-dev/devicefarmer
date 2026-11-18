@@ -8,6 +8,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { requestAccountCheck } from './check.js';
 import { assertPersonaFor } from '../comments/personas.js';
+import { Lang } from '../content/languages.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
   assertLinkable, EXCEPTION_SQL, getLimits, instanceNames, linkLogs, MAX_LIMIT, platformsWithLimits, sameTags, saveLimits,
@@ -34,6 +35,8 @@ const Editable = {
   instanceId: z.string().uuid().nullable().optional(),
   /** 账号人设: public persona or one of the account owner's; null clears. */
   personaId: z.string().uuid().nullable().optional(),
+  /** 账号语言 (BCP-47, canonicalised); null clears. Publishing uses the content's translation in it. */
+  lang: Lang.nullable().optional(),
   // loginStatus / accountStatus / lastError are written by the system (automatic check, check.ts) since
   // 2026-11-18; an old client sending them is ignored (zod strips unknown keys).
   notes: opt(2000),
@@ -48,6 +51,8 @@ const ListQuery = z.object({
   instanceId: z.union([z.string().uuid(), z.literal('none')]).optional(),
   /** uuid, or 'none' = no persona */
   personaId: z.union([z.string().uuid(), z.literal('none')]).optional(),
+  /** 账号语言, or 'none' = not set */
+  lang: z.union([z.literal('none'), Lang]).optional(),
   loginStatus: z.enum(LOGIN).optional(),
   accountStatus: z.enum(ACCOUNT).optional(),
   exception: z.enum(['true', 'false']).optional(),
@@ -114,6 +119,8 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     else if (qy.instanceId) where.push(eq(sa.instanceId, qy.instanceId));
     if (qy.personaId === 'none') where.push(isNull(sa.personaId));
     else if (qy.personaId) where.push(eq(sa.personaId, qy.personaId));
+    if (qy.lang === 'none') where.push(isNull(sa.lang));
+    else if (qy.lang) where.push(eq(sa.lang, qy.lang));
     if (qy.loginStatus) where.push(eq(sa.loginStatus, qy.loginStatus));
     if (qy.accountStatus) where.push(eq(sa.accountStatus, qy.accountStatus));
     if (qy.exception === 'true') where.push(EXCEPTION_SQL);
@@ -160,7 +167,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
       const [row] = await tx.insert(sa).values({
         userId: ownerId, platform: b.platform, handle: b.handle,
         displayName: blank(b.displayName) ?? null, profileUrl: blank(b.profileUrl) ?? platform.profileUrl(b.handle),
-        externalId: blank(b.externalId) ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null,
+        externalId: blank(b.externalId) ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null, lang: b.lang ?? null,
         notes: blank(b.notes) ?? null, createdBy: req.user.id,
       }).returning().catch((err) => { throw isUniqueViolation(err, 'social_accounts_platform_handle') ? handleTaken(b.platform, b.handle) : err; });
       if (b.tags?.length) await setAccountTags(tx, row!.id, b.tags);
@@ -193,6 +200,10 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         set.personaId = b.personaId;
         const names = await personaNames(tx, [cur.personaId, b.personaId ?? null]);
         logs.push({ accountId, action: 'update', field: 'persona', fromValue: names(cur.personaId), toValue: names(b.personaId) });
+      }
+      if (b.lang !== undefined && b.lang !== cur.lang) {
+        set.lang = b.lang;
+        logs.push({ accountId, action: 'update', field: 'lang', fromValue: cur.lang, toValue: b.lang });
       }
       if (b.instanceId !== undefined && b.instanceId !== cur.instanceId) {
         if (b.instanceId) await assertLinkable(tx, req.user, b.instanceId, cur.platform, cur.id);
@@ -250,9 +261,11 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     schema: {
       body: z.object({
         ids: z.array(z.string().uuid()).min(1).max(500),
-        action: z.enum(['set-persona', 'add-tags', 'remove-tags', 'unlink', 'delete']),
+        action: z.enum(['set-persona', 'set-lang', 'add-tags', 'remove-tags', 'unlink', 'delete']),
         /** set-persona: null clears */
         personaId: z.string().uuid().nullable().optional(),
+        /** set-lang: null clears */
+        lang: Lang.nullable().optional(),
         tags: Tags.optional(),
       }),
     },
@@ -260,6 +273,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const { action } = req.body;
     const ids = [...new Set(req.body.ids)];
     if (action === 'set-persona' && req.body.personaId === undefined) throw badRequest('personaId is required', 'social.batch_persona_required');
+    if (action === 'set-lang' && req.body.lang === undefined) throw badRequest('lang is required', 'social.batch_lang_required');
     if ((action === 'add-tags' || action === 'remove-tags') && !req.body.tags?.length) throw badRequest('tags are required', 'social.batch_tags_required');
     const changed = await db.transaction(async (tx) => {
       const rows = await tx.select().from(sa).where(inArray(sa.id, ids)).orderBy(asc(sa.id)).for('update');
@@ -289,6 +303,13 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         const names = await personaNames(tx, [pid, ...moving.map((r) => r.personaId)]);
         for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'persona', fromValue: names(r.personaId), toValue: names(pid) });
         if (moving.length) await tx.update(sa).set({ personaId: pid }).where(inArray(sa.id, moving.map((r) => r.id)));
+        n = moving.length;
+      }
+      if (action === 'set-lang') {
+        const lang = req.body.lang ?? null;
+        const moving = visible.filter((r) => r.lang !== lang);
+        for (const r of moving) logs.push({ accountId: r.id, action: 'update', field: 'lang', fromValue: r.lang, toValue: lang });
+        if (moving.length) await tx.update(sa).set({ lang }).where(inArray(sa.id, moving.map((r) => r.id)));
         n = moving.length;
       }
       if (action === 'add-tags' || action === 'remove-tags') {

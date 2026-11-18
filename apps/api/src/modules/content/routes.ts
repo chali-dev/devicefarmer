@@ -13,7 +13,7 @@ import {
   toContentItems, visibleContent,
 } from './content.js';
 import { assertCategoryFor } from './categories.js';
-import { getLanguageSettings, Lang, publicTranslation, translationsOf } from './languages.js';
+import { configuredLanguages, Lang, publicTranslation, SOURCE_LANG, translationsOf } from './languages.js';
 
 const c = schema.contents;
 const Id = z.object({ id: z.string().uuid() });
@@ -39,7 +39,11 @@ const ct = schema.contentTranslations;
 
 const Editable = {
   title: z.string().trim().min(1).max(200),
-  /** Source language (BCP-47); create defaults to the configured default source language. */
+  /**
+   * Source language: fixed to Chinese (zh-CN) since 2026-11-18. Accepted only as zh-CN on create, and only unchanged on
+   * update (older contents keep their source language, read-only; one without any may be set to zh-CN); anything else
+   * → 400 content.source_lang_fixed.
+   */
   lang: Lang.nullable().optional(),
   body: z.string().max(5000).optional(),
   /** 内容分类: a public category or one of the owner's (null clears). */
@@ -140,10 +144,11 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const category = b.categoryId ? await assertCategoryFor(owner.id, b.categoryId) : null;
     const stage = b.stage ?? 'draft';
     if (stage === 'archived') throw badRequest('新内容不能直接归档', 'content.bad_stage');
+    if (b.lang && b.lang !== SOURCE_LANG) throw badRequest('原文语言固定为中文', 'content.source_lang_fixed', { lang: b.lang });
     const row = await db.transaction(async (tx) => {
       const [r] = await tx.insert(c).values({
         userId: owner.id, title: b.title, body: b.body ?? '', categoryId: category?.id ?? null, stage, status: stage,
-        lang: b.lang !== undefined ? b.lang : (await getLanguageSettings()).defaultSource,
+        lang: SOURCE_LANG,
         platformHints: b.platformHints ?? {}, createdBy: req.user.id,
       }).returning();
       await setContentMedia(tx, r!.id, media.map((m) => m.id));
@@ -201,12 +206,13 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       // The legacy text is cleared whenever the category changes (see content-category-data-migration.ts).
       if (b.categoryId !== undefined) Object.assign(set, { categoryId: b.categoryId, category: null });
       if (b.platformHints !== undefined) set.platformHints = b.platformHints;
+      // The source language can no longer be changed (older contents keep theirs, read-only). The one exception: a
+      // legacy content without a source language may be declared Chinese (unless it has a Chinese translation).
       if (b.lang !== undefined && b.lang !== locked.lang) {
-        if (b.lang) {
-          const [dup] = await tx.select({ id: ct.id }).from(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, b.lang)));
-          if (dup) throw conflict('该语言已有译文，不能作为原文语言', 'content.lang_has_translation', { lang: b.lang });
-        }
-        set.lang = b.lang;
+        if (locked.lang !== null || b.lang !== SOURCE_LANG) throw badRequest('原文语言固定为中文，不能修改', 'content.source_lang_fixed', { lang: b.lang ?? '' });
+        const [dup] = await tx.select({ id: ct.id }).from(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, SOURCE_LANG)));
+        if (dup) throw conflict('该语言已有译文，不能作为原文语言', 'content.lang_has_translation', { lang: SOURCE_LANG });
+        set.lang = SOURCE_LANG;
       }
       if (b.stage !== undefined && b.stage !== locked.stage) {
         if (b.stage === 'archived') await assertNoUnfinishedPublish(tx, cur.id, 'archive');
@@ -235,10 +241,14 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
 
   // ---------------------------------------------------------------- translations (多语言内容, written by people)
 
-  /** Language list for the editor + default source language (any signed-in user; admins edit it in settings). */
-  app.get('/api/contents/languages', async () => {
-    const { languages, defaultSource } = await getLanguageSettings();
-    return { languages, defaultSource };
+  /**
+   * Languages for the editor: `source` (zh-CN, fixed), `configured` (配置语系 = languages bound to the social accounts
+   * the caller sees: own; admins all, or `ownerId`'s) and `languages` = source + configured.
+   */
+  app.get('/api/contents/languages', { schema: { querystring: z.object({ ownerId: z.string().uuid().optional() }) } }, async (req) => {
+    const owner = !isAdmin(req.user) ? req.user.id : req.query.ownerId ?? null;
+    const configured = await configuredLanguages(owner);
+    return { source: SOURCE_LANG, configured, languages: [SOURCE_LANG, ...configured] };
   });
 
   app.get('/api/contents/:id/translations', { schema: { params: Id } }, async (req) => {

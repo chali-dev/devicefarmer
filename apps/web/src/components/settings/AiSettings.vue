@@ -16,12 +16,12 @@ const state = ref<AiSettingsState | null>(null)
 const models = ref<string[]>([])
 const saving = ref(false)
 const keyInput = ref('')
-const form = ref({ enabled: true, model: '', hour: 6 })
+const form = ref({ enabled: true, model: '', hour: 6, workspaceId: '' })
 
 function apply(r: Res) {
   state.value = r.ai
   models.value = r.models
-  form.value = { enabled: r.ai.enabled, model: r.ai.model, hour: r.ai.hour }
+  form.value = { enabled: r.ai.enabled, model: r.ai.model, hour: r.ai.hour, workspaceId: r.ai.workspaceId ?? '' }
 }
 onMounted(async () => { try { apply(await api<Res>('GET', '/api/settings/ai')) } catch (e) { message.error(errorText(e)) } })
 
@@ -33,7 +33,7 @@ async function save(body: Record<string, unknown>) {
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
 }
-const saveAll = () => save({ ...form.value, ...(keyInput.value.trim() ? { apiKey: keyInput.value.trim() } : {}) })
+const saveAll = () => save({ ...form.value, workspaceId: form.value.workspaceId.trim() || null, ...(keyInput.value.trim() ? { apiKey: keyInput.value.trim() } : {}) })
 const modelLabel = (m: string) => (te(`settings.ai.models.${m}`) ? t(`settings.ai.models.${m}`) : m)
 const hours = Array.from({ length: 24 }, (_, h) => ({ value: h, label: `${String(h).padStart(2, '0')}:00` }))
 </script>
@@ -55,6 +55,9 @@ const hours = Array.from({ length: 24 }, (_, h) => ({ value: h, label: `${String
         </a-form-item>
         <a-form-item :label="t('settings.ai.key')">
           <a-input-password v-model:value="keyInput" :placeholder="state?.keySet ? t('settings.ai.keyReplace') : 'sk-ant-…'" autocomplete="off" :maxlength="300" />
+        </a-form-item>
+        <a-form-item :label="t('settings.ai.workspace')" :extra="t('settings.ai.workspaceHint')">
+          <a-input v-model:value="form.workspaceId" placeholder="wrkspc_…" allow-clear autocomplete="off" :maxlength="80" />
         </a-form-item>
         <a-form-item :label="t('settings.ai.model')">
           <a-select v-model:value="form.model" :options="models.map((m) => ({ value: m, label: modelLabel(m) }))" />

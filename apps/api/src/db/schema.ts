@@ -450,6 +450,11 @@ export const socialAccounts = pgTable('social_accounts', {
   instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
   /** 账号人设: a public persona or one of the account owner's personal personas (assertPersonaFor). */
   personaId: uuid('persona_id').references((): AnyPgColumn => personas.id, { onDelete: 'set null' }),
+  /**
+   * 账号语言 (BCP-47, canonical, null = not set): the language this account posts in. Publishing uses the content's
+   * translation in this language (else the Chinese source); the set of these = the 配置语系 offered in the editor.
+   */
+  lang: text('lang'),
   loginStatus: text('login_status', { enum: ['unknown', 'logged_in', 'logged_out', 'needs_verification'] }).notNull().default('unknown'),
   accountStatus: text('account_status', { enum: ['active', 'limited', 'suspended', 'disabled'] }).notNull().default('active'),
   notes: text('notes'),
@@ -473,6 +478,7 @@ export const socialAccounts = pgTable('social_accounts', {
   index('social_accounts_status_idx').on(t.loginStatus, t.accountStatus),
   index('social_accounts_created_at_idx').on(t.createdAt),
   index('social_accounts_persona_idx').on(t.personaId),
+  index('social_accounts_lang_idx').on(t.lang),
 ]);
 
 /** Tag names are unique case-insensitively; the first spelling wins (same rule as media tags). */
@@ -706,6 +712,12 @@ export const publishTasks = pgTable('publish_tasks', {
   mediaIds: uuid('media_ids').array().notNull().default(sql`'{}'::uuid[]`),
   /** feed (帖子, carousel when > 1 medium) | reel | story (限动). */
   postType: text('post_type', { enum: POST_TYPES }).notNull().default('feed'),
+  /**
+   * Language of the snapshot texts (title/caption): the account's language when the content has a translation in it
+   * (or is written in it), else the content's source language; null = unknown (rows from before, legacy contents
+   * without a source language).
+   */
+  lang: text('lang'),
   /** When it is (or was) due; distributions "now" get the creation time. */
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull().defaultNow(),
   status: text('status', { enum: PUBLISH_STATUSES }).notNull().default('pending'),

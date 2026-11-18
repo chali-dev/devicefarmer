@@ -8,6 +8,7 @@ import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-en
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
+import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { MANUAL_METHOD, type PublishInput, type PublishLogLevel } from './methods.js';
@@ -66,16 +67,20 @@ export interface DistributeResult { created: PublishTask[]; existing: PublishTas
 const lockPair = (tx: Tx, contentId: string, accountId: string) =>
   tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`publish:${contentId}:${accountId}`}, 0))`);
 
-function postFor(content: Content, platform: string, t: DistributeTarget) {
-  const hints = (content.platformHints ?? {}) as Record<string, Record<string, unknown> | undefined>;
-  const h = hints[platform] ?? {};
+/**
+ * The snapshot of one target: texts of the account's language (`textsForAccount`: its translation, else the source),
+ * per-target overrides on top; options (privacy) always from the content.
+ */
+function postFor(content: Content, texts: AccountTexts, platform: string, t: DistributeTarget) {
+  const h = texts.hints[platform] ?? {};
+  const opts = ((content.platformHints ?? {}) as AccountTexts['hints'])[platform] ?? {};
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
   const cap = capabilityOf(platform);
-  const title = cap.title ? (t.title?.trim() || str(h.title) || content.title) : (t.title?.trim() || null);
-  const caption = t.caption ?? str(h.description) ?? str(h.caption) ?? content.body;
+  const title = cap.title ? (t.title?.trim() || str(h.title) || texts.title) : (t.title?.trim() || null);
+  const caption = t.caption ?? str(h.description) ?? str(h.caption) ?? texts.body;
   const postType = t.postType ?? 'feed';
   const options: Record<string, unknown> = { ...(t.options ?? {}) };
-  if (cap.privacy && options.privacy === undefined) options.privacy = str(h.privacy) ?? 'private';
+  if (cap.privacy && options.privacy === undefined) options.privacy = str(opts.privacy) ?? 'private';
   if (options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(options.privacy)))) {
     throw badRequest(`${platform} 不支持该可见性：${String(options.privacy)}`, 'publish.bad_privacy', { platform, privacy: String(options.privacy) });
   }
@@ -97,6 +102,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
   const maxAttempts = opts.maxAttempts ?? config.PUBLISH_MAX_ATTEMPTS;
   const now = new Date();
+  const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
   const result = await db.transaction(async (tx) => {
     const out: DistributeResult = { created: [], existing: [] };
@@ -104,7 +110,8 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const acc = await visibleAccount(user, t.accountId, tx);
       assertPlatformEnabled(acc.platform);
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
-      const post = postFor(content, acc.platform, t);
+      const texts = textsForAccount(content, translations, acc);
+      const post = postFor(content, texts, acc.platform, t);
       const bad = validateForPlatform(acc.platform, media, post);
       if (bad) throw badRequest(`@${acc.handle}: ${bad.message}`, bad.code, { ...bad.params, account: acc.handle });
       if (t.scheduledAt && t.scheduledAt.getTime() > now.getTime() + 366 * 86400_000) throw badRequest('发布时间不能超过一年', 'publish.too_far');
@@ -118,11 +125,12 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const scheduledAt = t.scheduledAt && t.scheduledAt > now ? t.scheduledAt : now;
       const [row] = await tx.insert(pt).values({
         userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
-        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType,
+        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType, lang: texts.lang,
         scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts, republish: prior.length > 0, createdBy: user.id,
       }).returning();
       await publishLog(row!, 'info', prior.length ? 'distributed (re-publish)' : 'distributed', {
         account: acc.handle, platform: acc.platform, postType: post.postType, scheduledAt: scheduledAt.toISOString(), media: media.length, maxAttempts,
+        lang: texts.lang, accountLang: acc.lang, langFallback: texts.fallback,
       }, user, tx);
       out.created.push(row!);
     }

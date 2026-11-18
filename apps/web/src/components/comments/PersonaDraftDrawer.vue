@@ -32,11 +32,12 @@ const emptyBrief = () => ({ tone: '', topics: [], audience: '', lang: undefined,
 async function load(id: string) {
   loading.value = true
   try {
-    const [d, tpl, langs] = await Promise.all([
+    const [d, tpl] = await Promise.all([
       api<{ drafts: PersonaDraftSettings }>('GET', `/api/personas/${id}/drafts`),
       api<{ templates: CommentTemplate[] }>('GET', '/api/comment-templates?kind=post'),
-      api<{ languages: string[] }>('GET', '/api/contents/languages'),
     ])
+    // Chinese + the languages bound to the accounts that can use the persona (personal: its owner's; public: all).
+    const langs = await api<{ languages: string[] }>('GET', `/api/contents/languages${d.drafts.ownerType === 'user' && d.drafts.ownerId ? `?ownerId=${d.drafts.ownerId}` : ''}`)
     s.value = d.drafts
     templates.value = tpl.templates
     languages.value = langs.languages

@@ -4,7 +4,8 @@ import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { POST_TYPES, type Content, type MediaRule, type PostType, type PublishPlatform, type PublishTaskItem, type SocialAccount } from '../../api/types'
+import { langName } from '../../api/lang'
+import { POST_TYPES, type Content, type ContentTranslation, type MediaRule, type PostType, type PublishPlatform, type PublishTaskItem, type SocialAccount } from '../../api/types'
 import { useInstancesStore } from '../../stores/instances'
 import StatusTag from '../common/StatusTag.vue'
 import { MODAL_WIDTH } from '../common/ui'
@@ -19,6 +20,8 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
  * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
  * The content's 发布目标 (default target accounts) are preselected, except accounts this content was already
  * published to (tagged 已发布); checking one of those re-publishes (`republish` is sent only then).
+ * Languages: each account publishes the content's translation in its 账号语言, else the Chinese source (shown per
+ * account, with a warning when its language has no translation); its inherited title/caption follow that language.
  */
 const props = defineProps<{ open: boolean; content: Content | null; mode?: 'now' | 'at' }>()
 const emit = defineEmits<{ 'update:open': [boolean]; done: [] }>()
@@ -26,6 +29,7 @@ const { t } = useI18n()
 const store = useInstancesStore()
 
 const accounts = ref<SocialAccount[]>([])
+const translations = ref<ContentTranslation[]>([])
 const platforms = ref<PublishPlatform[]>([])
 const loading = ref(false)
 const saving = ref(false)
@@ -62,11 +66,13 @@ watch(() => props.open, async (o) => {
   loading.value = true
   try {
     const owner = props.content.userId
-    const [a, p, done] = await Promise.all([
+    const [a, p, done, tr] = await Promise.all([
       api<{ items: SocialAccount[] }>('GET', `/api/social/accounts?pageSize=200&ownerId=${owner}`),
       api<{ platforms: PublishPlatform[] }>('GET', '/api/publish/platforms'),
       api<{ items: PublishTaskItem[] }>('GET', `/api/publish/tasks?contentId=${props.content.id}&status=published&limit=500`),
+      api<{ translations: ContentTranslation[] }>('GET', `/api/contents/${props.content.id}/translations`),
     ])
+    translations.value = tr.translations
     accounts.value = a.items
     platforms.value = p.platforms
     published.value = new Set(done.items.map((x) => x.accountId))
@@ -129,8 +135,8 @@ function toggle(id: string, on: boolean) {
   if (on && !selected.value.includes(id)) {
     selected.value = [...selected.value, id]
     const platform = accountById(id)?.platform ?? ''
-    overrides[id] ??= { title: defaultTitle(platform), hashtags: [], privacy: defaultPrivacy(platform), at: commonAt.value }
-    captions[id] ??= defaultCaption(platform)
+    overrides[id] ??= { title: defaultTitle(id), hashtags: [], privacy: defaultPrivacy(platform), at: commonAt.value }
+    captions[id] ??= defaultCaption(id)
     accountTab.value = id
   } else if (!on) selected.value = selected.value.filter((x) => x !== id)
 }
@@ -140,15 +146,38 @@ const accountTabs = computed<TextTab[]>(() => selected.value.map((id) => {
   return { key: id, platform, label: `@${accountById(id)?.handle ?? ''}`, max: capOf(platform)?.captionMax ?? 5000, text: hasCaption(id) }
 }))
 
-// Inherited values, mirroring the API's postFor(): platform hint (if not blank), else the content's text. The content
-// has no hashtag list of its own (hashtags written in the text stay in the caption), so inherited hashtags are none.
-const hintOf = (platform: string, key: string) => {
-  const v = (props.content?.platformHints as Record<string, Record<string, unknown> | undefined> | undefined)?.[platform]?.[key]
-  return typeof v === 'string' && v.trim() ? v : undefined
+type Hints = Record<string, Record<string, unknown> | undefined>
+/**
+ * The texts an account publishes, mirroring the API's textsForAccount(): the content when the account has no language
+ * or the content is written in it; else its translation in the account's language; else the source (`missing`).
+ */
+function textsOf(id: string): { lang: string | null; translated: boolean; missing: boolean; noLang: boolean; title: string; body: string; hints: Hints } {
+  const c = props.content
+  const acc = accountById(id)
+  const source = { lang: c?.lang ?? null, translated: false, missing: false, noLang: !acc?.lang, title: c?.title ?? '', body: c?.body ?? '', hints: (c?.platformHints ?? {}) as Hints }
+  if (!acc?.lang || acc.lang === c?.lang) return source
+  const tr = translations.value.find((x) => x.lang === acc.lang)
+  if (!tr) return { ...source, missing: true }
+  return { lang: tr.lang, translated: true, missing: false, noLang: false, title: tr.title, body: tr.body, hints: (tr.platformHints ?? {}) as Hints }
 }
-const defaultCaption = (platform: string) => hintOf(platform, 'description') ?? hintOf(platform, 'caption') ?? props.content?.body ?? ''
-const defaultTitle = (platform: string) => (capOf(platform)?.title ? hintOf(platform, 'title') ?? props.content?.title ?? '' : '')
-const defaultPrivacy = (platform: string) => (capOf(platform)?.privacy ? hintOf(platform, 'privacy') ?? 'private' : undefined)
+const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined)
+// Inherited values, mirroring the API's postFor(): platform hint of the account's language (if not blank), else that
+// language's text. The content has no hashtag list of its own (hashtags in the text stay in the caption), so none.
+function defaultCaption(id: string) {
+  const x = textsOf(id)
+  const h = x.hints[accountById(id)?.platform ?? ''] ?? {}
+  return str(h.description) ?? str(h.caption) ?? x.body
+}
+function defaultTitle(id: string) {
+  const platform = accountById(id)?.platform ?? ''
+  const x = textsOf(id)
+  return capOf(platform)?.title ? str(x.hints[platform]?.title) ?? x.title : ''
+}
+/** Options (privacy) always come from the content itself. */
+const defaultPrivacy = (platform: string) => (capOf(platform)?.privacy ? str((props.content?.platformHints as Hints | undefined)?.[platform]?.privacy) ?? 'private' : undefined)
+/** Selected accounts whose language has no translation (they get the source text). */
+const missingLangAccounts = computed(() => selected.value.filter((id) => textsOf(id).missing))
+const langLabel = (l: string | null) => (l ? `${langName(l)} (${l})` : t('distribute.lang.unknown'))
 
 type Field = 'title' | 'caption' | 'hashtags' | 'privacy' | 'at'
 /** Which fields of an account differ from what it inherits (only those are sent). */
@@ -156,8 +185,8 @@ function edited(id: string): Record<Field, boolean> {
   const o = overrides[id]!
   const platform = accountById(id)?.platform ?? ''
   return {
-    title: !!o.title.trim() && o.title.trim() !== defaultTitle(platform).trim(),
-    caption: (captions[id] ?? '') !== defaultCaption(platform),
+    title: !!o.title.trim() && o.title.trim() !== defaultTitle(id).trim(),
+    caption: (captions[id] ?? '') !== defaultCaption(id),
     hashtags: o.hashtags.length > 0,
     privacy: o.privacy !== defaultPrivacy(platform),
     at: !sameAt(o.at, commonAt.value),
@@ -166,8 +195,8 @@ function edited(id: string): Record<Field, boolean> {
 function restore(id: string, field: Field) {
   const o = overrides[id]!
   const platform = accountById(id)?.platform ?? ''
-  if (field === 'title') o.title = defaultTitle(platform)
-  else if (field === 'caption') captions[id] = defaultCaption(platform)
+  if (field === 'title') o.title = defaultTitle(id)
+  else if (field === 'caption') captions[id] = defaultCaption(id)
   else if (field === 'hashtags') o.hashtags = []
   else if (field === 'privacy') o.privacy = defaultPrivacy(platform)
   else o.at = commonAt.value
@@ -250,6 +279,9 @@ async function submit() {
             <StatusTag kind="socialLogin" :status="a.loginStatus" />
             <StatusTag v-if="a.accountStatus !== 'active'" kind="socialAccount" :status="a.accountStatus" />
             <a-tooltip v-if="published.has(a.id)" :title="t('distribute.publishedHint')"><a-tag color="success">{{ t('distribute.published') }}</a-tag></a-tooltip>
+            <a-tooltip :title="textsOf(a.id).missing ? t('distribute.lang.missingHint', { lang: langLabel(a.lang) }) : textsOf(a.id).noLang ? t('distribute.lang.noLangHint') : undefined">
+              <a-tag :color="textsOf(a.id).missing ? 'warning' : undefined">{{ t(textsOf(a.id).translated ? 'distribute.lang.translation' : 'distribute.lang.source', { lang: langLabel(textsOf(a.id).lang) }) }}</a-tag>
+            </a-tooltip>
             <a-badge v-if="a.instance" :status="online(a) ? 'success' : 'default'" :text="`${a.instance.name} · ${online(a) ? t('distribute.online') : t('distribute.offline')}`" />
             <span v-else class="muted">{{ t('distribute.noDevice') }}</span>
           </a-space>
@@ -259,15 +291,18 @@ async function submit() {
       <template v-if="selected.length">
         <a-divider orientation="left" plain>{{ t('distribute.overrides') }}</a-divider>
         <div class="muted small prefill">{{ t('distribute.overridesHint') }}</div>
+        <a-alert v-if="missingLangAccounts.length" type="warning" show-icon class="prefill"
+          :message="t('distribute.lang.missing', { accounts: missingLangAccounts.map((id) => `@${accountById(id)?.handle} (${accountById(id)?.lang})`).join('、') })" />
         <PlatformTextTabs v-model:active="accountTab" :tabs="accountTabs" :values="captions" :rows="4">
           <template #default="{ tab }">
+            <div class="small muted caption-mark">{{ t(textsOf(tab.key).translated ? 'distribute.lang.translation' : 'distribute.lang.source', { lang: langLabel(textsOf(tab.key).lang) }) }}</div>
             <div v-if="tab.text !== false && edited(tab.key).caption" class="small caption-mark">
               {{ t('distribute.caption') }}<EditedMark :show="true" @restore="restore(tab.key, 'caption')" />
             </div>
             <a-form layout="vertical" class="tab-form">
               <a-form-item v-if="capOf(tab.platform ?? '')?.title">
                 <template #label>{{ t('distribute.titleOverride') }}<EditedMark :show="edited(tab.key).title" @restore="restore(tab.key, 'title')" /></template>
-                <a-input v-model:value="overrides[tab.key]!.title" :maxlength="capOf(tab.platform ?? '')!.title!.max" :placeholder="defaultTitle(tab.platform ?? '')" />
+                <a-input v-model:value="overrides[tab.key]!.title" :maxlength="capOf(tab.platform ?? '')!.title!.max" :placeholder="defaultTitle(tab.key)" />
               </a-form-item>
               <a-form-item v-if="tab.text !== false">
                 <template #label>{{ t('distribute.hashtags') }}<EditedMark :show="edited(tab.key).hashtags" @restore="restore(tab.key, 'hashtags')" /></template>

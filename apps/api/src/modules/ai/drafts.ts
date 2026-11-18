@@ -10,7 +10,7 @@ import { badRequest, HttpError } from '../../lib/errors.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { setContentMedia, setContentTags, setContentTargets } from '../content/content.js';
-import { getLanguageSettings } from '../content/languages.js';
+import { offeredLanguages, SOURCE_LANG } from '../content/languages.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
@@ -80,8 +80,9 @@ export async function normaliseBrief(p: Persona, brief: z.infer<typeof PersonaBr
   if (brief.lang) {
     let lang: string;
     try { lang = Intl.getCanonicalLocales(brief.lang)[0]!; } catch { throw badRequest('语言代码无效', 'persona.draft_lang_not_offered', { lang: brief.lang }); }
-    const { languages } = await getLanguageSettings();
-    if (!languages.includes(lang)) throw badRequest(`语言 ${lang} 不在内容语言列表中`, 'persona.draft_lang_not_offered', { lang });
+    // Chinese or a 配置语系 (languages bound to the accounts that can use the persona: all for a public persona).
+    const languages = await offeredLanguages(p.ownerType === 'public' ? null : p.ownerId);
+    if (!languages.includes(lang)) throw badRequest(`语言 ${lang} 不是中文或社交号已绑定的语言`, 'persona.draft_lang_not_offered', { lang });
     out.lang = lang;
   }
   const ids = [...new Set(brief.exampleTemplateIds ?? [])];
@@ -306,20 +307,37 @@ async function loadRecent(personaId: string, ownerId: string, now: Date): Promis
   )).orderBy(desc(C.createdAt)).limit(30);
 }
 
-/** Maps SDK errors (typed classes) to task errors: 401 final ai.key_invalid, 429/5xx/network retried, other 4xx final. */
-function mapApiError(err: unknown): Error {
+/** Message of an API error body (never contains the key). */
+function apiMessage(err: InstanceType<typeof Anthropic.APIError>): string {
+  const body = err.error as { error?: { message?: unknown } } | undefined;
+  return typeof body?.error?.message === 'string' ? body.error.message : '';
+}
+
+/**
+ * Maps SDK errors (typed classes) to task errors: 401 final ai.key_invalid, 429/5xx/network retried, other 4xx final.
+ * The workspace cases have no error code of their own (400 invalid_request_error / 404 not_found_error), so they are
+ * told apart by the documented message (docs: Authentication → Select a workspace).
+ */
+export function mapApiError(err: unknown): Error {
   if (err instanceof Anthropic.AuthenticationError) return new AiFinalError('ai.key_invalid', 'the Anthropic API rejected the API key (401)');
   if (err instanceof Anthropic.RateLimitError) return new TaskError('ai.api_rate_limited', 'the Anthropic API is rate limiting (429)');
   if (err instanceof Anthropic.InternalServerError) return new TaskError('ai.unavailable', `the Anthropic API is unavailable (${err.status})`);
   if (err instanceof Anthropic.APIConnectionError) return new TaskError('ai.unavailable', `the Anthropic API could not be reached (${err.name})`);
   if (err instanceof Anthropic.APIError) {
-    // The API's own message says which parameter it rejected (it never contains the key); keep it short.
-    const body = err.error as { error?: { message?: unknown } } | undefined;
-    const detail = typeof body?.error?.message === 'string' ? `: ${body.error.message.slice(0, 300)}` : '';
-    return new AiFinalError('ai.request_failed', `the Anthropic API refused the request (${err.status ?? '?'}: ${err.type ?? err.name})${detail}`);
+    const msg = apiMessage(err);
+    if (err instanceof Anthropic.BadRequestError && /not scoped to a workspace/i.test(msg)) {
+      return new AiFinalError('ai.workspace_required', 'the API key is not scoped to a workspace: set the workspace ID in Settings → AI');
+    }
+    if (err instanceof Anthropic.BadRequestError && /anthropic-workspace-id/i.test(msg)) return new AiFinalError('ai.workspace_invalid', `the workspace ID was refused (400): ${msg.slice(0, 200)}`);
+    if (err instanceof Anthropic.NotFoundError && /workspace/i.test(msg)) return new AiFinalError('ai.workspace_not_found', 'the workspace does not exist or the key has no access to it (404)');
+    // The API's own message says which parameter it rejected; keep it short.
+    return new AiFinalError('ai.request_failed', `the Anthropic API refused the request (${err.status ?? '?'}: ${err.type ?? err.name})${msg ? `: ${msg.slice(0, 300)}` : ''}`);
   }
   return err as Error;
 }
+
+/** A 400 that names the fallback parameters (e.g. fallbacks not offered to this account/model): retry once without. */
+const isFallbackRejection = (err: unknown) => err instanceof Anthropic.BadRequestError && /fallback/i.test(apiMessage(err));
 
 async function runDrafts(ctx: TaskContext<DraftPayload>) {
   const { personaId, count, day, trigger } = ctx.payload;
@@ -333,25 +351,35 @@ async function runDrafts(ctx: TaskContext<DraftPayload>) {
   if (!creds.apiKey) throw new AiFinalError('ai.not_configured', 'no Anthropic API key is configured');
   const owner = await draftOwner(p);
   if ('code' in owner) throw new AiFinalError(owner.code, 'the persona has no valid draft owner');
-  const lang = p.brief.lang || (await getLanguageSettings()).defaultSource || 'en';
+  const lang = p.brief.lang || SOURCE_LANG;
   const now = new Date();
   const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, owner.id, now)]);
   const user = buildUserMessage({ persona: p, brief: p.brief, lang, count, day, examples, recent });
   const model = creds.model;
   const fallback = FALLBACK_MODELS.includes(model);
-  await ctx.log('info', `drafts: requesting ${count} from ${model}`, { examples: examples.length, recent: recent.length, lang, fallback });
+  await ctx.log('info', `drafts: requesting ${count} from ${model}`, { examples: examples.length, recent: recent.length, lang, fallback, workspace: creds.workspaceId ?? null });
 
-  const client = new Anthropic({ apiKey: creds.apiKey, maxRetries: 0, timeout: REQUEST_TIMEOUT_MS });
+  const client = new Anthropic({
+    apiKey: creds.apiKey, maxRetries: 0, timeout: REQUEST_TIMEOUT_MS,
+    ...(creds.workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': creds.workspaceId } } : {}),
+  });
+  const create = (withFallback: boolean) => client.beta.messages.create({
+    model,
+    max_tokens: MAX_TOKENS,
+    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: user }],
+    output_config: { effort: EFFORT, format: { type: 'json_schema', schema: DRAFTS_SCHEMA as unknown as Record<string, unknown> } },
+    ...(withFallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
+  }, { signal: ctx.signal });
   let res: Anthropic.Beta.BetaMessage;
   try {
-    res = await client.beta.messages.create({
-      model,
-      max_tokens: MAX_TOKENS,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: user }],
-      output_config: { effort: EFFORT, format: { type: 'json_schema', schema: DRAFTS_SCHEMA as unknown as Record<string, unknown> } },
-      ...(fallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
-    }, { signal: ctx.signal });
+    try {
+      res = await create(fallback);
+    } catch (err) {
+      if (!fallback || !isFallbackRejection(err)) throw err;
+      await ctx.log('warn', 'drafts: the API refused the refusal fallback parameters, retrying once without them');
+      res = await create(false);
+    }
   } catch (err) {
     throw mapApiError(err);
   }

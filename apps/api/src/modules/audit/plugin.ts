@@ -231,12 +231,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
-    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId }),
+    detail: ({ body }) => ({ platform: body.platform, ownerId: body.ownerId, instanceId: body.instanceId, personaId: body.personaId, lang: body.lang }),
   },
   'PUT /api/social/accounts/:id': {
     action: 'social.account_update',
     detail: ({ body }) => ({
-      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, personaId: body.personaId,
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), instanceId: body.instanceId, personaId: body.personaId, lang: body.lang,
     }),
   },
   // 立即检测 (automatic check on the cloud phone, queued; the manual "mark checked" was removed)
@@ -244,7 +244,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/social/accounts/:id': { action: 'social.account_delete' },
   'POST /api/social/accounts/batch': {
     action: ({ body }) => `social.batch.${typeof body.action === 'string' ? body.action : 'unknown'}`,
-    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, personaId: body.personaId, tags: body.tags }),
+    detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length, personaId: body.personaId, lang: body.lang, tags: body.tags }),
   },
   'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
   // tracked accounts (追踪账号)
@@ -351,14 +351,13 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // The key itself is never stored in the log.
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
-  'PUT /api/settings/languages': { action: 'settings.languages', detail: ({ body }) => ({ languages: body.languages, defaultSource: body.defaultSource }) },
   'PUT /api/settings/tracked-collectors/:platform': {
     action: 'settings.tracked_collector', detail: ({ params, body }) => ({ platform: params.platform, instanceId: body.instanceId, resume: body.resume }),
   },
   // Never the key itself: only whether one was set or cleared.
   'PUT /api/settings/ai': {
     action: 'settings.ai',
-    detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, model: body.model, hour: body.hour, enabled: body.enabled }),
+    detail: ({ body }) => ({ set: typeof body.apiKey === 'string', cleared: body.apiKey === null, workspaceId: body.workspaceId, model: body.model, hour: body.hour, enabled: body.enabled }),
   },
   // 风控 (risk control)
   'PUT /api/risk/settings': {

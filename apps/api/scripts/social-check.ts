@@ -287,6 +287,35 @@ try {
   const raceLinkLogs = await sqlClient`select count(*)::int as n from social_account_logs where account_id in ${sqlClient(raceIds)} and action = 'link'`;
   check('race: exactly one link log (refused links write none)', (raceLinkLogs[0] as any).n === 1);
 
+  // ---------------------------------------------------------------- 账号语言 (lang): CRUD, filter, batch, logs, audit
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { lang: 'EN-us' });
+  check('lang: set on update, canonicalised (EN-us → en-US), logged with from → to',
+    r.status === 200 && r.body.account.lang === 'en-US' && (await logsOf(A, a1)).some((l) => l.action === 'update' && l.field === 'lang' && l.fromValue === null && l.toValue === 'en-US'), r.text.slice(0, 200));
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { lang: 'not a lang' });
+  const badLang = r.status;
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { lang: 'en-US', notes: 'changed' });
+  check('lang: invalid code → 400; unchanged value writes no log', badLang === 400 && (await logsOf(A, a1)).filter((l) => l.field === 'lang').length === 1);
+  r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: h('Lingo'), lang: 'hi' });
+  const l1: string = r.body.account?.id;
+  check('lang: set on create', r.status === 201 && r.body.account.lang === 'hi', r.text.slice(0, 200));
+  const ids = async (q: string, tok = A) => ((await http('GET', `/api/social/accounts?pageSize=200&q=${tag}&${q}`, tok)).body.items as any[]).map((x) => x.id).sort();
+  check('lang filter: ?lang=hi / ?lang=EN-US (canonical) / ?lang=none',
+    JSON.stringify(await ids('lang=hi')) === JSON.stringify([l1]) && JSON.stringify(await ids('lang=EN-US')) === JSON.stringify([a1]) && !(await ids('lang=none')).includes(a1) && (await ids('lang=none')).includes(y1));
+  check('lang filter: invalid → 400', (await http('GET', '/api/social/accounts?lang=__', A)).status === 400);
+  check('lang filter: B never sees A\'s accounts by language', (await ids('lang=hi', B)).length === 0);
+  r = await http('POST', '/api/social/accounts/batch', A, { ids: [a1, y1, l1], action: 'set-lang' });
+  check('batch set-lang without lang → 400 social.batch_lang_required', r.status === 400 && r.body.code === 'social.batch_lang_required', r.text.slice(0, 120));
+  r = await http('POST', '/api/social/accounts/batch', A, { ids: [a1, y1, l1], action: 'set-lang', lang: 'hi' });
+  check('batch set-lang (only changed rows count, logged per account)', r.status === 200 && r.body.changed === 2
+    && (await logsOf(A, y1)).some((l) => l.field === 'lang' && l.fromValue === null && l.toValue === 'hi') && (await logsOf(A, a1)).some((l) => l.field === 'lang' && l.fromValue === 'en-US' && l.toValue === 'hi'), r.text.slice(0, 120));
+  r = await http('POST', '/api/social/accounts/batch', B, { ids: [a1], action: 'set-lang', lang: 'fr' });
+  check('batch set-lang on another user\'s account → 404', r.status === 404);
+  r = await http('POST', '/api/social/accounts/batch', A, { ids: [y1, l1], action: 'set-lang', lang: null });
+  check('batch set-lang null clears', r.status === 200 && r.body.changed === 2 && JSON.stringify(await ids('lang=hi')) === JSON.stringify([a1]));
+  r = await http('PUT', `/api/social/accounts/${a1}`, T, { lang: 'pt-BR' });
+  check('admin sets a user\'s account language', r.status === 200 && r.body.account.lang === 'pt-BR');
+  await http('DELETE', `/api/social/accounts/${l1}`, A);
+
   // ---------------------------------------------------------------- batch set persona / unlink
   r = await http('POST', '/api/social/accounts/batch', A, { ids: [a1, y1], action: 'move-group', groupId: gA });
   check('batch move-group is gone → 400', r.status === 400);
@@ -330,10 +359,11 @@ try {
   const recent = acts.filter((a) => a.at >= t0);
   const actSet = new Set(recent.map((a) => a.action));
   const want = ['social.account_create', 'social.account_update', 'social.account_check', 'social.account_delete', 'social.batch.add-tags',
-    'social.batch.unlink', 'social.batch.set-persona', 'social.batch.delete', 'social.settings_update'];
+    'social.batch.unlink', 'social.batch.set-persona', 'social.batch.set-lang', 'social.batch.delete', 'social.settings_update'];
   check('audit actions recorded', want.every((x) => actSet.has(x)), want.filter((x) => !actSet.has(x)).join(','));
   check('audit target for account update is "platform @handle"', recent.some((a) => a.action === 'social.account_update' && a.target === `instagram @${h('Alpha')}`));
   check('audit delete keeps the target name', recent.some((a) => a.action === 'social.account_delete' && a.target === `youtube @${h('Alpha')}`));
+  check('audit: language recorded on update and batch', recent.some((a) => a.action === 'social.account_update' && (a.detail as any)?.lang === 'pt-BR') && recent.some((a) => a.action === 'social.batch.set-lang' && (a.detail as any)?.lang === 'hi'));
   check('audit never stores notes or error text', !recent.some((a) => JSON.stringify(a.detail).includes('upload blocked') || JSON.stringify(a.detail).includes('verified on phone')));
 
   // ---------------------------------------------------------------- user deletion cascades

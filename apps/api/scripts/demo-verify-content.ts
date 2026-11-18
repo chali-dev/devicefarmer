@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { CATEGORIES, CONTENT_CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, TARGETS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
+import { ACCOUNT_LANGS, CATEGORIES, CONTENT_CATEGORIES, CONTENTS, FAVORITES, MEDIA, PERSONAS, PUBLISHES, TARGETS, TEMPLATES, http, listAll, login, mediaName, readCredentials } from './demo-seed-content.js';
 
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail && !ok ? ` — ${detail}` : ''}`); };
@@ -442,7 +442,22 @@ try {
     check('demo 发布目标: contents carry their default targets in order (admin + demo-user)',
       Object.keys(TARGETS).every((title) => got(CONTENTS.find((c) => c.title === title)!.owner === 'user' ? uC : aC, title) === want(title)),
       Object.keys(TARGETS).map((title) => `${title}: ${got(aC, title)}`).join(' | '));
-    const adminAcc = (await listAll(T, '/api/social/accounts?q=demo.wanderlust')).find((a) => a.handle === 'demo.wanderlust.lena');
+    // 账号语言 + 发文语言: accounts carry their language; the demo publish task snapshots use the translation in it
+    const adminAccs = await listAll(T, '/api/social/accounts?q=demo.');
+    const langOk = Object.entries(ACCOUNT_LANGS).every(([h, l]) => [...adminAccs, ...userAccs].filter((a) => a.handle === h).every((a) => a.lang === l));
+    check('demo 账号语言: accounts carry their language', langOk, Object.keys(ACCOUNT_LANGS).map((h) => `${h}=${adminAccs.find((a) => a.handle === h)?.lang}`).join(' '));
+    const coffee = aC.find((x) => x.title === 'demo 新品咖啡上市');
+    const lena = adminAccs.find((a) => a.handle === 'demo.wanderlust.lena');
+    const lenaTasks = coffee && lena ? (await http('GET', `/api/publish/tasks?contentId=${coffee.id}&accountId=${lena.id}&limit=5`, T)).body.items as any[] : [];
+    const en = CONTENTS.find((c) => c.title === 'demo 新品咖啡上市')!.translations!.find((x) => x.lang === 'en')!;
+    check('demo 发文语言: the coffee post to @demo.wanderlust.lena (en) uses the English translation (lang en, English caption)',
+      PUBLISHES.some((p) => p.content === 'demo 新品咖啡上市' && p.account === 'demo.wanderlust.lena') && lenaTasks.length > 0
+        && lenaTasks.every((x) => x.lang === 'en' && x.caption === en.caption),
+      lenaTasks.map((x) => `${x.lang}: ${String(x.caption).slice(0, 30)}`).join(' | '));
+    const langs = (await http('GET', '/api/contents/languages', T)).body;
+    check('GET /api/contents/languages: zh-CN source + the languages bound to accounts', langs.source === 'zh-CN' && langs.languages[0] === 'zh-CN'
+      && ['en', 'hi'].every((l) => langs.configured.includes(l)) && !langs.configured.includes('zh-CN'), JSON.stringify(langs));
+    const adminAcc = adminAccs.find((a) => a.handle === 'demo.wanderlust.lena');
     r = await http('PUT', `/api/contents/${nc.id}`, U, { targetIds: [adminAcc.id] });
     check('demo-user cannot target an admin account → 404', r.status === 404 && r.body.code === 'social.not_found', `${r.status} ${r.body?.code}`);
     const mia = userAccs.find((a) => a.handle === 'demo.fit.with.mia');
