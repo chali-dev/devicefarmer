@@ -6,26 +6,27 @@ import { api, errorText } from '../../api/client'
 import { dateLocale } from '../../i18n'
 
 /**
- * 系统配置 → 发布重发 (admin): attempts per publish round and the base delay of the exponential backoff
- * (GET/PUT /api/settings/publish-retry, key `publish.retry`). The env values are the defaults; a saved value is
- * used for every round created or started again from then on (a running round keeps its own).
+ * 系统配置 → 发布任务 (admin): attempts per publish round, the base delay of the exponential backoff and the timeout
+ * of one attempt (GET/PUT /api/settings/publish-retry, keys `publish.retry` + `publish.timeout`). The env values are
+ * the defaults (hint under each field); a saved value is used for every round created or started again from then on
+ * (a running round keeps its own).
  */
-interface Retry { maxAttempts: number; backoffSec: number; backoffMs: number; updatedAt: string | null }
+interface Retry { maxAttempts: number; backoffSec: number; backoffMs: number; timeoutSec: number; timeoutMs: number; updatedAt: string | null }
 const { t } = useI18n()
 const state = ref<{ retry: Retry; defaults: Retry } | null>(null)
-const form = reactive({ maxAttempts: 3, backoffSec: 30 })
+const form = reactive({ maxAttempts: 3, backoffSec: 30, timeoutSec: 600 })
 const saving = ref(false)
 
 function fill(r: { retry: Retry; defaults: Retry }) {
   state.value = r
-  Object.assign(form, { maxAttempts: r.retry.maxAttempts, backoffSec: r.retry.backoffSec })
+  Object.assign(form, { maxAttempts: r.retry.maxAttempts, backoffSec: r.retry.backoffSec, timeoutSec: Math.min(3600, Math.max(60, r.retry.timeoutSec)) })
 }
 onMounted(async () => { try { fill(await api('GET', '/api/settings/publish-retry')) } catch (e) { message.error(errorText(e)) } })
 
 async function save() {
   saving.value = true
   try {
-    fill(await api('PUT', '/api/settings/publish-retry', { maxAttempts: form.maxAttempts, backoffSec: form.backoffSec }))
+    fill(await api('PUT', '/api/settings/publish-retry', { maxAttempts: form.maxAttempts, backoffSec: form.backoffSec, timeoutSec: form.timeoutSec }))
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
   finally { saving.value = false }
@@ -42,13 +43,18 @@ const waits = () => Array.from({ length: Math.max(0, (form.maxAttempts || 1) - 1
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.maxAttempts')" :extra="state ? t('settings.publishRetry.default', { v: state.defaults.maxAttempts, env: 'PUBLISH_MAX_ATTEMPTS' }) : undefined">
+            <a-form-item :label="t('settings.publish.maxAttempts')" :extra="state ? t('settings.envDefault', { v: state.defaults.maxAttempts, env: 'PUBLISH_MAX_ATTEMPTS' }) : undefined">
               <a-input-number v-model:value="form.maxAttempts" :min="1" :max="10" :precision="0" style="width: 100%" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.backoff')" :extra="state ? t('settings.publishRetry.default', { v: `${state.defaults.backoffSec} s`, env: 'PUBLISH_RETRY_BACKOFF_MS' }) : undefined">
+            <a-form-item :label="t('settings.publish.backoff')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.backoffSec} s`, env: 'PUBLISH_RETRY_BACKOFF_MS' }) : undefined">
               <a-input-number v-model:value="form.backoffSec" :min="1" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('settings.publish.timeout')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.timeoutSec} s`, env: 'PUBLISH_TIMEOUT_MS' }) : undefined">
+              <a-input-number v-model:value="form.timeoutSec" :min="60" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
             </a-form-item>
           </a-col>
         </a-row>

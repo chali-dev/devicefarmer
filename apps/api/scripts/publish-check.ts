@@ -5,10 +5,11 @@
  *   held by a test-only trigger against the monitor (created and dropped by this script).
  *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
  *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
- * - 系统配置 → 发布重发 (`publish.retry`): set to 4 attempts / 2 s backoff for the run (validation 400s checked), so the
- *   device-offline retry path waits 2 s: a default distribution gets 4 attempts, the TikTok round's scheduler task
- *   carries backoff_ms 2000 and logs retryInMs 2000, and a retry after changing the setting to 5 gets 5 attempts.
- *   The previous setting is restored at the end.
+ * - 系统配置 → 发布任务 (`publish.retry` + `publish.timeout`): set to 4 attempts / 2 s backoff / 120 s attempt timeout
+ *   for the run (validation 400s checked, a PUT without timeoutSec (older page) keeps the stored timeout, audit detail),
+ *   so the device-offline retry path waits 2 s: a default distribution gets 4 attempts, the TikTok round's scheduler
+ *   task carries backoff_ms 2000 + timeout_ms 120000 and logs retryInMs 2000, and a retry after changing the setting
+ *   to 5 attempts / 300 s gets 5 attempts and timeout_ms 300000. The previous rows of both keys are restored at the end.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
  */
 import { execFile } from 'node:child_process';
@@ -71,8 +72,8 @@ const ptIds = new Set<string>();
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
 // 发布重发 for this run (restored in finally).
-const prevRetry = (await http('GET', '/api/settings/publish-retry', T)).body;
-const RETRY = { maxAttempts: 4, backoffSec: 2 };
+const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, ['publish.retry', 'publish.timeout']));
+const RETRY = { maxAttempts: 4, backoffSec: 2, timeoutSec: 120 };
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
 async function waitStatus(token: string, id: string, statuses: string[], ms = 60_000) {
@@ -88,12 +89,19 @@ const contentStatus = async (token: string, id: string) => (await http('GET', `/
 try {
   // ---------------------------------------------------------------- 发布重发 setting (admin, strict)
   {
-    const bad = await Promise.all([{ maxAttempts: 0, backoffSec: 2 }, { maxAttempts: 11, backoffSec: 2 }, { maxAttempts: 3, backoffSec: 0 }, { maxAttempts: 3, backoffSec: 3601 }, { ...RETRY, extra: 1 }, { maxAttempts: 3 }]
+    const bad = await Promise.all([{ maxAttempts: 0, backoffSec: 2 }, { maxAttempts: 11, backoffSec: 2 }, { maxAttempts: 3, backoffSec: 0 }, { maxAttempts: 3, backoffSec: 3601 }, { ...RETRY, extra: 1 }, { maxAttempts: 3 }, { ...RETRY, timeoutSec: 59 }, { ...RETRY, timeoutSec: 3601 }, { ...RETRY, timeoutSec: 90.5 }]
       .map((b) => http('PUT', '/api/settings/publish-retry', T, b)));
-    check('publish retry setting: out-of-range / unknown / missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+    check('publish task setting: out-of-range (attempts, backoff, timeout 59/3601/fraction) / unknown / missing fields → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
     const ok = await http('PUT', '/api/settings/publish-retry', T, RETRY);
-    check('publish retry setting saved (4 attempts, 2 s)', ok.status === 200 && ok.body.retry.maxAttempts === 4 && ok.body.retry.backoffSec === 2 && ok.body.retry.backoffMs === 2000
-      && typeof ok.body.defaults.maxAttempts === 'number', ok.text.slice(0, 200));
+    check('publish task setting saved (4 attempts, 2 s, timeout 120 s); defaults = env', ok.status === 200 && ok.body.retry.maxAttempts === 4 && ok.body.retry.backoffSec === 2 && ok.body.retry.backoffMs === 2000
+      && ok.body.retry.timeoutSec === 120 && ok.body.retry.timeoutMs === 120_000
+      && ok.body.defaults.maxAttempts === Number(process.env.PUBLISH_MAX_ATTEMPTS ?? 3) && ok.body.defaults.timeoutMs === Number(process.env.PUBLISH_TIMEOUT_MS ?? 600_000), ok.text.slice(0, 300));
+    const old = await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 4, backoffSec: 2 });
+    check('PUT without timeoutSec (older page) keeps the stored timeout', old.status === 200 && old.body.retry.timeoutSec === 120, old.text.slice(0, 200));
+    await new Promise((res) => setTimeout(res, 1500));
+    const [au] = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'settings.publish_retry'), gte(schema.auditLogs.at, t0), eq(schema.auditLogs.status, 200)))
+      .orderBy(schema.auditLogs.at).limit(1);
+    check('audit settings.publish_retry with timeoutSec', (au?.detail as any)?.timeoutSec === 120, JSON.stringify(au?.detail));
   }
   // ---------------------------------------------------------------- setup: users, placeholder devices, accounts, media
   const pw = randomBytes(12).toString('base64url');
@@ -439,18 +447,18 @@ try {
     const [ttRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
     const lines = ttRun ? await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, ttRun.id)) : [];
     const retryLine = lines.find((l) => /failed, retrying/.test(l.message));
-    check('发布重发 backoff applied: scheduler task backoff_ms 2000, retry logged with retryInMs 2000',
-      ttRun?.backoffMs === 2000 && (retryLine?.data as any)?.retryInMs === 2000, `${ttRun?.backoffMs} ${JSON.stringify(retryLine?.data)}`);
+    check('发布任务 backoff + timeout applied: scheduler task backoff_ms 2000, timeout_ms 120000, retry logged with retryInMs 2000',
+      ttRun?.backoffMs === 2000 && ttRun?.timeoutMs === 120_000 && (retryLine?.data as any)?.retryInMs === 2000, `${ttRun?.backoffMs} ${ttRun?.timeoutMs} ${JSON.stringify(retryLine?.data)}`);
   }
   // A new round takes the current setting.
-  await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 5, backoffSec: 2 });
+  await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 5, backoffSec: 2, timeoutSec: 300 });
   await db.update(schema.instances).set({ status: 'running', adbState: 'device', image: PINNED }).where(eq(schema.instances.id, DOFF.id));
   r = await http('POST', `/api/publish/tasks/${ttTask.id}/retry`, A, {});
   d = await waitStatus(A, ttTask.id, ['awaiting_operator', 'failed']);
   {
     const [newRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
-    check('retry after changing 发布重发 to 5: the new round has 5 attempts (publish task + scheduler task)', d.task.maxAttempts === 5 && newRun?.maxAttempts === 5,
-      `${d.task.maxAttempts} ${newRun?.maxAttempts}`);
+    check('retry after changing 发布任务 to 5 attempts / 300 s: the new round has 5 attempts (publish task + scheduler task) and timeout_ms 300000',
+      d.task.maxAttempts === 5 && newRun?.maxAttempts === 5 && newRun?.timeoutMs === 300_000, `${d.task.maxAttempts} ${newRun?.maxAttempts} ${newRun?.timeoutMs}`);
   }
   check('device back online + manual retry → awaiting operator; new scheduler task retry_of the old one, key publish:<id>:2',
     d.task.status === 'awaiting_operator' && d.runs.length === 2 && d.runs[1].retryOf === d.runs[0].id && d.runs[1].idempotencyKey === `publish:${ttTask.id}:2`);
@@ -505,8 +513,8 @@ try {
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
-  if (prevRetry?.retry?.updatedAt) await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: prevRetry.retry.maxAttempts, backoffSec: prevRetry.retry.backoffSec });
-  else await db.delete(schema.settings).where(eq(schema.settings.key, 'publish.retry'));
+  await db.delete(schema.settings).where(inArray(schema.settings.key, ['publish.retry', 'publish.timeout']));
+  if (prevRetryRows.length) await db.insert(schema.settings).values(prevRetryRows);
   // Users first: their contents, accounts, publish tasks and private media go with them.
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   for (const id of publicMedia) await http('DELETE', `/api/media/${id}`, T);

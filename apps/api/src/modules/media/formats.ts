@@ -1,8 +1,8 @@
-import { config } from '../../config.js';
+import type { MediaLimitSettings } from './limits.js';
 
 /**
  * Media formats the library accepts. A file is accepted only when its extension, the declared
- * MIME type and its magic bytes all agree on one of these formats (MEDIA_ALLOWED_TYPES subset).
+ * MIME type and its magic bytes all agree on one of these formats (the allowed subset: media.limits setting, limits.ts).
  */
 export type MediaKind = 'image' | 'video';
 export interface MediaFormat {
@@ -58,16 +58,16 @@ export const PROCESSABLE = new Set(['jpeg', 'png', 'webp', 'mp4', 'mov', 'webm']
 /** Bytes needed to decide magic numbers. */
 export const MAGIC_BYTES = 64;
 
-export function allowedFormats(): MediaFormat[] {
-  const ids = new Set(config.MEDIA_ALLOWED_TYPES.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
-  return FORMATS.filter((f) => ids.has(f.id));
+/** Functions below take the effective limits (limits.ts getMediaLimitSettings: setting over env defaults). */
+export function allowedFormats(lim: MediaLimitSettings): MediaFormat[] {
+  return FORMATS.filter((f) => lim.allowedTypes.includes(f.id));
 }
 
-export function maxBytes(kind: MediaKind): number {
-  return Math.floor((kind === 'image' ? config.MEDIA_IMAGE_MAX_MB : config.MEDIA_VIDEO_MAX_MB) * 1024 * 1024);
+export function maxMb(lim: MediaLimitSettings, kind: MediaKind): number {
+  return kind === 'image' ? lim.imageMaxMb : lim.videoMaxMb;
 }
-export function maxMb(kind: MediaKind): number {
-  return kind === 'image' ? config.MEDIA_IMAGE_MAX_MB : config.MEDIA_VIDEO_MAX_MB;
+export function maxBytes(lim: MediaLimitSettings, kind: MediaKind): number {
+  return Math.floor(maxMb(lim, kind) * 1024 * 1024);
 }
 
 export function extOf(filename: string): string {
@@ -76,9 +76,9 @@ export function extOf(filename: string): string {
 }
 
 /** Format by extension among the allowed ones (step 1, before any byte is read). */
-export function formatByExt(filename: string): MediaFormat | undefined {
+export function formatByExt(lim: MediaLimitSettings, filename: string): MediaFormat | undefined {
   const ext = extOf(filename);
-  return ext ? allowedFormats().find((f) => f.exts.includes(ext)) : undefined;
+  return ext ? allowedFormats(lim).find((f) => f.exts.includes(ext)) : undefined;
 }
 
 /** Declared MIME must match the format; a generic/missing type is tolerated (magic bytes decide). */
@@ -88,10 +88,10 @@ export function mimeMatches(format: MediaFormat, declared: string): boolean {
 }
 
 /** Limits as reported to the UI (GET /api/media/limits). */
-export function mediaLimits() {
-  const fmts = allowedFormats();
+export function mediaLimits(lim: MediaLimitSettings) {
+  const fmts = allowedFormats(lim);
   const of = (kind: MediaKind) => ({
-    maxMb: maxMb(kind),
+    maxMb: maxMb(lim, kind),
     formats: fmts.filter((f) => f.kind === kind).map((f) => ({ id: f.id, mime: f.mime, mimes: [f.mime, ...f.mimeAliases], exts: f.exts, processable: PROCESSABLE.has(f.id) })),
   });
   return { image: of('image'), video: of('video') };

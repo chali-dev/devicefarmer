@@ -11,6 +11,8 @@ import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
 import { FIXED_MENUS, GRANTABLE_MENUS, DEFAULT_USER_MENUS, getUserMenus, saveUserMenus } from '../auth/role-menus.js';
 import { getPublishRetry, PublishRetryInput, publicRetry, publishRetryDefaults, savePublishRetry } from '../publish/retry-settings.js';
+import { getMediaLimitSettings, MAX_IMAGE_MB, MAX_VIDEO_MB, mediaLimitDefaults, MEDIA_TYPE_IDS, MediaLimitsInput, saveMediaLimitSettings } from '../media/limits.js';
+import { FORMATS } from '../media/formats.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
 
 /** Platform settings (设置). Admin only. */
@@ -97,7 +99,7 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return roleMenus();
   });
 
-  /** 发布重发: attempts + backoff of publish rounds (publish/retry-settings.ts; env values = defaults). */
+  /** 发布任务: attempts + backoff + per-attempt timeout of publish rounds (publish/retry-settings.ts; env values = defaults). */
   const retryView = async () => {
     const d = publishRetryDefaults();
     return { retry: publicRetry(await getPublishRetry()), defaults: publicRetry({ ...d, updatedAt: null }) };
@@ -106,6 +108,24 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/settings/publish-retry', { schema: { body: PublishRetryInput } }, async (req) => {
     await savePublishRetry(req.body);
     return retryView();
+  });
+
+  /**
+   * 素材上传限制 (media/limits.ts; env values = defaults): size per kind + allowed formats (a subset of `types`, the
+   * formats the upload validator knows). GET /api/media/limits (every user) serves the effective values to the upload UI.
+   */
+  const mediaLimitsView = async () => {
+    const { updatedAt, ...limits } = await getMediaLimitSettings(true);
+    return {
+      limits, updatedAt, defaults: mediaLimitDefaults(),
+      max: { imageMaxMb: MAX_IMAGE_MB, videoMaxMb: MAX_VIDEO_MB },
+      types: MEDIA_TYPE_IDS.map((id) => { const f = FORMATS.find((x) => x.id === id)!; return { id, kind: f.kind, exts: f.exts }; }),
+    };
+  };
+  app.get('/api/settings/media-limits', async () => mediaLimitsView());
+  app.put('/api/settings/media-limits', { schema: { body: MediaLimitsInput } }, async (req) => {
+    await saveMediaLimitSettings(req.body);
+    return mediaLimitsView();
   });
 
   /** Env-configured values shown read-only in the UI (publish defaults, audit retention, media limits). Cheap. */

@@ -154,11 +154,12 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
   const [acc] = await db.select({ handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
   const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
   try {
-    const { backoffMs } = await getPublishRetry();
+    // 系统配置 → 发布任务: backoff + per-attempt timeout are stored on the task (a round keeps them).
+    const { backoffMs, timeoutMs } = await getPublishRetry();
     const { task } = await createTask({
       type: TASK_TYPE, userId: row.userId, label: `${row.platform}${row.postType !== 'feed' ? ` ${row.postType}` : ''} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
       refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
-      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, backoffMs, retryOf,
+      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, backoffMs, timeoutMs, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
     return updated ?? row;

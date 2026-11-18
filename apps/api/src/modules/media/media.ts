@@ -15,6 +15,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { registerTaskHandler } from '../tasks/core.js';
 import { activeStorage, storageFor } from '../settings/storage.js';
+import { getMediaLimitSettings, type MediaLimitSettings } from './limits.js';
 import { FORMATS, formatByExt, MAGIC_BYTES, PROCESSABLE, maxBytes, maxMb, mediaLimits, mimeMatches, type MediaFormat } from './formats.js';
 import { analyzeMedia } from './process.js';
 import { transformMedia } from './transform.js';
@@ -147,8 +148,8 @@ export interface UploadInput {
   process?: MediaProcessOptions | null;
 }
 
-function rejectType(): HttpError {
-  const lim = mediaLimits();
+function rejectType(settings: MediaLimitSettings): HttpError {
+  const lim = mediaLimits(settings);
   const exts = [...lim.image.formats, ...lim.video.formats].flatMap((f) => f.exts).join(', ');
   return new HttpError(415, `不支持的文件类型（支持：${exts}）`, 'media.unsupported_type', { exts });
 }
@@ -166,8 +167,9 @@ async function drain(stream: Readable): Promise<void> {
  * the object is written; S3 needs a content length).
  */
 export async function createMedia(input: UploadInput): Promise<MediaAsset> {
-  const format = formatByExt(input.filename);
-  if (!format) { await drain(input.stream); throw rejectType(); }
+  const lim = await getMediaLimitSettings();
+  const format = formatByExt(lim, input.filename);
+  if (!format) { await drain(input.stream); throw rejectType(lim); }
   if (!mimeMatches(format, input.mimetype)) {
     await drain(input.stream);
     throw new HttpError(415, `文件类型（${input.mimetype}）与扩展名不符`, 'media.mime_mismatch', { mime: input.mimetype });
@@ -178,7 +180,7 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
   }
   const meta = input.meta ?? {};
   await assertMetaFor(input.owner, meta).catch(async (e) => { await drain(input.stream); throw e; });
-  const limit = maxBytes(format.kind);
+  const limit = maxBytes(lim, format.kind);
   const storage = await activeStorage();
   return withTempDir(async (dir) => {
     const tmp = path.join(dir, 'upload');
@@ -195,7 +197,7 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
       },
     }), fs.createWriteStream(tmp));
     if (over || input.stream.truncated) {
-      throw new HttpError(413, `文件过大（${format.kind === 'image' ? '图片' : '视频'}上限 ${maxMb(format.kind)} MB）`, 'media.too_large', { kind: format.kind, max: maxMb(format.kind) });
+      throw new HttpError(413, `文件过大（${format.kind === 'image' ? '图片' : '视频'}上限 ${maxMb(lim, format.kind)} MB）`, 'media.too_large', { kind: format.kind, max: maxMb(lim, format.kind) });
     }
     if (size === 0) throw badRequest('empty file', 'media.empty_file');
     await assertMagic(tmp, format);
