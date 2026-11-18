@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, watch } from 'vue'
-import { ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, PictureOutlined, PlayCircleFilled } from '@ant-design/icons-vue'
+import { ArrowLeftOutlined, ArrowRightOutlined, CloseOutlined, LoadingOutlined, PictureOutlined, PlayCircleFilled } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
 import type { ContentMedia, MediaItem } from '../../api/types'
 import { fmtDuration, useThumbs } from '../media/media'
@@ -21,9 +21,10 @@ const shown = () => (props.max ? props.media.slice(0, props.max) : props.media)
     <div v-for="(m, i) in shown()" :key="m.id" class="cell" :style="{ width: `${size}px` }" :title="m.name">
       <div class="thumb" :style="{ width: `${size}px`, height: `${size}px` }">
         <img v-if="thumbs.get(asItem(m))" :src="thumbs.get(asItem(m))" :alt="m.name" />
+        <LoadingOutlined v-else-if="m.status === 'processing'" class="ph" spin />
         <PictureOutlined v-else class="ph" />
         <span v-if="m.fileType === 'video'" class="badge"><PlayCircleFilled /> {{ fmtDuration(m.duration) }}</span>
-        <span v-if="m.status !== 'ready'" class="state">{{ t(`media.statuses.${m.status}`) }}</span>
+        <span v-if="m.status !== 'ready'" class="state" :class="{ failed: m.status === 'failed' }">{{ t(`media.statuses.${m.status}`) }}</span>
       </div>
       <div v-if="editable" class="ctl">
         <a-button size="small" type="text" :disabled="i === 0" :aria-label="t('content.moveUp')" @click="emit('move', i, -1)"><ArrowLeftOutlined /></a-button>
@@ -49,6 +50,7 @@ const shown = () => (props.max ? props.media.slice(0, props.max) : props.media)
   background: rgba(0, 0, 0, 0.6); color: #fff;
 }
 .state { position: absolute; top: 2px; right: 2px; font-size: 10px; padding: 0 3px; border-radius: 3px; background: var(--cp-bg-container); color: var(--cp-warning); }
+.state.failed { color: var(--cp-error); }
 .ctl { display: flex; }
 .more { align-self: center; color: var(--cp-text-secondary); font-size: 12px; }
 </style>
