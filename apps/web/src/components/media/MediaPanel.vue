@@ -529,7 +529,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 
     <MediaUploader
       v-if="canUpload" v-model:open="uploadOpen" :scope="uploadScope" :scope-label="tabLabel" :limits="limits" :categories="categories"
-      @uploaded="refreshAll"
+      :tag-options="tagOptions" @uploaded="refreshAll" @categories-changed="loadCategories"
     />
     <ScopedListManager v-if="canManageCategories" v-model:open="categoriesOpen" path="/api/media/categories" list-key="categories" texts="media.categories"
       :merge-into-public="false" :initial-tab="uploadScope" @changed="() => { void loadCategories(); void load() }" />

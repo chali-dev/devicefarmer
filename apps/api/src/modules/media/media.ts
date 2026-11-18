@@ -5,6 +5,7 @@ import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
+import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type MediaAsset, type MediaFileFacts, type MediaProcessing, type MediaProcessOptions } from '../../db/schema.js';
@@ -90,6 +91,26 @@ export async function assertCategoryFor(owner: Owner, categoryId: string): Promi
 }
 
 /**
+ * Name / category / tags / 对用户可见 of an asset: one schema and one rule check for both the edit
+ * (PUT /api/media/:id) and the upload (multipart fields), so they can't drift apart.
+ */
+export const MediaTag = z.string().trim().min(1).max(32);
+export const MediaMetaSchema = z.object({
+  name: z.string().trim().min(1).max(200).optional(),
+  categoryId: z.string().uuid().nullable().optional(),
+  tags: z.array(MediaTag).max(20).optional(),
+  /** Public assets only (admin): 'ready' = visible to users, 'disabled' = hidden. */
+  status: z.enum(['ready', 'disabled']).optional(),
+});
+export type MediaMeta = z.infer<typeof MediaMetaSchema>;
+
+/** Rules for metadata of an asset of `owner`: category of the same owner, visibility only on public assets. */
+export async function assertMetaFor(owner: Owner, m: Pick<MediaMeta, 'categoryId' | 'status'>): Promise<void> {
+  if (m.categoryId) await assertCategoryFor(owner, m.categoryId);
+  if (m.status !== undefined && owner.ownerType !== 'public') throw badRequest('只有公共素材可以启用/禁用', 'media.status_public_only');
+}
+
+/**
  * Single extension point for "is this asset still referenced by unfinished work?".
  * Pending/scheduled/running push-asset tasks, and unfinished publish tasks (incl. awaiting_operator)
  * whose media snapshot contains the asset.
@@ -113,7 +134,8 @@ export interface UploadInput {
   filename: string;
   mimetype: string;
   owner: Owner;
-  categoryId?: string | null;
+  /** Validated with MediaMetaSchema; name defaults to the file name without extension. */
+  meta?: MediaMeta;
   userId: string;
   /** Crop/compress in the media-process job (already normalised; null = keep as uploaded). */
   process?: MediaProcessOptions | null;
@@ -148,7 +170,8 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
     await drain(input.stream);
     throw badRequest(`${format.id.toUpperCase()} 不支持裁切/压缩`, 'media.process_unsupported', { format: format.id });
   }
-  if (input.categoryId) await assertCategoryFor(input.owner, input.categoryId).catch(async (e) => { await drain(input.stream); throw e; });
+  const meta = input.meta ?? {};
+  await assertMetaFor(input.owner, meta).catch(async (e) => { await drain(input.stream); throw e; });
   const limit = maxBytes(format.kind);
   const storage = await activeStorage();
   return withTempDir(async (dir) => {
@@ -179,20 +202,22 @@ export async function createMedia(input: UploadInput): Promise<MediaAsset> {
       throw new HttpError(502, `存储（${storage.kind}）写入失败：${describeError(err)}`, 'media.storage_write_failed', { storage: storage.kind, error: describeError(err) });
     }
     const fileName = cleanName(input.filename, 200) || `upload.${ext}`;
-    const name = fileName.replace(/\.[^.]{1,8}$/, '') || fileName;
+    const name = meta.name || fileName.replace(/\.[^.]{1,8}$/, '') || fileName;
     let row: MediaAsset;
     try {
       [row] = (await db.insert(schema.mediaAssets).values({
-        ownerType: input.owner.ownerType, ownerId: input.owner.ownerId, categoryId: input.categoryId ?? null,
+        ownerType: input.owner.ownerType, ownerId: input.owner.ownerId, categoryId: meta.categoryId ?? null,
         name, fileName, storage: storage.kind, fileKey, fileType: format.kind, mimeType: format.mime, fileSize: size,
         checksum: hash.digest('hex'), status: 'processing', createdBy: input.userId,
         processing: input.process ? { options: input.process } : null,
+        disableOnReady: meta.status === 'disabled',
       }).returning()) as [MediaAsset];
     } catch (err) {
       await storage.delete(fileKey).catch(() => undefined);
       throw err;
     }
     try {
+      if (meta.tags?.length) await setTags(row.id, meta.tags);
       await enqueueTask('media-process', { assetId: row.id }, input.userId, { refType: 'media', refId: row.id, label: `处理素材 ${name}` });
     } catch (err) {
       await purgeMedia(row).catch(() => undefined);
@@ -284,7 +309,7 @@ export async function processMedia(assetId: string, signal?: AbortSignal): Promi
       written.push(thumbnailKey);
       await st.put(thumbnailKey, thumb, ts.size, 'image/jpeg');
       const done = await db.update(schema.mediaAssets)
-        .set({ ...info, ...(replace ?? {}), processing, thumbnailKey, status: 'ready', error: null })
+        .set({ ...info, ...(replace ?? {}), processing, thumbnailKey, status: asset.disableOnReady ? 'disabled' : 'ready', error: null })
         .where(and(eq(schema.mediaAssets.id, asset.id), isNull(schema.mediaAssets.deletedAt), eq(schema.mediaAssets.status, 'processing'), eq(schema.mediaAssets.fileKey, asset.fileKey)))
         .returning({ id: schema.mediaAssets.id });
       if (!done.length) { for (const k of written) await st.delete(k).catch(() => undefined); }

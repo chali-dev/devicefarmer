@@ -279,6 +279,8 @@ export const mediaAssets = pgTable('media_assets', {
   error: text('error'),
   /** Crop/compress requested at upload (null = stored as uploaded) and, once done, what it did. */
   processing: jsonb('processing').$type<MediaProcessing>(),
+  /** Public assets uploaded with 对用户可见 off: the media-process job ends in 'disabled' instead of 'ready'. */
+  disableOnReady: boolean('disable_on_ready').notNull().default(false),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
