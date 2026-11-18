@@ -9,6 +9,10 @@
  * - Never calls an external platform: the YouTube API key set here is a syntactically valid dummy that is cleared
  *   again before any refresh could use it. The real YouTube Data API path runs only when YOUTUBE_TEST_API_KEY is
  *   set (then it refreshes the public channel @YouTube once, costing ~3 quota units).
+ * - 采集频率 by the operator: interval on create, single PATCH, batch POST /api/tracked-accounts/schedule (whole batch 404
+ *   on a foreign id, platforms without a source skipped) and the capacity aggregate GET /api/tracked-accounts/capacity
+ *   (exact numbers recomputed from the DB, same for every user, no ids/handles/owners). Assumes the default device pace
+ *   (TRACKED_DEVICE_MIN_INTERVAL_SEC / TRACKED_DEVICE_MAX_PER_HOUR read from this script's env, defaults 30 / 60).
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/tracked-check.ts
  */
 import { randomBytes } from 'node:crypto';
@@ -315,6 +319,137 @@ try {
   const igErr = await refreshTrackedAccount(ig.id).then(() => null, (e) => e as { code?: string });
   check('refreshTrackedAccount(Instagram, no collector) → tracked.collector_unset, no phone touched', igErr?.code === 'tracked.collector_unset');
   await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { status: 'active' });
+
+  // ---------------------------------------------------------------- 采集频率: create with an interval, batch, capacity
+  {
+    const sectionStart = new Date().toISOString();
+    const HOUR = 3600_000;
+    const inHour = (x: string | null) => !!x && new Date(x).getTime() > Date.now() - 5_000 && new Date(x).getTime() <= Date.now() + HOUR;
+    const mkAcc = async (body: Record<string, unknown>, tok = A.token) => {
+      const res = await http('POST', '/api/tracked-accounts', tok, body);
+      if (res.body?.account?.id) accountIds.push(res.body.account.id);
+      return res;
+    };
+    r = await mkAcc({ input: `fq1${tag}`, platform: 'instagram', refreshIntervalHours: 6 });
+    const f1 = r.body.account;
+    check('create Instagram with 采集频率 6 h → 201, interval 6, first slot within the hour', r.status === 201 && f1.refreshIntervalHours === 6 && inHour(f1.nextRefreshAt), r.text.slice(0, 160));
+    r = await mkAcc({ input: `fq2${tag}`, platform: 'instagram', refreshIntervalHours: null });
+    const f2 = r.body.account;
+    check('create Instagram with 采集频率 off (null) → no interval, no slot', r.status === 201 && f2.refreshIntervalHours === null && f2.nextRefreshAt === null);
+    r = await mkAcc({ input: `https://www.youtube.com/@fq3${tag}`, refreshIntervalHours: 12 });
+    const f3 = r.body.account;
+    check('create YouTube (API source) with 12 h → 201, interval 12', r.status === 201 && f3.refreshIntervalHours === 12 && inHour(f3.nextRefreshAt));
+    r = await mkAcc({ input: `@fq4${tag}`, platform: 'tiktok', refreshIntervalHours: 6 });
+    const ttRows = await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.handle, `fq4${tag}`));
+    check('create TikTok (no source) with an interval → 400 tracked.schedule_manual_only, nothing created', r.status === 400 && r.body.code === 'tracked.schedule_manual_only' && ttRows.length === 0, r.text.slice(0, 120));
+    r = await mkAcc({ input: `@fq4${tag}`, platform: 'tiktok', refreshIntervalHours: null });
+    const f4 = r.body.account;
+    check('create TikTok with interval off → 201', r.status === 201 && f4.refreshIntervalHours === null);
+    const badIv = await Promise.all([5, 0, 1.5, '24', -24].map((v) => mkAcc({ input: `fqbad${tag}`, platform: 'instagram', refreshIntervalHours: v })));
+    check('create with an unsupported interval (5, 0, 1.5, "24", -24) → 400, nothing created', badIv.every((x) => x.status === 400)
+      && (await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.handle, `fqbad${tag}`))).length === 0, badIv.map((x) => x.status).join(','));
+    r = await http('PATCH', `/api/tracked-accounts/${f1.id}`, A.token, { refreshIntervalHours: 7 });
+    check('list edit (PATCH) with an unsupported interval → 400', r.status === 400);
+    r = await http('PATCH', `/api/tracked-accounts/${f2.id}`, A.token, { refreshIntervalHours: 48 });
+    check('list edit (PATCH) 48 h on an account that was off → interval + slot', r.status === 200 && r.body.account.refreshIntervalHours === 48 && inHour(r.body.account.nextRefreshAt));
+
+    // ---- capacity aggregate (all users; recomputed exactly from the DB)
+    const minSec = Number(process.env.TRACKED_DEVICE_MIN_INTERVAL_SEC ?? 30);
+    const maxHr = Number(process.env.TRACKED_DEVICE_MAX_PER_HOUR ?? 60);
+    const capLimit = Math.min(maxHr, Math.floor(3600 / minSec));
+    const dbLoad = async () => {
+      const [x] = await sqlClient`select count(*)::int as n, coalesce(sum(1.0 / refresh_interval_hours), 0)::float8 as v from tracked_accounts
+        where platform = 'instagram' and refresh_interval_hours is not null and status <> 'paused'`;
+      return { n: x!.n as number, v: Math.round(Number(x!.v) * 100) / 100 };
+    };
+    const cap = async (tok: string) => http('GET', '/api/tracked-accounts/capacity', tok);
+    let exp = await dbLoad();
+    const [cA, cB, cT] = await Promise.all([cap(A.token), cap(B.token), cap(T)]);
+    const ci = cA.body.platforms?.find((x: any) => x.platform === 'instagram');
+    check('capacity: Instagram scheduled accounts and visits/hour of ALL users exactly as in the DB; limit min(max/h, 3600/min interval)',
+      cA.status === 200 && ci?.scheduledAccounts === exp.n && ci.visitsPerHour === exp.v && ci.capacityPerHour === capLimit && ci.overloaded === (exp.v > capLimit)
+      && cA.body.pace.minIntervalSec === minSec && cA.body.pace.maxPerHour === maxHr && cA.body.pace.capacityPerHour === capLimit,
+      `${JSON.stringify(cA.body)} vs db ${JSON.stringify(exp)}`);
+    check('capacity: only collector-device platforms (YouTube API not counted)', cA.body.platforms.map((x: any) => x.platform).join() === 'instagram');
+    check('capacity: same aggregate for user A, user B and admin (global, not per user)', cA.text === cB.text && cA.text === cT.text);
+    const leakIds = [ig.id, igB.id, f1.id, A.id, B.id];
+    check("capacity: aggregates only (keys pace/platforms; no ids, handles or usernames)",
+      Object.keys(cA.body).sort().join() === 'pace,platforms' && Object.keys(ci).sort().join() === 'capacityPerHour,overloaded,platform,scheduledAccounts,visitsPerHour'
+      && !leakIds.some((x) => cB.text.includes(x)) && !cB.text.includes('natgeo') && !cB.text.includes(tag), cB.text);
+    // Change one account 6 h → 1 h: +1 − 1/6 visits/hour; pause it: it drops out.
+    const before1 = ci.visitsPerHour as number;
+    await http('PATCH', `/api/tracked-accounts/${f1.id}`, A.token, { refreshIntervalHours: 1 });
+    exp = await dbLoad();
+    let c2 = (await cap(B.token)).body.platforms[0];
+    check("capacity follows A's change (6 h → 1 h, seen by B): +0.83 visits/hour, count unchanged",
+      c2.visitsPerHour === exp.v && Math.abs(c2.visitsPerHour - before1 - (1 - 1 / 6)) < 0.011 && c2.scheduledAccounts === ci.scheduledAccounts, `${before1} → ${c2.visitsPerHour}`);
+    await http('PATCH', `/api/tracked-accounts/${f1.id}`, A.token, { status: 'paused' });
+    exp = await dbLoad();
+    c2 = (await cap(A.token)).body.platforms[0];
+    check('capacity: a paused account is not counted (the scheduler skips it)', c2.scheduledAccounts === ci.scheduledAccounts - 1 && c2.visitsPerHour === exp.v);
+    await http('PATCH', `/api/tracked-accounts/${f1.id}`, A.token, { status: 'active' });
+    // Over the limit: seed (limit + 1) hourly accounts of user B directly → overloaded, nothing refused.
+    const many = await db.insert(schema.trackedAccounts).values(Array.from({ length: capLimit + 1 }, (_, i) => ({
+      userId: B.id, platform: 'instagram', handle: `cap${i}${tag}`, profileUrl: `https://www.instagram.com/cap${i}${tag}/`, refreshIntervalHours: 1, nextRefreshAt: new Date(Date.now() + HOUR),
+    }))).returning({ id: schema.trackedAccounts.id });
+    accountIds.push(...many.map((x) => x.id));
+    exp = await dbLoad();
+    c2 = (await cap(A.token)).body.platforms[0];
+    check(`capacity over the limit (${capLimit + 1} more hourly accounts of user B) → overloaded, exact numbers, still visible to A only as numbers`,
+      c2.overloaded === true && c2.visitsPerHour === exp.v && c2.scheduledAccounts === exp.n && exp.v > capLimit, JSON.stringify(c2));
+    r = await http('PATCH', `/api/tracked-accounts/${f2.id}`, A.token, { refreshIntervalHours: 1 });
+    check('saving while overloaded is not refused (200)', r.status === 200 && r.body.account.refreshIntervalHours === 1);
+    await db.delete(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, many.map((x) => x.id)));
+    c2 = (await cap(A.token)).body.platforms[0];
+    check('capacity back under the limit after removing them', c2.overloaded === false && c2.visitsPerHour === (await dbLoad()).v);
+
+    // ---- batch 设置采集频率
+    const batch = (ids: string[], hours: unknown, tok = A.token) => http('POST', '/api/tracked-accounts/schedule', tok, { ids, refreshIntervalHours: hours });
+    const rowOf = async (id: string) => (await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, id)))[0]!;
+    await db.update(schema.trackedAccounts).set({ scheduleSkipCode: 'tracked.paused' }).where(eq(schema.trackedAccounts.id, f1.id));
+    r = await batch([f1.id, f2.id, f3.id, f4.id, f1.id], 24);
+    const r1 = await rowOf(f1.id);
+    check('batch 24 h: 3 updated (IG, IG, YouTube), TikTok skipped tracked.schedule_manual_only, duplicate ids once',
+      r.status === 200 && [...r.body.updated].sort().join() === [f1.id, f2.id, f3.id].sort().join() && r.body.unchanged.length === 0
+      && r.body.skipped.length === 1 && r.body.skipped[0].id === f4.id && r.body.skipped[0].code === 'tracked.schedule_manual_only', r.text.slice(0, 300));
+    check('batch writes like a single PATCH: interval 24, first slot within the hour, skip code cleared',
+      r1.refreshIntervalHours === 24 && inHour(r1.nextRefreshAt!.toISOString()) && r1.scheduleSkipCode === null
+      && (await rowOf(f3.id)).refreshIntervalHours === 24 && (await rowOf(f4.id)).refreshIntervalHours === null);
+    const slot1 = r1.nextRefreshAt!.getTime();
+    r = await batch([f1.id, f2.id], 24);
+    check('batch with the same interval again → unchanged, slot kept', r.status === 200 && r.body.updated.length === 0 && r.body.unchanged.length === 2
+      && (await rowOf(f1.id)).nextRefreshAt!.getTime() === slot1);
+    r = await batch([f1.id, f4.id], null);
+    check('batch off: IG switched off (slot cleared); TikTok off is allowed (unchanged)', r.status === 200 && r.body.updated.join() === f1.id
+      && r.body.unchanged.join() === f4.id && r.body.skipped.length === 0 && (await rowOf(f1.id)).nextRefreshAt === null);
+    r = await batch([f1.id, igB.id], 6);
+    check("batch with another user's account → whole batch 404 tracked.not_found, nothing written",
+      r.status === 404 && r.body.code === 'tracked.not_found' && (await rowOf(f1.id)).refreshIntervalHours === null && (await rowOf(igB.id)).refreshIntervalHours === 24, r.text.slice(0, 120));
+    r = await batch([f1.id, '00000000-0000-0000-0000-000000000000'], 6);
+    check('batch with an unknown id → 404, nothing written', r.status === 404 && (await rowOf(f1.id)).refreshIntervalHours === null);
+    r = await batch([igB.id], 6);
+    check("user A batch on B's account alone → 404", r.status === 404);
+    const bad = await Promise.all([batch([f1.id], 5), batch([], 6), batch(['nope'], 6), http('POST', '/api/tracked-accounts/schedule', A.token, { ids: [f1.id] })]);
+    check('batch validation: unsupported interval, empty ids, non-uuid, missing interval → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+    r = await batch([igB.id], 12, B.token);
+    check('user B batch on own account → updated', r.status === 200 && r.body.updated.join() === igB.id && (await rowOf(igB.id)).refreshIntervalHours === 12);
+    r = await batch([f1.id, igB.id, f4.id], 3, T);
+    check("admin batch across users (A's and B's) → updated both, TikTok skipped", r.status === 200 && r.body.updated.length === 2
+      && (await rowOf(f1.id)).refreshIntervalHours === 3 && (await rowOf(igB.id)).refreshIntervalHours === 3 && r.body.skipped[0]?.code === 'tracked.schedule_manual_only');
+
+    // ---- audit: batch action with counts + interval only; create records the interval
+    await sleep(500);
+    const sb = await sqlClient`select user_id, detail from audit_logs where action = 'tracked.schedule_batch' and at >= ${sectionStart}::timestamptz order by at`;
+    const ok200 = sb.filter((x) => x.detail?.updated !== undefined);
+    const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+    check('audit tracked.schedule_batch: one entry per batch call, detail = count + interval (+ result counts), never ids',
+      sb.length >= 8 && ok200.length === 5 && sb.every((x) => !uuidRe.test(JSON.stringify(x.detail)))
+      && JSON.stringify(Object.entries(ok200[0]!.detail).sort()) === JSON.stringify(Object.entries({ count: 5, refreshIntervalHours: 24, updated: 3, unchanged: 0, skipped: 1 }).sort()),
+      `${sb.length} entries, first ${JSON.stringify(ok200[0]?.detail)}`);
+    const [ca] = await sqlClient`select detail from audit_logs where action = 'tracked.create' and target = ${`Instagram @fq1${tag}`}`;
+    check('audit tracked.create records the chosen interval', ca?.detail?.refreshIntervalHours === 6, JSON.stringify(ca));
+    await db.delete(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, [f1.id, f2.id, f3.id, f4.id]));
+  }
 
   // ---------------------------------------------------------------- YouTube API key: admin only, write-only, encrypted
   r = await http('GET', '/api/settings/youtube', A.token);

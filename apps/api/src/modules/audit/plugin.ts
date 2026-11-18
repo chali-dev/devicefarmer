@@ -243,7 +243,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
   // tracked accounts (追踪账号)
   'POST /api/tracked-accounts': {
-    action: 'tracked.create', detail: ({ body }) => ({ platform: body.platform, tags: body.tags, favorite: body.favorite }),
+    action: 'tracked.create', detail: ({ body }) => ({ platform: body.platform, tags: body.tags, favorite: body.favorite, refreshIntervalHours: body.refreshIntervalHours }),
   },
   'PATCH /api/tracked-accounts/:id': {
     action: 'tracked.update',
@@ -256,6 +256,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
+  'POST /api/tracked-accounts/schedule': {
+    action: 'tracked.schedule_batch', detail: ({ body }) => ({ count: ids(body.ids).length, refreshIntervalHours: body.refreshIntervalHours }),
+  },
   // 趋势热点 / 定时采集
   'PUT /api/trending/settings': {
     action: 'trending.settings_update',
