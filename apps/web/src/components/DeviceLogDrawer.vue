@@ -7,12 +7,17 @@ import { api, errorText } from '../api/client'
 import { taskText, type Instance, type Task } from '../api/types'
 import StatusTag from './common/StatusTag.vue'
 import { DRAWER_WIDTH, pagination } from './common/ui'
+import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
-/** Per-device log (日志): task history (live), connection history (status/adb changes) and Android logcat on demand. */
+/**
+ * Per-device log (日志): task history (live), connection history (status/adb changes; admins only, like 连线监控) and
+ * Android logcat on demand.
+ */
 const props = defineProps<{ instance: Instance | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const store = useInstancesStore()
+const auth = useAuthStore()
 const { t } = useI18n()
 
 const tab = ref<'tasks' | 'conn' | 'logcat'>('tasks')
@@ -52,7 +57,7 @@ const taskColumns = computed(() => [
   { title: t('common.error'), key: 'error' },
 ])
 
-// ---- 连线: status/adb changes (instance_status_events, GET /api/system/connections/:id/history, same view access)
+// ---- 连线: status/adb changes (instance_status_events, GET /api/system/connections/:id/history, admin only)
 interface ConnEvent { id: number; field: 'status' | 'adb'; from: string | null; to: string | null; status: string; at: string; offline: boolean }
 const CONN_HOURS = [24, 72, 168, 720] as const
 const connHours = ref<number>(24)
@@ -134,7 +139,7 @@ watch(tab, (t) => {
           </template>
         </a-table>
       </a-tab-pane>
-      <a-tab-pane key="conn" :tab="t('logs.conn')">
+      <a-tab-pane v-if="auth.isAdmin" key="conn" :tab="t('logs.conn')">
         <a-space wrap style="margin-bottom: 12px">
           <a-select v-model:value="connHours" :options="connRanges" style="width: 140px" @change="loadConn" />
           <a-tooltip :title="t('common.refresh')">

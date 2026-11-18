@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { countryName } from '../api/lang'
-import { dateLocale } from '../i18n'
+import { countryName } from '../../api/lang'
+import { dateLocale } from '../../i18n'
 import { ExclamationCircleOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
@@ -8,26 +8,30 @@ import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { deviceListLink, queryParam } from '../api/query'
-import { api, errorText } from '../api/client'
+import { deviceListLink, queryParam } from '../../api/query'
+import { api, errorText } from '../../api/client'
 import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
-} from '../api/types'
-import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
-import BatchFormModal from '../components/common/BatchFormModal.vue'
-import PageContainer from '../components/common/PageContainer.vue'
-import SearchBar from '../components/common/SearchBar.vue'
-import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
-import LangSelect from '../components/common/LangSelect.vue'
-import { langName } from '../api/lang'
-import PlatformTag from '../components/social/PlatformTag.vue'
-import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
-import SyncFromDeviceModal from '../components/social/SyncFromDeviceModal.vue'
-import { useAuthStore } from '../stores/auth'
-import { useInstancesStore } from '../stores/instances'
+} from '../../api/types'
+import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
+import BatchFormModal from '../common/BatchFormModal.vue'
+import SearchBar from '../common/SearchBar.vue'
+import StatusTag from '../common/StatusTag.vue'
+import { actionColumn, confirmAction, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
+import LangSelect from '../common/LangSelect.vue'
+import { langName } from '../../api/lang'
+import PlatformTag from './PlatformTag.vue'
+import SocialAccountFeedDrawer from '../feed/SocialAccountFeedDrawer.vue'
+import SyncFromDeviceModal from './SyncFromDeviceModal.vue'
+import { useAuthStore } from '../../stores/auth'
+import { useInstancesStore } from '../../stores/instances'
 
+/**
+ * 媒体管理 → 我的媒体号: the operator's own accounts (人设, status, 配置语系, 从云手机同步, detail drawer). The page's header
+ * actions are teleported into `extraTo` (the page header of SocialAccountsView) while this tab is shown.
+ */
+defineProps<{ extraTo?: string }>()
 const { t, te } = useI18n()
 const auth = useAuthStore()
 const store = useInstancesStore()
@@ -100,7 +104,7 @@ async function load() {
 function search() { page.current = 1; void load() }
 function reset() {
   Object.assign(filters, { q: '', platform: undefined, personaId: undefined, lang: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, tags: [], ownerId: undefined, instanceId: undefined })
-  if (route.query.instanceId) void router.replace({ query: {} })
+  if (route.query.instanceId) void router.replace({ query: { tab: route.query.tab } })
   search()
 }
 onMounted(() => { void loadMeta(); void load() })
@@ -361,18 +365,18 @@ async function submitBatchForm() {
 </script>
 
 <template>
-  <PageContainer :title="t('social.title')">
-    <template #extra>
+  <div class="cp-panel">
+    <Teleport defer :to="extraTo || 'body'" :disabled="!extraTo">
       <router-link v-slot="{ href, navigate }" to="/personas" custom><a-button :href="href" @click="navigate">{{ t('scripts.personas.manage') }}</a-button></router-link>
       <a-button @click="syncOpen = true"><template #icon><SyncOutlined /></template>{{ t('social.sync.button') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
-    </template>
+    </Teleport>
 
     <a-alert v-if="filters.instanceId" type="info" show-icon :message="t('social.filteredByDevice', { name: deviceName })">
       <template #action><a-button size="small" type="link" @click="reset">{{ t('common.reset') }}</a-button></template>
     </a-alert>
 
-    <a-card v-if="showGuide" :bordered="false" class="sync-guide">
+    <a-card v-if="showGuide" size="small" class="sync-guide">
       <div class="guide-title">{{ t('social.sync.guideTitle') }}</div>
       <a-steps direction="vertical" size="small" :current="-1">
         <a-step :title="t('social.sync.step1')">
@@ -392,7 +396,7 @@ async function submitBatchForm() {
       </a-steps>
     </a-card>
 
-    <a-card :bordered="false">
+    <div>
       <SearchBar :loading="loading" @reset="reset" @refresh="load">
         <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
@@ -516,8 +520,8 @@ async function submitBatchForm() {
           </template>
         </template>
       </a-table>
-    </a-card>
-  </PageContainer>
+    </div>
+  </div>
 
   <SocialAccountFeedDrawer v-model:open="feedOpen" :account="feedFor" />
   <SyncFromDeviceModal v-model:open="syncOpen" :users="users" :instance-id="filters.instanceId" @synced="onSynced" />
@@ -612,9 +616,9 @@ async function submitBatchForm() {
 </template>
 
 <style scoped>
+.cp-panel { display: flex; flex-direction: column; gap: var(--cp-gap); min-width: 0; }
 .batch-hint { margin-top: 6px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
-.sync-guide { margin-bottom: 12px; }
 .guide-title { font-weight: 600; margin-bottom: 12px; }
 :deep(.row-synced) > td { background: var(--cp-primary-bg) !important; transition: background 0.6s; }
 </style>

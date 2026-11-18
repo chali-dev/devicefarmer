@@ -118,6 +118,7 @@ function targetLink(task: Task): RouteLocationRaw | null {
   if (task.instanceId && store.byId.has(task.instanceId)) return deviceListLink(task.instanceId)
   if (task.refType === 'media') return '/media'
   if (task.refType === 'social-account') return '/social'
+  if (task.refType === 'tracked_account') return { path: '/social', query: { tab: 'tracked' } }
   return null
 }
 

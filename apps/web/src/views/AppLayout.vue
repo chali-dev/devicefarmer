@@ -159,7 +159,7 @@ async function savePassword() {
           <template #title>{{ t(`nav.group.${g.key}`) }}</template>
           <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
             <component :is="it.icon" />
-            <span>{{ navLabel(it.key, auth.isAdmin) }}</span>
+            <span>{{ navLabel(it.key) }}</span>
           </a-menu-item>
         </a-sub-menu>
       </a-menu>

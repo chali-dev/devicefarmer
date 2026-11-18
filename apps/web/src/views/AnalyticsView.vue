@@ -27,7 +27,8 @@ const auth = useAuthStore()
 const RANGES = [7, 30, 90] as const
 const platforms = usePlatformsStore()
 
-const range = ref<number>(7)
+/** 7 / 30 / 90 days (owner's list 2026-11-18: default 30). */
+const range = ref<number>(30)
 const ownerId = ref<string | undefined>()
 const platform = ref<string | undefined>()
 const users = ref<ManagedUser[]>([])

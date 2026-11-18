@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { LeftOutlined, RightOutlined } from '@ant-design/icons-vue'
@@ -7,20 +6,20 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { queryParam } from '../api/query'
-import { api, codeText, errorText } from '../api/client'
+import { api, errorText } from '../api/client'
 import { POST_TYPES, type ManagedUser, type PostType, type PublishPlatform, type PublishStatus, type PublishTaskItem, type SocialAccount } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, pagination, TABLE_SIZE } from '../components/common/ui'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
 import PublishTaskDrawer from '../components/publish/PublishTaskDrawer.vue'
+import PublishTaskTable from '../components/publish/PublishTaskTable.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 /**
- * Publish scheduler (定时发布): week calendar, today (今日发布), pending queue, history.
+ * 排程发布 (publish scheduler): week calendar (drag a card to another day), today (今日发布), pending queue, history.
  * One filter model for every tab (search, platform, post type, account, owner, status, date range); a task's
  * day is when it was published, else when it is due (same rule as the API's from/to).
  */
@@ -52,7 +51,6 @@ const filters = reactive({
   range: null as [Dayjs, Dayjs] | null,
 })
 const contentId = computed(() => (typeof route.query.contentId === 'string' ? route.query.contentId : undefined))
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`publish.status.${s}`)
 const typeText = (x: PostType) => t(`publish.type.${x}`)
 const when = (x: PublishTaskItem) => dayjs(x.publishedAt ?? x.scheduledAt)
@@ -199,17 +197,6 @@ function reset() {
 watch(tab, () => { filters.status = undefined; page.current = 1; void load() })
 watch(contentId, () => search())
 
-const columns = computed(() => [
-  { title: t('publish.colTime'), key: 'time', width: 170 },
-  { title: t('publish.colAccount'), key: 'account', width: 220 },
-  { title: t('publish.postType'), key: 'postType', width: 90 },
-  { title: t('publish.colContent'), key: 'content', width: 240 },
-  { title: t('common.status'), key: 'status', width: 150 },
-  ...(tab.value === 'queue' ? [{ title: t('common.device'), key: 'device', width: 160 }] : [{ title: t('publish.result'), key: 'result', width: 220 }]),
-  ...(auth.isAdmin ? [{ title: t('content.colOwner'), key: 'owner', width: 110 }] : []),
-  actionColumn(90),
-])
-const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 function onTableChange(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void loadList() }
 
 async function loadAccounts() {
@@ -248,7 +235,6 @@ onMounted(async () => {
     if (auth.isAdmin) users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users
   } catch (e) { message.error(errorText(e)) }
 })
-const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, undefined, x.error ?? x.errorCode) : '')
 </script>
 
 <template>
@@ -311,36 +297,8 @@ const errText = (x: PublishTaskItem) => (x.errorCode ? codeText(x.errorCode, und
               <a-radio-button v-for="x in postTypes" :key="x" :value="x">{{ typeText(x) }} {{ byPostType[x] ?? 0 }}</a-radio-button>
             </a-radio-group>
           </div>
-          <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
-            :locale="k === 'today' ? { emptyText: t('publish.todayEmpty') } : undefined"
-            :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" @change="onTableChange">
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'time'">{{ fmt(record.status === 'published' ? record.publishedAt : record.scheduledAt) }}</template>
-              <template v-else-if="column.key === 'account'"><PlatformTag :platform="record.platform" /> @{{ record.account?.handle ?? '—' }}</template>
-              <template v-else-if="column.key === 'postType'"><PostTypeTag :type="record.postType" /></template>
-              <template v-else-if="column.key === 'content'">
-                <a-typography-text :content="record.content?.title ?? '—'" :ellipsis="{ tooltip: record.content?.title }" />
-              </template>
-              <template v-else-if="column.key === 'status'">
-                <StatusTag kind="publish" :status="record.status" />
-                <div v-if="record.status === 'pending' && record.errorCode"><a-typography-text type="danger" class="small">{{ errText(record) }}</a-typography-text></div>
-              </template>
-              <template v-else-if="column.key === 'device'">
-                <template v-if="record.instance"><a-badge :status="record.instance.online ? 'success' : 'default'" :text="record.instance.name" /></template>
-                <span v-else class="muted">—</span>
-              </template>
-              <template v-else-if="column.key === 'result'">
-                <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
-                <span v-else-if="record.externalId">{{ record.externalId }}</span>
-                <a-typography-text v-else-if="record.errorCode" type="danger" class="small">{{ errText(record) }}<template v-if="record.errorCode === 'publish.operator_failed' && record.error">: {{ record.error }}</template></a-typography-text>
-                <span v-else class="muted">—</span>
-              </template>
-              <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
-              <template v-else-if="column.key === 'ops'">
-                <a-button type="link" size="small" @click="openTask(record.id)">{{ record.status === 'awaiting_operator' ? t('publish.handle') : t('common.view') }}</a-button>
-              </template>
-            </template>
-          </a-table>
+          <PublishTaskTable :items="items" :total="total" :loading="loading" :current="page.current" :page-size="page.pageSize"
+            :mode="k === 'queue' ? 'queue' : 'result'" :empty-text="k === 'today' ? t('publish.todayEmpty') : undefined" @change="onTableChange" @open="openTask" />
         </a-tab-pane>
       </a-tabs>
     </a-card>

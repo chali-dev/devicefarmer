@@ -350,7 +350,7 @@ const appColumns = computed(() => [
                 <template v-else-if="column.key === 'ops'">
                   <a-tag v-if="record.protected">{{ t('detail.apps.platform') }}</a-tag>
                   <a-space v-else :size="0">
-                    <a-button type="link" size="small" @click="importToLibrary(record.package)">{{ t('detail.apps.addToLibrary') }}</a-button>
+                    <a-button v-if="auth.isAdmin" type="link" size="small" @click="importToLibrary(record.package)">{{ t('detail.apps.addToLibrary') }}</a-button>
                     <a-button type="link" size="small" danger @click="uninstall(record.package)">{{ t('common.uninstall') }}</a-button>
                   </a-space>
                 </template>

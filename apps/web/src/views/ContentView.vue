@@ -15,6 +15,7 @@ import {
 import PageContainer from '../components/common/PageContainer.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import BatchFormModal from '../components/common/BatchFormModal.vue'
+import BatchPublishModal from '../components/content/BatchPublishModal.vue'
 import ScopedListManager from '../components/common/ScopedListManager.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
@@ -435,6 +436,7 @@ const batchTags = ref<string[]>([])
 const batchCategoryOptions = computed(() => [{ value: 'none', label: t('content.batch.clearCategory') }, ...categoryGroups(publicCats.value, personalCats.value)])
 /** Only the actions that make sense in the current tab. */
 const batchShows = computed(() => ({
+  publish: tab.value !== 'archived',
   archive: tab.value !== 'archived',
   unarchive: tab.value === 'all' || tab.value === 'archived',
   cancel: tab.value === 'all' || tab.value === 'pending' || tab.value === 'published',
@@ -477,6 +479,7 @@ const batchFormBusy = ref(false)
 const batchFormLabel = (a: BatchFormAction) => t(`content.batch.${a === 'set-category' ? 'setCategory' : a === 'add-tags' ? 'addTags' : 'removeTags'}`)
 const batchFormReady = computed(() => (batchForm.value === 'set-category' ? !!batchCategory.value : batchTags.value.length > 0))
 const batchItems = computed<BatchItem[]>(() => [
+  ...(batchShows.value.publish ? [{ key: 'publish', label: t('content.batch.publish') }] : []),
   { key: 'set-category', label: t('content.batch.setCategory') },
   { key: 'add-tags', label: t('content.batch.addTags') },
   { key: 'remove-tags', label: t('content.batch.removeTags') },
@@ -485,7 +488,13 @@ const batchItems = computed<BatchItem[]>(() => [
   ...(batchShows.value.cancel ? [{ key: 'cancel-publish', label: t('content.batch.cancelPublish'), danger: true }] : []),
   { key: 'delete', label: t('common.delete'), danger: true },
 ])
+/** 批量发布: its own dialog (time, post type, dry-run summary), see BatchPublishModal. */
+const batchPublishOpen = ref(false)
+const batchPublishIds = ref<string[]>([])
+const batchTitles = computed(() => new Map(items.value.map((i) => [i.id, i.title])))
+function onBatchPublished() { selectedKeys.value = []; void load() }
 function onBatch(key: string) {
+  if (key === 'publish') { batchPublishIds.value = [...selectedKeys.value]; batchPublishOpen.value = true; return }
   if (key === 'set-category' || key === 'add-tags' || key === 'remove-tags') {
     batchCategory.value = undefined; batchTags.value = []
     batchForm.value = key
@@ -763,6 +772,7 @@ async function submitBatchForm() {
 
   <MediaPicker v-model:open="pickerOpen" :exclude="form.media.map((m) => m.id)" @pick="onPick" />
   <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" @done="load" />
+  <BatchPublishModal v-model:open="batchPublishOpen" :ids="batchPublishIds" :titles="batchTitles" @done="onBatchPublished" />
   <ScopedListManager v-model:open="categoryManagerOpen" path="/api/content-categories" list-key="categories" texts="content.categories" @changed="categoriesChanged" />
 </template>
 

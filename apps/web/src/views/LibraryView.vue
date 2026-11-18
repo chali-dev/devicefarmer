@@ -9,10 +9,9 @@ import PageContainer from '../components/common/PageContainer.vue'
 import { actionColumn, confirmDanger, pagination, TABLE_SIZE } from '../components/common/ui'
 import LibraryInstallModal from '../components/library/LibraryInstallModal.vue'
 import LibraryLogDrawer from '../components/library/LibraryLogDrawer.vue'
-import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
-const auth = useAuthStore()
+/** 应用库 (admin only since 2026-11-18, page and API): upload / update APKs in bulk, preinstall, install to devices. */
 const { t } = useI18n()
 const apps = ref<LibraryApp[]>([])
 const loading = ref(false)
@@ -82,7 +81,7 @@ const columns = computed(() => [
       <a-tooltip :title="t('library.howToBody')"><QuestionCircleOutlined class="muted" /></a-tooltip>
     </template>
     <template #extra>
-      <a-tooltip v-if="auth.isAdmin" :title="t('library.uploadTip')">
+      <a-tooltip :title="t('library.uploadTip')">
         <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
           <a-button type="primary" :loading="uploading"><template #icon><UploadOutlined /></template>{{ t('library.upload') }}</a-button>
         </a-upload>
@@ -97,14 +96,13 @@ const columns = computed(() => [
           <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
           <template v-else-if="column.key === 'source'">{{ sourceText(record.sourceInstance) }}</template>
           <template v-else-if="column.key === 'preinstall'">
-            <a-switch v-if="auth.isAdmin" :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
-            <span v-else>{{ record.preinstall ? t('common.yes') : '—' }}</span>
+            <a-switch :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="target = record">{{ t('common.install') }}</a-button>
               <a-button type="link" size="small" @click="logsOf = record">{{ t('library.logs') }}</a-button>
-              <a-button v-if="auth.isAdmin" type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
+              <a-button type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
             </a-space>
           </template>
         </template>

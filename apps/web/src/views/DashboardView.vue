@@ -193,12 +193,12 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         <!-- tracked accounts -->
         <a-col v-if="w.tracked" :xs="24" :md="12" :xl="8">
           <a-card size="small" :bordered="false" :title="t('dashboard.w.tracked')" class="card">
-            <template #extra><router-link to="/tracked">{{ t('dashboard.viewAll') }}</router-link></template>
+            <template #extra><router-link :to="{ path: '/social', query: { tab: 'tracked' } }">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
-              <StatLink :label="t('dashboard.accounts')" :value="w.tracked.total" to="/tracked" />
-              <StatLink :label="t('tracked.status.active')" :value="w.tracked.byStatus.active ?? 0" :to="{ path: '/tracked', query: { status: 'active' } }" />
-              <StatLink :label="t('tracked.status.paused')" :value="w.tracked.byStatus.paused ?? 0" :to="{ path: '/tracked', query: { status: 'paused' } }" />
-              <StatLink :label="t('tracked.status.error')" :value="w.tracked.byStatus.error ?? 0" :to="{ path: '/tracked', query: { status: 'error' } }" tone="error" />
+              <StatLink :label="t('dashboard.accounts')" :value="w.tracked.total" :to="{ path: '/social', query: { tab: 'tracked' } }" />
+              <StatLink :label="t('tracked.status.active')" :value="w.tracked.byStatus.active ?? 0" :to="{ path: '/social', query: { tab: 'tracked', status: 'active' } }" />
+              <StatLink :label="t('tracked.status.paused')" :value="w.tracked.byStatus.paused ?? 0" :to="{ path: '/social', query: { tab: 'tracked', status: 'paused' } }" />
+              <StatLink :label="t('tracked.status.error')" :value="w.tracked.byStatus.error ?? 0" :to="{ path: '/social', query: { tab: 'tracked', status: 'error' } }" tone="error" />
             </div>
             <div class="list-title">{{ t('dashboard.topGainers') }}</div>
             <div v-if="!w.tracked.topGainers.length" class="muted small">{{ t('dashboard.noGainers') }}</div>
@@ -255,12 +255,12 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         <!-- comments & engagement -->
         <a-col v-if="w.comments" :xs="24" :md="12" :xl="8">
           <a-card size="small" :bordered="false" :title="t('dashboard.w.comments')" class="card">
-            <template #extra><router-link to="/comments">{{ t('dashboard.viewAll') }}</router-link></template>
+            <template #extra><router-link :to="{ path: '/social', query: { tab: 'replies' } }">{{ t('dashboard.viewAll') }}</router-link></template>
             <div class="grid4">
-              <StatLink :label="t('dashboard.commentsUnread')" :value="w.comments.unread" :to="{ path: '/comments', query: { status: 'new' } }" />
-              <StatLink :label="t('dashboard.commentsDrafts')" :value="w.comments.drafts" :to="{ path: '/comments', query: { tab: 'queue' } }" />
-              <StatLink :label="t('dashboard.commentsOperator')" :value="w.comments.awaitingOperator" :to="{ path: '/comments', query: { tab: 'queue' } }" />
-              <StatLink :label="t('dashboard.commentsQueued')" :value="w.comments.queued" :to="{ path: '/comments', query: { tab: 'queue' } }" />
+              <StatLink :label="t('dashboard.commentsUnread')" :value="w.comments.unread" :to="{ path: '/social', query: { tab: 'replies', status: 'new' } }" />
+              <StatLink :label="t('dashboard.commentsDrafts')" :value="w.comments.drafts" :to="{ path: '/social', query: { tab: 'replies', view: 'queue', replyStatus: 'draft' } }" />
+              <StatLink :label="t('dashboard.commentsOperator')" :value="w.comments.awaitingOperator" :to="{ path: '/social', query: { tab: 'replies', view: 'queue', replyStatus: 'awaiting_operator' } }" />
+              <StatLink :label="t('dashboard.commentsQueued')" :value="w.comments.queued" :to="{ path: '/social', query: { tab: 'replies', view: 'queue' } }" />
             </div>
             <div class="sub muted">{{ t('dashboard.commentsRecent', { total: w.comments.total, sent: w.comments.sent7d, failed: w.comments.failed7d }) }}</div>
           </a-card>
