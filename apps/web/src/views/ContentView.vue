@@ -398,7 +398,10 @@ const onPick = (picked: ContentMedia[]) => { form.media = [...form.media, ...pic
  * polled until the media-process task has finished.
  */
 const MAX_MEDIA = 20
-const uploadBlocked = computed(() => (targetOwner.value && targetOwner.value !== myId.value ? t('content.uploadOtherOwner') : ''))
+const otherOwner = computed(() => Boolean(targetOwner.value && targetOwner.value !== myId.value))
+/** Admin on another user's content: uploads go to public media (usable by every content); others are blocked. */
+const uploadScope = computed<'mine' | 'public'>(() => (otherOwner.value && auth.isAdmin ? 'public' : 'mine'))
+const uploadBlocked = computed(() => (otherOwner.value && !auth.isAdmin ? t('content.uploadOtherOwner') : ''))
 function onUploaded(items: ContentMedia[]) {
   const fresh = items.filter((p) => !form.media.some((m) => m.id === p.id))
   const room = Math.max(0, MAX_MEDIA - form.media.length)
@@ -776,9 +779,9 @@ async function submitBatchForm() {
         <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
         <a-space style="margin-top: 8px" wrap>
           <a-button :disabled="form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" @uploaded="onUploaded" />
+          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :scope="uploadScope" @uploaded="onUploaded" />
         </a-space>
-        <div v-if="uploadBlocked" class="muted small media-hint">{{ uploadBlocked }}</div>
+        <div v-if="uploadBlocked || uploadScope === 'public'" class="muted small media-hint">{{ uploadBlocked || t('content.uploadPublicHint') }}</div>
         <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
       </a-form-item>
     </a-form>

@@ -1272,6 +1272,8 @@ const en: Messages = {
     fieldMedia: 'Media ({n})',
     addMedia: 'Choose from media library',
     uploadMedia: 'Upload',
+    uploadPublic: 'Upload as public media',
+    uploadPublicHint: "This is another user's content: media you upload is stored as public media (visible to every user); a content can only use its owner's own media or public media.",
     uploadOtherOwner: "A content can only use its owner's own media or public media: ask the owner to upload, or upload it as public media in the media library first",
     uploadOverLimit: 'A content holds at most {max} media; {n} more were uploaded to My media but not added',
     uploadFailed: 'Processing of "{name}" failed: {error}',

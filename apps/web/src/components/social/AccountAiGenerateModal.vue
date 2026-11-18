@@ -11,7 +11,7 @@
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
@@ -50,6 +50,7 @@ const at = ref<Dayjs | null>(null)
 const saving = ref(false)
 const result = ref<{ kind: 'draft' | 'now' | 'at' | 'kept'; err?: string; taskId?: string } | null>(null)
 const pickerOpen = ref(false)
+const atOpen = ref(false)
 
 watch(() => props.open, (o) => {
   if (!o) return
@@ -61,6 +62,7 @@ watch(() => props.open, (o) => {
   langTab.value = 'src'
   mode.value = 'draft'
   at.value = null
+  atOpen.value = false
   result.value = null
 })
 
@@ -68,9 +70,11 @@ watch(() => props.open, (o) => {
 const trLang = computed(() => (draft.value?.account.lang && draft.value.account.lang !== SRC ? draft.value.account.lang : null))
 const trMissing = computed(() => Boolean(trLang.value) && !form.value.trBody.trim() && !form.value.trTitle.trim())
 const edited = computed(() => Boolean(draft.value) && (form.value.title !== draft.value!.preview.title || form.value.body !== draft.value!.preview.text))
-const uploadBlocked = computed(() => (draft.value && draft.value.account.userId !== auth.user?.id ? t('content.uploadOtherOwner') : ''))
+const otherOwner = computed(() => Boolean(draft.value && draft.value.account.userId !== auth.user?.id))
+/** Admin on another user's account: uploads go to public media; others are blocked (as in the content editor). */
+const uploadScope = computed<'mine' | 'public'>(() => (otherOwner.value && auth.isAdmin ? 'public' : 'mine'))
+const uploadBlocked = computed(() => (otherOwner.value && !auth.isAdmin ? t('content.uploadOtherOwner') : ''))
 const previewText = computed(() => (langTab.value === 'tr' && form.value.trBody.trim() ? form.value.trBody : form.value.body))
-const okText = computed(() => t(mode.value === 'draft' ? 'feed.saveDraft' : mode.value === 'now' ? 'feed.modeNow' : 'feed.modeAt'))
 const busy = computed(() => generating.value || saving.value)
 
 async function generate() {
@@ -111,10 +115,32 @@ async function pollMedia() {
 watch([processing, () => props.open], schedulePoll)
 onBeforeUnmount(() => clearTimeout(poll))
 
-async function save() {
+/** One button (owner 2026-11-18): click = 保存草稿; its menu = 立即发布 (confirmed) / 排程发布 (time dialog). */
+function titleOk() {
+  if (form.value.title.trim()) return true
+  langTab.value = 'src'; message.warning(t('content.titleRequired')); return false
+}
+const trWarn = computed(() => (trLang.value && trMissing.value ? `${t('content.lang.missingOne')}：${langName(trLang.value)}。${t('social.aiDrafts.trMissingHint')}` : ''))
+function onMenu({ key }: { key: string | number }) {
+  if (!titleOk()) return
+  if (key === 'at') { atOpen.value = true; return }
+  Modal.confirm({
+    title: t('feed.modeNow'), okText: t('feed.modeNow'),
+    content: [t('social.aiDrafts.liveHint'), trWarn.value].filter(Boolean).join('\n'),
+    onOk: () => save('now'),
+  })
+}
+async function confirmAt() {
+  if (!at.value) { message.warning(t('feed.pickTime')); return }
+  await save('at')
+  if (result.value) atOpen.value = false
+}
+
+async function save(m: Mode) {
   if (!props.account || !draft.value) return
-  if (!form.value.title.trim()) { langTab.value = 'src'; message.warning(t('content.titleRequired')); return }
-  if (mode.value === 'at' && !at.value) { message.warning(t('feed.pickTime')); return }
+  if (!titleOk()) return
+  if (m === 'at' && !at.value) { message.warning(t('feed.pickTime')); return }
+  mode.value = m
   saving.value = true
   try {
     const r = await api<{ content: { id: string }; publish: { tasks: PublishTaskItem[]; error: { code: string | null; message: string; params: Record<string, string | number> } | null } | null }>(
@@ -183,28 +209,17 @@ const close = () => emit('update:open', false)
                 <a-textarea v-model:value="form.trBody" :auto-size="{ minRows: 6, maxRows: 14 }" :maxlength="2200" show-count />
               </a-form-item>
             </template>
-            <a-alert v-if="trLang && trMissing && mode !== 'draft'" type="warning" show-icon class="gap-b"
-              :message="`${t('content.lang.missingOne')}：${langName(trLang)}`" :description="t('social.aiDrafts.trMissingHint')" />
             <a-form-item :label="t('content.fieldMedia', { n: media.length })">
               <MediaStrip :media="media" :size="72" editable @move="moveMedia" @remove="(i: number) => media.splice(i, 1)" />
               <a-space style="margin-top: 8px" wrap>
                 <a-button :disabled="media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-                <ContentMediaUpload :disabled="media.length >= MAX_MEDIA" :blocked="uploadBlocked" @uploaded="onUploaded" />
+                <ContentMediaUpload :disabled="media.length >= MAX_MEDIA" :blocked="uploadBlocked" :scope="uploadScope" @uploaded="onUploaded" />
               </a-space>
-              <div v-if="draft.preview.media.length" class="muted small">{{ t('social.aiDrafts.suggestedMedia') }}</div>
-              <div v-if="uploadBlocked" class="muted small">{{ uploadBlocked }}</div>
-              <div v-if="processing.length" class="muted small">{{ t('content.mediaProcessingHint', { n: processing.length }) }}</div>
-            </a-form-item>
-            <a-form-item :label="t('feed.sendMode')">
-              <a-radio-group v-model:value="mode" button-style="solid">
-                <a-radio-button value="draft">{{ t('feed.modeDraft') }}</a-radio-button>
-                <a-radio-button value="now">{{ t('feed.modeNow') }}</a-radio-button>
-                <a-radio-button value="at">{{ t('feed.modeAt') }}</a-radio-button>
-              </a-radio-group>
-              <a-date-picker v-if="mode === 'at'" v-model:value="at" show-time :placeholder="t('feed.pickTime')" style="width: 100%; margin-top: 8px" />
+              <div v-if="draft.preview.media.length" class="muted small media-hint">{{ t('social.aiDrafts.suggestedMedia') }}</div>
+              <div v-if="uploadBlocked || uploadScope === 'public'" class="muted small media-hint">{{ uploadBlocked || t('content.uploadPublicHint') }}</div>
+              <div v-if="processing.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processing.length }) }}</div>
             </a-form-item>
           </a-form>
-          <a-alert v-if="mode !== 'draft'" type="warning" show-icon :message="t('social.aiDrafts.liveHint')" />
           <a-alert v-if="result?.kind === 'kept'" type="error" show-icon class="gap" :message="t('social.aiDrafts.publishFailedDraftKept', { err: result.err })">
             <template #description><router-link to="/content?status=draft" @click="close">{{ t('social.aiDrafts.openDrafts') }}</router-link></template>
           </a-alert>
@@ -222,8 +237,22 @@ const close = () => emit('update:open', false)
     </template>
     <template #footer>
       <a-button @click="close">{{ t('social.aiDrafts.close') }}</a-button>
-      <a-button v-if="draft && !result" type="primary" :loading="saving" :disabled="generating" @click="save">{{ okText }}</a-button>
+      <a-dropdown-button v-if="draft && !result" type="primary" :loading="saving" :disabled="generating" :trigger="['click']" @click="save('draft')">
+        {{ t('feed.saveDraft') }}
+        <template #icon><DownOutlined /></template>
+        <template #overlay>
+          <a-menu @click="onMenu">
+            <a-menu-item key="now">{{ t('feed.modeNow') }}</a-menu-item>
+            <a-menu-item key="at">{{ t('feed.modeAt') }}</a-menu-item>
+          </a-menu>
+        </template>
+      </a-dropdown-button>
     </template>
+    <a-modal v-model:open="atOpen" :title="t('feed.modeAt')" :width="MODAL_WIDTH.sm" :ok-text="t('feed.modeAt')" :confirm-loading="saving" @ok="confirmAt">
+      <a-date-picker v-model:value="at" show-time :placeholder="t('feed.pickTime')" style="width: 100%" />
+      <a-alert type="warning" show-icon class="gap" :message="t('social.aiDrafts.liveHint')" />
+      <a-alert v-if="trWarn" type="warning" show-icon class="gap" :message="trWarn" />
+    </a-modal>
     <MediaPicker v-model:open="pickerOpen" :exclude="media.map((m) => m.id)" @pick="onPick" />
   </a-modal>
 </template>
@@ -233,5 +262,6 @@ const close = () => emit('update:open', false)
 .topic-row :deep(.ant-input-group-wrapper) { flex: 1; }
 .gap { margin-top: 12px; }
 .gap-b { margin-bottom: 12px; }
+.media-hint { margin-top: 6px; line-height: 1.5; }
 .tab-tag { margin-inline-start: 4px; }
 </style>

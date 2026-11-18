@@ -1273,6 +1273,8 @@ const zhCN = {
     fieldMedia: '素材（{n}）',
     addMedia: '从素材库选择',
     uploadMedia: '上传',
+    uploadPublic: '上传为公共素材',
+    uploadPublicHint: '这是其他用户的内容：你上传的素材会存为公共素材（所有用户可见），内容只能使用所有者自己的素材或公共素材。',
     uploadOtherOwner: '内容只能使用所有者自己的素材或公共素材：请让所有者上传，或先在素材库上传为公共素材',
     uploadOverLimit: '一条内容最多 {max} 个素材，另外 {n} 个已上传到「我的素材」但未加入',
     uploadFailed: '素材「{name}」处理失败：{error}',
