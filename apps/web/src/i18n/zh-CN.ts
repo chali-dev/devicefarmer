@@ -81,7 +81,7 @@ const zhCN = {
     publish: '定时发布',
     comments: '评论互动',
     scripts: '话术库',
-    personas: '人设',
+    personas: '人设管理',
     trending: '趋势热点',
     tasks: '任务中心',
     connections: '连线监控',

@@ -80,7 +80,7 @@ const en: Messages = {
     publish: 'Publish scheduler',
     comments: 'Comments',
     scripts: 'Script library',
-    personas: 'Personas',
+    personas: 'Persona management',
     trending: 'Trending',
     tasks: 'Task Center',
     connections: 'Connections',

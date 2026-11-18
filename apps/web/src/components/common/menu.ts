@@ -23,7 +23,7 @@ export const MENU_GROUPS: MenuGroup[] = [
     { key: 'library', icon: AppstoreOutlined }, { key: 'proxies', icon: ClusterOutlined },
   ] },
   { key: 'matrix', icon: ShareAltOutlined, items: [
-    { key: 'social', icon: TeamOutlined }, { key: 'personas', icon: IdcardOutlined }, { key: 'analytics', icon: RiseOutlined },
+    { key: 'personas', icon: IdcardOutlined }, { key: 'social', icon: TeamOutlined }, { key: 'analytics', icon: RiseOutlined },
     { key: 'tracked', icon: EyeOutlined }, { key: 'comments', icon: CommentOutlined },
   ] },
   { key: 'content', icon: ReadOutlined, items: [
