@@ -14,10 +14,12 @@ import PhonePreview from './PhonePreview.vue'
 import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
 
 /**
- * Publishing step (立即发布 / 定时发布): pick the post type and the target accounts (grouped by platform, with
- * device + login status), the schedule, and per-account fine-tuning: each account's title/caption/privacy/time
- * start as the values the task would get anyway (content texts for its platform, the unified time) and follow them
- * until edited; only edited fields are sent as overrides, so an untouched account publishes exactly as without them.
+ * Publishing step (立即发布 / 排程发布): pick the post type and the target accounts (grouped by platform, with
+ * device + login status), the schedule (one time for every account: 立即 / 排程 at the top; the per-account
+ * 本账号发布时间 was removed on 2026-11-18, the API still takes a per-target `scheduledAt` from an older page), and
+ * per-account fine-tuning: each account's title/caption/privacy start as the values the task would get anyway
+ * (content texts for its platform) and follow them until edited; only edited fields are sent as overrides, so an
+ * untouched account publishes exactly as without them.
  * No separate hashtags field (owner 2026-11-18): hashtags are written in the caption text itself; the API still accepts
  * `hashtags` from an older page, this one never sends them.
  * `mode` presets the schedule: now, or a time (default: the next full hour at least 30 min ahead).
@@ -25,7 +27,7 @@ import PlatformTextTabs, { type TextTab } from './PlatformTextTabs.vue'
  * published to (tagged 已发布); checking one of those re-publishes (`republish` is sent only then).
  * Languages: each account publishes the content's translation in its 账号语言, else the Chinese source (shown per
  * account, with a warning when its language has no translation); its inherited title/caption follow that language.
- * Nothing is queued until the person presses 发布 / 定时发布 here (draft first, 2026-11-18): the phone preview shows the
+ * Nothing is queued until the person presses 发布 / 排程发布 here (draft first, 2026-11-18): the phone preview shows the
  * selected account's post as it will be shared, and the notice says the cloud phone really posts it (no test mode).
  * 编辑后重新发布: `accountIds` (+ `postType`) preselect exactly those accounts instead of the 发布目标 (the account
  * of a failed publish task; publishing creates a new task with the content's current texts and media).
@@ -41,7 +43,7 @@ const platforms = ref<PublishPlatform[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const selected = ref<string[]>([])
-interface Override { title: string; privacy: string | undefined; at: Dayjs | null }
+interface Override { title: string; privacy: string | undefined }
 const overrides = reactive<Record<string, Override>>({})
 /** Per-account caption (starts as the content's text for that platform); one tab per selected account. */
 const captions = reactive<Record<string, string>>({})
@@ -56,11 +58,6 @@ const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
 function onWhen() { if (form.when === 'at' && !form.at) form.at = defaultAt() }
 /** The unified time (null = now). */
 const commonAt = computed(() => (form.when === 'at' ? form.at : null))
-const sameAt = (a: Dayjs | null, b: Dayjs | null) => (a && b ? a.isSame(b, 'minute') : a === b)
-// Accounts whose time still follows the unified one move with it; edited ones keep theirs.
-watch(commonAt, (now, before) => {
-  for (const id of selected.value) { const o = overrides[id]; if (o && sameAt(o.at, before)) o.at = now }
-})
 
 watch(() => props.open, async (o) => {
   if (!o || !props.content) return
@@ -151,7 +148,7 @@ function toggle(id: string, on: boolean) {
   if (on && !selected.value.includes(id)) {
     selected.value = [...selected.value, id]
     const platform = accountById(id)?.platform ?? ''
-    overrides[id] ??= { title: defaultTitle(id), privacy: defaultPrivacy(platform), at: commonAt.value }
+    overrides[id] ??= { title: defaultTitle(id), privacy: defaultPrivacy(platform) }
     captions[id] ??= defaultCaption(id)
     accountTab.value = id
   } else if (!on) selected.value = selected.value.filter((x) => x !== id)
@@ -195,7 +192,7 @@ const defaultPrivacy = (platform: string) => (capOf(platform)?.privacy ? str((pr
 const missingLangAccounts = computed(() => selected.value.filter((id) => textsOf(id).missing))
 const langLabel = (l: string | null) => (l ? `${langName(l)} (${l})` : t('distribute.lang.unknown'))
 
-type Field = 'title' | 'caption' | 'privacy' | 'at'
+type Field = 'title' | 'caption' | 'privacy'
 /** Which fields of an account differ from what it inherits (only those are sent). */
 function edited(id: string): Record<Field, boolean> {
   const o = overrides[id]!
@@ -204,7 +201,6 @@ function edited(id: string): Record<Field, boolean> {
     title: !!o.title.trim() && o.title.trim() !== defaultTitle(id).trim(),
     caption: (captions[id] ?? '') !== defaultCaption(id),
     privacy: o.privacy !== defaultPrivacy(platform),
-    at: !sameAt(o.at, commonAt.value),
   }
 }
 function restore(id: string, field: Field) {
@@ -212,8 +208,7 @@ function restore(id: string, field: Field) {
   const platform = accountById(id)?.platform ?? ''
   if (field === 'title') o.title = defaultTitle(id)
   else if (field === 'caption') captions[id] = defaultCaption(id)
-  else if (field === 'privacy') o.privacy = defaultPrivacy(platform)
-  else o.at = commonAt.value
+  else o.privacy = defaultPrivacy(platform)
 }
 /** 已修改 · 恢复 next to an edited field. */
 const EditedMark = (p: { show: boolean; onRestore?: () => void }) => (p.show
@@ -230,7 +225,7 @@ async function submit() {
   try {
     const targets = selected.value.map((id) => {
       const o = overrides[id]!
-      const at = o.at ?? commonAt.value
+      const at = commonAt.value
       const text = hasCaption(id)
       const e = edited(id)
       return {
@@ -326,14 +321,6 @@ async function submit() {
                     <template #label>{{ t('distribute.privacy') }}<EditedMark :show="edited(tab.key).privacy" @restore="restore(tab.key, 'privacy')" /></template>
                     <a-select v-model:value="overrides[tab.key]!.privacy"
                       :options="capOf(tab.platform ?? '')!.privacy!.map((p) => ({ value: p, label: t(`distribute.privacyOpt.${p}`) }))" />
-                  </a-form-item>
-                </a-col>
-                <a-col :xs="24" :sm="12">
-                  <a-form-item>
-                    <template #label>{{ t('distribute.timeOverride') }}<EditedMark :show="edited(tab.key).at" @restore="restore(tab.key, 'at')" /></template>
-                    <!-- Clearing goes back to the unified time (shown as 立即 when that is "now"). -->
-                    <a-date-picker :value="overrides[tab.key]!.at" show-time format="YYYY-MM-DD HH:mm" allow-clear :disabled-date="pastDay" :placeholder="t('distribute.now')" style="width: 100%"
-                      @update:value="(v: Dayjs | null) => { overrides[tab.key]!.at = v ?? commonAt }" />
                   </a-form-item>
                 </a-col>
               </a-row>

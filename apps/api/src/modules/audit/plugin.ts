@@ -289,7 +289,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'POST /api/trending/refresh': { action: 'trending.refresh' },
   'POST /api/collection/run': { action: 'collection.run' },
-  // content (内容管理) and publish scheduler (定时发布). Captions/bodies are not copied into the audit log.
+  // content (内容管理) and publish scheduler (排程发布). Captions/bodies are not copied into the audit log.
   'POST /api/contents': {
     action: 'content.create', target: ({ body }) => body.title as string,
     detail: ({ body }) => ({ ownerId: body.ownerId, categoryId: body.categoryId, tags: body.tags, mediaIds: ids(body.mediaIds), targetIds: body.targetIds ? ids(body.targetIds) : undefined, stage: body.stage, lang: body.lang }),

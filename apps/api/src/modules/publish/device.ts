@@ -19,7 +19,7 @@ import { DEVICE_METHOD, PublishCheckError, registerPublishMethod, type PublishIn
  *
  * Available for an Instagram account linked to a phone, with media, as 帖子 (images; a carousel adds items 2..N in
  * the app's gallery), Reels (1 video) or 快拍 (1 image / video). Else the run goes to the operator with the reason
- * (`publish.device_*`). Rules (风控 → 云手机发帖, device-rules.ts): per account ≤ postsPerDay device runs per rolling
+ * (`publish.device_*`). Rules (风控 → 云手机发帖, device-rules.ts): per account ≤ postsPerDay device runs (that reached 分享) per rolling
  * 24 h and ≥ minGapMin between two; over them → a new round at the allowed time. The
  * phone work runs under `withDevice` (one operation per phone, shared pace with collection / checks / comments,
  * nobody watching); busy / paced → a new round. A halted phone (风控) parks the run (scheduled, no task) until an
@@ -48,7 +48,10 @@ async function storeEvidence(row: PublishTask, shot: Buffer | null, inputText: s
 /**
  * Reserves this run against the account's daily cap / minimum gap (per-account advisory lock): sets
  * device_run_at = now, or says when the next run may start. Returns the previous value to undo the reservation
- * when the phone never started (busy / paced / offline).
+ * when the run ends without 分享 having been tapped (owner decision 2026-11-18: a phone that never started, and any
+ * failure before 分享 (text mismatch, push failed, timeout, wrong account, logged out, media not found, discard
+ * failed, a challenge screen, a cancel / task timeout) does not count toward postsPerDay / minGapMin; published,
+ * `publish.send_uncertain` and every error after 分享 keep it).
  */
 async function reserve(row: PublishTask, rules: { postsPerDay: number; minGapMin: number }):
   Promise<{ ok: true; prev: Date | null } | { ok: false; at: Date; code: string; message: string; data: Record<string, unknown> }> {
@@ -73,7 +76,11 @@ async function reserve(row: PublishTask, rules: { postsPerDay: number; minGapMin
 }
 const unreserve = (row: PublishTask, prev: Date | null) => db.update(pt).set({ deviceRunAt: prev }).where(eq(pt.id, row.id));
 
-async function run(input: PublishInput, ctx: PublishRunContext): Promise<PublishMethodResult> {
+/** What a run needs from the phone side; replaceable only by scripts/device-publish-check.ts (no phone there). */
+export interface DeviceRunDeps { withDevice: typeof withDevice; flow: typeof publishOnIg }
+const realDeps: DeviceRunDeps = { withDevice, flow: publishOnIg };
+
+export async function runDevicePublish(input: PublishInput, ctx: PublishRunContext, deps: DeviceRunDeps = realDeps): Promise<PublishMethodResult> {
   const { row, log } = ctx;
   const acc = input.account;
   const inst: Instance | undefined = acc.instanceId ? await getInstance(acc.instanceId) : undefined;
@@ -85,18 +92,24 @@ async function run(input: PublishInput, ctx: PublishRunContext): Promise<Publish
   await log('info', 'cloud phone: live (shares the post)', { device: inst.name });
   const offline = () => new TaskError('publish.device_offline', `device ${inst.name} is offline`);
   let started = false;
+  /** 分享 was tapped (set by the flow right before the tap): from then on the run counts, whatever happens. */
+  let shared = false;
   try {
-    const res = await withDevice(inst, ctx.task.log, offline, (dev) => {
+    const res = await deps.withDevice(inst, ctx.task.log, offline, (dev) => {
       started = true;
-      return publishOnIg(dev, {
+      return deps.flow(dev, {
         publishTaskId: row.id, round: row.attemptNo, postType: input.postType, handle: acc.handle, externalId: acc.externalId,
         media: input.media, text: input.postType === 'story' ? '' : input.text, log: ctx.task.log, signal: ctx.task.signal,
+        onShare: () => { shared = true; },
       });
     }, { lockMs: 12 * 60_000, weight: 6, what: 'publish' });
     const evidence = await storeEvidence(row, res.screenshot, res.inputText, res.excerpt);
     return { state: 'published', externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: res.publishedAt ?? null, evidence, data: { device: inst.name, screens: res.screens } };
   } catch (err) {
-    if (!started) await unreserve(row, r.prev);
+    if (!shared) {
+      await unreserve(row, r.prev);
+      if (started) await log('info', 'failed before 分享: not counted toward the daily cap / minimum gap');
+    }
     // adb doesn't see the phone although the device row says online: an operator takes it (like comments).
     if (!started && err instanceof TaskError && err.code === 'publish.device_offline') return { state: 'unavailable', reason: 'publish.device_offline' };
     if (err instanceof CollectorDefer) return { state: 'deferred', at: err.runAt, code: err.code, message: `device busy or paced (${err.code})` };
@@ -130,5 +143,5 @@ registerPublishMethod({
     if (input.postType === 'feed' && input.media.some((m) => m.fileType !== 'image')) return 'publish.device_feed_video';
     return null;
   },
-  run,
+  run: (input, ctx) => runDevicePublish(input, ctx),
 });

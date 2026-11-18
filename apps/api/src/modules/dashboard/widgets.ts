@@ -5,6 +5,7 @@ import { hostCapacity } from '../../health.js';
 import { counterDeltas } from '../../lib/counter-deltas.js';
 import { isAdmin } from '../auth/rbac.js';
 import { EXCEPTION_SQL } from '../social/social.js';
+import { NEWEST } from '../publish/routes.js';
 import { visibleTasks } from '../tasks/routes.js';
 import { registerDashboardWidget, type DashboardCtx } from './registry.js';
 
@@ -158,12 +159,13 @@ registerDashboardWidget('publishing', async (ctx) => {
 }, { order: 50 });
 
 // ---------------------------------------------------------------- today's publishing per post type
-// Same day rule as GET /api/publish/tasks?from&to: published_at when published, else scheduled_at, in the viewer's time zone.
+// Same day rule as GET /api/publish/tasks?from&to: published_at when published, else scheduled_at, in the viewer's time zone;
+// only the newest task per content + account (like the 今日 tab with group=content: a failed attempt edited and published again counts once).
 registerDashboardWidget('publishToday', async (ctx) => {
   const day = sql`(date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}) at time zone ${ctx.tz})`;
   const when = sql`coalesce(${pt.publishedAt}, ${pt.scheduledAt})`;
   const rows = await db.select({ t: pt.postType, s: pt.status, n: count() }).from(pt)
-    .where(and(own(ctx, pt.userId), sql`${when} >= ${day}`, sql`${when} < ${day} + interval '1 day'`, sql`${pt.status} <> 'cancelled'`))
+    .where(and(own(ctx, pt.userId), sql`${when} >= ${day}`, sql`${when} < ${day} + interval '1 day'`, sql`${pt.status} <> 'cancelled'`, NEWEST))
     .groupBy(pt.postType, pt.status);
   const byType = { feed: 0, reel: 0, story: 0 } as Record<string, number>;
   const published = { feed: 0, reel: 0, story: 0 } as Record<string, number>;

@@ -14,6 +14,10 @@
  * see the phone and hands them to an operator (`publish.device_offline`) — so the phone is never touched. The real
  * phone flow (push, share target, caption read back, discard) is covered by device-publish-device-check.ts.
  * The dry_run (legacy) / send_uncertain end states are written as DB fixtures.
+ * 未点分享不计数 (owner 2026-11-18): the phone side of a run (withDevice + the Instagram flow) is replaced in THIS
+ * process by stand-ins (`runDevicePublish` deps) that fail before 分享 or after it (calling `onShare` first); the
+ * reservation (device_run_at) in the real DB is checked, then a real run through the API shows whether the next round
+ * is deferred by the minimum gap. The real flow itself is not exercised here (no phone).
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/device-publish-check.ts
  */
@@ -22,6 +26,8 @@ import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
+import { runDevicePublish, type DeviceRunDeps } from '../src/modules/publish/device.js';
+import { PublishDeviceError } from '../src/modules/publish/ig-publish.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
 
@@ -143,7 +149,7 @@ try {
   // ---------------------------------------------------------------- draft first: a content creates no publish task until it is distributed
   const offC = await content('offline', [img]);
   const before = await db.select().from(pt).where(eq(pt.contentId, offC));
-  check('a saved content is only a draft: no publish task until 发布 / 定时发布 (distribute)', before.length === 0, String(before.length));
+  check('a saved content is only a draft: no publish task until 发布 / 排程发布 (distribute)', before.length === 0, String(before.length));
   // ---------------------------------------------------------------- method selection: device → adb doesn't see the phone → operator
   let p = await dist(offC, a0.id);
   let d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
@@ -217,6 +223,49 @@ try {
     row?.status === 'scheduled' && row.errorCode === 'publish.daily_limited' && capAt > 23.9 * 3600_000 && capAt < 24.1 * 3600_000, `${row?.status} ${row?.errorCode} ${capAt / 3600_000}`);
   await http('POST', `/api/publish/tasks/${p.id}/cancel`, A);
   await http('PUT', '/api/publish/device-settings', T, { postsPerDay: 3, minGapMin: 60 });
+
+  // ---------------------------------------------------------------- a failure before 分享 does not count (min gap / daily cap); after 分享 it does
+  {
+    const fakeDevice = (async (inst: any, _log: any, _off: any, fn: any) => fn({ inst, adbPort: inst.adbPort })) as unknown as DeviceRunDeps['withDevice'];
+    const failBefore = (async () => { throw new PublishDeviceError('publish.device_text_mismatch', 'mismatch (test)', { excerpt: 'read back: x' }); }) as unknown as DeviceRunDeps['flow'];
+    const plainBefore = (async () => { throw new Error('boom before share (test)'); }) as unknown as DeviceRunDeps['flow'];
+    const uncertain = (async (_d: any, inp: any) => { inp.onShare(); throw new PublishDeviceError('publish.send_uncertain', 'uncertain (test)', { afterSend: true }); }) as unknown as DeviceRunDeps['flow'];
+    const plainAfter = (async (_d: any, inp: any) => { inp.onShare(); throw new Error('boom after share (test)'); }) as unknown as DeviceRunDeps['flow'];
+    const [accRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, a0.id));
+    const runWith = async (taskId: string, flow: DeviceRunDeps['flow']) => {
+      const [row] = await db.select().from(pt).where(eq(pt.id, taskId));
+      const logs: string[] = [];
+      const ctx = { row: row!, log: async (_l: string, m: string) => { logs.push(m); }, task: { task: {} as any, payload: {}, attempt: 1, signal: new AbortController().signal, log: async () => undefined } };
+      const input = { publishTaskId: row!.id, attemptNo: row!.attemptNo, platform: 'instagram', account: accRow!, caption: row!.caption, hashtags: [], text: row!.caption, options: {}, media: [], postType: 'feed' as const };
+      let out: any; let err: any = null;
+      try { out = await runDevicePublish(input as any, ctx as any, { withDevice: fakeDevice, flow }); } catch (e) { err = e; }
+      const [after] = await db.select().from(pt).where(eq(pt.id, taskId));
+      return { out, err, logs, runAt: after!.deviceRunAt };
+    };
+    // a task whose own round is far away (cancelled): only its device_run_at matters here
+    const x = await dist(await content('pre-share fail', [img]), a0.id, { scheduledAt: new Date(Date.now() + 3 * 86400_000).toISOString() });
+    await http('POST', `/api/publish/tasks/${x.id}/cancel`, A);
+    let rr = await runWith(x.id, failBefore);
+    check('failure before 分享 (text mismatch): run fails publish.device_text_mismatch, reservation undone (device_run_at back to empty), logged as not counted',
+      rr.err?.code === 'publish.device_text_mismatch' && rr.runAt === null && rr.logs.includes('failed before 分享: not counted toward the daily cap / minimum gap'), `${rr.err?.code} ${String(rr.runAt)} ${rr.logs.join(' | ')}`);
+    rr = await runWith(x.id, plainBefore);
+    check('any other error before 分享: reservation undone too', !!rr.err && rr.runAt === null, `${rr.err?.message} ${String(rr.runAt)}`);
+    p = await dist(await content('after pre-share fail', [img2]), a0.id);
+    d = await waitStatus(A, p.id, ['awaiting_operator', 'failed', 'scheduled']);
+    check('next run right after (min gap 60 min) is NOT deferred by publish.min_gap (here: adb offline → operator)',
+      d.task.status === 'awaiting_operator' && d.task.errorCode !== 'publish.min_gap' && !msgs(d).some((m) => m.includes('minimum gap')), `${d.task.status} ${d.task.errorCode} ${msgs(d).join(' | ')}`);
+    rr = await runWith(x.id, uncertain);
+    check('after 分享 without confirmation (send_uncertain): awaiting operator, reservation KEPT (device_run_at ≈ now)',
+      rr.out?.state === 'awaiting_operator' && rr.out?.code === 'publish.send_uncertain' && !!rr.runAt && Date.now() - rr.runAt.getTime() < 60_000, `${JSON.stringify(rr.out)} ${rr.err?.message} ${String(rr.runAt)}`);
+    rr = await runWith(x.id, plainAfter);
+    check('any error after 分享: reservation kept', !!rr.err && !!rr.runAt && Date.now() - rr.runAt.getTime() < 60_000, `${rr.err?.message} ${String(rr.runAt)}`);
+    p = await dist(await content('after shared', [img2]), a0.id);
+    d = await waitDeferred(A, p.id);
+    const [def] = await db.select().from(pt).where(eq(pt.id, p.id));
+    check('next run after a share that counted → deferred publish.min_gap', def?.errorCode === 'publish.min_gap' && def.status === 'scheduled', `${def?.status} ${def?.errorCode}`);
+    await http('POST', `/api/publish/tasks/${p.id}/cancel`, A);
+    await db.update(pt).set({ deviceRunAt: null }).where(eq(pt.id, x.id));
+  }
 
   // ---------------------------------------------------------------- halted phone: parked, 恢复 re-queues
   await haltDevice(D2, { code: 'publish.device_challenge', source: 'publish', platform: 'instagram', socialAccountId: a2.id });

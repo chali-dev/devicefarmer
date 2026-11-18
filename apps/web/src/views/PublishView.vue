@@ -58,7 +58,8 @@ const when = (x: PublishTaskItem) => dayjs(x.publishedAt ?? x.scheduledAt)
 const postTypes = computed(() => POST_TYPES.filter((x) => platforms.value.some((p) => p.postTypes.includes(x))))
 
 function baseParams(): URLSearchParams {
-  const p = new URLSearchParams()
+  // One entry per content + account (its newest task; older attempts folded under it), also in the calendar.
+  const p = new URLSearchParams({ group: 'content' })
   if (filters.q.trim()) p.set('q', filters.q.trim())
   if (filters.platform) p.set('platform', filters.platform)
   if (filters.ownerId) p.set('ownerId', filters.ownerId)

@@ -1,5 +1,5 @@
 /**
- * Content management (内容管理) + publish scheduler (定时发布) through the real HTTP API, the real task centre
+ * Content management (内容管理) + publish scheduler (排程发布) through the real HTTP API, the real task centre
  * (BullMQ worker in the API), real media processing (sharp / ffmpeg). No mocks.
  * - Devices are placeholder `instances` rows (no Android container): "online" = status running + adb state device,
  *   held by a test-only trigger against the monitor (created and dropped by this script).
@@ -12,6 +12,8 @@
  *   retry", no new round queued); 编辑后重新发布 = the content edited + distributed again to that account → a NEW
  *   publish task with the edited text (the failed one stays, no `republish` needed), the content status follows the
  *   newest task per account; a new round takes a changed timeout (300 s). The previous rows of both keys are restored.
+ * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
+ *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
  */
 import { execFile } from 'node:child_process';
@@ -520,6 +522,45 @@ try {
   r = await http('GET', '/api/publish/platforms', A);
   check('platform capabilities (no methods field: publishing is manual only)', ['instagram', 'youtube', 'tiktok', 'facebook'].every((id) => r.body.platforms.some((p: any) => p.id === id)) && r.body.platforms.every((p: any) => !('methods' in p))
     && r.body.platforms.find((p: any) => p.id === 'youtube').capability.media.max === 1);
+
+  // ---------------------------------------------------------------- group=content: newest task per content + account, older ones folded
+  {
+    const later = () => new Date(Date.now() + 5 * 86400_000).toISOString();
+    const mk = async (title: string) => (await http('POST', '/api/contents', A, { title: `pc-${tag} ${title}`, body: 'grp', mediaIds: [imgA1] })).body.content.id as string;
+    const g1 = await mk('grp1');
+    const g2 = await mk('grp2');
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) { // 3 attempts on g1 → igA (each cancelled, then 编辑后重新发布 = a new task)
+      const d = await http('POST', `/api/contents/${g1}/distribute`, A, { targets: [{ accountId: igA, scheduledAt: later() }] });
+      ids.push(d.body.created[0].id);
+      if (i < 2) await http('POST', `/api/publish/tasks/${d.body.created[0].id}/cancel`, A);
+      await sleep(20);
+    }
+    const g2t = (await http('POST', `/api/contents/${g2}/distribute`, A, { targets: [{ accountId: igA, scheduledAt: later() }] })).body.created[0].id as string;
+    const q = `q=${encodeURIComponent(`pc-${tag} grp`)}`;
+    r = await http('GET', `/api/publish/tasks?${q}&sort=updated_desc`, A);
+    check('without group: every task listed (old behaviour, no previous field)', r.status === 200 && r.body.total === 4 && r.body.items.every((i: any) => !('previous' in i)), `${r.body.total}`);
+    const plainCancelled = r.body.byStatus.cancelled;
+    r = await http('GET', `/api/publish/tasks?${q}&group=content&sort=updated_desc`, A);
+    const row1 = r.body.items?.find((i: any) => i.contentId === g1);
+    check('group=content: one row per content + account (2), total 2, the newest task of g1 with its 2 older attempts in previous (newest first, cancelled)',
+      r.status === 200 && r.body.total === 2 && r.body.items.length === 2 && row1?.id === ids[2] && row1.previous.map((x: any) => x.id).join() === [ids[1], ids[0]].join()
+      && row1.previous.every((x: any) => x.status === 'cancelled' && 'errorCode' in x && 'updatedAt' in x) && r.body.items.find((i: any) => i.contentId === g2)?.previous.length === 0,
+    JSON.stringify(r.body.items?.map((i: any) => [i.id, i.previous?.map((x: any) => x.id)])));
+    check('group=content: byStatus counts the newest tasks only (no cancelled; without group 2)', r.body.byStatus.cancelled === 0 && r.body.byStatus.scheduled === 2 && plainCancelled === 2, JSON.stringify(r.body.byStatus));
+    const [pg1, pg2] = await Promise.all([1, 2].map((n) => http('GET', `/api/publish/tasks?${q}&group=content&sort=updated_desc&limit=1&offset=${n - 1}`, A)));
+    check('group=content paging: limit 1 → total 2 on both pages, two different rows', pg1.body.total === 2 && pg2.body.total === 2 && pg1.body.items.length === 1 && pg2.body.items.length === 1 && pg1.body.items[0].id !== pg2.body.items[0].id);
+    r = await http('GET', `/api/publish/tasks?${q}&group=content&status=cancelled`, A);
+    const r2 = await http('GET', `/api/publish/tasks?${q}&status=cancelled`, A);
+    check('status filter matches the newest task: group=content&status=cancelled → 0 (newest are scheduled); without group → the 2 cancelled', r.body.total === 0 && r2.body.total === 2, `${r.body.total} ${r2.body.total}`);
+    r = await http('GET', `/api/publish/tasks?contentId=${g1}&group=content`, B);
+    check("B: group=content shows none of A's tasks", r.status === 200 && r.body.total === 0);
+    r = await http('GET', `/api/publish/tasks/${ids[0]}`, A);
+    check('detail: history = every task of this content on this account, newest first (3)', r.status === 200 && r.body.history?.map((x: any) => x.id).join() === [ids[2], ids[1], ids[0]].join(), JSON.stringify(r.body.history?.map((x: any) => x.id)));
+    r = await http('GET', `/api/publish/tasks/${g2t}`, A);
+    check('detail of a single task: history of 1', r.body.history?.length === 1 && r.body.history[0].id === g2t);
+    for (const id of [ids[2], g2t]) await http('POST', `/api/publish/tasks/${id}/cancel`, A);
+  }
 
   // ---------------------------------------------------------------- delete content (finished only)
   r = await http('DELETE', `/api/contents/${cOp.id}`, A);

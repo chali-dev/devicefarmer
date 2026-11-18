@@ -358,7 +358,7 @@ export function compactNumber(n: number | null | undefined): string {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
 
-// ---------------------------------------------------------------- content (内容管理) + publish scheduler (定时发布)
+// ---------------------------------------------------------------- content (内容管理) + publish scheduler (排程发布)
 export type ContentStatus = 'draft' | 'ready' | 'scheduled' | 'partially_published' | 'published' | 'failed' | 'archived'
 export const CONTENT_STATUSES: ContentStatus[] = ['draft', 'ready', 'scheduled', 'partially_published', 'published', 'failed', 'archived']
 export const CONTENT_STATUS_COLOR: Record<ContentStatus, string> = {
@@ -438,6 +438,13 @@ export interface PublishTaskItem {
   account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
   media: ContentMedia[]
+  /** Only with `group=content`: the older tasks of the same content + account (newest first, ≤ 20). */
+  previous?: PublishAttempt[]
+}
+/** One task of a content + account (编辑后重新发布 leaves several): list `previous`, detail `history`. */
+export interface PublishAttempt {
+  id: string; status: PublishStatus; errorCode: string | null; error: string | null; method: string | null; postType: PostType
+  scheduledAt: string; publishedAt: string | null; createdAt: string; updatedAt: string
 }
 export interface PublishLog {
   id: string; publishTaskId: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; data: Record<string, unknown> | null

@@ -197,6 +197,8 @@ export interface PublishFlowInput {
   signal?: AbortSignal;
   /** Diagnostics only (scripts, owner-approved): stop after the caption read-back, never tap 分享; the draft is discarded. */
   probeOnly?: boolean;
+  /** Called right before 分享 is tapped (from then on the run counts toward the daily cap / minimum gap). */
+  onShare?: () => void;
 }
 export interface PublishFlowResult {
   outcome: 'published' | 'probe';
@@ -399,6 +401,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     if (!shareAt) throw fail('publish.device_timeout', '找不到“分享”按钮', { retry: true, excerpt: dumpExcerpt(now) });
     const sharedAt = new Date();
     keep = true;
+    input.onShare?.();
     await s.tap(shareAt);
     await log('info', 'publish: share tapped');
     if (input.postType === 'reel') {
