@@ -13,6 +13,7 @@ import DeviceAssignModal from '../components/DeviceAssignModal.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceState from '../components/DeviceState.vue'
 import DeviceThumb from '../components/DeviceThumb.vue'
+import OwnerBadge from '../components/OwnerBadge.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
@@ -129,12 +130,9 @@ function filterByOwner(o: InstanceOwner) {
   selectedKeys.value = selectedKeys.value.filter((k) => visible.has(k))
 }
 const ownerName = (o: InstanceOwner) => o.displayName ? t('permissions.userLabel', { display: o.username, username: o.displayName }) : o.username
-/** Card line (admin): first two granted users, then "+N". */
-const ownersShort = (list: InstanceOwner[]) =>
-  list.slice(0, 2).map((o) => o.username).join(t('common.listSep')) + (list.length > 2 ? ` +${list.length - 2}` : '')
 
 // ---- actions menu (row and batch)
-type MenuKey = Action | 'install' | 'uninstall' | 'sync' | 'assign' | 'assign-add' | 'assign-remove'
+type MenuKey = Action | 'install' | 'uninstall' | 'sync' | 'assign' | 'assign-batch' | 'unassign'
 const isBusy = (i: Instance) => BUSY_STATUSES.includes(i.status)
 /** Whether an action makes sense for this device's current status. */
 function canDo(key: MenuKey, i: Instance) {
@@ -153,38 +151,34 @@ const batchItems = computed<BatchItem[]>(() => [
   { key: 'install', label: t('devices.installApp') },
   { key: 'uninstall', label: t('devices.uninstallApp') },
   ...(auth.isAdmin ? [
-    { key: 'assign-add', label: t('permissions.addToSelected') },
-    { key: 'assign-remove', label: t('permissions.removeFromSelected') },
+    { key: 'assign-batch', label: t('permissions.assignToSelected') },
+    { key: 'unassign', label: t('permissions.unassignSelected') },
     { key: 'delete', label: t('devices.delete'), danger: true },
   ] : []),
 ])
 function onMenu(key: MenuKey, ids: string[]) {
-  if (key === 'assign' || key === 'assign-add' || key === 'assign-remove') openAssign(key === 'assign' ? 'set' : key === 'assign-add' ? 'add' : 'remove', ids)
+  if (key === 'assign' || key === 'assign-batch' || key === 'unassign') openAssign(key === 'assign' ? 'set' : key === 'assign-batch' ? 'assign' : 'clear', ids)
   else if (key === 'sync') void openSync(ids[0]!)
   else if (key === 'install' || key === 'uninstall') openApp(key, ids)
   else void run(key, ids)
 }
 
-// ---- 分配 (admin; moved from the former 权限管理 page): one device's users, or add / remove users on the selection.
+// ---- 分配 (admin): a phone belongs to one user or none; one device (更多 → 分配), or the selection (分配给用户 / 取消分配).
 const assignOpen = ref(false)
-const assignMode = ref<'set' | 'add' | 'remove'>('set')
+const assignMode = ref<'set' | 'assign' | 'clear'>('set')
 const assignIds = ref<string[]>([])
-function openAssign(mode: 'set' | 'add' | 'remove', ids: string[]) {
+function openAssign(mode: 'set' | 'assign' | 'clear', ids: string[]) {
   if (!ids.length) return
   assignMode.value = mode; assignIds.value = [...ids]; assignOpen.value = true
 }
 
 // ---- 同步媒体号: the shared 从云手机同步 dialog (POST /api/social/sync-from-device) with this device preselected;
-// admins also pick the account's owner there.
+// the account goes to the phone's assigned user (unassigned: the admin running it), shown read only there.
 const syncOpen = ref(false)
 const syncId = ref<string | undefined>()
-const syncUsers = ref<ManagedUser[]>([])
-async function openSync(id: string) {
+function openSync(id: string) {
   syncId.value = id
   syncOpen.value = true
-  if (auth.isAdmin && !syncUsers.value.length) {
-    try { syncUsers.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users } catch { /* owner = the admin */ }
-  }
 }
 function onSynced(accountId: string) {
   message.success({ content: () => h('span', [t('devices.syncDone'), ' ', h('a', { onClick: () => router.push({ path: '/social', query: { instanceId: syncId.value } }) }, t('devices.syncView'))]), key: accountId })
@@ -550,13 +544,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <DeviceState :instance="record as Instance" :automation="automation[record.id]" :resumable="auth.isAdmin" :admin="auth.isAdmin" @resumed="loadAutomation" />
           </template>
           <template v-else-if="column.key === 'owners'">
-            <span v-if="!record.owners?.length" class="faint">{{ t('devices.unassigned') }}</span>
-            <a-tooltip v-else :title="record.owners.length > 3 ? record.owners.map(ownerName).join(t('common.listSep')) : undefined">
-              <span>
-                <a-tag v-for="o in record.owners.slice(0, 3)" :key="o.id" class="clickable" @click="filterByOwner(o)">{{ o.username }}</a-tag>
-                <a-tag v-if="record.owners.length > 3">+{{ record.owners.length - 3 }}</a-tag>
-              </span>
-            </a-tooltip>
+            <OwnerBadge :owners="record.owners ?? []" :label="ownerName" @filter="filterByOwner" />
           </template>
           <template v-else-if="column.key === 'net'">
             <a-tooltip v-if="record.proxy" :title="netTitle(record)">
@@ -645,15 +633,8 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                 </template>
               </a-dropdown>
             </div>
-            <div v-if="auth.isAdmin && i.owners" class="phone-owners small">
-              <span v-if="!i.owners.length" class="faint">{{ t('devices.unassigned') }}</span>
-              <a-popover v-else :trigger="['hover', 'click']" :title="t('devices.colOwners')">
-                <template #content>
-                  <div v-for="o in i.owners" :key="o.id"><a @click="filterByOwner(o)">{{ ownerName(o) }}</a></div>
-                </template>
-                <span class="ellipsis muted clickable">{{ ownersShort(i.owners) }}</span>
-              </a-popover>
-              <a class="assign-link" @click="openAssign('set', [i.id])">{{ t('permissions.assign') }}</a>
+            <div v-if="auth.isAdmin && i.owners" class="phone-owners">
+              <OwnerBadge :owners="i.owners" :label="ownerName" @filter="filterByOwner" />
             </div>
             <div class="phone-screen" role="button" tabindex="0" @click="openPhone(i.id)" @keydown.enter="openPhone(i.id)">
               <DeviceThumb :instance-id="i.id" :running="i.status === 'running'" :paused="phoneOpen" :slow="!!i.sourceId" :width="i.spec.width" :height="i.spec.height">
@@ -854,7 +835,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 
   <DeviceLogDrawer v-model:open="logOpen" :instance="logInstance" />
   <DeviceAssignModal v-model:open="assignOpen" :mode="assignMode" :instance-ids="assignIds" />
-  <SyncFromDeviceModal v-model:open="syncOpen" :users="syncUsers" :instance-id="syncId" @synced="onSynced" />
+  <SyncFromDeviceModal v-model:open="syncOpen" :instance-id="syncId" @synced="onSynced" />
   <CloudPhoneDrawer v-model:open="phoneOpen" :instance-id="phoneId" :profile-name="profileName" @menu="onMenu" @log="openLog" />
 </template>
 
@@ -896,8 +877,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 .phone { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--cp-border-secondary); border-radius: var(--cp-radius-lg); background: var(--cp-bg-container); min-width: 0; }
 .phone.selected { border-color: var(--cp-primary); }
 .phone.focus { border-color: var(--cp-primary); box-shadow: 0 0 0 2px var(--cp-primary-bg); }
-.phone-owners { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: -4px; }
-.assign-link { flex: none; margin-inline-start: auto; }
+.phone-owners { display: flex; align-items: center; min-width: 0; margin-top: -4px; }
 :deep(.row-focus > td) { background: var(--cp-primary-bg) !important; }
 .phone-head { display: flex; align-items: center; gap: 8px; }
 .phone-actions { display: flex; flex-wrap: wrap; justify-content: center; }

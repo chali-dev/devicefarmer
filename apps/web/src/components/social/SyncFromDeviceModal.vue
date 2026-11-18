@@ -1,19 +1,21 @@
 <script setup lang="ts">
 /**
- * 从云手机同步: pick a cloud phone the viewer may operate (admins: any, plus the account owner), queue the
+ * 从云手机同步: pick a cloud phone the viewer may operate (admins: any), queue the
  * account-device-sync task and follow it through the task events until it ends (a pace / busy deferral continues
  * as a new task, which is followed too). The result comes from the task (GET /api/tasks/:id).
+ * 账号归属 (admins) follows the phone (owner decision 2026-11-18): the phone's assigned user, else the admin; shown
+ * read only and derived by the API too (no ownerId sent). Only a legacy phone with several users offers a pick among them.
  */
 import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
-import type { ManagedUser, Task } from '../../api/types'
+import type { InstanceOwner, Task } from '../../api/types'
 import { dateLocale } from '../../i18n'
 import { useAuthStore } from '../../stores/auth'
 import { useInstancesStore } from '../../stores/instances'
 
-const props = defineProps<{ open: boolean; users: ManagedUser[]; instanceId?: string }>()
+const props = defineProps<{ open: boolean; instanceId?: string }>()
 const emit = defineEmits<{ 'update:open': [boolean]; synced: [accountId: string] }>()
 const { t, te } = useI18n()
 const auth = useAuthStore()
@@ -29,6 +31,13 @@ type SyncTaskResult = {
 }
 const state = ref<{ phase: 'idle' | 'queued' | 'running' | 'deferred' | 'done' | 'failed'; result?: SyncTaskResult; error?: string }>({ phase: 'idle' })
 
+/** The phone's assigned users (admins get them in GET /api/instances). */
+const phoneOwners = computed<InstanceOwner[]>(() => (deviceId.value ? store.byId.get(deviceId.value)?.owners ?? [] : []))
+const ownerLabel = (o: { username: string; displayName?: string | null }) => (o.displayName ? `${o.displayName} (${o.username})` : o.username)
+const derivedOwner = computed(() => (phoneOwners.value.length === 1
+  ? t('social.sync.ownerAssigned', { user: ownerLabel(phoneOwners.value[0]!) })
+  : t('social.sync.ownerSelf', { user: auth.user?.username ?? '' })))
+watch(deviceId, () => { ownerId.value = undefined })
 const devices = computed(() => store.list.map((i) => ({ value: i.id, label: `${i.name}${i.status !== 'running' ? ` (${t(`status.${i.status}`)})` : ''}` })))
 watch(() => props.open, (o) => {
   if (!o) return
@@ -102,9 +111,10 @@ const close = () => emit('update:open', false)
         <a-select v-model:value="deviceId" show-search option-filter-prop="label" :options="devices" :placeholder="t('social.sync.devicePlaceholder')"
           :not-found-content="t('social.sync.noDevices')" :disabled="waiting" />
       </a-form-item>
-      <a-form-item v-if="auth.isAdmin" :label="t('social.sync.owner')" :extra="t('social.sync.ownerHint')">
-        <a-select v-model:value="ownerId" allow-clear show-search option-filter-prop="label" :placeholder="auth.user?.username" :disabled="waiting"
-          :options="users.map((u) => ({ value: u.id, label: u.username }))" />
+      <a-form-item v-if="auth.isAdmin && deviceId" :label="t('social.sync.owner')" :extra="phoneOwners.length > 1 ? t('social.sync.ownerPickLegacy') : t('social.sync.ownerHint')">
+        <a-select v-if="phoneOwners.length > 1" v-model:value="ownerId" show-search option-filter-prop="label" :disabled="waiting"
+          :options="phoneOwners.map((u) => ({ value: u.id, label: ownerLabel(u) }))" />
+        <span v-else class="derived-owner">{{ derivedOwner }}</span>
       </a-form-item>
     </a-form>
 
@@ -124,7 +134,7 @@ const close = () => emit('update:open', false)
 
     <div class="footer">
       <a-button @click="close">{{ t('social.sync.close') }}</a-button>
-      <a-button type="primary" :disabled="!deviceId || waiting" :loading="busy" @click="start">
+      <a-button type="primary" :disabled="!deviceId || waiting || (auth.isAdmin && phoneOwners.length > 1 && !ownerId)" :loading="busy" @click="start">
         {{ state.phase === 'idle' ? t('social.sync.start') : t('social.sync.again') }}
       </a-button>
     </div>
@@ -132,5 +142,6 @@ const close = () => emit('update:open', false)
 </template>
 
 <style scoped>
+.derived-owner { font-weight: 500; }
 .footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>
