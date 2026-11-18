@@ -6,7 +6,7 @@ import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
-import { PlusOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import {
   taskStatusText,
   type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentRules, type CommentStatus, type CommentTemplate,
@@ -85,6 +85,33 @@ async function loadComments() {
     const r = await api<{ items: CommentItem[]; total: number; byStatus: Record<CommentStatus, number> }>('GET', `/api/comments?${p}`)
     items.value = r.items; total.value = r.total; byStatus.value = r.byStatus
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
+}
+
+// Replies are collapsed under their comment (V toggle). Expanded thread ids survive reloads (a status change on a
+// reply reloads the list and must not collapse it); ids that left the list are dropped on each load.
+const expanded = ref(new Set<string>())
+function toggleThread(id: string) {
+  const s = new Set(expanded.value)
+  if (!s.delete(id)) s.add(id)
+  expanded.value = s
+}
+watch(items, (list) => {
+  const ids = new Set(list.map((c) => c.id))
+  if ([...expanded.value].some((id) => !ids.has(id))) expanded.value = new Set([...expanded.value].filter((id) => ids.has(id)))
+})
+/** GET /api/comments loads the replies of the whole page with one query capped at 2000 rows and no per-thread
+ *  total, so once the cap is reached a thread's count may be short: it is then shown as "N+". */
+const CHILDREN_CAP = 2000
+const childrenCapped = computed(() => items.value.reduce((n, c) => n + (c.children?.length ?? 0), 0) >= CHILDREN_CAP)
+const ACTIVE_REPLY: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
+/** Replies that need attention, flagged on the collapsed toggle so they aren't hidden: new ones and ones with a reply in progress. */
+function threadInfo(c: CommentItem) {
+  const kids = c.children ?? []
+  return {
+    n: childrenCapped.value ? `${kids.length}+` : String(kids.length),
+    fresh: kids.filter((k) => k.status === 'new').length,
+    pending: kids.filter((k) => k.reply && ACTIVE_REPLY.includes(k.reply.status)).length,
+  }
 }
 
 async function setStatus(c: CommentItem, status: CommentStatus) {
@@ -336,7 +363,7 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
       <a-spin v-if="tab === 'comments'" :spinning="loading">
         <a-empty v-if="!items.length && !loading" :description="filters.accountId ? t('comments.empty') : `${t('comments.empty')} · ${t('comments.selectAccount')}`" />
         <div v-for="c in items" :key="c.id" class="thread">
-          <div v-for="m in [c, ...(c.children ?? [])]" :key="m.id" class="msg" :class="{ child: m.id !== c.id, hidden: m.status === 'hidden' || m.status === 'ignored' }">
+          <div v-for="m in (expanded.has(c.id) ? [c, ...(c.children ?? [])] : [c])" :key="m.id" class="msg" :class="{ child: m.id !== c.id, hidden: m.status === 'hidden' || m.status === 'ignored' }">
             <div class="meta">
               <PlatformTag v-if="m.id === c.id" :platform="m.platform" />
               <span v-if="m.id === c.id && !filters.accountId" class="muted">@{{ m.account?.handle }}</span>
@@ -364,6 +391,14 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
               <a-button v-if="m.id === c.id && filters.accountId === m.accountId" size="small" type="link" @click="openManual(m)">{{ t('comments.addManual') }}</a-button>
               <a-button v-if="m.source === 'manual'" size="small" type="link" danger @click="remove(m)">{{ t('common.delete') }}</a-button>
             </a-space>
+            <template v-if="m.id === c.id && c.children?.length">
+              <button v-for="info in [threadInfo(c)]" :key="c.id" type="button" class="thread-toggle" :aria-expanded="expanded.has(c.id)" @click="toggleThread(c.id)">
+                <DownOutlined class="chev" :class="{ open: expanded.has(c.id) }" />
+                <span>{{ expanded.has(c.id) ? t('comments.collapseReplies') : t('comments.expandReplies', { n: info.n }) }}</span>
+                <a-tag v-if="info.fresh" color="blue" class="badge">{{ t('comments.newReplies', { n: info.fresh }) }}</a-tag>
+                <a-tag v-if="info.pending" color="orange" class="badge">{{ t('comments.pendingReplies', { n: info.pending }) }}</a-tag>
+              </button>
+            </template>
           </div>
         </div>
         <a-pagination v-model:current="page.current" v-model:page-size="page.pageSize" v-bind="pagination({ total, hideOnSinglePage: true })" class="pager" @change="loadComments" />
@@ -483,6 +518,16 @@ const reason = (code: string | null, platform: string) => (code ? codeText(code,
 .msg { padding: 4px 0; }
 .msg.child { margin-left: 24px; border-top: 1px dashed var(--cp-border-secondary); }
 .msg.hidden { opacity: 0.6; }
+.thread-toggle {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; margin-top: 2px; padding: 2px 6px;
+  border: 0; border-radius: var(--cp-radius); background: transparent; color: var(--cp-primary); font: inherit; font-size: 12px;
+  text-align: start; cursor: pointer;
+}
+.thread-toggle:hover { background: var(--cp-bg-hover); }
+.thread-toggle:focus-visible { outline: 2px solid var(--cp-primary); outline-offset: 1px; }
+.thread-toggle .chev { transition: transform 0.2s; }
+.thread-toggle .chev.open { transform: rotate(180deg); }
+.thread-toggle .badge { margin: 0; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
 .text { white-space: pre-wrap; word-break: break-word; margin: 2px 0; }
 .reply-line { display: flex; gap: 6px; align-items: center; font-size: 12px; min-width: 0; }
