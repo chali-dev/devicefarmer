@@ -68,7 +68,13 @@ onMounted(() => {
 })
 onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer); if (poll) clearInterval(poll) })
 
-const w = computed(() => data.value?.widgets ?? {})
+/** Widget → the menu its card links to: a menu switched off for the user role (权限管理) hides its card. */
+const WIDGET_MENU: Record<string, string> = {
+  devices: 'instances', social: 'social', tracked: 'social', comments: 'social', analytics: 'analytics', tasks: 'tasks',
+  trending: 'trending', media: 'media', publishing: 'content', publishToday: 'publish',
+}
+const w = computed(() => Object.fromEntries(Object.entries(data.value?.widgets ?? {})
+  .filter(([k]) => !WIDGET_MENU[k] || auth.menuAllowed(WIDGET_MENU[k]!))) as NonNullable<typeof data.value>['widgets'])
 const has = (k: string) => !!data.value?.order.includes(k)
 const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 const trendPoints = computed(() => (w.value.publishing?.trend ?? []).map((r) => ({ t: dayTs(r.day), v: r.published })))

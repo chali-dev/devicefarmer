@@ -4,7 +4,9 @@ import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import AlertSettings from '../components/settings/AlertSettings.vue'
 import { kindKey } from '../api/alerts'
 import { api, codeText, errorText } from '../api/client'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -14,7 +16,9 @@ import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } fro
 import { dateLocale } from '../i18n'
 
 /**
- * 告警通道 (admin): external alert destinations. Each channel has a type (Telegram today), the alert kinds it
+ * 告警通道 (风控管理, admin): tab 告警通道 = external alert destinations; tab 告警类型 = the alert rules (in-app kinds,
+ * cooldown, recipients, retention; GET/PUT /api/settings/alerts, formerly a Settings tab). Tab in the URL (?tab=).
+ * Channels: Each channel has a type (Telegram today), the alert kinds it
  * receives (none = all) and an optional minimum severity. Secrets are write-only: the API only says
  * `botTokenSet`, and an empty token field on edit keeps the stored one.
  */
@@ -28,6 +32,14 @@ interface Channel {
 interface KindInfo { kind: string; severity: Severity }
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
+const TABS = ['channels', 'rules'] as const
+type Tab = (typeof TABS)[number]
+const tab = computed<Tab>({
+  get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'channels'),
+  set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
+})
 const channels = ref<Channel[]>([])
 const kinds = ref<KindInfo[]>([])
 const types = ref<string[]>(['telegram'])
@@ -132,11 +144,13 @@ async function save() {
 <template>
   <PageContainer :subtitle="t('alertChannels.subtitle')">
     <template #extra>
-      <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('alertChannels.add') }}</a-button>
+      <a-button v-if="tab === 'channels'" type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('alertChannels.add') }}</a-button>
     </template>
     <a-card :bordered="false">
+     <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
+      <a-tab-pane key="channels" :tab="t('alertChannels.tabs.channels')">
       <SearchBar :loading="loading" @refresh="load">
-        <span class="muted">{{ t('alertChannels.rulesLink') }} · <router-link :to="{ path: '/settings', query: { tab: 'alerts' } }">{{ t('nav.settings') }}</router-link></span>
+        <span class="muted">{{ t('alertChannels.rulesLink') }} · <router-link :to="{ query: { tab: 'rules' } }">{{ t('alertChannels.tabs.rules') }}</router-link></span>
       </SearchBar>
       <a-table
         :data-source="channels" :columns="columns" row-key="id" :loading="loading" :size="TABLE_SIZE"
@@ -181,6 +195,9 @@ async function save() {
           </template>
         </template>
       </a-table>
+      </a-tab-pane>
+      <a-tab-pane key="rules" :tab="t('alertChannels.tabs.rules')"><AlertSettings /></a-tab-pane>
+     </a-tabs>
     </a-card>
   </PageContainer>
 

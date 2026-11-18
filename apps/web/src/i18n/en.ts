@@ -64,8 +64,8 @@ const en: Messages = {
   nav: {
     dashboard: 'Dashboard',
     notifications: 'Notification center',
-    settings: 'System settings',
-    group: { devices: 'Cloud phones', matrix: 'Media matrix', content: 'Content centre', system: 'System' },
+    settings: 'System configuration',
+    group: { devices: 'Cloud phones', matrix: 'Media matrix', content: 'Content centre', accounts: 'Account management', risk: 'Risk management', system: 'System configuration' },
     instances: 'My cloud phones',
     library: 'App Library',
     media: 'Media Library',
@@ -80,9 +80,21 @@ const en: Messages = {
     trending: 'Trending',
     tasks: 'Task Center',
     connections: 'Connections',
-    system: 'System',
+    permissions: 'Permissions',
+    'risk-events': 'Risk log',
+    logs: 'System logs',
     'alert-channels': 'Alert channels',
-    risk: 'Risk control',
+    risk: 'Risk configuration',
+  },
+  roleMenus: {
+    subtitle: 'Role menu permissions: the roles are fixed (admin and user); tick the menus users can see.',
+    hint: 'Admins always see every menu; the dashboard is always shown; menus marked "Admins only" cannot be granted to users. A menu switched off is hidden in the sidebar, and its page and its own endpoints refuse users too (data endpoints shared by several pages are not affected).',
+    menu: 'Menu',
+    roleAdmin: 'Admin',
+    roleUser: 'User',
+    always: 'Always shown',
+    adminOnly: 'Admins only',
+    restoreDefault: 'Restore default',
   },
   header: {
     disconnected: 'Live connection lost, reconnecting',
@@ -1701,6 +1713,8 @@ const en: Messages = {
       task_cancel: 'Cancel task',
       task_retry: 'Retry task',
       settings_task_retention: 'Change task retention',
+      settings_role_menus: 'Change role menu permissions',
+      settings_publish_retry: 'Change publish retry settings',
       settings_task_cleanup: 'Run task cleanup',
       system_settings: 'Change system settings',
       system_maintenance: 'Run system maintenance',
@@ -1862,11 +1876,19 @@ const en: Messages = {
     updatedAt: 'Updated {at}',
     readOnlyEnv: 'env {name}, read-only',
     tabs: {
+      backup: 'Backup & retention',
+      publishRetry: 'Publish retries',
       storage: 'Storage',
-      tracked: 'Tracked accounts',
-      publish: 'Publish defaults',
-      retention: 'Data retention',
       ai: 'AI',
+      tracked: 'Tracked collection',
+      env: 'Environment',
+    },
+    publishRetry: {
+      title: 'Retry failed publish runs',
+      hint: 'How often and how far apart a failed publish round (e.g. phone offline) is retried. Saved values apply to rounds created or started again from now on; a running round keeps its values.',
+      default: 'Default {v} (env {env})',
+      waits: 'Wait before each retry: {waits}',
+      noRetry: 'One attempt only, no automatic retry',
     },
     ai: {
       title: 'AI drafts (Anthropic)',
@@ -1886,7 +1908,10 @@ const en: Messages = {
       hourHint: 'Drafts of the day are generated from {h}:00, API host local time (once per switched-on social account per day)',
     },
     publish: {
-      maxAttempts: 'Default max attempts',
+      publishTitle: 'Publish tasks',
+      maxAttemptsDefault: 'Max attempts (default)',
+      backoffDefault: 'Retry backoff base (default)',
+      maxAttempts: 'Max attempts',
       timeout: 'Attempt timeout',
       backoff: 'Retry backoff base',
       mediaTitle: 'Media upload limits',
@@ -1909,8 +1934,17 @@ const en: Messages = {
     },
   },
   sysadmin: {
-    tabs: { backups: 'Database backups', logs: 'System logs' },
+    tabs: { backups: 'Database backups', logs: 'System logs', deviceLogs: 'Device logs' },
     dayUnit: 'days',
+    deviceLogs: {
+      device: 'Device',
+      type: 'Type',
+      change: 'Change',
+      allDevices: 'All devices',
+      allTypes: 'All types',
+      empty: 'No device logs',
+      types: { status: 'Device status', adb: 'ADB connection', offline: 'Offline events' },
+    },
     backup: {
       schedule: 'Scheduled backup',
       enabled: 'Daily automatic backup',
@@ -2418,7 +2452,8 @@ const en: Messages = {
   },
   alertChannels: {
     subtitle: 'Send alerts to one or more external channels (Telegram bots for now). Each alert is de-duplicated by the cooldown first, then delivered to every matching enabled channel.',
-    rulesLink: 'In-app notifications and the cooldown are set in System settings → Alerts',
+    rulesLink: 'In-app notifications, the cooldown and the recipients are set under Alert types',
+    tabs: { channels: 'Alert channels', rules: 'Alert types' },
     add: 'New channel',
     edit: 'Edit channel',
     colName: 'Name',
@@ -2515,6 +2550,11 @@ const en: Messages = {
     },
     common: {
       nothing_to_update: 'Nothing to update',
+    },
+    rbac: {
+      menu_disabled: 'This menu is not available to your role; ask an administrator',
+      menu_unknown: 'Unknown menu: {menu}',
+      menu_not_grantable: 'The menu "{menu}" cannot be granted to users',
     },
     auth: {
       invalid_credentials: 'Invalid username or password',
@@ -3062,7 +3102,7 @@ const en: Messages = {
     sources: { api: 'API', manual: 'Manual', device: 'Cloud phone' },
   },
   risk: {
-    tabs: { pace: 'Collection & check pace', limits: 'Account limits', comments: 'Comment replies', devicePublish: 'Posts from phones', events: 'Risk log' },
+    tabs: { devicePublish: 'Posting limits', comments: 'Reply limits', collect: 'Collection limits', check: 'Check limits', limits: 'Account limits' },
     sources: { collector: 'Tracked collection', account_check: 'Account check', feed: 'Post collection', reply: 'Comment sending', publish: 'Posting' },
     feed: {
       title: 'Posts & comments collection',

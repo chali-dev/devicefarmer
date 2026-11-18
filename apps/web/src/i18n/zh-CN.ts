@@ -65,8 +65,8 @@ const zhCN = {
   nav: {
     dashboard: '仪表板',
     notifications: '通知中心',
-    settings: '系统设置',
-    group: { devices: '云手机管理', matrix: '媒体矩阵', content: '内容中心', system: '系统管理' },
+    settings: '系统配置',
+    group: { devices: '云手机管理', matrix: '媒体矩阵', content: '内容中心', accounts: '账号管理', risk: '风控管理', system: '系统配置' },
     instances: '我的云机',
     library: '应用库',
     media: '素材库',
@@ -81,9 +81,21 @@ const zhCN = {
     trending: '趋势热点',
     tasks: '任务中心',
     connections: '连线监控',
-    system: '系统维护',
+    permissions: '权限管理',
+    'risk-events': '风控记录',
+    logs: '系统日志',
     'alert-channels': '告警通道',
-    risk: '风控',
+    risk: '风控配置',
+  },
+  roleMenus: {
+    subtitle: '角色菜单权限：角色固定为管理员和普通用户，在这里勾选普通用户能看到的菜单。',
+    hint: '管理员始终可见全部菜单；仪表板始终显示；标为“仅管理员”的菜单不能分配给普通用户。关闭的菜单在侧边栏隐藏，其页面和专属接口也会拒绝普通用户（多个页面共用的数据接口不受影响）。',
+    menu: '菜单',
+    roleAdmin: '管理员',
+    roleUser: '普通用户',
+    always: '始终显示',
+    adminOnly: '仅管理员',
+    restoreDefault: '恢复默认',
   },
   header: {
     disconnected: '实时连接已断开，正在重连',
@@ -1702,6 +1714,8 @@ const zhCN = {
       task_cancel: '取消任务',
       task_retry: '重试任务',
       settings_task_retention: '修改任务保留期',
+      settings_role_menus: '修改角色菜单权限',
+      settings_publish_retry: '修改发布重发设置',
       settings_task_cleanup: '手动清理任务',
       system_settings: '修改系统维护设置',
       system_maintenance: '执行系统维护',
@@ -1873,11 +1887,19 @@ const zhCN = {
     updatedAt: '更新于 {at}',
     readOnlyEnv: '环境变量 {name}，只读',
     tabs: {
+      backup: '备份与保留',
+      publishRetry: '发布重发',
       storage: '存储',
-      tracked: '追踪账号',
-      publish: '发布默认值',
-      retention: '数据保留',
       ai: 'AI',
+      tracked: '追踪采集',
+      env: '环境变量',
+    },
+    publishRetry: {
+      title: '发布任务失败重发',
+      hint: '一轮发布失败（如云手机离线）后自动重试的次数和间隔。保存后对新创建或重新开始的发布轮次生效，已在运行的轮次保持原值。',
+      default: '默认 {v}（环境变量 {env}）',
+      waits: '每次重试前等待：{waits}',
+      noRetry: '只尝试 1 次，失败后不自动重试',
     },
     ai: {
       title: 'AI 草稿（Anthropic）',
@@ -1897,7 +1919,10 @@ const zhCN = {
       hourHint: 'API 主机本地时间 {h}:00 起生成当天的草稿（每个开启的社交号每天一次）',
     },
     publish: {
-      maxAttempts: '默认最大尝试次数',
+      publishTitle: '发布任务',
+      maxAttemptsDefault: '最大尝试次数（默认值）',
+      backoffDefault: '重试退避基数（默认值）',
+      maxAttempts: '最大尝试次数',
       timeout: '单次尝试超时',
       backoff: '重试退避基数',
       mediaTitle: '素材上传限制',
@@ -1920,8 +1945,17 @@ const zhCN = {
     },
   },
   sysadmin: {
-    tabs: { backups: '数据库备份', logs: '系统日志' },
+    tabs: { backups: '数据库备份', logs: '系统日志', deviceLogs: '设备日志' },
     dayUnit: '天',
+    deviceLogs: {
+      device: '设备',
+      type: '类型',
+      change: '变化',
+      allDevices: '全部设备',
+      allTypes: '全部类型',
+      empty: '暂无设备日志',
+      types: { status: '设备状态', adb: 'ADB 连接', offline: '掉线事件' },
+    },
     backup: {
       schedule: '定时备份',
       enabled: '每日自动备份',
@@ -2429,7 +2463,8 @@ const zhCN = {
   },
   alertChannels: {
     subtitle: '把告警发到一个或多个外部通道（目前支持 Telegram 机器人）。同一告警先按冷却时间去重，再分发到所有匹配的已启用通道。',
-    rulesLink: '站内通知和冷却时间在“系统设置 → 告警通知”中配置',
+    rulesLink: '站内通知、冷却时间和接收人在“告警类型”中配置',
+    tabs: { channels: '告警通道', rules: '配置告警类型' },
     add: '新建通道',
     edit: '编辑通道',
     colName: '名称',
@@ -2518,6 +2553,11 @@ const zhCN = {
     },
     common: {
       nothing_to_update: '没有需要修改的内容',
+    },
+    rbac: {
+      menu_disabled: '该菜单未对你的角色开放，请联系管理员',
+      menu_unknown: '未知菜单：{menu}',
+      menu_not_grantable: '菜单“{menu}”不能分配给普通用户',
     },
     auth: {
       invalid_credentials: '用户名或密码错误',
@@ -3065,7 +3105,7 @@ const zhCN = {
     sources: { api: '接口', manual: '手动', device: '云手机' },
   },
   risk: {
-    tabs: { pace: '采集与检测节奏', limits: '账号上限', comments: '评论回复', devicePublish: '云手机发帖', events: '风控记录' },
+    tabs: { devicePublish: '媒体号发文限制', comments: '回复限制', collect: '采集限制', check: '检测限制', limits: '账号上限' },
     sources: { collector: '追踪采集', account_check: '账号检测', feed: '帖子采集', reply: '发评论', publish: '发帖' },
     feed: {
       title: '帖子与评论采集',

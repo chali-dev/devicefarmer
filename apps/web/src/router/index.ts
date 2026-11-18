@@ -36,11 +36,14 @@ const router = createRouter({
         { path: 'risk', name: 'risk', component: () => import('../views/RiskView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
-        // 权限管理 only assigned devices; that moved to 我的云机 (分配, owner decision 2026-11-18).
-        { path: 'permissions', redirect: '/instances' },
+        // 权限管理 = 角色菜单权限 (owner 2026-11-18; device assignment is 我的云机 → 分配).
+        { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
         { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue'), meta: { admin: true } },
-        { path: 'system', name: 'system', component: () => import('../views/SystemView.vue'), meta: { admin: true } },
+        { path: 'risk-events', name: 'risk-events', component: () => import('../views/RiskEventsView.vue'), meta: { admin: true } },
+        { path: 'logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { admin: true } },
+        // 系统维护 dissolved (owner 2026-11-18): backups → 系统配置 备份与保留, logs → 系统日志.
+        { path: 'system', redirect: (to) => (to.query.tab === 'logs' ? { path: '/logs' } : { path: '/settings', query: { tab: 'backup' } }) },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
@@ -52,6 +55,9 @@ router.beforeEach(async (to) => {
   if (to.meta.public) return true
   if (!auth.user && !(await auth.loadMe())) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.meta.admin && !auth.isAdmin) return { name: 'dashboard' }
+  // 角色菜单权限: a menu switched off for the user role (its first path segment) leads to the dashboard.
+  const top = to.path.split('/')[1] ?? ''
+  if (!auth.menuAllowed(top)) return { name: 'dashboard' }
   return true
 })
 

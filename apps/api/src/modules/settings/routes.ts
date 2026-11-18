@@ -9,6 +9,8 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
+import { FIXED_MENUS, GRANTABLE_MENUS, DEFAULT_USER_MENUS, getUserMenus, saveUserMenus } from '../auth/role-menus.js';
+import { getPublishRetry, PublishRetryInput, publicRetry, publishRetryDefaults, savePublishRetry } from '../publish/retry-settings.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
 
 /** Platform settings (设置). Admin only. */
@@ -77,6 +79,33 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     if (req.audit) req.audit.extra = { taskId: task.id };
     reply.code(202);
     return { task: { id: task.id, status: task.status } };
+  });
+
+  /**
+   * 权限管理 (角色菜单权限): which business menus the `user` role sees (auth/role-menus.ts). Admins always see all;
+   * `fixed` lists the keys that cannot be granted (always on / admin only).
+   */
+  const roleMenus = async () => {
+    const m = await getUserMenus(true);
+    return { menus: m.menus, updatedAt: m.updatedAt, grantable: GRANTABLE_MENUS, defaults: DEFAULT_USER_MENUS, fixed: FIXED_MENUS };
+  };
+  app.get('/api/settings/role-menus', async () => roleMenus());
+  app.put('/api/settings/role-menus', {
+    schema: { body: z.object({ menus: z.array(z.string().min(1).max(40)).max(50) }).strict() },
+  }, async (req) => {
+    await saveUserMenus(req.body.menus);
+    return roleMenus();
+  });
+
+  /** 发布重发: attempts + backoff of publish rounds (publish/retry-settings.ts; env values = defaults). */
+  const retryView = async () => {
+    const d = publishRetryDefaults();
+    return { retry: publicRetry(await getPublishRetry()), defaults: publicRetry({ ...d, updatedAt: null }) };
+  };
+  app.get('/api/settings/publish-retry', async () => retryView());
+  app.put('/api/settings/publish-retry', { schema: { body: PublishRetryInput } }, async (req) => {
+    await savePublishRetry(req.body);
+    return retryView();
   });
 
   /** Env-configured values shown read-only in the UI (publish defaults, audit retention, media limits). Cheap. */

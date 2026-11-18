@@ -16,6 +16,7 @@ import { onDeviceResumed } from '../tracked/collector.js';
 import './device.js'; // registers the `device` method (云手机发帖)
 import { MANUAL_METHOD, PublishCheckError, publishMethods, type PublishInput, type PublishLogLevel, type PublishMethodResult } from './methods.js';
 import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
+import { getPublishRetry } from './retry-settings.js';
 
 export { PublishCheckError };
 
@@ -103,7 +104,8 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   const media = await contentMediaOf(db, content.id);
   const notReady = media.find((m) => m.status !== 'ready');
   if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
-  const maxAttempts = opts.maxAttempts ?? config.PUBLISH_MAX_ATTEMPTS;
+  // 系统配置 → 发布重发 (retry-settings.ts); an explicit maxAttempts of the request wins.
+  const maxAttempts = opts.maxAttempts ?? (await getPublishRetry()).maxAttempts;
   const now = new Date();
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
@@ -152,10 +154,11 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
   const [acc] = await db.select({ handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
   const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
   try {
+    const { backoffMs } = await getPublishRetry();
     const { task } = await createTask({
       type: TASK_TYPE, userId: row.userId, label: `${row.platform}${row.postType !== 'feed' ? ` ${row.postType}` : ''} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
       refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
-      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, retryOf,
+      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: row.maxAttempts, backoffMs, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
     return updated ?? row;
@@ -183,6 +186,8 @@ async function currentTask(row: PublishTask): Promise<Task | undefined> {
 async function newRound(user: AuthUser, id: string, from: PublishStatus[], scheduledAt: Date | null, action: 'rescheduled' | 'retried'): Promise<PublishTask> {
   const now = new Date();
   const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
+  // A new round (retry / reschedule) takes the current 发布重发 attempts.
+  const { maxAttempts } = await getPublishRetry();
   const { prev, next } = await db.transaction(async (tx) => {
     const [cur] = await tx.select().from(pt).where(eq(pt.id, id)).for('update');
     if (!cur) throw conflict('发布任务不存在', 'publish.not_found');
@@ -194,7 +199,7 @@ async function newRound(user: AuthUser, id: string, from: PublishStatus[], sched
     }
     const fresh = action === 'retried' || cur.status === 'dry_run';
     const [n] = await tx.update(pt).set({
-      status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null,
+      status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null, maxAttempts,
       error: fresh ? null : cur.error, errorCode: fresh ? null : cur.errorCode, method: fresh ? null : cur.method,
     }).where(eq(pt.id, id)).returning().catch((err) => {
       const e = err as { code?: string; cause?: { code?: string } };
