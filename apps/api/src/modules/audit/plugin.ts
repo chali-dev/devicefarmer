@@ -348,6 +348,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },
   'POST /api/personas/:id/drafts/generate': { action: 'persona.draft_generate' },
+  // target = the source persona's name, targetId = its id; the route adds sourceId, the new id/name, ownerId and example counts.
+  'POST /api/personas/:id/copy': { action: 'persona.copy', detail: ({ body }) => ({ ownerId: body.ownerId }) },
   // 内容分类: names only (no descriptions); the merge route adds the target name.
   'POST /api/content-categories': { action: 'content_category.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name }) },
   'PATCH /api/content-categories/:id': { action: 'content_category.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },

@@ -18,7 +18,8 @@ import { useAuthStore } from '../stores/auth'
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
  * (账号人设 accounts → /social; 范例 count → opens the form, the 话术库 page /scripts was removed 2026-11-18) and its
  * 发文/评论 tone; row actions 编辑 / AI测试 (one AI draft now) / 更多. `?edit=<id>` opens the form of that persona
- * (插入话术 links here).
+ * (插入话术 links here). 复制到我的人设 on every row and in the form (any visible persona → a personal copy with all 范例, AI off;
+ * admins pick the owner in the 全部用户 tab), then the copy's form opens.
  * AI 草稿 on/off and per day live only in the form (no AI column since 2026-11-18). Public personas are managed by admins; personal ones by their owner (admins: all).
  * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 发文风格 + 发文范例, 评论风格 + 评论范例, AI 草稿). No merge for personas
  * (owner decision 2026-11-18; the shared `useScopedList` merge stays for 内容分类/素材分类).
@@ -115,6 +116,37 @@ function pickOwner() {
   ownerPick.value = false
   formOpen.value = true
 }
+
+// ---- 复制到我的人设 (POST /api/personas/:id/copy): any visible persona → a personal copy of the caller, or (admin, 全部用户
+// tab) of a picked user; then the new persona's form opens (?tab=…&edit=<id>).
+const copySource = ref<{ id: string; name: string } | null>(null)
+const copyOpen = ref(false)
+const copyOwner = ref<string | undefined>()
+const copying = ref(false)
+/** Admins choose the owner in the 全部用户 tab (default: themselves); everyone else copies to themselves. */
+const copyPicksOwner = computed(() => auth.isAdmin && isAllUsers.value)
+function startCopy(p: { id: string; name: string }) {
+  copySource.value = { id: p.id, name: p.name }
+  copyOwner.value = auth.user?.id
+  copyOpen.value = true
+}
+async function doCopy() {
+  const src = copySource.value
+  if (!src) return
+  const owner = copyPicksOwner.value ? copyOwner.value : auth.user?.id
+  if (!owner) { message.warning(t('personas.ownerRequired')); return }
+  copying.value = true
+  try {
+    const r = await api<{ persona: { id: string; name: string } }>('POST', `/api/personas/${src.id}/copy`, owner !== auth.user?.id ? { ownerId: owner } : {})
+    message.success(t('personas.copied', { name: r.persona.name }))
+    copyOpen.value = false
+    const tabTo: PageTab = owner === auth.user?.id ? 'mine' : 'all-users'
+    if (tabTo === 'all-users') ownerId.value = owner
+    const same = pageTab.value === tabTo
+    await router.replace({ query: { ...route.query, tab: tabTo, edit: r.persona.id } })
+    if (same) void load()
+  } catch (e) { message.error(errorText(e)) } finally { copying.value = false }
+}
 </script>
 
 <template>
@@ -166,12 +198,13 @@ function pickOwner() {
                       <a-menu-item key="up" :disabled="indexOf(record as ScopedItem) === 0 || busy" @click="move(list, indexOf(record as ScopedItem), -1)">{{ t('scopedList.moveUp') }}</a-menu-item>
                       <a-menu-item key="down" :disabled="indexOf(record as ScopedItem) === list.length - 1 || busy" @click="move(list, indexOf(record as ScopedItem), 1)">{{ t('scopedList.moveDown') }}</a-menu-item>
                     </template>
+                    <a-menu-item key="copy" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
                   </a-menu>
                 </template>
               </a-dropdown>
             </a-space>
-            <span v-else class="muted">—</span>
+            <a-button v-else type="link" size="small" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-button>
           </template>
         </template>
       </a-table>
@@ -185,8 +218,18 @@ function pickOwner() {
       </a-form>
     </a-modal>
 
+    <a-modal v-model:open="copyOpen" :title="t('personas.copyTitle')" :ok-text="t('personas.copy')" :cancel-text="t('common.cancel')" :width="MODAL_WIDTH.sm"
+      :confirm-loading="copying" @ok="doCopy">
+      <p><span class="strong">{{ copySource?.name }}</span></p>
+      <a-form v-if="copyPicksOwner" layout="vertical">
+        <a-form-item :label="t('personas.copyTo')" required>
+          <a-select v-model:value="copyOwner" show-search option-filter-prop="label" :options="userOptions" />
+        </a-form-item>
+      </a-form>
+      <div class="muted small">{{ t('personas.copyHint') }}</div>
+    </a-modal>
 
-    <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" :users="users" @saved="load" />
+    <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" :users="users" @saved="load" @copy="startCopy" />
   </PageContainer>
 </template>
 
