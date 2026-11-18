@@ -5,6 +5,8 @@
  * allowed, reschedule refused, evidence RBAC), an uncertain share (awaiting the operator, never re-sent), through the
  * real HTTP API and the real task centre. Test mode was removed on 2026-11-18 (draft first): the settings have no
  * testMode (an older page's value is accepted and ignored), and a content is only a draft until it is distributed.
+ * The on/off switch was removed the same day (cloud-phone posting is always on): a stored `enabled: false` is ignored
+ * (the device method is still tried), GET has no `enabled`, a PUT with it is accepted, ignored and dropped.
  *
  * Devices are placeholder `instances` rows (no Android container, adb ports 5571–5573 that nothing listens on) kept
  * "online" by a test-only trigger like publish-check.ts: the `device` method takes their runs, finds that adb doesn't
@@ -117,16 +119,17 @@ try {
 
   // ---------------------------------------------------------------- settings: defaults, validation, RBAC, audit
   let r = await http('GET', '/api/publish/device-settings', T);
-  check('settings default: enabled, 3 posts / 24 h, 60 min gap, no test mode', r.status === 200 && JSON.stringify(r.body.rules) === JSON.stringify({ enabled: true, postsPerDay: 3, minGapMin: 60 }), r.text);
+  check('settings default: 3 posts / 24 h, 60 min gap, no test mode, no on/off switch', r.status === 200 && JSON.stringify(r.body.rules) === JSON.stringify({ postsPerDay: 3, minGapMin: 60 }), r.text);
   const [g403, p403] = await Promise.all([http('GET', '/api/publish/device-settings', A), http('PUT', '/api/publish/device-settings', A, { postsPerDay: 2 })]);
   check('settings: users get 403 (read and write)', g403.status === 403 && p403.status === 403 && g403.body.code === 'publish.admin_only', `${g403.status} ${p403.status}`);
   const bad = await Promise.all([
     http('PUT', '/api/publish/device-settings', T, { postsPerDay: 0 }), http('PUT', '/api/publish/device-settings', T, { minGapMin: 2000 }),
     http('PUT', '/api/publish/device-settings', T, { testMode: 'no' }), http('PUT', '/api/publish/device-settings', T, { other: 1 }),
+    http('PUT', '/api/publish/device-settings', T, { enabled: 'no' }),
   ]);
   check('settings: out-of-range / wrong type / unknown field → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
   r = await http('PUT', '/api/publish/device-settings', T, { postsPerDay: 5, minGapMin: 0 });
-  check('settings: partial PUT keeps the other fields', r.status === 200 && r.body.rules.postsPerDay === 5 && r.body.rules.minGapMin === 0 && r.body.rules.enabled === true && !('testMode' in r.body.rules), r.text);
+  check('settings: partial PUT keeps the other fields', r.status === 200 && r.body.rules.postsPerDay === 5 && r.body.rules.minGapMin === 0 && !('enabled' in r.body.rules) && !('testMode' in r.body.rules), r.text);
   // an old stored testMode (written by an older version) is ignored and dropped on the next save; an older page's PUT with it is accepted
   await db.update(schema.settings).set({ value: { enabled: true, postsPerDay: 5, minGapMin: 0, testMode: true } }).where(eq(schema.settings.key, 'publish.device'));
   r = await http('GET', '/api/publish/device-settings', T);
@@ -165,13 +168,19 @@ try {
   check('帖子 with a video → device not available (publish.device_feed_video) → operator, phone not tried',
     d.task.status === 'awaiting_operator' && d.task.method === 'manual' && msgs(d).includes('method device not available: publish.device_feed_video') && !msgs(d).includes('method device'), msgs(d).join(' | '));
 
-  // switched off → by hand
-  await http('PUT', '/api/publish/device-settings', T, { enabled: false });
-  p = await dist(await content('disabled', [img]), a0.id);
+  // the on/off switch is gone: a stored enabled:false (left by an older version) is ignored, the device method is still tried
+  await db.update(schema.settings).set({ value: { enabled: false, postsPerDay: 5, minGapMin: 0 } }).where(eq(schema.settings.key, 'publish.device'));
+  r = await http('GET', '/api/publish/device-settings', T);
+  check('settings: a stored enabled:false is not returned', r.status === 200 && !('enabled' in r.body.rules) && r.body.rules.postsPerDay === 5, r.text);
+  p = await dist(await content('stored off', [img]), a0.id);
   d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
-  check('云手机发帖 off → publish.device_disabled → operator (as before)', d.task.status === 'awaiting_operator' && d.task.method === 'manual'
-    && msgs(d).includes('method device not available: publish.device_disabled'), msgs(d).join(' | '));
-  await http('PUT', '/api/publish/device-settings', T, { enabled: true });
+  check('a stored enabled:false is ignored: method device still tried (→ publish.device_offline), never publish.device_disabled',
+    d.task.status === 'awaiting_operator' && msgs(d).includes('method device not available: publish.device_offline')
+    && !msgs(d).some((m) => m.includes('publish.device_disabled')), msgs(d).join(' | '));
+  r = await http('PUT', '/api/publish/device-settings', T, { enabled: false, postsPerDay: 5 });
+  const [storedEn] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.device'));
+  check('settings: PUT with enabled from an older page → 200, ignored, dropped from the stored value',
+    r.status === 200 && !('enabled' in r.body.rules) && !('enabled' in (storedEn?.value as object)) && (storedEn?.value as any).postsPerDay === 5, `${r.text} ${JSON.stringify(storedEn?.value)}`);
 
   // no phone at all: the precheck still fails (an operator needs the phone too)
   const aNo = await acc(null);

@@ -3118,10 +3118,7 @@ const en: Messages = {
       off: 'Off: only the manual “Sync from cloud phone” in Media accounts',
     },
     devicePublish: {
-      title: 'Posts from cloud phones',
-      hint: 'At the scheduled time the account’s cloud phone publishes in the Instagram app (post / Reels / story): media pushed to the phone’s gallery → share screen → media selected → caption pasted and read back → Share → the new post confirmed on the profile. Every step uses the phone’s lock and pace; a verification/limit screen halts the device and raises an alert. Runs over these limits are deferred, never dropped.',
-      enabled: 'Publish from cloud phones',
-      enabledHint: 'Off: every publish task goes to an operator, as before.',
+      hint: 'Each account posts from its linked cloud phone; runs over these limits are deferred, never dropped.',
       postsPerDay: 'Per account per day (24 h)',
       minGap: 'Minimum gap between two posts',
       minutes: 'min',
