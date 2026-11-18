@@ -9,12 +9,12 @@ import { assertInstancesAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
 import { maxBytes, mediaLimits } from './formats.js';
 import {
-  assertCanManage, assertCategoryFor, canManage, createMedia, deleteMedia, getVisibleMedia, openMedia, ownerForScope, setTags, type Owner,
+  assertCanManage, assertMetaFor, canManage, createMedia, deleteMedia, getVisibleMedia, MediaMetaSchema, openMedia, ownerForScope, setTags,
+  type MediaMeta, type Owner,
 } from './media.js';
 import { normalizeOptions, ProcessOptionsSchema } from './transform.js';
 
 const Id = z.object({ id: z.string().uuid() });
-const Tag = z.string().trim().min(1).max(32);
 const ma = schema.mediaAssets;
 const mc = schema.mediaCategories;
 
@@ -150,7 +150,11 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   // ------------------------------------------------------------ upload
   /**
    * multipart, one file per request. Text fields BEFORE the file: scope=public|mine (public: admin),
-   * optional categoryId, optional process (JSON, ProcessOptionsSchema: crop/compress in the job). Returns 201 with status 'processing'; a media-process task does the rest.
+   * optional process (JSON, ProcessOptionsSchema: crop/compress in the job), and the same metadata as
+   * PUT /api/media/:id (MediaMetaSchema + assertMetaFor): name (default: file name without extension),
+   * categoryId, tags (JSON array of strings), status=ready|disabled (public only: visible to users once
+   * processed). All checks run before the file is stored, so a refused upload leaves no row.
+   * Returns 201 with status 'processing'; a media-process task does the rest.
    */
   app.post('/api/media/upload', async (req, reply) => {
     const file = await req.file({ limits: { fileSize: Math.max(maxBytes('image'), maxBytes('video')), files: 1, fields: 10 } });
@@ -165,6 +169,16 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     try { owner = ownerForScope(req.user, scope); } catch (e) { file.file.resume(); throw e; }
     const categoryId = field('categoryId') || null;
     if (categoryId && !z.string().uuid().safeParse(categoryId).success) { file.file.resume(); throw badRequest('invalid categoryId', 'media.category_mismatch'); }
+    const tagsRaw = field('tags');
+    let tags: unknown;
+    if (tagsRaw) { try { tags = JSON.parse(tagsRaw); } catch { tags = tagsRaw; } }
+    const metaParsed = MediaMetaSchema.safeParse({ name: field('name') || undefined, categoryId, tags, status: field('status') || undefined });
+    if (!metaParsed.success) {
+      file.file.resume();
+      const detail = metaParsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ');
+      throw badRequest(`invalid fields: ${detail}`, 'media.bad_fields', { detail });
+    }
+    const meta: MediaMeta = metaParsed.data;
     const processRaw = field('process');
     let processOpts: MediaProcessOptions | null = null;
     if (processRaw) {
@@ -177,7 +191,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
       }
       processOpts = normalizeOptions(r.data);
     }
-    const asset = await createMedia({ stream: file.file, filename: file.filename || '', mimetype: file.mimetype || '', owner, categoryId, userId: req.user.id, process: processOpts });
+    const asset = await createMedia({ stream: file.file, filename: file.filename || '', mimetype: file.mimetype || '', owner, meta, userId: req.user.id, process: processOpts });
     reply.code(201);
     return { item: (await toItems(req.user, [asset]))[0] };
   });
@@ -205,28 +219,20 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/media/:id', {
     schema: {
       params: Id,
-      body: z.object({
-        name: z.string().trim().min(1).max(200).optional(),
-        categoryId: z.string().uuid().nullable().optional(),
-        tags: z.array(Tag).max(20).optional(),
-        /** Public assets only (admin): enable = 'ready', disable = 'disabled'. */
-        status: z.enum(['ready', 'disabled']).optional(),
-      }),
+      body: MediaMetaSchema,
     },
   }, async (req) => {
     const a = await getVisibleMedia(req.user, req.params.id);
     assertCanManage(req.user, a);
     const b = req.body;
     const set: Partial<MediaAsset> = {};
+    const statusChange = b.status !== undefined && b.status !== a.status ? b.status : undefined;
+    await assertMetaFor({ ownerType: a.ownerType, ownerId: a.ownerId }, { categoryId: b.categoryId, status: statusChange });
     if (b.name !== undefined) set.name = b.name;
-    if (b.categoryId !== undefined) {
-      if (b.categoryId) await assertCategoryFor({ ownerType: a.ownerType, ownerId: a.ownerId }, b.categoryId);
-      set.categoryId = b.categoryId;
-    }
-    if (b.status !== undefined && b.status !== a.status) {
-      if (a.ownerType !== 'public') throw badRequest('只有公共素材可以启用/禁用', 'media.status_public_only');
+    if (b.categoryId !== undefined) set.categoryId = b.categoryId;
+    if (statusChange !== undefined) {
       if (a.status !== 'ready' && a.status !== 'disabled') throw conflict(`素材状态为 ${a.status}，不能启用/禁用`, 'media.not_ready', { status: a.status });
-      set.status = b.status;
+      set.status = statusChange;
     }
     if (!Object.keys(set).length && b.tags === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
     if (Object.keys(set).length) {

@@ -53,10 +53,12 @@ async function raw(p: string, token: string) {
 }
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
-async function upload(token: string, scope: string | null, name: string, data: Buffer, mime: string, categoryId?: string) {
+/** `fields`: extra multipart text fields (name, tags, status, …), sent before the file like the web client. */
+async function upload(token: string, scope: string | null, name: string, data: Buffer, mime: string, categoryId?: string, fields: Record<string, string> = {}) {
   const fd = new FormData();
   if (scope) fd.append('scope', scope);
   if (categoryId) fd.append('categoryId', categoryId);
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
   fd.append('file', new Blob([new Uint8Array(data)], { type: mime }), name);
   return http<{ item: any }>('POST', '/api/media/upload', token, fd);
 }
@@ -179,6 +181,8 @@ try {
   const upA = await upload(A.token, 'mine', `私有A-${tag}.jpg`, jpg, 'image/jpeg');
   const upB = await upload(B.token, null, `privB-${tag}.png`, png, 'image/png'); // scope defaults to mine
   check('users upload private media', upA.status === 201 && upB.status === 201 && upB.body.item.ownerType === 'user' && upB.body.item.ownerId === B.id, `${upA.status} ${upB.status}`);
+  check('upload without metadata fields: name = file name without extension, no category, no tags', upB.body.item.name === `privB-${tag}` && upB.body.item.categoryId === null && upB.body.item.tags.length === 0,
+    JSON.stringify([upB.body?.item?.name, upB.body?.item?.categoryId, upB.body?.item?.tags]));
   const aId = upA.body.item.id, bId = upB.body.item.id;
   await waitDone(aId, A.token); await waitDone(bId, B.token);
   const rA = await row(aId);
@@ -283,6 +287,72 @@ try {
   const counts = [await cnt(admin, 'scope=public', pubCatId), await cnt(A.token, 'scope=public', pubCatId), await cnt(A.token, 'scope=mine', aCatId)];
   check('counts per viewer (public category: admin 2, user 1 while one asset is disabled; A\'s own 1)', counts.join() === '2,1,1', JSON.stringify(counts));
   await http('PUT', `/api/media/${pubImg.id}`, admin, { status: 'ready' });
+
+  // ---------- metadata at upload (name / category / tags / 对用户可见): same schema + rules as PUT /api/media/:id
+  {
+    const metaCat = (await http('POST', '/api/media/categories', admin, { scope: 'public', name: `UpMeta-${tag}` })).body.category.id as string;
+    createdCats.push(metaCat);
+    const metaRows = async () => (await db.select({ n: sql<number>`count(*)::int` }).from(schema.mediaAssets).where(dlike(schema.mediaAssets.fileName, `%upmeta-${tag}%`)))[0]!.n;
+    const mine: string[] = [];
+    const hid = await upload(admin, 'public', `upmeta-${tag}-hidden.png`, png, 'image/png', metaCat,
+      { name: `  隐藏素材 ${tag} `, tags: JSON.stringify([` Promo${tag} `, `promo${tag}`, `Summer${tag}`]), status: 'disabled' });
+    if (hid.status === 201) mine.push(hid.body.item.id);
+    const hidRow = hid.status === 201 ? await row(hid.body.item.id) : undefined;
+    check('admin public upload with name/category/tags/status=disabled → 201, stored while processing (name trimmed, tags case-insensitively deduped)',
+      hid.status === 201 && hid.body.item.status === 'processing' && hid.body.item.name === `隐藏素材 ${tag}` && hid.body.item.categoryId === metaCat
+        && hid.body.item.tags.join() === `Promo${tag},Summer${tag}` && hidRow?.disableOnReady === true && hidRow?.categoryId === metaCat,
+      `${hid.status} ${JSON.stringify([hid.body?.item?.status, hid.body?.item?.name, hid.body?.item?.tags, hidRow?.disableOnReady])} ${hid.status !== 201 ? hid.text.slice(0, 200) : ''}`);
+    const vis = await upload(admin, 'public', `upmeta-${tag}-visible.png`, png, 'image/png', metaCat, { name: `可见素材 ${tag}`, status: 'ready' });
+    if (vis.status === 201) mine.push(vis.body.item.id);
+    const hidDone = await waitDone(hid.body.item.id, admin);
+    const visDone = await waitDone(vis.body.item.id, admin);
+    check('after processing: 对用户可见 off → disabled, on → ready; metadata kept', hidDone.status === 'disabled' && visDone.status === 'ready'
+      && hidDone.name === `隐藏素材 ${tag}` && hidDone.tags.length === 2 && hidDone.categoryId === metaCat, `${hidDone.status} ${visDone.status}`);
+    const forA = ids(await list(A.token, `scope=public&categoryId=${metaCat}`));
+    check('user sees the visible upload only', forA.join() === vis.body.item.id, JSON.stringify(forA));
+    check('hidden upload can be enabled later in the edit dialog (PUT unchanged)', (await http('PUT', `/api/media/${hid.body.item.id}`, admin, { status: 'ready' })).body?.item?.status === 'ready');
+    check('category count includes uploads with categoryId', (await cnt(admin, 'scope=public', metaCat)) === 2);
+
+    const fileCount = () => (fs.existsSync(ASSET_DIR) ? fs.readdirSync(ASSET_DIR, { recursive: true }).filter((f) => fs.statSync(path.join(ASSET_DIR, String(f))).isFile()).length : 0);
+    const before = await metaRows();
+    const filesBefore = fileCount();
+    const pubPersonal = await upload(admin, 'public', `upmeta-${tag}-x1.png`, png, 'image/png', aCatId);
+    check('admin public upload with a personal category → 400 media.category_mismatch', pubPersonal.status === 400 && pubPersonal.body.code === 'media.category_mismatch', `${pubPersonal.status} ${pubPersonal.body?.code}`);
+    const adminMinePub = await upload(admin, 'mine', `upmeta-${tag}-x2.png`, png, 'image/png', metaCat);
+    check('admin personal upload with a public category → 400 media.category_mismatch', adminMinePub.status === 400 && adminMinePub.body.code === 'media.category_mismatch', `${adminMinePub.status}`);
+    const aWithB = await upload(A.token, 'mine', `upmeta-${tag}-x3.png`, png, 'image/png', bCatId);
+    const aWithPub = await upload(A.token, 'mine', `upmeta-${tag}-x4.png`, png, 'image/png', metaCat);
+    check('user upload with another user\'s / a public category → 400 media.category_mismatch', aWithB.body?.code === 'media.category_mismatch' && aWithPub.body?.code === 'media.category_mismatch'
+      && aWithB.status === 400 && aWithPub.status === 400, `${aWithB.status} ${aWithPub.status}`);
+    const aStatus = await upload(A.token, 'mine', `upmeta-${tag}-x5.png`, png, 'image/png', undefined, { status: 'disabled' });
+    check('private upload with status → 400 media.status_public_only (same rule as edit)', aStatus.status === 400 && aStatus.body.code === 'media.status_public_only', `${aStatus.status} ${aStatus.body?.code}`);
+    const manyTags = await upload(A.token, 'mine', `upmeta-${tag}-x6.png`, png, 'image/png', undefined, { tags: JSON.stringify(Array.from({ length: 21 }, (_, i) => `t${i}`)) });
+    const longTag = await upload(A.token, 'mine', `upmeta-${tag}-x7.png`, png, 'image/png', undefined, { tags: JSON.stringify(['x'.repeat(33)]) });
+    const notArray = await upload(A.token, 'mine', `upmeta-${tag}-x8.png`, png, 'image/png', undefined, { tags: 'just text' });
+    const longName = await upload(A.token, 'mine', `upmeta-${tag}-x9.png`, png, 'image/png', undefined, { name: 'n'.repeat(201) });
+    const badStatus = await upload(admin, 'public', `upmeta-${tag}-x10.png`, png, 'image/png', undefined, { status: 'hidden' });
+    check('21 tags / 33-char tag / tags not a JSON array / 201-char name / unknown status → 400 media.bad_fields',
+      [manyTags, longTag, notArray, longName, badStatus].every((r) => r.status === 400 && r.body.code === 'media.bad_fields'),
+      JSON.stringify([manyTags, longTag, notArray, longName, badStatus].map((r) => [r.status, r.body?.code])));
+    const edit21 = await http('PUT', `/api/media/${vis.body.item.id}`, admin, { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) });
+    const edit20 = await http('PUT', `/api/media/${vis.body.item.id}`, admin, { tags: Array.from({ length: 20 }, (_, i) => `t${i}${tag}`) });
+    check('edit has the same tag limits (21 → 400, 20 → 200)', edit21.status === 400 && edit20.status === 200 && edit20.body.item.tags.length === 20, `${edit21.status} ${edit20.status}`);
+    check('refused uploads created no rows and no files in storage', (await metaRows()) === before && fileCount() === filesBefore, `rows ${await metaRows()} vs ${before}, files ${fileCount()} vs ${filesBefore}`);
+    const aOwn = await upload(A.token, 'mine', `upmeta-${tag}-own.jpg`, jpg, 'image/jpeg', aCatId, { name: `我的上传 ${tag}`, tags: JSON.stringify([`Mine${tag}`]) });
+    if (aOwn.status === 201) mine.push(aOwn.body.item.id);
+    check('user upload into own category with name + tags', aOwn.status === 201 && aOwn.body.item.categoryId === aCatId && aOwn.body.item.name === `我的上传 ${tag}` && aOwn.body.item.tags.join() === `Mine${tag}`,
+      `${aOwn.status} ${aOwn.text.slice(0, 160)}`);
+    const aOwnDone = await waitDone(aOwn.body.item.id, A.token);
+    check('private upload ends ready (disable_on_ready stays off)', aOwnDone.status === 'ready' && (await row(aOwn.body.item.id))?.disableOnReady === false);
+    await new Promise((r) => setTimeout(r, 500));
+    const [metaAudit] = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'media.upload'), eq(schema.auditLogs.target, `upmeta-${tag}-hidden.png`)));
+    check('upload audit records categoryId + status (no tag/name texts needed)', (metaAudit?.detail as any)?.categoryId === metaCat && (metaAudit?.detail as any)?.status === 'disabled', JSON.stringify(metaAudit?.detail));
+    // keep the later counts/search checks unchanged: remove these assets now
+    for (const id of mine) await http('DELETE', `/api/media/${id}`, admin);
+    check('cleanup of metadata uploads', (await metaRows()) === 0);
+    await db.delete(schema.mediaTags).where(inArray(sql`lower(${schema.mediaTags.name})`, [`promo${tag}`, `summer${tag}`, `mine${tag}`, ...Array.from({ length: 20 }, (_, i) => `t${i}${tag}`)]));
+  }
+
   // merge: within one owner only (a category holds assets of its own owner)
   const aCat2 = (await http('POST', '/api/media/categories', A.token, { scope: 'mine', name: `合并源-${tag}` })).body.category.id as string;
   createdCats.push(aCat2);

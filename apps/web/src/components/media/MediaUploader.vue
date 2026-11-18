@@ -6,26 +6,25 @@ import { errorText } from '../../api/client'
 import type { MediaCategory, MediaLimits, MediaProcessOptions } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
 import MediaEditor from './MediaEditor.vue'
-import { acceptAttr, allExts, fmtSize, formatOf, isVideoFile, precheck, processOptions, xhrUpload, type PendingFile } from './media'
+import { acceptAttr, allExts, fileStem, fmtSize, formatOf, isVideoFile, metaFields, precheck, processOptions, xhrUpload, type PendingFile, type UploadMeta } from './media'
 
 /**
  * Multi-file upload: drag & drop / picker → nothing is sent yet; the files open in MediaEditor
- * (crop, size, quality, preview). 保存 there queues the file here: 2 parallel XHRs with progress,
+ * (crop, size, quality, preview; name, category, tags, 对用户可见). 保存 there queues the file here: 2 parallel XHRs with progress,
  * retry. Crop/compress itself runs on the server (media-process job) with the chosen options.
  */
-const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[] }>()
+const props = defineProps<{ scope: 'public' | 'mine'; scopeLabel: string; limits: MediaLimits | null; categories: MediaCategory[]; tagOptions: string[] }>()
 const open = defineModel<boolean>('open', { required: true })
-const emit = defineEmits<{ uploaded: [] }>()
+const emit = defineEmits<{ uploaded: []; categoriesChanged: [] }>()
 const { t } = useI18n()
 
 interface Entry {
-  uid: number; file: File; process: MediaProcessOptions | null
+  uid: number; file: File; process: MediaProcessOptions | null; meta: UploadMeta | null
   state: 'waiting' | 'uploading' | 'done' | 'error'; pct: number; error: string; abort?: () => void
 }
 const entries = ref<Entry[]>([])
 const pending = ref<PendingFile[]>([])
 const editorOpen = ref(false)
-const categoryId = ref<string | undefined>(undefined)
 let uid = 0
 const CONCURRENCY = 2
 
@@ -41,12 +40,13 @@ const stats = computed(() => ({
 /** Picked file: rejected ones are listed with the reason, the rest go to the editor. */
 function add(file: File) {
   const bad = props.limits ? precheck(file, props.limits) : null
-  if (bad) entries.value.push(reactive<Entry>({ uid: ++uid, file, process: null, state: 'error', pct: 0, error: t(bad.key, bad.params) }))
+  if (bad) entries.value.push(reactive<Entry>({ uid: ++uid, file, process: null, meta: null, state: 'error', pct: 0, error: t(bad.key, bad.params) }))
   else {
     const fmt = formatOf(file, props.limits)
     pending.value.push(reactive<PendingFile>({
       uid: ++uid, file, url: URL.createObjectURL(file), video: isVideoFile(file, props.limits), processable: Boolean(fmt?.processable), formatId: fmt?.id ?? '',
       settings: { aspect: 'free', maxSize: 'original', quality: 'original' }, rect: null, dims: null,
+      meta: { name: fileStem(file.name), categoryId: undefined, tags: [], visible: true },
     }))
     editorOpen.value = true
   }
@@ -60,7 +60,7 @@ function dropPending(uids: number[]) {
 function save(uids: number[]) {
   for (const p of pending.value.filter((x) => uids.includes(x.uid))) {
     const proc = p.processable ? processOptions(p.settings, p.rect, p.dims, p.video) : null
-    entries.value.push(reactive<Entry>({ uid: p.uid, file: p.file, process: proc, state: 'waiting', pct: 0, error: '' }))
+    entries.value.push(reactive<Entry>({ uid: p.uid, file: p.file, process: proc, meta: { ...p.meta, tags: [...p.meta.tags] }, state: 'waiting', pct: 0, error: '' }))
   }
   dropPending(uids)
   pump()
@@ -76,8 +76,7 @@ async function start(e: Entry) {
   e.state = 'uploading'
   e.pct = 0
   e.error = ''
-  const fields: Record<string, string> = { scope: props.scope }
-  if (categoryId.value) fields.categoryId = categoryId.value
+  const fields: Record<string, string> = { scope: props.scope, ...(e.meta ? metaFields(e.meta, props.scope) : {}) }
   if (e.process) fields.process = JSON.stringify(e.process)
   const up = xhrUpload(fields, e.file, (p) => { e.pct = p })
   e.abort = up.abort
@@ -124,12 +123,6 @@ onBeforeUnmount(() => {
 
 <template>
   <a-modal v-model:open="open" :title="t('media.uploadTitle', { scope: scopeLabel })" :footer="null" :width="MODAL_WIDTH.md" :mask-closable="!stats.busy">
-    <a-form-item v-if="categories.length" :label="t('media.uploadCategory')">
-      <a-select
-        v-model:value="categoryId" allow-clear :placeholder="t('media.uncategorized')" style="width: 240px; max-width: 100%"
-        :options="categories.map((c) => ({ value: c.id, label: c.name }))"
-      />
-    </a-form-item>
     <a-upload-dragger :multiple="true" :show-upload-list="false" :before-upload="add" :accept="accept">
       <p style="margin: 8px 0"><CloudUploadOutlined class="upload-icon" /></p>
       <p style="margin: 0">{{ t('media.drop') }}</p>
@@ -147,7 +140,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-for="e in entries" :key="e.uid" class="file">
         <div class="file-row">
-          <a-typography-text class="file-name" :content="e.file.name" :ellipsis="{ tooltip: e.file.name }" />
+          <a-typography-text class="file-name" :content="e.meta?.name || e.file.name" :ellipsis="{ tooltip: e.file.name }" />
           <span v-if="e.process" class="muted small nowrap">{{ processText(e.process) }}</span>
           <span class="muted small nowrap">{{ fmtSize(e.file.size) }}</span>
           <a-tooltip v-if="e.state === 'error'" :title="t('media.retry')">
@@ -164,7 +157,10 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </a-modal>
-  <MediaEditor v-model:open="editorOpen" :items="pending" @save="save" @discard="dropPending" />
+  <MediaEditor
+    v-model:open="editorOpen" :items="pending" :scope="scope" :categories="categories" :tag-options="tagOptions"
+    @save="save" @discard="dropPending" @categories-changed="emit('categoriesChanged')"
+  />
 </template>
 
 <style scoped>

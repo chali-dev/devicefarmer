@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
-import { PlayCircleOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import { PlayCircleOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
+import { api, errorText } from '../../api/client'
+import type { MediaCategory } from '../../api/types'
 import { MODAL_WIDTH } from '../common/ui'
+import VNodes from '../common/VNodes'
 import MediaCropper from './MediaCropper.vue'
-import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan, type EditSettings, type PendingFile, type Rect } from './media'
+import { defaultRect, EDITOR_ASPECTS, encodePreview, fmtSize, lockedRatio, plan, tagProblem, type EditSettings, type PendingFile, type Rect } from './media'
 
 /**
  * Edit-before-upload: crop (move/resize, aspect presets), size and quality per file, with a
- * client-side preview of the result. Nothing is uploaded until 保存 (this file) or 保存全部.
+ * client-side preview of the result, plus the 编辑素材 fields (name, category, tags, 对用户可见 for
+ * public uploads) stored with the upload. Nothing is uploaded until 保存 (this file) or 保存全部.
  * 取消 drops the current file; closing the dialog drops all files still in it.
+ * `categories` are the upload owner's (public ones for a public upload, the uploader's own otherwise);
+ * 新建分类 adds one in the same scope.
  */
-const props = defineProps<{ items: PendingFile[] }>()
+const props = defineProps<{ items: PendingFile[]; scope: 'public' | 'mine'; categories: MediaCategory[]; tagOptions: string[] }>()
 const open = defineModel<boolean>('open', { required: true })
-const emit = defineEmits<{ save: [uids: number[]]; discard: [uids: number[]] }>()
+const emit = defineEmits<{ save: [uids: number[]]; discard: [uids: number[]]; categoriesChanged: [] }>()
 const { t } = useI18n()
 
 const currentUid = ref<number | null>(null)
@@ -35,15 +42,49 @@ function setAspect(i: PendingFile, a: EditSettings['aspect']) {
   i.settings.aspect = a
   i.rect = null // re-fit: largest centred box of the new preset
 }
+/** Crop preset/size/quality (processable files) and category/tags/visibility (all files) of the current one; names stay per file. */
 function applyToAll() {
   const c = cur.value
   if (!c) return
   for (const i of props.items) {
-    if (i === c || !i.processable) continue
+    if (i === c) continue
+    i.meta.categoryId = c.meta.categoryId
+    i.meta.tags = [...c.meta.tags]
+    i.meta.visible = c.meta.visible
+    if (!i.processable || !c.processable) continue
     setAspect(i, c.settings.aspect)
     i.settings.maxSize = c.settings.maxSize
     i.settings.quality = c.settings.quality
   }
+}
+
+// ------------------------------------------------------------ metadata (same fields and rules as 编辑素材)
+/** Categories created here, shown before the parent's list has reloaded. */
+const createdCats = ref<MediaCategory[]>([])
+const categoryOptions = computed(() => [...props.categories, ...createdCats.value.filter((c) => !props.categories.some((x) => x.id === c.id))]
+  .map((c) => ({ value: c.id, label: c.name })))
+const newCategory = ref('')
+async function addCategory() {
+  const name = newCategory.value.trim()
+  const c = cur.value
+  if (!name || !c) return
+  try {
+    const r = await api<{ category: MediaCategory }>('POST', '/api/media/categories', { scope: props.scope, name })
+    createdCats.value.push(r.category)
+    newCategory.value = ''
+    c.meta.categoryId = r.category.id
+    message.success(t('media.categories.created'))
+    emit('categoriesChanged')
+  } catch (e) { message.error(errorText(e)) }
+}
+/** Tags trimmed, then the edit dialog's limits; jumps to the first file that breaks them. */
+function metaOk(uids: number[]): boolean {
+  for (const i of props.items.filter((x) => uids.includes(x.uid))) {
+    i.meta.tags = i.meta.tags.map((x) => x.trim()).filter(Boolean)
+    const bad = tagProblem(i.meta.tags)
+    if (bad) { currentUid.value = i.uid; message.warning(t(bad)); return false }
+  }
+  return true
 }
 
 const result = computed(() => (cur.value?.dims && cur.value.processable ? plan(cur.value.dims.w, cur.value.dims.h, cur.value.settings, cur.value.rect, cur.value.video) : null))
@@ -107,8 +148,8 @@ const pixelPct = computed(() => {
 })
 
 function discardCurrent() { if (cur.value) emit('discard', [cur.value.uid]) }
-function saveCurrent() { if (cur.value) emit('save', [cur.value.uid]) }
-function saveAll() { emit('save', props.items.map((i) => i.uid)) }
+function saveCurrent() { if (cur.value && metaOk([cur.value.uid])) emit('save', [cur.value.uid]) }
+function saveAll() { const uids = props.items.map((i) => i.uid); if (metaOk(uids)) emit('save', uids) }
 function close() { emit('discard', props.items.map((i) => i.uid)) }
 </script>
 
@@ -124,7 +165,7 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
       >
         <img v-if="!i.video" :src="i.url" alt="">
         <span v-else class="strip-video"><PlayCircleOutlined /></span>
-        <span class="strip-name">{{ i.file.name }}</span>
+        <span class="strip-name">{{ i.meta.name || i.file.name }}</span>
       </button>
     </div>
 
@@ -168,6 +209,43 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
         </a-col>
       </a-row>
 
+      <a-form layout="vertical" class="controls">
+        <a-row :gutter="16">
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('common.name')">
+              <a-input v-model:value="cur.meta.name" :maxlength="200" :placeholder="cur.file.name" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12">
+            <a-form-item :label="t('media.category')">
+              <a-select
+                v-model:value="cur.meta.categoryId" allow-clear show-search option-filter-prop="label" :placeholder="t('media.uncategorized')"
+                :options="categoryOptions" :dropdown-style="{ minWidth: '240px' }"
+              >
+                <template #dropdownRender="{ menuNode }">
+                  <VNodes :vnodes="menuNode" />
+                  <a-divider style="margin: 4px 0" />
+                  <div class="new-category">
+                    <a-input v-model:value="newCategory" size="small" :maxlength="50" :placeholder="t('media.categories.namePlaceholder')" @press-enter="addCategory" @keydown.stop />
+                    <a-button type="link" size="small" :disabled="!newCategory.trim()" @click="addCategory"><template #icon><PlusOutlined /></template>{{ t('media.categories.add') }}</a-button>
+                  </div>
+                </template>
+              </a-select>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :xs="24" :sm="scope === 'public' ? 18 : 24">
+            <a-form-item :label="t('media.tags')">
+              <a-select v-model:value="cur.meta.tags" mode="tags" :options="tagOptions.map((x) => ({ value: x }))" :token-separators="[',']" :placeholder="t('media.addTag')" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col v-if="scope === 'public'" :xs="24" :sm="6">
+            <a-form-item :label="t('media.visible')"><a-switch v-model:checked="cur.meta.visible" /></a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
+
       <a-form v-if="cur.processable" layout="vertical" class="controls">
         <a-form-item :label="t('media.processCrop')">
           <a-radio-group :value="cur.settings.aspect" size="small" button-style="solid" @update:value="(v: EditSettings['aspect']) => setAspect(cur!, v)">
@@ -196,7 +274,7 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
     <template #footer>
       <div class="footer">
         <a-tooltip v-if="items.length > 1" :title="t('media.editorApplyAllHint')">
-          <a-button :disabled="!cur?.processable" @click="applyToAll">{{ t('media.editorApplyAll') }}</a-button>
+          <a-button :disabled="!cur" @click="applyToAll">{{ t('media.editorApplyAll') }}</a-button>
         </a-tooltip>
         <span class="grow" />
         <a-button @click="discardCurrent">{{ t('common.cancel') }}</a-button>
@@ -234,6 +312,7 @@ function close() { emit('discard', props.items.map((i) => i.uid)) }
 .note { line-height: 1.5; min-height: 4.5em; }
 .controls { margin-top: var(--cp-gap); }
 .controls :deep(.ant-form-item) { margin-bottom: 8px; }
+.new-category { display: flex; align-items: center; gap: 4px; padding: 4px 8px; }
 .footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .grow { flex: 1; }
 </style>
