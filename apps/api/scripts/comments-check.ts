@@ -2,10 +2,10 @@
  * Comments & engagement (评论互动) test against the real API + DB + Redis + task centre (no mocks).
  * - Rules (admin-only settings), comment accounts (own only, no read/reply modes or sync status any more).
  * - Official-API sync and API replies were removed on 2026-11-18: POST …/sync is 404, every reply (also to a
- *   historical `api` comment) is handed to an operator after approval (method manual).
+ *   historical `api` comment) is handed to an operator (method manual).
  * - Manual comment entry (threads), list/detail/status/delete, publish-task link by external post id.
- * - Reply workflow end to end on the manual path: draft → review → approve → awaiting_operator → sent / failed;
- *   self-approval refused, reject with reason, batch approval, scheduled send + cancel, edit rules.
+ * - Reply workflow end to end on the manual path, without approval (removed 2026-11-18): draft → scheduled →
+ *   awaiting_operator → sent / failed; approve / reject / batch-approve endpoints 404, scheduled send + cancel, edit rules.
  * - Anti-abuse: one reply per comment (again allowed after failed / rejected / cancelled), duplicate-text
  *   limit (normalized), per-account send rate limit (deferred, not dropped), every block logged with its code.
  * - Idempotency of the reply job (same key → same task), RBAC/isolation (admin, user A, user B), templates, audit.
@@ -78,13 +78,15 @@ try {
 
   // ---------------------------------------------------------------- rules
   let r = await http('GET', '/api/comments/settings', A);
-  check('rules default: approval on, same text ≤ 3 / 24 h, 20 sends / h',
-    r.status === 200 && r.body.rules.requireApproval === true && r.body.rules.duplicateMax === 3 && r.body.rules.duplicateWindowHours === 24 && r.body.rules.sendsPerHour === 20, r.text);
+  check('rules default: same text ≤ 3 / 24 h, 20 sends / h, no approval rule',
+    r.status === 200 && !('requireApproval' in r.body.rules) && r.body.rules.duplicateMax === 3 && r.body.rules.duplicateWindowHours === 24 && r.body.rules.sendsPerHour === 20, r.text);
   r = await http('PUT', '/api/comments/settings', A, { sendsPerHour: 100 });
   check('user: PUT rules → 403 comment.admin_only', r.status === 403 && r.body.code === 'comment.admin_only', r.text);
   r = await http('PUT', '/api/comments/settings', T, { sendsPerHour: 0 });
   check('admin: invalid rule (0 sends/h) → 400', r.status === 400);
   r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, requireApproval: true });
+  check('admin: the removed requireApproval rule → 400', r.status === 400);
+  r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20 });
   check('admin: PUT rules', r.status === 200 && r.body.rules.sendsPerHour === 20);
 
   // ---------------------------------------------------------------- accounts (no modes / sync any more)
@@ -166,21 +168,13 @@ try {
   check('user B: reply to A\'s comment → 404', r.status === 404);
   r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: `Thank you, Viewer 0! ${tag}`, submit: true });
   const r1 = r.body.reply?.id as string;
-  check('A: reply submitted → pending_review (users need approval)', r.status === 201 && r.body.reply.status === 'pending_review' && r.body.reply.authorName === `cca${tag}`, r.text);
+  check('A: reply submitted → scheduled at once (no approval), send task created', r.status === 201 && r.body.reply.status === 'scheduled' && !!r.body.reply.taskId && r.body.reply.authorName === `cca${tag}`, r.text);
   r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: 'second reply' });
   check('second reply to the same comment → 409 comment.already_replied', r.status === 409 && r.body.code === 'comment.already_replied', r.text);
-  r = await http('POST', `/api/comment-replies/${r1}/approve`, A);
-  check('A approves own reply → 403 comment.self_approval', r.status === 403 && r.body.code === 'comment.self_approval', r.text);
-  r = await http('POST', `/api/comment-replies/${r1}/approve`, B);
-  check('user B: approve A\'s reply → 404', r.status === 404 && r.body.code === 'comment.reply_not_found');
-  r = await http('GET', '/api/comment-replies?reviewable=true', A);
-  check('review queue of A excludes own replies', r.status === 200 && !r.body.items.some((x: any) => x.id === r1));
-  r = await http('GET', '/api/comment-replies?reviewable=true', T);
-  check('admin review queue contains it (canReview)', r.status === 200 && r.body.items.some((x: any) => x.id === r1 && x.canReview));
+  r = await http('POST', `/api/comment-replies/${r1}/approve`, T);
+  check('approve endpoint is gone (404)', r.status === 404);
   r = await http('PATCH', `/api/comment-replies/${r1}`, A, { text: `Thank you so much, Viewer 0! ${tag}` });
-  check('author edits while pending review', r.status === 200 && r.body.reply.text.startsWith('Thank you so much'));
-  r = await http('POST', `/api/comment-replies/${r1}/approve`, T, { note: 'ok' });
-  check('admin approves → queued for sending', r.status === 200 && ['approved', 'scheduled', 'sending', 'awaiting_operator'].includes(r.body.reply.status) && r.body.reply.reviewerName === process.env.ADMIN_USERNAME, r.text);
+  check('a submitted reply can no longer be edited (409)', r.status === 409 && r.body.code === 'comment.bad_status');
   let row = await waitReply(r1, ['awaiting_operator', 'failed']);
   check('TikTok reply → awaiting_operator (manual method)', row.status === 'awaiting_operator' && row.method === 'manual' && !!row.handedAt, `${row.status} ${row.errorCode}`);
   const t1 = await taskRow(row.taskId!);
@@ -188,8 +182,8 @@ try {
     t1.type === 'comment-reply' && t1.idempotencyKey === `comment-reply:${r1}:1` && t1.status === 'success' && t1.createdBy === uA, JSON.stringify({ k: t1.idempotencyKey, s: t1.status }));
   const dupTask = await createTask({ type: 'comment-reply', userId: uA, refType: 'comment_reply', refId: r1, payload: { commentTaskId: r1, round: 1 }, idempotencyKey: `comment-reply:${r1}:1` });
   check('idempotency: creating the reply job again with the same key returns the same task', dupTask.created === false && dupTask.task.id === t1.id);
-  r = await http('POST', `/api/comment-replies/${r1}/approve`, T);
-  check('approve again → 409 comment.bad_status', r.status === 409 && r.body.code === 'comment.bad_status');
+  r = await http('POST', `/api/comment-replies/${r1}/submit`, A);
+  check('submit again → 409 comment.bad_status', r.status === 409 && r.body.code === 'comment.bad_status');
   r = await http('GET', `/api/comment-replies/${r1}`, A);
   check('reply detail: device link info + logs + runs', r.status === 200 && r.body.runs.length === 1 && r.body.logs.some((l: any) => l.action === 'handed_over'), r.text.slice(0, 300));
   r = await http('POST', `/api/comment-replies/${r1}/outcome`, A, { result: 'failed' });
@@ -206,7 +200,6 @@ try {
   // failed → new reply allowed; cancelled → new reply allowed
   r = await http('POST', `/api/comments/${c[1]}/replies`, A, { text: `Reply one ${tag}`, submit: true });
   const r2 = r.body.reply.id as string;
-  await http('POST', `/api/comment-replies/${r2}/approve`, T);
   await waitReply(r2, ['awaiting_operator']);
   r = await http('POST', `/api/comment-replies/${r2}/outcome`, A, { result: 'failed', reason: 'comments are closed on this video' });
   check('operator records failed (reason kept)', r.status === 200 && r.body.reply.status === 'failed' && r.body.reply.errorCode === 'comment.operator_failed' && r.body.reply.error === 'comments are closed on this video');
@@ -222,18 +215,9 @@ try {
   r = await http('POST', `/api/comments/${c[1]}/replies`, A, { text: `Reply three ${tag}` });
   check('after cancel: a new reply is allowed', r.status === 201);
 
-  // reject (reason required) → new reply allowed
-  r = await http('POST', `/api/comments/${c[2]}/replies`, A, { text: `Check my profile ${tag}`, submit: true });
-  const r4 = r.body.reply.id as string;
-  r = await http('POST', `/api/comment-replies/${r4}/reject`, T, { reason: '' });
-  check('reject without a reason → 400', r.status === 400);
-  r = await http('POST', `/api/comment-replies/${r4}/reject`, T, { reason: 'self-promotion' });
-  check('admin rejects with a reason', r.status === 200 && r.body.reply.status === 'rejected' && r.body.reply.reviewNote === 'self-promotion');
-  r = await http('POST', `/api/comment-replies/${r4}/submit`, A);
-  check('rejected reply cannot be resubmitted (409)', r.status === 409);
-  r = await http('POST', `/api/comments/${c[2]}/replies`, A, { text: `Thanks for the feedback ${tag}` });
-  check('after rejection: a new reply is allowed', r.status === 201);
-  await http('POST', `/api/comment-replies/${r.body.reply.id}/cancel`, A);
+  // reject is gone with the approval step
+  r = await http('POST', `/api/comment-replies/${r3}/reject`, T, { reason: 'self-promotion' });
+  check('reject endpoint is gone (404)', r.status === 404);
 
   // ---------------------------------------------------------------- duplicate text
   const same = `Thanks for watching! ${tag}`;
@@ -255,24 +239,21 @@ try {
   check('case / whitespace variant of the same text → still blocked', r.status === 409 && r.body.code === 'comment.duplicate_text');
   r = await http('PATCH', `/api/comment-replies/${d6!.id}`, A, { text: `Glad you liked the part about lighting ${tag}` });
   r = await http('POST', `/api/comment-replies/${d6!.id}/submit`, A);
-  check('individually written text → submitted', r.status === 200 && r.body.reply.status === 'pending_review');
+  check('individually written text → submitted (scheduled)', r.status === 200 && r.body.reply.status === 'scheduled');
   r = await http('POST', `/api/comments/${c[7]}/replies`, B, { text: same, submit: true });
   check('(B cannot even reach A\'s comment: 404)', r.status === 404);
 
-  // ---------------------------------------------------------------- batch approval
-  r = await http('POST', '/api/comment-replies/approve', T, { ids: [dupIds[0], dupIds[1], r1] });
-  check('batch approve: each checked individually (2 ok, sent one refused bad_status)',
-    r.status === 200 && r.body.results.filter((x: any) => x.ok).length === 2 && r.body.results.find((x: any) => x.id === r1)?.code === 'comment.bad_status', r.text);
-  r = await http('POST', '/api/comment-replies/approve', A, { ids: [dupIds[2]!] });
-  check('batch approve by the author: refused per item (comment.self_approval)', r.status === 200 && r.body.results[0].ok === false && r.body.results[0].code === 'comment.self_approval', r.text);
-  for (const id of dupIds.slice(0, 2)) await waitReply(id!, ['awaiting_operator']);
+  // ---------------------------------------------------------------- no batch approval any more
+  r = await http('POST', '/api/comment-replies/approve', T, { ids: [dupIds[0], dupIds[1]] });
+  check('batch approve endpoint is gone (404)', r.status === 404);
+  for (const id of dupIds) await waitReply(id!, ['awaiting_operator']);
+  await waitReply(d6!.id, ['awaiting_operator']);
 
   // ---------------------------------------------------------------- scheduled send + cancel
   const later = new Date(Date.now() + 3600_000).toISOString();
   r = await http('POST', `/api/comments/${c[8]}/replies`, A, { text: `See you tomorrow ${tag}`, submit: true, scheduledAt: later });
   const r8 = r.body.reply.id as string;
-  r = await http('POST', `/api/comment-replies/${r8}/approve`, T);
-  check('approved with a send time → scheduled', r.status === 200 && r.body.reply.status === 'scheduled', r.text);
+  check('submitted with a send time → scheduled', r.status === 201 && r.body.reply.status === 'scheduled', r.text);
   const t8 = await taskRow(r.body.reply.taskId);
   check('scheduled task-centre task with run_at', t8.status === 'scheduled' && !!t8.runAt);
   r = await http('POST', `/api/comment-replies/${r8}/cancel`, A);
@@ -283,7 +264,7 @@ try {
   const rl: string[] = [];
   for (let i = 0; i < 3; i++) {
     r = await http('POST', `/api/comments/${cr2[i]}/replies`, T, { text: `Admin reply ${i} ${tag}`, submit: true });
-    check(`admin reply ${i}: approved without review (admin)`, r.status === 201 && r.body.reply.reviewerName === process.env.ADMIN_USERNAME && r.body.reply.status !== 'pending_review', r.text);
+    check(`admin reply ${i}: submitted → scheduled (no reviewer)`, r.status === 201 && r.body.reply.reviewerName === null && r.body.reply.status === 'scheduled', r.text);
     rl.push(r.body.reply.id);
     if (i < 2) await waitReply(r.body.reply.id, ['awaiting_operator']);
   }
@@ -303,7 +284,6 @@ try {
   }).returning();
   r = await http('POST', `/api/comments/${apiC!.id}/replies`, A, { text: `Thanks a lot ${tag}`, submit: true });
   const ry = r.body.reply.id as string;
-  await http('POST', `/api/comment-replies/${ry}/approve`, T);
   row = await waitReply(ry, ['failed', 'sent', 'awaiting_operator']);
   check('reply to a historical API comment → awaiting_operator, method manual (no API send)', row.status === 'awaiting_operator' && row.method === 'manual', `${row.status} ${row.method} ${row.errorCode}`);
   const ty = await waitTask(row.taskId!);
@@ -341,8 +321,8 @@ try {
   r = await http('GET', '/api/comment-replies?limit=200', B);
   check('B: reply history has none of A\'s', r.status === 200 && r.body.items.length === 0);
   r = await http('GET', `/api/comment-replies?status=sent,failed&accountId=${ta}`, A);
-  check('A: sent/failed history with author, reviewer, sender and failure reason',
-    r.status === 200 && r.body.items.some((x: any) => x.id === r1 && x.authorName && x.reviewerName && x.senderName) && r.body.items.some((x: any) => x.id === r2 && x.error), r.text.slice(0, 300));
+  check('A: sent/failed history with author, sender and failure reason (no reviewer)',
+    r.status === 200 && r.body.items.some((x: any) => x.id === r1 && x.authorName && !x.reviewerName && x.senderName) && r.body.items.some((x: any) => x.id === r2 && x.error), r.text.slice(0, 300));
   r = await http('DELETE', `/api/comments/${c[10]}`, B);
   check('B: delete A\'s comment → 404', r.status === 404);
   r = await http('DELETE', `/api/comments/${c[10]}`, A);
@@ -351,11 +331,11 @@ try {
   // ---------------------------------------------------------------- logs, leaks, audit
   const logs = await db.select().from(schema.commentLogs).where(inArray(schema.commentLogs.accountId, [ya, ia, ta, ta2]));
   const codes = new Set(logs.filter((l) => l.action === 'blocked').map((l) => l.code));
-  const want = ['comment.already_replied', 'comment.self_approval', 'comment.duplicate_text', 'comment.rate_limited'];
+  const want = ['comment.already_replied', 'comment.duplicate_text', 'comment.rate_limited'];
   check('every block logged with its reason code', want.every((x) => codes.has(x)), [...codes].join(','));
   const r1Logs = logs.filter((l) => l.commentTaskId === r1).map((l) => l.action);
-  check('reply log: created → submitted → blocked (self-approval) → edited → approved → queued → run → handed_over → sent',
-    ['created', 'submitted', 'blocked', 'edited', 'approved', 'queued', 'run', 'handed_over', 'sent'].every((a) => r1Logs.includes(a)), r1Logs.join(','));
+  check('reply log: created → submitted → queued → run → handed_over → sent, no approval',
+    ['created', 'submitted', 'queued', 'run', 'handed_over', 'sent'].every((a) => r1Logs.includes(a)) && !r1Logs.includes('approved'), r1Logs.join(','));
   const taskRows = await db.select().from(schema.tasks).where(and(inArray(schema.tasks.type, ['comment-sync', 'comment-reply']), gte(schema.tasks.createdAt, t0)));
   const replies = await db.select().from(schema.commentTasks).where(inArray(schema.commentTasks.accountId, [ya, ia, ta, ta2]));
   check('only comment-reply tasks were created (no comment-sync)', taskRows.length > 0 && taskRows.every((t) => t.type === 'comment-reply'));
@@ -367,11 +347,10 @@ try {
   const audits = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, t0));
   const acts = new Set(audits.map((a) => a.action));
   const wantA = ['comment.rules_update', 'comment.manual_create', 'comment.status', 'comment.delete', 'comment.reply_create', 'comment.reply_update',
-    'comment.reply_submit', 'comment.reply_approve', 'comment.reply_approve_batch', 'comment.reply_reject', 'comment.reply_cancel', 'comment.reply_outcome_sent',
+    'comment.reply_submit', 'comment.reply_cancel', 'comment.reply_outcome_sent',
     'comment.reply_outcome_failed', 'comment.template_create', 'comment.template_update', 'comment.template_delete'];
   check('audit actions recorded', wantA.every((x) => acts.has(x)), wantA.filter((x) => !acts.has(x)).join(','));
-  check('audit: refused self-approval recorded with 403', audits.some((a) => a.action === 'comment.reply_approve' && a.status === 403 && a.userId === uA));
-  check('audit: reply target is "platform @handle → author"', audits.some((a) => a.action === 'comment.reply_approve' && a.target === `tiktok @${h('ta')} → Viewer 0`), audits.filter((a) => a.action === 'comment.reply_approve').map((a) => a.target).join('|'));
+  check('audit: reply target is "platform @handle → author"', audits.some((a) => a.action === 'comment.reply_outcome_sent' && a.target === `tiktok @${h('ta')} → Viewer 0`), audits.filter((a) => a.action === 'comment.reply_outcome_sent').map((a) => a.target).join('|'));
   check('audit never stores reply texts', !audits.some((a) => JSON.stringify(a.detail).includes(same) || JSON.stringify(a.detail).includes('Thank you')));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);

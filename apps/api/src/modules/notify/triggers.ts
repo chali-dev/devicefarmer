@@ -6,7 +6,7 @@ import { notify, recover } from './notify.js';
 
 /**
  * Alert triggers: the kind-specific mapping from a state transition to notify()/recover(). Each is called
- * from the single place where that transition happens (monitor, device-op failure hook, manual account
+ * from the single place where that transition happens (monitor, device-op failure hook, automatic account
  * check, collector, publish failure hook, task centre). Never throw (notify/recover don't).
  */
 
@@ -24,9 +24,12 @@ export async function deviceStatusChanged(inst: Pick<Instance, 'id' | 'name' | '
 const PROBLEM_LOGIN = new Set<string>(['logged_out', 'needs_verification']);
 const PROBLEM_ACCOUNT = new Set<string>(['limited', 'suspended', 'disabled']);
 
-/** Result of the manual account check ("mark checked" on the social page). */
-export async function accountChecked(acc: Pick<SocialAccount, 'id' | 'platform' | 'handle' | 'loginStatus' | 'accountStatus'>): Promise<void> {
-  const reason = PROBLEM_LOGIN.has(acc.loginStatus) ? acc.loginStatus : PROBLEM_ACCOUNT.has(acc.accountStatus) ? acc.accountStatus : null;
+/**
+ * Result of the automatic account check on the account's cloud phone (modules/social/check.ts; the manual
+ * "mark checked" was removed on 2026-11-18). `reason` overrides the one derived from the statuses (wrong_account).
+ */
+export async function accountChecked(acc: Pick<SocialAccount, 'id' | 'platform' | 'handle' | 'loginStatus' | 'accountStatus'>, why?: string): Promise<void> {
+  const reason = why ?? (PROBLEM_LOGIN.has(acc.loginStatus) ? acc.loginStatus : PROBLEM_ACCOUNT.has(acc.accountStatus) ? acc.accountStatus : null);
   const a = { kind: 'account.problem' as const, refId: acc.id, params: { platform: acc.platform, handle: acc.handle, reason } };
   if (reason) await notify(a);
   else if (acc.loginStatus === 'logged_in') await recover(a);

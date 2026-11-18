@@ -7,7 +7,6 @@ import type { SettingsConfig } from '../api/types'
 import AlertSettings from '../components/settings/AlertSettings.vue'
 import LanguageSettings from '../components/settings/LanguageSettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
-import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import SystemInfo from '../components/settings/SystemInfo.vue'
 import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
@@ -24,7 +23,7 @@ const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['storage', 'tracked', 'social', 'publish', 'languages', 'retention', 'system', 'alerts'] as const
+const TABS = ['storage', 'tracked', 'publish', 'languages', 'retention', 'system', 'alerts'] as const
 type Tab = (typeof TABS)[number]
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'storage'),
@@ -62,7 +61,6 @@ const envGroups = computed(() => {
           <a-divider v-if="platforms.scope.features.youtubeKey && platforms.scope.features.trackedCollector" />
           <YoutubeKeySettings v-if="platforms.scope.features.youtubeKey" />
         </a-tab-pane>
-        <a-tab-pane key="social" :tab="t('settings.tabs.social')"><SocialLimitsSettings /></a-tab-pane>
         <a-tab-pane key="publish" :tab="t('settings.tabs.publish')">
           <div class="settings-pane">
             <a-descriptions

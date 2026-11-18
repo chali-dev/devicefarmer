@@ -4,7 +4,8 @@
  * (adb ports 5598–5599, no containers). User A is granted device D1, which hosts one of B's accounts.
  * Seeds for both users: accounts (tag, personal persona), media + content with targets, scheduled
  * publish tasks (plus an admin distribution of A's content to B's account), seeded analytics stats,
- * manual comments + a reply (approved by the admin → B's comment-reply task) and an account.problem notification.
+ * manual comments + a reply (submitted by B → B's comment-reply task; no approval step) and an account.problem notification
+ * (as raised by the automatic account check: statuses written + the real trigger called).
  * Then, as A: every list/detail/filter/count/action endpoint must never contain B's account ids, handles,
  * display name, tag or persona, others' rows are 404 and ownerId filters are ignored or 403;
  * A's /api/events WebSocket must not carry B's account events. The admin sees both.
@@ -12,10 +13,11 @@
  * (E2E_API=http://127.0.0.1:<port> for another API).
  */
 import { randomBytes } from 'node:crypto';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { seedStatsDay } from './lib/analytics-seed.js';
+import { accountChecked } from '../src/modules/notify/triggers.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -132,15 +134,15 @@ try {
   const commentB: string = cmB.body.comment.id;
   const replyB: string = rpB.body.reply.id;
 
-  // B: a comment-reply task (B submits the reply, the admin approves it → handed to an operator) + an account.problem alert ("mark checked").
+  // B: a comment-reply task (B submits the reply → handed to an operator, no approval) + an account.problem alert
+  // (what the automatic account check does on a logged-out phone: status written, real trigger called).
   r = await http('POST', `/api/comment-replies/${replyB}/submit`, B, {});
-  check('setup: B submits the reply for review', r.status === 200 && r.body.reply?.status === 'pending_review', r.text.slice(0, 200));
-  r = await http('POST', `/api/comment-replies/${replyB}/approve`, T, {});
   const taskB: string = r.body?.reply?.taskId;
-  check('setup: admin approves → B\'s comment-reply task', r.status === 200 && !!taskB, r.text.slice(0, 200));
+  check('setup: B submits the reply → scheduled, B\'s comment-reply task', r.status === 200 && r.body.reply?.status === 'scheduled' && !!taskB, r.text.slice(0, 200));
   await waitFor('B reply task finished', async () => ['success', 'failed'].includes((await http('GET', `/api/tasks/${taskB}`, B)).body?.task?.status));
-  r = await http('POST', `/api/social/accounts/${b.account}/checked`, B, { loginStatus: 'logged_out', message: 'test' });
-  check('setup: B marks the account logged out (account.problem)', r.status === 200, r.text);
+  const [bRow] = await db.update(schema.socialAccounts).set({ loginStatus: 'logged_out', lastCheckCode: 'logged_out' }).where(eq(schema.socialAccounts.id, b.account)).returning();
+  await accountChecked(bRow!);
+  check('setup: B\'s account checked as logged out (account.problem)', bRow?.loginStatus === 'logged_out');
   await waitFor('B notification', async () => ((await http('GET', '/api/notifications', B)).body?.items ?? (await http('GET', '/api/notifications', B)).body?.notifications ?? [])
     .some((n: any) => n.kind === 'account.problem'), 15_000).catch(() => undefined);
   await sleep(1500); // let pending events reach the WebSocket
@@ -188,7 +190,7 @@ try {
     check(`A: ${label} → ${codes.join('/')}`, codes.includes(res.status) && !leaks(res.text).length, `${res.status} ${res.text.slice(0, 200)}`);
   };
   await deny('PUT B\'s account', 'PUT', `/api/social/accounts/${b.account}`, { notes: 'x' });
-  await deny('mark B\'s account checked', 'POST', `/api/social/accounts/${b.account}/checked`, {});
+  await deny('立即检测 on B\'s account', 'POST', `/api/social/accounts/${b.account}/check`);
   await deny('batch with B\'s account', 'POST', '/api/social/accounts/batch', { ids: [a.account, b.account], action: 'add-tags', tags: ['x'] });
   await deny('rename B\'s persona', 'PATCH', `/api/personas/${b.persona}`, { name: 'x' });
   await deny('set B\'s personal persona on own account', 'PUT', `/api/social/accounts/${a.account}`, { personaId: b.persona }, [400, 404]);
@@ -253,7 +255,7 @@ try {
   await clean('/api/comment-replies/<B>', `/api/comment-replies/${replyB}`, 404);
   await deny('manual comment on B\'s account', 'POST', '/api/comments', { accountId: b.account, text: 'x', authorName: 'x' });
   await deny('reply to B\'s comment', 'POST', `/api/comments/${commentB}/replies`, { text: 'x' });
-  await deny('approve B\'s reply', 'POST', `/api/comment-replies/${replyB}/approve`, {});
+  await deny('cancel B\'s reply', 'POST', `/api/comment-replies/${replyB}/cancel`);
   await clean('/api/comment-templates', '/api/comment-templates?kind=all');
 
   // personas / categories

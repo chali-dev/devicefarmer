@@ -1,6 +1,7 @@
 /**
  * 媒体矩阵 demo data + verification through the real HTTP API (no mocks). DB writes only where the product has no
- * entry point any more: own posts, daily stats and tracked-account history (manual entry was removed on 2026-11-18;
+ * entry point any more: own posts, daily stats, tracked-account history and the accounts' login/account status
+ * (system-written by the automatic check on the cloud phone since 2026-11-18; manual entry was removed on 2026-11-18;
  * these demo rows use the legacy source `manual`, i.e. "entered", never `api`/`device`, so they don't pose as collected data).
  *
  * Seeds (idempotent, everything recognisable by the `demo` prefix, Instagram only):
@@ -11,11 +12,12 @@
  *   likes/comments (帖子 tab), both via scripts/lib/analytics-seed.ts.
  * - 追踪账号: 10 tracked Instagram accounts (tags incl. the former categories 灵感/竞品/合作候选, favourites, weekly snapshots, posts; history written to the
  *   DB as demo rows). Their 定时采集 is switched off, so the demo never sends the collector phone to these made-up handles.
- * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
+ * - 评论互动: ~35 manual comments with threads, replies as draft / handed to an operator / cancelled (no approval step since
+ *   2026-11-18), 3 templates with 人设 (one public, one demo-user's).
  * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public), the rest by topic
  *   (旅行 / 美食 / 时尚 admin's, 生活 demo-user's); one account without persona.
  * Then verifies filters, RBAC/isolation, logs, batch actions (throw-away `demotmp.*` accounts), exact
- * analytics numbers, tracked deltas, the reply review state machine and in-app notifications.
+ * analytics numbers, tracked deltas, the reply state machine (no approval) and in-app notifications.
  * Nothing is sent to Instagram: manual comments always hand replies over to an operator (awaiting_operator).
  *
  * Usage (from apps/api, API running):
@@ -29,6 +31,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withCaptcha } from './lib/login.js';
+import { accountChecked } from '../src/modules/notify/triggers.js';
+import { eq } from 'drizzle-orm';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const CRED_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../var/demo-credentials.txt');
@@ -289,17 +293,18 @@ for (const s of ACCOUNTS) {
   }
   const r = await must('POST', '/api/social/accounts', tokenOf(s.owner), {
     platform: 'instagram', handle: s.handle, displayName: s.displayName, personaId: s.persona ? personaId.get(s.persona) : null, tags: s.tags,
-    notes: s.notes, loginStatus: s.login, accountStatus: s.status === 'suspended' ? 'active' : s.status, lastError: s.lastError ?? null,
+    notes: s.notes,
   });
-  let acc = r.account;
   counts.accounts++;
-  if (s.status === 'suspended') {
-    // As an operator would: the check found the account suspended (raises account.problem in-app).
-    acc = (await must('POST', `/api/social/accounts/${acc.id}/checked`, tokenOf(s.owner), { accountStatus: 'suspended', lastError: 'demo: 平台提示账号已被停用', message: 'demo: 手动检查' })).account;
-  } else if (s.login === 'logged_in') {
-    acc = (await must('POST', `/api/social/accounts/${acc.id}/checked`, tokenOf(s.owner), { message: 'demo: 手动检查正常' })).account;
-  }
-  accByHandle.set(s.handle, acc);
+  // Statuses are system-written (automatic check on the cloud phone; these demo accounts have no phone): demo DB rows,
+  // and the real alert trigger the check calls (a suspended account raises account.problem in-app).
+  const { db: sdb, schema: ss } = await import('../src/db/index.js');
+  const lastError = s.status === 'suspended' ? 'demo: 平台提示账号已被停用' : s.lastError ?? null;
+  const [row] = await sdb.update(ss.socialAccounts).set({
+    loginStatus: s.login, accountStatus: s.status, lastError, ...(s.login !== 'unknown' ? { lastCheckedAt: new Date(), lastCheckCode: s.login === 'logged_in' ? 'ok' : 'logged_out' } : {}),
+  }).where(eq(ss.socialAccounts.id, r.account.id)).returning();
+  if (row && (s.status !== 'active' || s.login !== 'unknown')) await accountChecked(row);
+  accByHandle.set(s.handle, (await must('GET', `/api/social/accounts/${r.account.id}`, tokenOf(s.owner))).account);
 }
 
 // ---------------------------------------------------------------- seed: daily stats
@@ -450,18 +455,18 @@ for (const [ai, handle] of COMMENT_ACCOUNTS.entries()) {
 // ---------------------------------------------------------------- seed: replies (never sent: manual comments → awaiting_operator)
 const latestReply = async (commentId: string, tok: string) => ((await must('GET', `/api/comment-replies?commentId=${commentId}&limit=5`, tok)).items as any[])[0] ?? null;
 const tplId = (name: string) => tplByName.get(name)?.id ?? null;
-type ReplyPlan = { ext: string; owner: Owner; text: string; tpl?: string; flow: 'draft' | 'pending' | 'approve' | 'reject' | 'cancel' | 'admin-submit' };
+type ReplyPlan = { ext: string; owner: Owner; text: string; tpl?: string; flow: 'draft' | 'submit' | 'cancel' | 'admin-submit' };
 const REPLIES: ReplyPlan[] = [
   { ext: 'demo:demo.wanderlust.lena:c1', owner: 'admin', text: '谢谢你的喜欢！这是在多洛米蒂拍的，攻略下周发～', tpl: 'demo · 感谢支持', flow: 'admin-submit' },
   { ext: 'demo:demo.tokyo.bites:c2', owner: 'admin', text: 'Thank you! The recipe is in our story highlights 🍜', flow: 'admin-submit' },
   { ext: 'demo:demo.minimal.closet:c1', owner: 'admin', text: '这件外套是去年秋季款，我们整理一下链接再回复你（草稿）', flow: 'draft' },
   { ext: 'demo:demo.island.hopper:c2', owner: 'admin', text: '感谢关注，海岛攻略整理中（已取消的演示回复）', flow: 'cancel' },
   { ext: 'demo:demo.cozy.home:c1', owner: 'user', text: '谢谢！沙发是二手淘来的，改天写一篇改造记录（草稿）', flow: 'draft' },
-  { ext: 'demo:demo.cozy.home:c2', owner: 'user', text: '很高兴你喜欢这个角落，灯具信息我放在置顶评论了～', flow: 'pending' },
-  { ext: 'demo:demo.plant.parent:c1', owner: 'user', text: '龟背竹一周浇一次水就够了，记得放在散射光的位置 🌿', flow: 'pending' },
-  { ext: 'demo:demo.fit.with.mia:c1', owner: 'user', text: '好问题！新手建议从每周 3 次、每次 20 分钟开始，循序渐进 💪', tpl: 'demo · 健身答疑', flow: 'approve' },
-  { ext: 'demo:demo.fit.with.mia:c2', owner: 'user', text: '马上下单我们的训练营，限时 5 折！！！', flow: 'reject' },
-  { ext: 'demo:demo.yoga.daily:c1', owner: 'user', text: '感谢关注～课程安排请私信我们，我们会尽快回复你。', tpl: 'demo · 引导私信', flow: 'pending' },
+  { ext: 'demo:demo.cozy.home:c2', owner: 'user', text: '很高兴你喜欢这个角落，灯具信息我放在置顶评论了～', flow: 'submit' },
+  { ext: 'demo:demo.plant.parent:c1', owner: 'user', text: '龟背竹一周浇一次水就够了，记得放在散射光的位置 🌿', flow: 'submit' },
+  { ext: 'demo:demo.fit.with.mia:c1', owner: 'user', text: '好问题！新手建议从每周 3 次、每次 20 分钟开始，循序渐进 💪', tpl: 'demo · 健身答疑', flow: 'submit' },
+  { ext: 'demo:demo.fit.with.mia:c2', owner: 'user', text: '马上下单我们的训练营，限时 5 折！！！（已取消：语气过于营销）', flow: 'cancel' },
+  { ext: 'demo:demo.yoga.daily:c1', owner: 'user', text: '感谢关注～课程安排请私信我们，我们会尽快回复你。', tpl: 'demo · 引导私信', flow: 'submit' },
 ];
 for (const p of REPLIES) {
   const c = commentByExt.get(p.ext);
@@ -473,8 +478,6 @@ for (const p of REPLIES) {
   if (p.flow === 'draft') continue;
   if (p.flow === 'cancel') { await must('POST', `/api/comment-replies/${r.id}/cancel`, tok); continue; }
   await must('POST', `/api/comment-replies/${r.id}/submit`, tok, {});
-  if (p.flow === 'approve') await must('POST', `/api/comment-replies/${r.id}/approve`, ADMIN, { note: 'demo: 内容合适，人工回复即可' });
-  if (p.flow === 'reject') await must('POST', `/api/comment-replies/${r.id}/reject`, ADMIN, { reason: 'demo: 语气过于营销，请针对评论本身回答' });
 }
 // A few local comment states for the filters.
 for (const [ext, status] of [['demo:demo.tokyo.bites:c3', 'read'], ['demo:demo.sneaker.drop:c2', 'hidden'], ['demo:demo.island.hopper:c3', 'ignored'], ['demo:demo.yoga.daily:c3', 'read']] as const) {
@@ -573,7 +576,7 @@ try {
     const adminAcc = accByHandle.get('demo.tokyo.bites');
     const userAcc = accByHandle.get('demo.cozy.home');
     for (const [m, p, b] of [['GET', `/api/social/accounts/${adminAcc.id}`], ['PUT', `/api/social/accounts/${adminAcc.id}`, { notes: 'x' }], ['GET', `/api/social/accounts/${adminAcc.id}/logs`],
-      ['POST', `/api/social/accounts/${adminAcc.id}/checked`, {}], ['DELETE', `/api/social/accounts/${adminAcc.id}`], ['GET', `/api/analytics/accounts/${adminAcc.id}`]] as const) {
+      ['POST', `/api/social/accounts/${adminAcc.id}/check`, {}], ['DELETE', `/api/social/accounts/${adminAcc.id}`], ['GET', `/api/analytics/accounts/${adminAcc.id}`]] as const) {
       const r = await http(m, p, DU.token, b);
       check(`demo-user ${m} ${p.replace(adminAcc.id, ':adminAccount')} → 404`, r.status === 404, `${r.status}`);
     }
@@ -604,24 +607,30 @@ try {
     check('create: @ stripped, duplicate tags merged case-insensitively', a1.handle === `demotmp.${tmpTag}.1` && a1.tags.length === 2 && a1.loginStatus === 'unknown' && a1.accountStatus === 'active');
     const u = await must('PUT', `/api/social/accounts/${a1.id}`, DU.token, { displayName: 'Temp One', notes: 'demo: edited', loginStatus: 'logged_in', tags: ['tmp', 'edited'] });
     const back = (await must('GET', `/api/social/accounts/${a1.id}`, DU.token)).account;
-    check('edit persists (displayName, notes, loginStatus, tags)', back.displayName === 'Temp One' && back.notes === 'demo: edited' && back.loginStatus === 'logged_in' && back.tags.map((t: string) => t.toLowerCase()).sort().join() === 'edited,tmp' && u.account.id === a1.id);
+    check('edit persists (displayName, notes, tags); loginStatus is system-written (ignored)', back.displayName === 'Temp One' && back.notes === 'demo: edited' && back.loginStatus === 'unknown' && back.tags.map((t: string) => t.toLowerCase()).sort().join() === 'edited,tmp' && u.account.id === a1.id);
     let logs = (await must('GET', `/api/social/accounts/${a1.id}/logs`, DU.token)).logs as any[];
-    check('logs: create + field updates + status + tags (with from → to, actor)', logs.some((l) => l.action === 'create') && logs.some((l) => l.field === 'displayName' && l.toValue === 'Temp One')
-      && logs.some((l) => l.action === 'status' && l.field === 'loginStatus' && l.fromValue === 'unknown' && l.toValue === 'logged_in') && logs.some((l) => l.field === 'tags') && logs.every((l) => l.actorName === DEMO_USER));
+    check('logs: create + field updates + tags (with from → to, actor), no status entry', logs.some((l) => l.action === 'create') && logs.some((l) => l.field === 'displayName' && l.toValue === 'Temp One')
+      && !logs.some((l) => l.action === 'status') && logs.some((l) => l.field === 'tags') && logs.every((l) => l.actorName === DEMO_USER));
     const nop = await must('PUT', `/api/social/accounts/${a1.id}`, DU.token, { notes: 'demo: edited' });
     const logs2 = (await must('GET', `/api/social/accounts/${a1.id}/logs`, DU.token)).logs as any[];
     check('unchanged edit writes no log', logs2.length === logs.length && !!nop);
     const unread0 = (await must('GET', '/api/notifications?limit=1', DU.token)).unread as number;
-    const ck = (await must('POST', `/api/social/accounts/${a2.id}/checked`, DU.token, { accountStatus: 'suspended', message: 'demo: 检查发现被封' })).account;
-    logs = (await must('GET', `/api/social/accounts/${a2.id}/logs`, DU.token)).logs as any[];
-    check('mark checked: lastCheckedAt, status change, checked + status logs', !!ck.lastCheckedAt && ck.accountStatus === 'suspended' && ck.exception
-      && logs.some((l) => l.action === 'checked' && l.message === 'demo: 检查发现被封') && logs.some((l) => l.action === 'status' && l.toValue === 'suspended'));
+    const goneChecked = await http('POST', `/api/social/accounts/${a2.id}/checked`, DU.token, { accountStatus: 'suspended' });
+    const noDev = await http('POST', `/api/social/accounts/${a2.id}/check`, DU.token);
+    check('标记已检查 gone (404); 立即检测 without a cloud phone → 400 account_check.no_device', goneChecked.status === 404 && noDev.status === 400 && codeOf(noDev) === 'account_check.no_device');
+    // What the automatic check does when the phone shows the login screen: status written + the real alert trigger.
+    const { db: cdb, schema: cs } = await import('../src/db/index.js');
+    const [ckRow] = await cdb.update(cs.socialAccounts).set({ loginStatus: 'logged_out', lastCheckCode: 'logged_out', lastCheckedAt: new Date() })
+      .where(eq(cs.socialAccounts.id, a2.id)).returning();
+    await accountChecked(ckRow!);
+    const ck = (await must('GET', `/api/social/accounts/${a2.id}`, DU.token)).account;
+    check('checked (system): lastCheckedAt, logged_out, exception', !!ck.lastCheckedAt && ck.loginStatus === 'logged_out' && ck.exception);
     // 告警: account.problem for the owner (and admins)
     const notif = await waitFor('account.problem notification', async () => {
       const n = await must('GET', '/api/notifications?unread=1&limit=50', DU.token);
       return (n.notifications as any[]).find((x) => x.kind === 'account.problem' && x.refId === a2.id);
     }, 10_000);
-    check('告警: suspended → account.problem in-app for the owner (unread, warning)', !!notif && notif.severity === 'warning' && notif.readAt === null && notif.params?.reason === 'suspended');
+    check('告警: logged out → account.problem in-app for the owner (unread, warning)', !!notif && notif.severity === 'warning' && notif.readAt === null && notif.params?.reason === 'logged_out');
     const adminN = await must('GET', '/api/notifications?unread=1&limit=100', ADMIN);
     check('告警: admins notified too (notifyAdmins)', (adminN.notifications as any[]).some((x) => x.kind === 'account.problem' && x.refId === a2.id));
     if (notif) {
@@ -634,7 +643,10 @@ try {
       const mine = (adminN.notifications as any[]).find((x) => x.kind === 'account.problem' && x.refId === a2.id);
       if (mine) await must('POST', `/api/notifications/${mine.id}/read`, ADMIN);
     }
-    const rec = (await must('POST', `/api/social/accounts/${a2.id}/checked`, DU.token, { accountStatus: 'active', loginStatus: 'logged_in' })).account;
+    const [recRow] = await cdb.update(cs.socialAccounts).set({ loginStatus: 'logged_in', lastCheckCode: 'ok', lastCheckedAt: new Date() })
+      .where(eq(cs.socialAccounts.id, a2.id)).returning();
+    await accountChecked(recRow!);
+    const rec = (await must('GET', `/api/social/accounts/${a2.id}`, DU.token)).account;
     const recN = await waitFor('recovered notification', async () => ((await must('GET', '/api/notifications?unread=1&limit=50', DU.token)).notifications as any[]).find((x) => x.kind === 'account.problem' && x.refId === a2.id && x.recovered), 10_000);
     check('告警: clean check → recovered notification (info)', rec.exception === false && !!recN && recN.severity === 'info');
     if (recN) await must('POST', `/api/notifications/${recN.id}/read`, DU.token);
@@ -867,31 +879,25 @@ try {
     const ca = await must('GET', '/api/comments/accounts', DU.token);
     check('comment accounts (demo-user): own only, no read/reply modes', (ca.accounts as any[]).every((a) => a.userId === DU.id && !('readMode' in a) && !('replyMode' in a)));
 
-    // review state machine on seeded data
+    // reply states on seeded data (no approval step since 2026-11-18)
     const replyOf = async (ext: string, tok: string) => latestReply(commentByExt.get(ext).id, tok);
-    const pending = await replyOf('demo:demo.cozy.home:c2', DU.token);
-    check('seeded: demo-user reply pending_review (needs approval by someone else)', pending?.status === 'pending_review' && pending.canReview === false && pending.canEdit === true);
-    const self = await http('POST', `/api/comment-replies/${pending.id}/approve`, DU.token, {});
-    check('self-approval refused → 403 comment.self_approval', self.status === 403 && codeOf(self) === 'comment.self_approval', self.text);
-    const selfRej = await http('POST', `/api/comment-replies/${pending.id}/reject`, DU.token, { reason: 'x' });
-    check('self-rejection refused → 403', selfRej.status === 403);
-    const queue = await must('GET', '/api/comment-replies?reviewable=true&limit=200', ADMIN);
-    const queueDu = await must('GET', '/api/comment-replies?reviewable=true&limit=200', DU.token);
-    check('review queue: admin sees demo-user\'s pending replies (canReview), demo-user\'s queue excludes own', (queue.items as any[]).filter((r) => r.userId === DU.id).length >= 3
-      && (queue.items as any[]).every((r) => r.canReview) && !(queueDu.items as any[]).some((r) => r.authorId === DU.id));
-    const approved = await replyOf('demo:demo.fit.with.mia:c1', DU.token);
-    const ao = await waitFor('awaiting_operator', async () => { const r = await replyOf('demo:demo.fit.with.mia:c1', DU.token); return r?.status === 'awaiting_operator' && r; }, 30_000);
-    check('approved by admin → handed to operator (awaiting_operator, method manual), never sent', !!ao && ao.method === 'manual' && ao.reviewerName === process.env.ADMIN_USERNAME && !ao.sentAt && !!approved.templateId, JSON.stringify(approved)?.slice(0, 200));
-    const rej = await replyOf('demo:demo.fit.with.mia:c2', DU.token);
-    check('rejected by admin with reason', rej?.status === 'rejected' && !!rej.reviewNote && rej.reviewerName === process.env.ADMIN_USERNAME);
+    const sub = await waitFor('submitted → awaiting_operator', async () => { const r = await replyOf('demo:demo.cozy.home:c2', DU.token); return r?.status === 'awaiting_operator' && r; }, 30_000);
+    check('seeded: demo-user reply submitted → handed to an operator without approval (method manual, no reviewer), never sent',
+      !!sub && sub.method === 'manual' && !sub.reviewerName && !sub.sentAt && !('canReview' in sub), JSON.stringify(sub)?.slice(0, 200));
+    const gone = await Promise.all([http('POST', `/api/comment-replies/${sub.id}/approve`, ADMIN, {}), http('POST', `/api/comment-replies/${sub.id}/reject`, ADMIN, { reason: 'x' })]);
+    check('approve / reject endpoints are gone (404)', gone.every((x) => x.status === 404));
+    const tplReply = await waitFor('template reply awaiting_operator', async () => { const r = await replyOf('demo:demo.fit.with.mia:c1', DU.token); return r?.status === 'awaiting_operator' && r; }, 30_000);
+    check('reply from a template → awaiting_operator', !!tplReply && !!tplReply.templateId);
+    const canc2 = await replyOf('demo:demo.fit.with.mia:c2', DU.token);
+    check('cancelled (too promotional) demo reply', canc2?.status === 'cancelled');
     const draft = await replyOf('demo:demo.cozy.home:c1', DU.token);
     check('draft stays draft, editable', draft?.status === 'draft' && draft.canEdit === true);
     const adm = await waitFor('admin awaiting_operator', async () => { const r = await replyOf('demo:demo.wanderlust.lena:c1', ADMIN); return r?.status === 'awaiting_operator' && r; }, 30_000);
-    check('admin reply: approved without review → awaiting_operator', !!adm && adm.reviewNote === 'admin');
+    check('admin reply: submitted → awaiting_operator', !!adm && !adm.reviewerName);
     const canc = await replyOf('demo:demo.island.hopper:c2', ADMIN);
     check('cancelled demo reply', canc?.status === 'cancelled');
     const byStatus = (await must('GET', `/api/comment-replies?ownerId=${DU.id}&limit=1`, ADMIN)).byStatus;
-    check('reply byStatus counts (demo-user): draft/pending/awaiting/rejected', byStatus.draft >= 1 && byStatus.pending_review >= 3 && byStatus.awaiting_operator >= 1 && byStatus.rejected >= 1, JSON.stringify(byStatus));
+    check('reply byStatus counts (demo-user): draft/awaiting/cancelled', byStatus.draft >= 1 && byStatus.awaiting_operator >= 3 && byStatus.cancelled >= 1, JSON.stringify(byStatus));
 
     // full flow on throw-away account: draft → edit → submit → reject → new reply → approve → cancel; duplicate rules
     const ta = (await must('POST', '/api/social/accounts', DU.token, { platform: 'instagram', handle: `demotmp.${tmpTag}.cmt` })).account; tmpIds.push(ta.id);
@@ -907,7 +913,7 @@ try {
     check('one active reply per comment → 409 comment.already_replied', second.status === 409 && codeOf(second) === 'comment.already_replied');
     r = (await must('PATCH', `/api/comment-replies/${r.id}`, DU.token, { text: 'Thanks a lot for watching, more soon!' })).reply;
     r = (await must('POST', `/api/comment-replies/${r.id}/submit`, DU.token, {})).reply;
-    check('draft → edit → submit → pending_review', r.status === 'pending_review' && r.text === 'Thanks a lot for watching, more soon!');
+    check('draft → edit → submit → scheduled (no review)', r.status === 'scheduled' && r.text === 'Thanks a lot for watching, more soon!');
     const tplShared = tplByName.get('demo · 感谢支持');
     const ut = await http('PUT', `/api/comment-templates/${tplShared.id}`, DU.token, { name: 'hijack' });
     const us = await http('POST', '/api/comment-templates', DU.token, { name: 'demotmp shared', text: 'x', shared: true });
@@ -920,20 +926,13 @@ try {
     check('templates: a shared template cannot use a personal persona (400 persona.not_allowed)', badP.status === 400 && codeOf(badP) === 'persona.not_allowed');
     const tlA = await must('GET', '/api/comment-templates?q=demo', ADMIN);
     check('templates: admin sees demo-user\'s private template too', (tlA.templates as any[]).some((t) => t.name === 'demo · 健身答疑' && t.userId === DU.id));
-    const noReason = await http('POST', `/api/comment-replies/${r.id}/reject`, ADMIN, {});
-    check('reject without reason → 400', noReason.status === 400);
-    r = (await must('POST', `/api/comment-replies/${r.id}/reject`, ADMIN, { reason: 'demo: please be more specific' })).reply;
-    const edRej = await http('PATCH', `/api/comment-replies/${r.id}`, DU.token, { text: 'x' });
-    check('rejected: no further edit (409 comment.bad_status)', r.status === 'rejected' && edRej.status === 409 && codeOf(edRej) === 'comment.bad_status');
-    let r2 = (await must('POST', `/api/comments/${c1.id}/replies`, DU.token, { text: 'Glad you liked it — the full routine is in the caption.', submit: true })).reply;
-    check('after rejection a new reply is allowed (submit at once → pending_review)', r2.status === 'pending_review');
-    const twice = await http('POST', `/api/comment-replies/${r2.id}/submit`, DU.token, {});
+    const ao2 = await waitFor('tmp awaiting_operator', async () => { const x = (await must('GET', `/api/comment-replies/${r.id}`, DU.token)); return x.reply.status === 'awaiting_operator' && x; }, 30_000);
+    check('submit → task → awaiting_operator (manual hand-over, no platform call), run logged', !!ao2 && ao2.reply.method === 'manual' && ao2.runs.length === 1 && ao2.logs.some((l: any) => l.action === 'handed_over'));
+    const edAo = await http('PATCH', `/api/comment-replies/${r.id}`, DU.token, { text: 'x' });
+    check('handed over: no further edit (409 comment.bad_status)', edAo.status === 409 && codeOf(edAo) === 'comment.bad_status');
+    const twice = await http('POST', `/api/comment-replies/${r.id}/submit`, DU.token, {});
     check('submit twice → 409 comment.bad_status', twice.status === 409 && codeOf(twice) === 'comment.bad_status');
-    r2 = (await must('POST', `/api/comment-replies/${r2.id}/approve`, ADMIN, { note: 'demo ok' })).reply;
-    const ao2 = await waitFor('tmp awaiting_operator', async () => { const x = (await must('GET', `/api/comment-replies/${r2.id}`, DU.token)); return x.reply.status === 'awaiting_operator' && x; }, 30_000);
-    check('approve → task → awaiting_operator (manual hand-over, no platform call), run logged', !!ao2 && ao2.reply.method === 'manual' && ao2.runs.length === 1 && ao2.logs.some((l: any) => l.action === 'handed_over'));
-    const reApprove = await http('POST', `/api/comment-replies/${r2.id}/approve`, ADMIN, {});
-    check('approve again → 409', reApprove.status === 409);
+    const r2 = r;
     const outcomeNoReason = await http('POST', `/api/comment-replies/${r2.id}/outcome`, DU.token, { result: 'failed' });
     check('operator outcome "failed" needs a reason → 400', outcomeNoReason.status === 400 && codeOf(outcomeNoReason) === 'comment.outcome_needs_reason');
     const cr = (await must('POST', `/api/comment-replies/${r2.id}/cancel`, DU.token)).reply;

@@ -18,9 +18,9 @@ import { useAuthStore } from '../stores/auth'
 import { usePlatformsStore } from '../stores/platforms'
 
 /**
- * 账号分析: followers gained, views, likes, comments and shares per day (+ per-post counters) of the operator's own social accounts
- * Read-only history: the official platform APIs were removed (owner decision 2026-11-18) and manual entry before that,
- * so there is currently no data source; rows collected earlier are still shown. Days are UTC.
+ * 账号分析: followers gained, views, likes, comments and shares per day (+ per-post counters) of the operator's own social accounts.
+ * Counters come from the automatic account check on each account's cloud phone (source device, abbreviated values
+ * marked ≈); rows of the removed official APIs / manual entry stay readable. Days are UTC.
  */
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -97,7 +97,6 @@ const totalStats = computed(() => {
 <template>
   <PageContainer :title="t('analytics.title')" :subtitle="data ? t('analytics.rangeHint', { from: fmtDay(data.from), to: fmtDay(data.to) }) : undefined">
     <a-card :bordered="false">
-      <a-alert type="info" show-icon class="notice" :message="t('analytics.noSource')" :description="t('analytics.noSourceHint')" />
       <SearchBar :loading="loading" @refresh="load()">
         <a-radio-group v-model:value="range" button-style="solid">
           <a-radio-button v-for="r in RANGES" :key="r" :value="r">{{ t('analytics.lastDays', { n: r }) }}</a-radio-button>
@@ -117,7 +116,8 @@ const totalStats = computed(() => {
 
     <template v-if="data">
       <a-card :bordered="false" :title="t('analytics.trendAll')">
-        <TrendCharts :days="data.days" />
+        <TrendCharts v-if="data.totals.withData" :days="data.days" />
+        <a-empty v-else :description="`${t('analytics.noData')} · ${t('analytics.noDataHint')}`" />
       </a-card>
 
       <a-card :bordered="false">
@@ -133,7 +133,7 @@ const totalStats = computed(() => {
             <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
             <template v-else-if="column.key === 'followers'">
               <a-tooltip :title="record.latest ? t('analytics.asOf', { day: fmtDay(record.latest.day) }) : undefined">
-                <span class="num">{{ compactNumber(record.latest?.followers) }}</span>
+                <span class="num">{{ record.latest?.approx?.includes('followers') ? '≈' : '' }}{{ compactNumber(record.latest?.followers) }}</span>
               </a-tooltip>
             </template>
             <template v-else-if="column.key === 'gained'">
@@ -164,7 +164,6 @@ const totalStats = computed(() => {
           <span class="muted">{{ t('analytics.rangeHint', { from: fmtDay(detail.from), to: fmtDay(detail.to) }) }}</span>
         </a-space>
       </div>
-      <a-alert type="info" show-icon class="drawer-head" :message="t('analytics.noSource')" />
       <TrendCharts :days="detail.days" :height="140" />
       <a-tabs v-model:active-key="detailTab">
         <a-tab-pane key="days" :tab="t('analytics.dayRows')" />
@@ -186,6 +185,7 @@ const totalStats = computed(() => {
           <template v-if="column.key === 'day'">{{ fmtDay(record.day) }}</template>
           <template v-else-if="column.key === 'followersGained'">{{ signed(record.followersGained) }}</template>
           <template v-else-if="column.key === 'source'">{{ t(`analytics.sources.${record.source}`) }}</template>
+          <template v-else-if="column.key === 'followers' && record.followers !== null">{{ record.approx?.includes('followers') ? '≈' : '' }}{{ Number(record.followers).toLocaleString(dateLocale()) }}</template>
           <template v-else>{{ record[column.key as string] === null || record[column.key as string] === undefined ? '—' : Number(record[column.key as string]).toLocaleString(dateLocale()) }}</template>
         </template>
       </a-table>
@@ -197,7 +197,6 @@ const totalStats = computed(() => {
 
 <style scoped>
 .drawer-head { margin-bottom: 12px; }
-.notice { margin-bottom: 16px; }
 .num { font-variant-numeric: tabular-nums; }
 .up { color: var(--cp-success); }
 .down { color: var(--cp-error); }

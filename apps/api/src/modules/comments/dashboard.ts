@@ -30,9 +30,10 @@ registerDashboardWidget('comments', async (ctx) => {
   return {
     total: comments.reduce((s, x) => s + Number(x.n), 0),
     unread: c.new ?? 0,
-    pendingReview: r.pending_review ?? 0,
+    /** Replies written but not submitted (there is no review step since 2026-11-18). */
+    drafts: r.draft ?? 0,
     awaitingOperator: r.awaiting_operator ?? 0,
-    queued: (r.approved ?? 0) + (r.scheduled ?? 0) + (r.sending ?? 0),
+    queued: (r.pending_review ?? 0) + (r.approved ?? 0) + (r.scheduled ?? 0) + (r.sending ?? 0),
     sent7d: recent.sent ?? 0,
     failed7d: recent.failed ?? 0,
   };

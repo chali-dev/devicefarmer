@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import {
-  type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentRules, type CommentStatus, type CommentTemplate,
+  type CommentAccount, type CommentItem, type CommentReplyItem, type CommentReplyStatus, type CommentStatus, type CommentTemplate,
 } from '../api/types'
 import CommentDrawer from '../components/comments/CommentDrawer.vue'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -20,20 +20,24 @@ import { platformName } from '../components/social/platformMeta'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
-/** Comments & engagement (评论互动): threads, reply composer, review queue, sending / history, templates, rules. */
+/**
+ * Comments & engagement (评论互动): threads, reply composer, sending queue / history, templates. No approval step
+ * (removed 2026-11-18); the reply rules are edited on the 风控 page.
+ */
 const { t } = useI18n()
 const auth = useAuthStore()
 const store = useInstancesStore()
 const route = useRoute()
 const router = useRouter()
 
-type Tab = 'comments' | 'review' | 'queue' | 'history' | 'templates'
-const TABS: Tab[] = ['comments', 'review', 'queue', 'history', 'templates']
+type Tab = 'comments' | 'queue' | 'history' | 'templates'
+const TABS: Tab[] = ['comments', 'queue', 'history', 'templates']
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'comments'),
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
-const QUEUE: CommentReplyStatus[] = ['draft', 'approved', 'scheduled', 'sending', 'awaiting_operator']
+/** `approved` / `pending_review` only on rows older than the removal of the approval step. */
+const QUEUE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
 const HISTORY: CommentReplyStatus[] = ['sent', 'failed', 'rejected', 'cancelled']
 const STATUSES: CommentStatus[] = ['new', 'read', 'replied', 'hidden', 'ignored']
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
@@ -42,7 +46,6 @@ const errText = (code: string | null, raw: string | null, platform?: string) => 
 const accounts = ref<CommentAccount[]>([])
 const posts = ref<{ postId: string; postUrl: string | null; n: number; title: string | null }[]>([])
 const templates = ref<CommentTemplate[]>([])
-const rules = ref<CommentRules | null>(null)
 const filters = reactive({
   accountId: (typeof route.query.account === 'string' ? route.query.account : undefined) as string | undefined,
   postId: undefined as string | undefined, status: (typeof route.query.status === 'string' ? route.query.status : undefined) as CommentStatus | undefined, source: undefined as 'api' | 'manual' | undefined, q: '',
@@ -59,9 +62,6 @@ async function loadPosts() {
 }
 async function loadTemplates() {
   try { templates.value = (await api<{ templates: CommentTemplate[] }>('GET', '/api/comment-templates')).templates } catch (e) { message.error(errorText(e)) }
-}
-async function loadRules() {
-  try { rules.value = (await api<{ rules: CommentRules }>('GET', '/api/comments/settings')).rules } catch (e) { message.error(errorText(e)) }
 }
 
 // ---------------------------------------------------------------- comments
@@ -146,46 +146,23 @@ async function saveManual() {
 }
 const parentItem = computed(() => items.value.find((x) => x.id === manual.parentId) ?? null)
 
-// ---------------------------------------------------------------- replies (review / queue / history)
+// ---------------------------------------------------------------- replies (queue / history)
 const replies = ref<CommentReplyItem[]>([])
 const rTotal = ref(0)
 const rByStatus = ref<Partial<Record<CommentReplyStatus, number>>>({})
 const rLoading = ref(false)
 const rPage = reactive({ current: 1, pageSize: 20 })
-const reviewCount = ref(0)
-const selected = ref<string[]>([])
 async function loadReplies() {
   rLoading.value = true
   try {
     const p = new URLSearchParams()
     if (filters.accountId) p.set('accountId', filters.accountId)
     if (filters.q.trim()) p.set('q', filters.q.trim())
-    if (tab.value === 'review') p.set('reviewable', 'true')
-    else p.set('status', (tab.value === 'queue' ? QUEUE : HISTORY).join(','))
+    p.set('status', (tab.value === 'queue' ? QUEUE : HISTORY).join(','))
     p.set('limit', String(rPage.pageSize)); p.set('offset', String((rPage.current - 1) * rPage.pageSize))
     const r = await api<{ items: CommentReplyItem[]; total: number; byStatus: Record<CommentReplyStatus, number> }>('GET', `/api/comment-replies?${p}`)
     replies.value = r.items; rTotal.value = r.total; rByStatus.value = r.byStatus
-    if (tab.value === 'review') reviewCount.value = r.total
-    selected.value = selected.value.filter((id) => r.items.some((x) => x.id === id))
   } catch (e) { message.error(errorText(e)) } finally { rLoading.value = false }
-}
-async function loadReviewCount() {
-  try { reviewCount.value = (await api<{ total: number }>('GET', '/api/comment-replies?reviewable=true&limit=1')).total } catch { /* badge only */ }
-}
-const rowSelection = computed(() => ({
-  selectedRowKeys: selected.value,
-  onChange: (keys: (string | number)[]) => { selected.value = keys.map(String) },
-  getCheckboxProps: (r: CommentReplyItem) => ({ disabled: !r.canReview }),
-}))
-async function approveSelected() {
-  try {
-    const r = await api<{ results: { id: string; ok: boolean; code?: string; error?: string }[] }>('POST', '/api/comment-replies/approve', { ids: selected.value })
-    const fail = r.results.filter((x) => !x.ok)
-    if (fail.length) message.warning(`${t('comments.batchResult', { ok: r.results.length - fail.length, fail: fail.length })}: ${fail.map((x) => errText(x.code ?? null, x.error ?? null)).join('; ')}`)
-    else message.success(t('comments.batchResult', { ok: r.results.length, fail: 0 }))
-    selected.value = []
-    await loadReplies()
-  } catch (e) { message.error(errorText(e)) }
 }
 const replyColumns = computed(() => [
   { title: t('comments.colAccount'), key: 'account', width: 180 },
@@ -225,14 +202,6 @@ function removeTpl(x: CommentTemplate) {
   })
 }
 
-// ---------------------------------------------------------------- rules (admin)
-const rulesOpen = ref(false)
-const rulesForm = reactive<CommentRules>({ requireApproval: true, duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20 })
-function openRules() { if (rules.value) Object.assign(rulesForm, rules.value); rulesOpen.value = true }
-async function saveRules() {
-  try { rules.value = (await api<{ rules: CommentRules }>('PUT', '/api/comments/settings', { ...rulesForm })).rules; message.success(t('common.saved')); rulesOpen.value = false } catch (e) { message.error(errorText(e)) }
-}
-
 // ---------------------------------------------------------------- loading / live updates
 function load() {
   if (tab.value === 'comments') return loadComments()
@@ -254,26 +223,26 @@ watch(() => filters.accountId, (id) => {
   void loadPosts()
   search()
 })
-watch(tab, () => { selected.value = []; void load() })
+watch(tab, () => { void load() })
 
 const drawerOpen = ref(false)
 const drawerId = ref<string | null>(null)
 const drawer = ref<InstanceType<typeof CommentDrawer>>()
 function openComment(id: string) { drawerId.value = id; drawerOpen.value = true }
-function changed() { void load(); void loadReviewCount(); void loadAccounts() }
+function changed() { void load(); void loadAccounts() }
 
 let timer: ReturnType<typeof setTimeout> | null = null
 const off = store.onTaskEvent((ev) => {
   if (ev.type !== 'task.updated' || ev.task.type !== 'comment-reply') return
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
-    void load(); void loadAccounts(); void loadReviewCount()
+    void load(); void loadAccounts()
     if (drawerOpen.value) void drawer.value?.reload()
   }, 400)
 })
 onBeforeUnmount(() => { off(); if (timer) clearTimeout(timer) })
 onMounted(() => {
-  void load(); void loadAccounts(); void loadTemplates(); void loadRules(); void loadReviewCount()
+  void load(); void loadAccounts(); void loadTemplates()
   if (filters.accountId) void loadPosts()
 })
 </script>
@@ -281,17 +250,13 @@ onMounted(() => {
 <template>
   <PageContainer :title="t('comments.title')">
     <template v-if="auth.isAdmin" #extra>
-      <a-button @click="openRules">{{ t('comments.rules') }}</a-button>
+      <a-button @click="$router.push('/risk')">{{ t('comments.rules') }}</a-button>
     </template>
 
     <a-card :bordered="false" class="tabs-card">
       <a-tabs v-model:active-key="tab">
         <a-tab-pane key="comments" :tab="t('comments.tabs.comments')" />
-        <a-tab-pane v-for="k in (['review', 'queue', 'history'] as const)" :key="k">
-          <template #tab>
-            {{ t(`comments.tabs.${k}`) }}<a-badge v-if="k === 'review' && reviewCount" :count="reviewCount" :offset="[6, -2]" />
-          </template>
-        </a-tab-pane>
+        <a-tab-pane v-for="k in (['queue', 'history'] as const)" :key="k" :tab="t(`comments.tabs.${k}`)" />
         <a-tab-pane key="templates" :tab="t('comments.tabs.templates')" />
       </a-tabs>
 
@@ -312,12 +277,9 @@ onMounted(() => {
           <a-select-option value="manual">{{ t('comments.sourceManual') }}</a-select-option>
         </a-select>
         <a-input-search v-if="tab !== 'templates'" v-model:value="filters.q" :placeholder="t('comments.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
-        <template v-if="tab === 'review' || tab === 'templates'" #actions>
-          <a-button v-if="tab === 'review'" type="primary" :disabled="!selected.length" @click="approveSelected">{{ t('comments.approveSelected', { n: selected.length }) }}</a-button>
-          <template v-else>
-            <a-button @click="$router.push({ path: '/scripts', query: { kind: 'comment' } })">{{ t('scripts.manage') }}</a-button>
-            <a-button type="primary" @click="openTpl()"><template #icon><PlusOutlined /></template>{{ t('comments.newTemplate') }}</a-button>
-          </template>
+        <template v-if="tab === 'templates'" #actions>
+          <a-button @click="$router.push({ path: '/scripts', query: { kind: 'comment' } })">{{ t('scripts.manage') }}</a-button>
+          <a-button type="primary" @click="openTpl()"><template #icon><PlusOutlined /></template>{{ t('comments.newTemplate') }}</a-button>
         </template>
       </SearchBar>
 
@@ -376,9 +338,8 @@ onMounted(() => {
         <a-pagination v-model:current="page.current" v-model:page-size="page.pageSize" v-bind="pagination({ total, hideOnSinglePage: true })" class="pager" @change="loadComments" />
       </a-spin>
 
-      <!-- review / queue / history -->
+      <!-- queue / history -->
       <a-table v-else-if="tab !== 'templates'" :data-source="replies" :columns="replyColumns" row-key="id" :size="TABLE_SIZE" :loading="rLoading" :scroll="{ x: 1230 }"
-        :row-selection="tab === 'review' ? rowSelection : undefined"
         :pagination="pagination({ current: rPage.current, pageSize: rPage.pageSize, total: rTotal })"
         @change="onRepliesChange">
         <template #bodyCell="{ column, record }">
@@ -396,7 +357,7 @@ onMounted(() => {
           </template>
           <template v-else-if="column.key === 'people'">
             <div>{{ record.authorName ?? '—' }}</div>
-            <div class="muted small">{{ record.reviewerName ?? '—' }} / {{ record.status === 'sent' ? (record.senderName ?? t('comments.method.api')) : '—' }}</div>
+            <div v-if="record.status === 'sent'" class="muted small">{{ t('comments.sentBy', { name: record.senderName ?? t('comments.method.api') }) }}</div>
           </template>
           <template v-else-if="column.key === 'time'">{{ fmt(record.sentAt ?? record.scheduledAt ?? record.updatedAt) }}</template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
@@ -422,7 +383,7 @@ onMounted(() => {
     </a-card>
   </PageContainer>
 
-  <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" :templates="templates" :rules="rules" @changed="changed" />
+  <CommentDrawer ref="drawer" v-model:open="drawerOpen" :comment-id="drawerId" :templates="templates" @changed="changed" />
 
   <a-modal v-model:open="manualOpen" :title="t('comments.manualTitle')" :width="MODAL_WIDTH.md" :confirm-loading="manualBusy" @ok="saveManual">
     <a-form layout="vertical">
@@ -468,14 +429,6 @@ onMounted(() => {
     </a-form>
   </a-modal>
 
-  <a-modal v-model:open="rulesOpen" :title="t('comments.rules')" :width="MODAL_WIDTH.sm" @ok="saveRules">
-    <a-form layout="vertical">
-      <a-form-item><a-checkbox v-model:checked="rulesForm.requireApproval">{{ t('comments.requireApproval') }}</a-checkbox></a-form-item>
-      <a-form-item :label="t('comments.duplicateMax')"><a-input-number v-model:value="rulesForm.duplicateMax" :min="1" :max="100" style="width: 100%" /></a-form-item>
-      <a-form-item :label="t('comments.duplicateWindowHours')"><a-input-number v-model:value="rulesForm.duplicateWindowHours" :min="1" :max="720" style="width: 100%" /></a-form-item>
-      <a-form-item :label="t('comments.sendsPerHour')"><a-input-number v-model:value="rulesForm.sendsPerHour" :min="1" :max="500" style="width: 100%" /></a-form-item>
-    </a-form>
-  </a-modal>
 </template>
 
 <style scoped>

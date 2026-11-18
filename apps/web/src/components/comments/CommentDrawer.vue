@@ -6,20 +6,18 @@ import type { Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { commentActionText, logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
-import type { CommentItem, CommentLog, CommentReplyItem, CommentRules, CommentTemplate } from '../../api/types'
-import { useAuthStore } from '../../stores/auth'
+import type { CommentItem, CommentLog, CommentReplyItem, CommentTemplate } from '../../api/types'
 import PlatformTag from '../social/PlatformTag.vue'
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
 
 /**
  * One comment: its thread, the reply composer (always written by a person, optionally from a template),
- * the current reply's workflow actions (submit, review, cancel, manual outcome) and the history + log.
+ * the current reply's workflow actions (submit, cancel, manual outcome; no approval step since 2026-11-18) and the history + log.
  */
-const props = defineProps<{ open: boolean; commentId: string | null; templates: CommentTemplate[]; rules: CommentRules | null }>()
+const props = defineProps<{ open: boolean; commentId: string | null; templates: CommentTemplate[] }>()
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>()
 const { t } = useI18n()
-const auth = useAuthStore()
 
 const comment = ref<CommentItem | null>(null)
 const thread = ref<CommentItem[]>([])
@@ -36,7 +34,6 @@ const persona = ref<string | undefined>()
 const personas = computed(() => [...new Map(props.templates.flatMap((x) => (x.persona ? [[x.persona.id, x.persona] as const] : []))).values()]
   .sort((a, b) => a.name.localeCompare(b.name)))
 const shownTemplates = computed(() => props.templates.filter((x) => !persona.value || x.personaId === persona.value || x.id === form.templateId))
-const review = reactive({ note: '', reason: '' })
 const outcome = reactive({ result: 'sent' as 'sent' | 'failed', reason: '', externalReplyId: '' })
 
 async function load() {
@@ -47,12 +44,11 @@ async function load() {
       'GET', `/api/comments/${props.commentId}`)
     comment.value = r.comment; thread.value = r.thread; replies.value = r.replies; logs.value = r.logs
     const a = active.value
-    form.text = a?.status === 'draft' || (a?.status === 'pending_review' && a.canEdit) ? a.text : ''
+    form.text = a?.status === 'draft' ? a.text : ''
     form.templateId = a?.templateId ?? undefined
     form.at = null
     const pid = r.comment.account?.personaId
     persona.value = pid && personas.value.some((p) => p.id === pid) ? pid : undefined
-    Object.assign(review, { note: '', reason: '' })
     Object.assign(outcome, { result: 'sent', reason: '', externalReplyId: '' })
   } catch (e) { message.error(errorText(e)) } finally { loading.value = false }
 }
@@ -61,8 +57,7 @@ defineExpose({ reload: load })
 
 const active = computed(() => replies.value.find((r) => !DONE.includes(r.status)) ?? null)
 const history = computed(() => replies.value.filter((r) => r.id !== active.value?.id))
-const editing = computed(() => !active.value || active.value.status === 'draft' || (active.value.status === 'pending_review' && active.value.canEdit))
-const needsReview = computed(() => !!props.rules?.requireApproval && !auth.isAdmin)
+const editing = computed(() => !active.value || active.value.status === 'draft')
 const errText = (code: string | null, raw: string | null) => (code ? codeText(code, undefined, raw ?? code) : raw ?? '')
 
 function pickTemplate(id: string | undefined) {
@@ -86,11 +81,6 @@ function save(submit: boolean) {
     await api('PATCH', `/api/comment-replies/${a.id}`, { text: form.text, templateId: form.templateId ?? null, scheduledAt: at() })
     if (submit && a.status === 'draft') await api('POST', `/api/comment-replies/${a.id}/submit`, {})
   }, submit ? t('comments.submitted') : t('common.saved'))
-}
-const approve = () => act(() => api('POST', `/api/comment-replies/${active.value!.id}/approve`, { note: review.note || null }), t('comments.approved'))
-function reject() {
-  if (!review.reason.trim()) { message.warning(t('comments.rejectReason')); return }
-  void act(() => api('POST', `/api/comment-replies/${active.value!.id}/reject`, { reason: review.reason }), t('comments.rejected'))
 }
 function cancel() {
   confirmDanger({
@@ -161,15 +151,15 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
             </a-form-item>
           </a-form>
           <a-space wrap>
-            <a-button :loading="busy" @click="save(false)">{{ active?.status === 'pending_review' ? t('common.save') : t('comments.saveDraft') }}</a-button>
+            <a-button :loading="busy" @click="save(false)">{{ t('comments.saveDraft') }}</a-button>
             <a-button v-if="!active || active.status === 'draft'" type="primary" :loading="busy" @click="save(true)">{{ t('comments.submit') }}</a-button>
-            <span v-if="!active || active.status === 'draft'" class="muted small">{{ needsReview ? t('comments.needsReview') : t('comments.noReviewNeeded') }}</span>
+            <span v-if="!active || active.status === 'draft'" class="muted small">{{ t('comments.submitHint') }}</span>
             <a-button v-if="active" danger :disabled="busy" @click="cancel">{{ t('comments.cancel') }}</a-button>
           </a-space>
         </template>
 
         <!-- current reply (not editable here) -->
-        <template v-if="active && (!editing || active.status === 'pending_review')">
+        <template v-if="active && !editing">
           <a-descriptions :column="1" size="small" bordered style="margin-top: 8px">
             <a-descriptions-item :label="t('comments.colStatus')">
               <StatusTag kind="commentReply" :status="active.status" />
@@ -182,15 +172,6 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
               <span class="err">{{ errText(active.errorCode, active.error) }}</span>
             </a-descriptions-item>
           </a-descriptions>
-
-          <div v-if="active.canReview" class="box">
-            <a-input v-model:value="review.note" :placeholder="t('comments.reviewNote')" :maxlength="500" style="margin-bottom: 6px" />
-            <a-space wrap>
-              <a-button type="primary" :loading="busy" @click="approve">{{ t('comments.approve') }}</a-button>
-              <a-input v-model:value="review.reason" :placeholder="t('comments.rejectReason')" :maxlength="1000" style="width: 240px" />
-              <a-button danger :loading="busy" @click="reject">{{ t('comments.reject') }}</a-button>
-            </a-space>
-          </div>
 
           <div v-if="active.status === 'awaiting_operator'" class="box">
             <a-alert type="warning" show-icon :message="t('comments.operatorHint')" class="gap" />

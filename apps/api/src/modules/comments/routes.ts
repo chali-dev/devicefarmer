@@ -7,8 +7,8 @@ import { forbidden, HttpError } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { visibleAccount } from '../social/social.js';
 import {
-  approveReply, assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, recordReplyOutcome,
-  rejectReply, REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
+  assertTemplateWritable, cancelReply, createManualComment, createReply, deleteManualComment, editReply, getRules, recordReplyOutcome,
+  REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
 } from './comments.js';
 import { assertPersonaFor } from './personas.js';
 
@@ -57,8 +57,7 @@ export async function toReplyItems(rows: CommentTask[], viewer: AuthUser) {
       comment: comments.find((c) => c.id === r.commentId) ?? null,
       account: acc ? { id: acc.id, handle: acc.handle, platform: acc.platform } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
-      canReview: r.status === 'pending_review' && (isAdmin(viewer) || r.authorId !== viewer.id),
-      canEdit: r.status === 'draft' || (r.status === 'pending_review' && (isAdmin(viewer) || r.authorId === viewer.id)),
+      canEdit: r.status === 'draft',
     };
   });
 }
@@ -109,15 +108,13 @@ const ReplyQuery = z.object({
   accountId: z.string().uuid().optional(),
   commentId: z.string().uuid().optional(),
   ownerId: z.string().uuid().optional(),
-  /** Only replies the caller may review (review queue). */
-  reviewable: z.coerce.boolean().optional(),
   q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
 
 /**
- * Comments & engagement (评论互动): received comments (sync / manual entry), reply tasks with review,
+ * Comments & engagement (评论互动): received comments (manual entry), reply tasks (no approval step since 2026-11-18),
  * anti-abuse rules, history, templates. Users see their own accounts' data only (404 otherwise).
  */
 export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
@@ -128,7 +125,6 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/comments/settings', {
     schema: {
       body: z.object({
-        requireApproval: z.boolean().optional(),
         duplicateMax: z.number().int().min(1).max(100).optional(),
         duplicateWindowHours: z.number().int().min(1).max(24 * 30).optional(),
         sendsPerHour: z.number().int().min(1).max(500).optional(),
@@ -259,10 +255,6 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const base: (SQL | undefined)[] = [ownerWhere(R.userId, req.user, q.ownerId)];
     if (q.accountId) base.push(eq(R.accountId, q.accountId));
     if (q.commentId) base.push(eq(R.commentId, q.commentId));
-    if (q.reviewable) {
-      base.push(eq(R.status, 'pending_review'));
-      if (!isAdmin(req.user)) base.push(sql`${R.authorId} is distinct from ${req.user.id}`);
-    }
     if (q.q) {
       const l = like(q.q);
       base.push(or(ilike(R.text, l), ilike(R.authorName, l), ilike(R.reviewerName, l), ilike(R.error, l),
@@ -304,36 +296,6 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const next = await submitReply(req.user, r, at(req.body?.scheduledAt));
     if (req.audit) req.audit.extra = { status: next.status, taskId: next.taskId };
     return { reply: (await toReplyItems([next], req.user))[0] };
-  });
-
-  app.post('/api/comment-replies/:id/approve', { schema: { params: Id, body: z.object({ note: z.string().trim().max(500).nullable().optional() }).nullish() } }, async (req) => {
-    const r = await visibleReply(req.user, req.params.id);
-    const next = await approveReply(req.user, r, req.body?.note);
-    if (req.audit) req.audit.extra = { status: next.status, taskId: next.taskId };
-    return { reply: (await toReplyItems([next], req.user))[0] };
-  });
-
-  /** Batch approval: each reply was written individually and is checked individually. */
-  app.post('/api/comment-replies/approve', {
-    schema: { body: z.object({ ids: z.array(z.string().uuid()).min(1).max(50), note: z.string().trim().max(500).nullable().optional() }) },
-  }, async (req) => {
-    const results: { id: string; ok: boolean; status?: string; code?: string; error?: string }[] = [];
-    for (const id of [...new Set(req.body.ids)]) {
-      try {
-        const r = await visibleReply(req.user, id);
-        const next = await approveReply(req.user, r, req.body.note);
-        results.push({ id, ok: true, status: next.status });
-      } catch (err) {
-        results.push({ id, ok: false, code: err instanceof HttpError ? err.code : 'comment.failed', error: (err as Error).message });
-      }
-    }
-    if (req.audit) req.audit.extra = { approved: results.filter((r) => r.ok).length, refused: results.filter((r) => !r.ok).map((r) => ({ id: r.id, code: r.code })) };
-    return { results };
-  });
-
-  app.post('/api/comment-replies/:id/reject', { schema: { params: Id, body: z.object({ reason: z.string().trim().min(1).max(1000) }) } }, async (req) => {
-    const r = await visibleReply(req.user, req.params.id);
-    return { reply: (await toReplyItems([await rejectReply(req.user, r, req.body.reason)], req.user))[0] };
   });
 
   app.post('/api/comment-replies/:id/cancel', { schema: { params: Id } }, async (req) => {

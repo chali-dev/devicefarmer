@@ -12,10 +12,12 @@ export interface SocialPlatform {
   defaultLimit: number;
   /** Public profile URL for a handle (used when no URL is entered). */
   profileUrl: (handle: string) => string;
+  /** 自动检测 on the linked cloud phone (modules/social/check.ts) exists for this platform. */
+  deviceCheck?: boolean;
 }
 
 export const PLATFORMS: readonly SocialPlatform[] = [
-  { id: 'instagram', name: 'Instagram', defaultLimit: 1, profileUrl: (h) => `https://www.instagram.com/${encodeURIComponent(h)}/` },
+  { id: 'instagram', name: 'Instagram', defaultLimit: 1, deviceCheck: true, profileUrl: (h) => `https://www.instagram.com/${encodeURIComponent(h)}/` },
   { id: 'youtube', name: 'YouTube', defaultLimit: 1, profileUrl: (h) => `https://www.youtube.com/@${encodeURIComponent(h)}` },
   { id: 'tiktok', name: 'TikTok', defaultLimit: 1, profileUrl: (h) => `https://www.tiktok.com/@${encodeURIComponent(h)}` },
   // Handle = Facebook username, or the numeric id of a profile without one (profile.php?id=…).

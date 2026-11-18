@@ -46,6 +46,9 @@ export interface ProfileData {
 export interface SourceContext {
   log?: (level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>) => Promise<void>;
   signal?: AbortSignal;
+  /** For 风控记录 rows (risk_events): the tracked account and who started the refresh. */
+  trackedAccountId?: string | null;
+  userId?: string | null;
 }
 
 export interface PostData {

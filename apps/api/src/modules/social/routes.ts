@@ -6,7 +6,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
-import { accountChecked } from '../notify/triggers.js';
+import { requestAccountCheck } from './check.js';
 import { assertPersonaFor } from '../comments/personas.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
 import {
@@ -34,10 +34,9 @@ const Editable = {
   instanceId: z.string().uuid().nullable().optional(),
   /** 账号人设: public persona or one of the account owner's; null clears. */
   personaId: z.string().uuid().nullable().optional(),
-  loginStatus: z.enum(LOGIN).optional(),
-  accountStatus: z.enum(ACCOUNT).optional(),
+  // loginStatus / accountStatus / lastError are written by the system (automatic check, check.ts) since
+  // 2026-11-18; an old client sending them is ignored (zod strips unknown keys).
   notes: opt(2000),
-  lastError: opt(500),
 };
 const CreateBody = z.object({ platform: z.enum(PLATFORM_IDS), ownerId: z.string().uuid().optional(), ...Editable });
 const UpdateBody = z.object({ ...Editable, handle: Handle.optional() });
@@ -82,7 +81,6 @@ async function personaNames(tx: Tx, ids: (string | null)[]): Promise<(id: string
 }
 
 const FIELDS = ['handle', 'displayName', 'profileUrl', 'externalId', 'notes'] as const;
-const STATUS_FIELDS = ['loginStatus', 'accountStatus', 'lastError'] as const;
 
 /**
  * Social accounts (社交账号): own platform accounts, personas, tags, status, logs and device links.
@@ -163,8 +161,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         userId: ownerId, platform: b.platform, handle: b.handle,
         displayName: blank(b.displayName) ?? null, profileUrl: blank(b.profileUrl) ?? platform.profileUrl(b.handle),
         externalId: blank(b.externalId) ?? null, instanceId: b.instanceId ?? null, personaId: b.personaId ?? null,
-        loginStatus: b.loginStatus ?? 'unknown', accountStatus: b.accountStatus ?? 'active',
-        notes: blank(b.notes) ?? null, lastError: blank(b.lastError) ?? null, createdBy: req.user.id,
+        notes: blank(b.notes) ?? null, createdBy: req.user.id,
       }).returning().catch((err) => { throw isUniqueViolation(err, 'social_accounts_platform_handle') ? handleTaken(b.platform, b.handle) : err; });
       if (b.tags?.length) await setAccountTags(tx, row!.id, b.tags);
       await writeLogs(tx, req.user, [
@@ -190,12 +187,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
         if (v === undefined || v === cur[k]) continue;
         (set as Record<string, unknown>)[k] = v;
         logs.push({ accountId, action: 'update', field: k, fromValue: cur[k], toValue: v });
-      }
-      for (const k of STATUS_FIELDS) {
-        const v = k === 'lastError' ? blank(b.lastError) : b[k];
-        if (v === undefined || v === cur[k]) continue;
-        (set as Record<string, unknown>)[k] = v;
-        logs.push({ accountId, action: 'status', field: k, fromValue: cur[k], toValue: v });
       }
       if (b.personaId !== undefined && b.personaId !== cur.personaId) {
         if (b.personaId) await assertPersonaFor(cur.userId, b.personaId, 'account', tx);
@@ -227,31 +218,16 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     return { account: item };
   });
 
-  /** Manual check (标记已检查): sets last_checked_at, optionally the observed statuses and error. */
-  app.post('/api/social/accounts/:id/checked', {
-    schema: {
-      params: Id,
-      body: z.object({ loginStatus: z.enum(LOGIN).optional(), accountStatus: z.enum(ACCOUNT).optional(), lastError: opt(500), message: opt(300) }).default({}),
-    },
-  }, async (req) => {
-    const b = req.body;
-    await db.transaction(async (tx) => {
-      const cur = await visibleAccount(req.user, req.params.id, tx, true);
-      const set: Partial<typeof sa.$inferInsert> = { lastCheckedAt: new Date() };
-      const logs: LogEntry[] = [{ accountId: cur.id, action: 'checked', field: null, fromValue: null, toValue: null, message: blank(b.message) ?? null }];
-      for (const k of STATUS_FIELDS) {
-        const v = k === 'lastError' ? blank(b.lastError) : b[k];
-        if (v === undefined || v === cur[k]) continue;
-        (set as Record<string, unknown>)[k] = v;
-        logs.push({ accountId: cur.id, action: 'status', field: k, fromValue: cur[k], toValue: v });
-      }
-      await tx.update(sa).set(set).where(eq(sa.id, cur.id));
-      await writeLogs(tx, req.user, logs);
-    });
+  /**
+   * 立即检测: queues the automatic check on the account's cloud phone (check.ts; the manual "mark checked"
+   * was removed on 2026-11-18). Owner (or admin); refused with a code when it can't run.
+   */
+  app.post('/api/social/accounts/:id/check', { schema: { params: Id } }, async (req, reply) => {
     const acc = await visibleAccount(req.user, req.params.id);
-    await accountChecked(acc); // alerts: a problem result notifies, a clean one recovers
-    const [item] = await toItems(req.user, [acc]);
-    return { account: item };
+    const task = await requestAccountCheck(req.user, acc);
+    if (req.audit) req.audit.extra = { taskId: task.id };
+    reply.code(202);
+    return { task: { id: task.id, status: task.status } };
   });
 
   app.delete('/api/social/accounts/:id', { schema: { params: Id } }, async (req, reply) => {

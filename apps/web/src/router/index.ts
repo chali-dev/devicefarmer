@@ -28,6 +28,7 @@ const router = createRouter({
         // Platform integrations (official APIs) were removed on 2026-11-18; old links land on Settings.
         { path: 'platforms', redirect: '/settings' },
         { path: 'alert-channels', name: 'alert-channels', component: () => import('../views/AlertChannelsView.vue'), meta: { admin: true } },
+        { path: 'risk', name: 'risk', component: () => import('../views/RiskView.vue'), meta: { admin: true } },
         { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },

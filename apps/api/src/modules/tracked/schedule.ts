@@ -1,8 +1,8 @@
 import { and, eq, inArray, isNotNull, lte, ne, sql } from 'drizzle-orm';
-import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { COLLECTOR_PLATFORMS } from './collector.js';
+import { capacityPerHour as paceCapacity, getRiskSettings } from '../risk/settings.js';
 import { createTask } from '../tasks/core.js';
 import { platformDef } from './platforms.js';
 import { firstSlot, HOUR_MS as HOUR } from './slots.js';
@@ -60,14 +60,14 @@ export async function scheduleTrackedRefreshes(now = new Date()): Promise<Schedu
 /**
  * 采集容量 (capacity hint for the 采集频率 pickers): per collector-device platform, how many accounts of ALL
  * users are on a schedule (not paused, the scheduler skips those) and the scheduled visits per hour they add up
- * to (Σ 1/interval), against what the device pace allows per hour (min(TRACKED_DEVICE_MAX_PER_HOUR,
- * 3600 / TRACKED_DEVICE_MIN_INTERVAL_SEC)). Aggregates only: no ids, handles or owners. Over the limit nothing
+ * to (Σ 1/interval), against what the device pace of the 风控 settings allows per hour (min(maxPerHour,
+ * 3600 / minIntervalSec); env TRACKED_DEVICE_* are only the defaults). Aggregates only: no ids, handles or owners. Over the limit nothing
  * is refused: the collector defers visits (collector.ts), so collection queues and runs later.
  */
 export async function scheduleCapacity() {
-  const minIntervalSec = config.TRACKED_DEVICE_MIN_INTERVAL_SEC;
-  const maxPerHour = config.TRACKED_DEVICE_MAX_PER_HOUR;
-  const capacityPerHour = Math.min(maxPerHour, Math.floor(3600 / minIntervalSec));
+  const pace = await getRiskSettings();
+  const { minIntervalSec, maxPerHour } = pace;
+  const capacityPerHour = paceCapacity(pace);
   const platforms = COLLECTOR_PLATFORMS.filter((p) => isPlatformEnabled(p));
   const rows = platforms.length ? await db.select({
     platform: ta.platform,

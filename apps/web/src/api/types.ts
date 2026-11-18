@@ -267,6 +267,11 @@ export interface SocialAccount {
   notes: string | null
   lastCheckedAt: string | null
   lastError: string | null
+  /** Last automatic check on the cloud phone (ok | logged_out | wrong_account | challenge | offline | timeout | app_missing). */
+  lastCheckCode: string | null
+  lastCheckDetail: string | null
+  /** Why 自动检测 can't run (account_check.unsupported_platform | account_check.no_device), null = it can. */
+  autoCheckUnsupported: string | null
   exception: boolean
   createdAt: string
   updatedAt: string
@@ -428,7 +433,7 @@ export interface DashboardWidgets {
     recentFailures: { id: string; type: string; label: string | null; error: string | null; errorCode: string | null; finishedAt: string | null; createdAt: string }[]
   }
   media?: { public: DashboardMediaPart; private: DashboardMediaPart; processing: number; failed: number }
-  comments?: { total: number; unread: number; pendingReview: number; awaitingOperator: number; queued: number; sent7d: number; failed7d: number }
+  comments?: { total: number; unread: number; drafts: number; awaitingOperator: number; queued: number; sent7d: number; failed7d: number }
   analytics?: DashboardAnalytics
   trending?: { regions: string[]; region: string; capturedAt: string; top: { rank: number; title: string | null; videoId: string; views: number | null; url: string }[] }
   perUser?: { users: DashboardUserRow[] }
@@ -475,7 +480,7 @@ export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
   draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
   sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default',
 }
-export interface CommentRules { requireApproval: boolean; duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
+export interface CommentRules { duplicateMax: number; duplicateWindowHours: number; sendsPerHour: number }
 export interface CommentAccount {
   id: string; platform: string; handle: string; displayName: string | null; userId: string; instanceId: string | null
   newCount: number
@@ -503,7 +508,7 @@ export interface CommentReplyItem {
   comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null
   account: { id: string; handle: string; platform: string } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
-  canReview: boolean; canEdit: boolean
+  canEdit: boolean
 }
 export interface CommentLog {
   id: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; action: string; code: string | null; message: string | null
@@ -561,7 +566,7 @@ export interface TrendingData {
 export interface AnalyticsSums { followersGained: number | null; views: number | null; likes: number | null; shares: number | null; comments: number | null }
 export interface AnalyticsAccount {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; displayName: string | null
-  latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: 'api' | 'manual' } | null
+  latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: 'api' | 'manual' | 'device'; approx: string[] } | null
   /** Metrics the official API could not provide when the row was collected (history). */
   missing: string[]
 }
@@ -572,7 +577,7 @@ export interface AnalyticsSummary {
   accounts: (AnalyticsAccount & { range: AnalyticsSums })[]
 }
 export interface AnalyticsDay extends Partial<AnalyticsSums> {
-  day: string; source: 'api' | 'manual' | null
+  day: string; source: 'api' | 'manual' | 'device' | null; approx?: string[]
   followers?: number | null; following?: number | null; posts?: number | null; totalViews?: number | null; totalLikes?: number | null
 }
 export interface AnalyticsSeries { account: AnalyticsAccount; from: string; to: string; days: AnalyticsDay[] }
@@ -599,4 +604,22 @@ export const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number
 export interface AppNotification {
   id: string; userId: string; kind: string; severity: 'info' | 'warning' | 'error'; recovered: boolean
   params: Record<string, string | number>; refType: string | null; refId: string | null; readAt: string | null; createdAt: string
+}
+
+// ---------------------------------------------------------------- 风控 (risk control, admin)
+export interface RiskDeviceSettings { minIntervalSec: number; maxPerHour: number; busyRetrySec: number; accountCheckHours: number | null }
+export interface RiskSettings { device: RiskDeviceSettings; defaults: RiskDeviceSettings; capacityPerHour: number; eventRetentionDays: number }
+export interface RiskDevice {
+  id: string; name: string; status: string; adbState: string | null; external: boolean; online: boolean
+  /** Platforms this phone collects tracked accounts for. */
+  collectorFor: string[]
+  /** Social accounts on this phone that the automatic check covers. */
+  checkedAccounts: number
+  halted: { at: string; code: string; source: 'collector' | 'account_check'; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null
+  visitsLastHour: number; lastVisitAt: string | null
+}
+export interface RiskEvent {
+  id: string; at: string; instanceId: string | null; instanceName: string | null; source: 'collector' | 'account_check'; code: string; detail: string | null
+  socialAccountId: string | null; trackedAccountId: string | null; userId: string | null
+  socialHandle: string | null; trackedHandle: string | null; username: string | null
 }

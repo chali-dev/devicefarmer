@@ -2,6 +2,8 @@
  * Social accounts (社交账号) test through the public API against the real API + DB (no mocks).
  * - Creates no Android container: device links use placeholder `instances` rows (adb ports 5586–5589, no containers);
  *   one is deleted through the real device delete job to verify that accounts are unlinked and logged.
+ * - Login / account status and the recorded error are written by the system (automatic check on the cloud phone,
+ *   see account-device-check.ts): the API ignores them on create/update and "mark checked" is gone (404).
  * - Creates two temporary users (A, B) with generated passwords and removes everything afterwards.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/social-check.ts
  */
@@ -179,8 +181,8 @@ try {
   check('user B: GET A\'s account → 404', r.status === 404 && r.body.code === 'social.not_found');
   r = await http('PUT', `/api/social/accounts/${a1}`, B, { notes: 'x' });
   check('user B: PUT A\'s account → 404', r.status === 404);
-  r = await http('POST', `/api/social/accounts/${a1}/checked`, B, {});
-  check('user B: mark A\'s account checked → 404', r.status === 404);
+  r = await http('POST', `/api/social/accounts/${a1}/check`, B);
+  check('user B: 立即检测 on A\'s account → 404', r.status === 404 && r.body.code === 'social.not_found');
   r = await http('GET', `/api/social/accounts/${a1}/logs`, B);
   check('user B: A\'s logs → 404', r.status === 404);
   r = await http('DELETE', `/api/social/accounts/${a1}`, B);
@@ -247,21 +249,29 @@ try {
   // ---------------------------------------------------------------- status + checks + exception filter
   r = await http('GET', '/api/social/accounts?exception=true', A);
   check('no exceptions yet (unknown login is not an exception)', r.body.total === 0);
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { loginStatus: 'needs_verification' });
-  check('set login status', r.status === 200 && r.body.account.loginStatus === 'needs_verification' && r.body.account.exception === true);
-  r = await http('PUT', `/api/social/accounts/${y1}`, A, { accountStatus: 'limited', lastError: 'upload blocked' });
+  r = await http('PUT', `/api/social/accounts/${a1}`, A, { loginStatus: 'needs_verification', accountStatus: 'limited', lastError: 'x' });
+  check('statuses are system-written: PUT ignores loginStatus / accountStatus / lastError', r.status === 200 && r.body.account.loginStatus === 'unknown'
+    && r.body.account.accountStatus === 'active' && r.body.account.lastError === null && r.body.account.exception === false, r.text.slice(0, 200));
+  r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: h('statusx'), loginStatus: 'logged_in', accountStatus: 'suspended' });
+  check('create ignores status fields too', r.status === 201 && r.body.account.loginStatus === 'unknown' && r.body.account.accountStatus === 'active', r.text.slice(0, 200));
+  await http('DELETE', `/api/social/accounts/${r.body.account.id}`, A);
+  r = await http('POST', `/api/social/accounts/${a1}/checked`, A, { loginStatus: 'logged_in', message: 'verified on phone' });
+  check('标记已检查 removed → 404', r.status === 404);
+  r = await http('POST', `/api/social/accounts/${y1}/check`, A);
+  check('立即检测 on a YouTube account → 400 account_check.unsupported_platform', r.status === 400 && r.body.code === 'account_check.unsupported_platform', r.text);
+  // What the automatic check writes (social/check.ts), set directly here: no phone in this test.
+  await db.update(schema.socialAccounts).set({ loginStatus: 'needs_verification', lastCheckCode: 'challenge' }).where(eq(schema.socialAccounts.id, a1));
+  await db.update(schema.socialAccounts).set({ accountStatus: 'limited', lastError: 'upload blocked' }).where(eq(schema.socialAccounts.id, y1));
   r = await http('GET', '/api/social/accounts?exception=true', A);
   check('exception filter: login problem + limited account', r.body.total === 2);
-  r = await http('POST', `/api/social/accounts/${a1}/checked`, A, { loginStatus: 'logged_in', message: 'verified on phone' });
-  check('mark checked sets last_checked_at + status', r.status === 200 && !!r.body.account.lastCheckedAt && r.body.account.loginStatus === 'logged_in' && r.body.account.exception === false);
-  r = await http('POST', `/api/social/accounts/${y1}/checked`, A, { accountStatus: 'active', lastError: '' });
-  check('check clears last error', r.body.account.lastError === null && r.body.account.exception === false);
+  r = await http('GET', '/api/social/accounts?loginStatus=needs_verification', A);
+  check('login status filter', r.body.total === 1 && r.body.items[0].id === a1 && r.body.items[0].lastCheckCode === 'challenge');
+  await db.update(schema.socialAccounts).set({ loginStatus: 'logged_in', lastCheckCode: 'ok' }).where(eq(schema.socialAccounts.id, a1));
+  await db.update(schema.socialAccounts).set({ accountStatus: 'active', lastError: null }).where(eq(schema.socialAccounts.id, y1));
   r = await http('GET', '/api/social/accounts?exception=true', A);
   check('exception filter empty again', r.body.total === 0);
-  r = await http('GET', '/api/social/accounts?loginStatus=logged_in', A);
-  check('login status filter', r.body.total === 1 && r.body.items[0].id === a1);
-  r = await http('PUT', `/api/social/accounts/${a1}`, A, { loginStatus: 'bogus' });
-  check('invalid status → 400', r.status === 400);
+  r = await http('GET', '/api/social/accounts?loginStatus=bogus', A);
+  check('invalid status filter → 400', r.status === 400);
 
   // ---------------------------------------------------------------- logs
   const L = await logsOf(A, a1);
@@ -270,8 +280,7 @@ try {
   check('log: link (to device name)', has('link', 'device', (l) => l.toValue === D1.name));
   check('log: persona change', has('update', 'persona', (l) => l.fromValue === null && l.toValue === 'Main'));
   check('log: tags change', has('update', 'tags'));
-  check('log: login status from → to', has('status', 'loginStatus', (l) => l.fromValue === 'unknown' && l.toValue === 'needs_verification'));
-  check('log: checked with message', has('checked', null, (l) => l.message === 'verified on phone'));
+  check('log: no status entry from the ignored status fields', !L.some((l) => l.action === 'status'));
   check('log: no entry for a no-op save', L.filter((l) => l.field === 'notes').length === 0);
   r = await http('PUT', `/api/social/accounts/${a1}`, A, { notes: 'changed' });
   check('log: notes change', (await logsOf(A, a1)).some((l) => l.field === 'notes' && l.fromValue === 'n1' && l.toValue === 'changed'));
@@ -320,7 +329,7 @@ try {
   const acts = await db.select().from(schema.auditLogs).where(like(schema.auditLogs.action, 'social.%'));
   const recent = acts.filter((a) => a.at >= t0);
   const actSet = new Set(recent.map((a) => a.action));
-  const want = ['social.account_create', 'social.account_update', 'social.account_checked', 'social.account_delete', 'social.batch.add-tags',
+  const want = ['social.account_create', 'social.account_update', 'social.account_check', 'social.account_delete', 'social.batch.add-tags',
     'social.batch.unlink', 'social.batch.set-persona', 'social.batch.delete', 'social.settings_update'];
   check('audit actions recorded', want.every((x) => actSet.has(x)), want.filter((x) => !actSet.has(x)).join(','));
   check('audit target for account update is "platform @handle"', recent.some((a) => a.action === 'social.account_update' && a.target === `instagram @${h('Alpha')}`));

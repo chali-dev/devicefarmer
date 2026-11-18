@@ -16,8 +16,9 @@ import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext 
  *   rows it stored earlier (source `api`) stay readable.
  * - Replies (comment_tasks) are always written by a person, optionally from a saved template. No
  *   generated text, no automatic replies, no "reply to all": one reply task per comment request.
- * - Review: with `requireApproval` (default on) a user's reply needs approval by someone else who can
- *   see it (an admin, or the account owner when an admin wrote it). Admins may approve their own.
+ * - No approval step (owner decision 2026-11-18): a submitted reply goes straight to its send task
+ *   (draft → scheduled → sending → awaiting_operator). pending_review / approved / rejected stay in the
+ *   status list for old rows only; src/db/comment-approval-migration.ts moved waiting rows on.
  * - Anti-abuse (owner's hard constraint), each block written to comment_logs with a reason code:
  *   one reply per comment (unless the previous one failed / was rejected / cancelled; also a DB
  *   partial unique index), the same text at most `duplicateMax` times per account per
@@ -44,8 +45,6 @@ type Level = 'debug' | 'info' | 'warn' | 'error';
 // ---------------------------------------------------------------- settings
 
 export interface CommentRules {
-  /** Users' replies need approval before sending. */
-  requireApproval: boolean;
   /** Same reply text at most this many times per account within the window. */
   duplicateMax: number;
   duplicateWindowHours: number;
@@ -53,20 +52,20 @@ export interface CommentRules {
   sendsPerHour: number;
 }
 const RULES_KEY = 'comments.rules';
-export const DEFAULT_RULES: CommentRules = { requireApproval: true, duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20 };
+export const DEFAULT_RULES: CommentRules = { duplicateMax: 3, duplicateWindowHours: 24, sendsPerHour: 20 };
 
 export async function getRules(exec: Exec = db): Promise<CommentRules> {
   const [row] = await exec.select().from(schema.settings).where(eq(schema.settings.key, RULES_KEY));
   const v = (row?.value ?? {}) as Partial<CommentRules>;
   const int = (x: unknown, d: number) => (typeof x === 'number' && Number.isInteger(x) && x >= 1 ? x : d);
   return {
-    requireApproval: typeof v.requireApproval === 'boolean' ? v.requireApproval : DEFAULT_RULES.requireApproval,
     duplicateMax: int(v.duplicateMax, DEFAULT_RULES.duplicateMax),
     duplicateWindowHours: int(v.duplicateWindowHours, DEFAULT_RULES.duplicateWindowHours),
     sendsPerHour: int(v.sendsPerHour, DEFAULT_RULES.sendsPerHour),
   };
 }
 
+/** Stored without the removed `requireApproval` (an old row's flag is dropped on the next save). */
 export async function saveRules(input: Partial<CommentRules>): Promise<CommentRules> {
   const next = { ...(await getRules()), ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) };
   await db.insert(schema.settings).values({ key: RULES_KEY, value: next })
@@ -247,76 +246,40 @@ export async function createReply(user: AuthUser, comment: Comment, b: ReplyInpu
 }
 
 export async function editReply(user: AuthUser, r: CommentTask, b: { text?: string; scheduledAt?: Date | null; templateId?: string | null }): Promise<CommentTask> {
-  if (r.status !== 'draft' && r.status !== 'pending_review') throw conflict(`当前状态（${r.status}）不能修改`, 'comment.bad_status', { status: r.status });
-  if (r.status === 'pending_review' && !isAdmin(user) && r.authorId !== user.id) throw forbidden('只有作者可以修改待审核的回复', 'comment.not_author');
+  if (r.status !== 'draft') throw conflict(`当前状态（${r.status}）不能修改`, 'comment.bad_status', { status: r.status });
   const text = b.text !== undefined ? b.text.trim() : r.text;
   if (!text) throw badRequest('回复内容不能为空', 'comment.text_empty');
   if (b.templateId) await visibleTemplate(user, b.templateId);
   return db.transaction(async (tx) => {
     const set = { text, textHash: textHash(text), ...(b.scheduledAt !== undefined ? { scheduledAt: b.scheduledAt } : {}), ...(b.templateId !== undefined ? { templateId: b.templateId } : {}) };
-    if (r.status === 'pending_review' && set.textHash !== r.textHash) await assertNotDuplicate(tx, user, { ...r, textHash: set.textHash }, await getRules(tx));
-    const [done] = await tx.update(R).set(set).where(and(eq(R.id, r.id), inArray(R.status, ['draft', 'pending_review']))).returning();
+    const [done] = await tx.update(R).set(set).where(and(eq(R.id, r.id), eq(R.status, 'draft'))).returning();
     if (!done) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
     await replyLog(done, { action: 'edited', data: { textChanged: text !== r.text, scheduledAt: done.scheduledAt?.toISOString() ?? null }, actor: user }, tx);
     return done;
   });
 }
 
-/** draft → pending_review (review required) or approved (+ send scheduled). */
+/** draft → scheduled: the send task of round 1 is created at once (runAt = scheduledAt). No approval step. */
 export async function submitReply(user: AuthUser, r: CommentTask, scheduledAt?: Date | null): Promise<CommentTask> {
   if (r.status !== 'draft') throw conflict(`当前状态（${r.status}）不能提交`, 'comment.bad_status', { status: r.status });
   const rules = await getRules();
-  const needsReview = rules.requireApproval && !isAdmin(user);
   const row = await db.transaction(async (tx) => {
     await assertNotDuplicate(tx, user, r, rules);
-    const now = new Date();
-    const [done] = await tx.update(R).set({
-      status: needsReview ? 'pending_review' : 'approved', submittedAt: now,
-      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
-      ...(needsReview ? {} : { reviewerId: user.id, reviewerName: user.username, reviewedAt: now, reviewNote: rules.requireApproval ? 'admin' : 'review not required' }),
-    }).where(and(eq(R.id, r.id), eq(R.status, 'draft'))).returning();
+    const [done] = await tx.update(R).set({ status: 'scheduled', submittedAt: new Date(), ...(scheduledAt !== undefined ? { scheduledAt } : {}) })
+      .where(and(eq(R.id, r.id), eq(R.status, 'draft'))).returning();
     if (!done) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
-    await replyLog(done, { action: 'submitted', message: needsReview ? 'waiting for review' : 'approved without review', data: { needsReview }, actor: user }, tx);
-    return done;
-  });
-  return needsReview ? row : scheduleSend(row, user);
-}
-
-/** Who may review: anyone who sees the reply and is not its author; admins also their own. */
-function assertReviewer(user: AuthUser, r: CommentTask) {
-  if (!isAdmin(user) && r.authorId === user.id) throw forbidden('不能审核自己撰写的回复', 'comment.self_approval');
-}
-
-export async function approveReply(user: AuthUser, r: CommentTask, note?: string | null): Promise<CommentTask> {
-  if (r.status !== 'pending_review') throw conflict(`当前状态（${r.status}）不能审核`, 'comment.bad_status', { status: r.status });
-  try { assertReviewer(user, r); } catch (err) {
-    await replyLog(r, { level: 'warn', action: 'blocked', code: 'comment.self_approval', message: 'self-approval refused', actor: user });
-    throw err;
-  }
-  const row = await db.transaction(async (tx) => {
-    await assertNotDuplicate(tx, user, r, await getRules(tx));
-    const [done] = await tx.update(R).set({ status: 'approved', reviewerId: user.id, reviewerName: user.username, reviewedAt: new Date(), reviewNote: note?.trim() || null })
-      .where(and(eq(R.id, r.id), eq(R.status, 'pending_review'))).returning();
-    if (!done) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
-    await replyLog(done, { action: 'approved', message: note ?? null, actor: user }, tx);
+    await replyLog(done, { action: 'submitted', message: 'submitted', actor: user }, tx);
     return done;
   });
   return scheduleSend(row, user);
 }
 
-export async function rejectReply(user: AuthUser, r: CommentTask, reason: string): Promise<CommentTask> {
-  if (r.status !== 'pending_review') throw conflict(`当前状态（${r.status}）不能审核`, 'comment.bad_status', { status: r.status });
-  assertReviewer(user, r);
-  const [done] = await db.update(R).set({ status: 'rejected', reviewerId: user.id, reviewerName: user.username, reviewedAt: new Date(), reviewNote: reason.trim() })
-    .where(and(eq(R.id, r.id), eq(R.status, 'pending_review'))).returning();
-  if (!done) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
-  await replyLog(done, { level: 'warn', action: 'rejected', message: reason.trim(), actor: user });
-  return done;
-}
-
 // ---------------------------------------------------------------- replies: sending
 
-/** Creates the task-centre task of the reply's current round (runAt = scheduledAt). */
+/**
+ * Creates the task-centre task of the reply's current round (runAt = scheduledAt). The reply is `scheduled`
+ * until its task runs (also for "now"; `approved` is only on old rows).
+ */
 async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<CommentTask> {
   const now = new Date();
   const when = r.scheduledAt && r.scheduledAt > now ? r.scheduledAt : null;
@@ -327,7 +290,7 @@ async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<Com
       refType: REPLY_REF, refId: r.id, payload: { commentTaskId: r.id, round: r.round },
       runAt: when, idempotencyKey: `comment-reply:${r.id}:${r.round}`, maxAttempts: r.maxAttempts,
     });
-    const [done] = await db.update(R).set({ taskId: task.id, status: when ? 'scheduled' : 'approved' })
+    const [done] = await db.update(R).set({ taskId: task.id, status: 'scheduled' })
       .where(and(eq(R.id, r.id), eq(R.round, r.round), inArray(R.status, ['approved', 'scheduled']))).returning();
     await replyLog(done ?? r, { action: when ? 'scheduled' : 'queued', data: { runAt: when?.toISOString() ?? null, round: r.round }, taskId: task.id, actor });
     return done ?? r;
@@ -397,6 +360,7 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     const [r] = await tx.select().from(R).where(eq(R.id, id)).for('update');
     if (!r) return { kind: 'gone' as const };
     // `sending` of this same task = an earlier attempt was cut off before the hand-over (nothing is ever sent automatically).
+    // `approved` = an old row queued before the approval step was removed.
     if (r.taskId !== ctx.task.id || !['approved', 'scheduled', 'sending'].includes(r.status)) return { kind: 'skip' as const, r };
     await lockKey(tx, `comment-send:${r.accountId}`);
     const hourAgo = new Date(Date.now() - 3600_000);
@@ -454,7 +418,7 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     if (!ctx.signal.aborted) {
       // Check failures are final; anything else (e.g. a database error) is retried while attempts remain.
       const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
-      await db.update(R).set({ status: final ? 'failed' : 'approved', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
+      await db.update(R).set({ status: final ? 'failed' : 'scheduled', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
         .where(and(eq(R.id, r.id), eq(R.taskId, ctx.task.id), eq(R.status, 'sending')));
       await log(final ? 'error' : 'warn', final ? 'failed' : 'retry', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, undefined, code);
     }

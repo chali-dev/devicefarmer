@@ -49,6 +49,8 @@ import './modules/analytics/analytics.js'; // analytics dashboard widget (histor
 import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task + dashboard widget
 import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly collection tick (tracked schedules, trending)
 import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels
+import { riskRoutes } from './modules/risk/routes.js'; // 风控: device pace, device halts, risk events
+import { scheduleAccountDeviceChecks } from './modules/social/check.js'; // 社交号自动检测 (task account-device-check)
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 import { logSink } from './modules/system/logs.js';
@@ -105,6 +107,7 @@ await app.register(taskRoutes);
 await app.register(dashboardRoutes);
 await app.register(systemRoutes);
 await app.register(notifyRoutes);
+await app.register(riskRoutes);
 
 /** Dependency health: each check is a real call, nothing is assumed (see health.ts). */
 app.get('/api/health', async (_req, reply) => {
@@ -157,6 +160,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     alertsHourly(app.log);
   };
   const firstRun = setTimeout(() => {
@@ -164,6 +168,7 @@ async function startBackground(): Promise<void> {
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
+    void scheduleAccountDeviceChecks().catch((err) => app.log.warn({ err }, 'account check scheduling failed'));
     alertsHourly(app.log);
   }, 10_000);
   firstRun.unref();

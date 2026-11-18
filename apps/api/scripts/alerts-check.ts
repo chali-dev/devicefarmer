@@ -4,8 +4,10 @@
  *   the API's real monitor finds no container and marks them `error`. The device "recovered" path of the
  *   monitor needs a real booted device, so recovery semantics are exercised by calling the real recover()
  *   from this script (the same function the monitor calls).
- * - account.problem: the manual "mark checked" route (problem + recovered). The scheduled official-API account
- *   check (号状态监控) and the connection.expired kind were removed on 2026-11-18 (see platforms-check.ts).
+ * - account.problem: raised by the automatic account check on the cloud phone (social/check.ts; the manual "mark
+ *   checked" route is gone: 404). The check needs a real phone (account-device-check.ts), so here the account's
+ *   statuses are written as the check writes them and the real trigger accountChecked() it calls is called from
+ *   this script (problem, wrong_account reason, recovered). The connection.expired kind went with the official APIs.
  * - publish.failed: a real distribution to a suspended (facebook, text-only) account fails in preflight.
  * - recipients/RBAC/isolation, cooldown, mark read, WebSocket delivery, rules RBAC/validation, audit, retention.
  * External alert channels (Telegram, fan-out, delivery failures) are covered by scripts/alert-channels-check.ts.
@@ -18,6 +20,7 @@ import WebSocket from 'ws';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
 import { NOTIFY_CLEANUP_TASK, recover } from '../src/modules/notify/notify.js';
+import { accountChecked } from '../src/modules/notify/triggers.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -151,24 +154,30 @@ try {
   check('notifyAdmins off → only the granted user (B), not the admin', (await notes(uT, D2.id)).length === 0);
   await http('PUT', '/api/settings/alerts', T, { notifyAdmins: true });
 
-  // ---------------------------------------------------------------- account.problem via the manual check
+  // ---------------------------------------------------------------- account.problem (automatic check result)
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: h('ig') });
   const ig: string = r.body.account.id; refIds.push(ig);
   r = await http('POST', `/api/social/accounts/${ig}/checked`, A, { loginStatus: 'logged_out' });
-  check('manual check result logged_out → 200', r.status === 200, r.text);
+  check('manual "mark checked" is gone (404)', r.status === 404, String(r.status));
+  const setChecked = async (set: Partial<typeof schema.socialAccounts.$inferInsert>, why?: string) => {
+    const [row] = await db.update(schema.socialAccounts).set(set).where(eq(schema.socialAccounts.id, ig)).returning();
+    await accountChecked(row!, why);
+  };
+  await setChecked({ loginStatus: 'logged_out', lastCheckCode: 'logged_out' });
   const nIg = (await notes(uA, ig, 'account.problem'))[0];
   check('account.problem to the owner (reason logged_out, platform/handle params)', !!nIg && nIg.params.reason === 'logged_out' && nIg.params.handle === h('ig') && nIg.refType === 'social_account', JSON.stringify(nIg));
   check('account.problem to admin, not to B', (await notes(uT, ig)).length === 1 && (await notes(uB, ig)).length === 0);
-  r = await http('POST', `/api/social/accounts/${ig}/checked`, A, { loginStatus: 'logged_in' });
+  await setChecked({ loginStatus: 'logged_in', lastCheckCode: 'ok' });
   const igRec = (await notes(uA, ig, 'account.problem')).find((x) => x.recovered);
-  check('manual check logged_in → recovered notice', r.status === 200 && !!igRec);
-  r = await http('POST', `/api/social/accounts/${ig}/checked`, A, { accountStatus: 'suspended' });
-  check('manual check: account suspended → account.problem (reason suspended)', (await notes(uA, ig, 'account.problem')).some((x) => !x.recovered && x.params.reason === 'suspended'));
+  check('check ok (logged_in) → recovered notice', !!igRec);
+  await setChecked({ loginStatus: 'logged_out', lastCheckCode: 'wrong_account' }, 'wrong_account');
+  check('check wrong_account → account.problem (reason wrong_account)', (await notes(uA, ig, 'account.problem')).some((x) => !x.recovered && x.params.reason === 'wrong_account'));
 
   // ---------------------------------------------------------------- publish.failed via a real publish run
   r = await http('POST', '/api/social/accounts', A, { platform: 'facebook', handle: h('fb') });
   const fb: string = r.body.account.id; refIds.push(fb);
-  await http('PUT', `/api/social/accounts/${fb}`, A, { accountStatus: 'suspended' });
+  // account status is system-written now (not editable through the API)
+  await db.update(schema.socialAccounts).set({ accountStatus: 'suspended' }).where(eq(schema.socialAccounts.id, fb));
   r = await http('POST', '/api/contents', A, { title: `al-${tag}`, body: 'alert test' });
   const contentId: string = r.body.content?.id;
   r = await http('POST', `/api/contents/${contentId}/distribute`, A, { targets: [{ accountId: fb }] });
