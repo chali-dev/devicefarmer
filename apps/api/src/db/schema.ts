@@ -1143,6 +1143,8 @@ export interface ContentAiInfo {
   accountId?: string;
   /** 立即生成 with a 主题: the topic the person asked for. */
   topic?: string;
+  /** 「AI生成草稿」 saved from the account preview: whether the person changed the generated title/text before saving. */
+  edited?: boolean;
   model: string;
   requestedModel: string;
   personaId: string;
