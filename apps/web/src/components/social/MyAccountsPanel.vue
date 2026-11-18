@@ -368,7 +368,6 @@ async function submitBatchForm() {
 <template>
   <div class="cp-panel">
     <Teleport defer :to="extraTo || 'body'" :disabled="!extraTo">
-      <router-link v-slot="{ href, navigate }" to="/personas" custom><a-button :href="href" @click="navigate">{{ t('scripts.personas.manage') }}</a-button></router-link>
       <a-button @click="syncOpen = true"><template #icon><SyncOutlined /></template>{{ t('social.sync.button') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('social.add') }}</a-button>
     </Teleport>

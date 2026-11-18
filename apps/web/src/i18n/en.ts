@@ -2046,7 +2046,6 @@ const en: Messages = {
     persona: 'Persona',
     noPersona: 'No persona',
     personas: {
-      manage: 'Personas',
       tabs: { public: 'Public personas', mine: 'Personal personas' },
       add: 'New persona',
       namePlaceholder: 'Persona name (max. 50 characters)',

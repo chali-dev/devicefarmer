@@ -2057,7 +2057,6 @@ const zhCN = {
     persona: '人设',
     noPersona: '未设人设',
     personas: {
-      manage: '人设管理',
       tabs: { public: '公共人设', mine: '个人人设' },
       add: '新建人设',
       namePlaceholder: '人设名称（最多 50 个字符）',
