@@ -940,8 +940,6 @@ const en: Messages = {
     searchPlaceholder: 'Handle / name / notes',
     colAccount: 'Account',
     colPlatform: 'Platform',
-    colCategory: 'Category',
-    uncategorized: 'Uncategorized',
     tag: 'Tag',
     tags: 'Tags',
     owner: 'Owner',

@@ -243,12 +243,12 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/social/settings': { action: 'social.settings_update', detail: ({ body }) => ({ limits: body.limits }) },
   // tracked accounts (追踪账号)
   'POST /api/tracked-accounts': {
-    action: 'tracked.create', detail: ({ body }) => ({ platform: body.platform, category: body.category, tags: body.tags, favorite: body.favorite }),
+    action: 'tracked.create', detail: ({ body }) => ({ platform: body.platform, tags: body.tags, favorite: body.favorite }),
   },
   'PATCH /api/tracked-accounts/:id': {
     action: 'tracked.update',
     detail: ({ body }) => ({
-      fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, category: body.category, tags: body.tags, refreshIntervalHours: body.refreshIntervalHours,
+      fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, tags: body.tags, refreshIntervalHours: body.refreshIntervalHours,
     }),
   },
   'DELETE /api/tracked-accounts/:id': { action: 'tracked.delete' },

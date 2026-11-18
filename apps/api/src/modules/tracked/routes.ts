@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -10,6 +10,7 @@ import { enqueueTask } from '../instances/queue.js';
 import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platforms.js';
 import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts, upsertPosts } from './tracked.js';
 import { firstSlot, SCHEDULE_INTERVALS } from './schedule.js';
+import { normTags, TAG_LIMIT, TAG_MAX } from './tags.js';
 
 const ta = schema.trackedAccounts;
 const ts = schema.trackedAccountSnapshots;
@@ -19,14 +20,12 @@ const Id = z.object({ id: z.string().uuid() });
 const MAX_COUNT = 1e13;
 const Count = z.number().int().min(0).max(MAX_COUNT).nullable().optional();
 const HttpUrl = z.string().trim().max(1000).url().refine((u) => /^https?:\/\//i.test(u), 'http(s) URL required');
-const Tags = z.array(z.string().trim().min(1).max(32)).max(20);
+const Tags = z.array(z.string().trim().min(1).max(TAG_MAX)).max(TAG_LIMIT);
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const Platform = z.enum(PLATFORM_IDS);
 
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 const blankToNull = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim());
-/** Lowercase, trimmed, deduplicated. */
-const normTags = (tags: string[]) => [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
 const isUnique = (err: unknown) => {
   const e = err as { code?: string; cause?: { code?: string } };
   return e.code === '23505' || e.cause?.code === '23505';
@@ -41,8 +40,6 @@ function ownerWhere(user: AuthUser, ownerId?: string): SQL | undefined {
 
 const ListQuery = z.object({
   platform: Platform.optional(),
-  /** exact category, or 'none' for uncategorized */
-  category: z.string().trim().max(50).optional(),
   tag: z.string().trim().max(32).optional(),
   favorite: z.enum(['true', 'false']).optional(),
   status: z.enum(['active', 'paused', 'error']).optional(),
@@ -56,7 +53,6 @@ const CreateBody = z.object({
   input: z.string().trim().min(1).max(500),
   platform: Platform.optional(),
   displayName: optText(200),
-  category: optText(50),
   tags: Tags.optional(),
   favorite: z.boolean().optional(),
   notes: optText(1000),
@@ -66,7 +62,6 @@ const UpdateBody = z.object({
   displayName: optText(200),
   avatarUrl: HttpUrl.nullable().optional(),
   bio: optText(2000),
-  category: optText(50),
   tags: Tags.optional(),
   favorite: z.boolean().optional(),
   /** 'error' is set by refreshes only. */
@@ -107,8 +102,6 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const q = req.query;
     const where: (SQL | undefined)[] = [ownerWhere(req.user, q.ownerId)];
     if (q.platform) where.push(eq(ta.platform, q.platform));
-    if (q.category === 'none') where.push(isNull(ta.category));
-    else if (q.category) where.push(eq(ta.category, q.category));
     if (q.tag) where.push(sql`${ta.tags} @> array[${q.tag.toLowerCase()}]::text[]`);
     if (q.favorite) where.push(eq(ta.favorite, q.favorite === 'true'));
     if (q.status) where.push(eq(ta.status, q.status));
@@ -123,14 +116,11 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { items: await toPublicAccounts(rows), total, page: q.page, pageSize: q.pageSize };
   });
 
-  /** Categories and tags in use (filter suggestions). */
+  /** Tags in use (filter suggestions). */
   app.get('/api/tracked-accounts/facets', { schema: { querystring: z.object({ ownerId: z.string().uuid().optional() }) } }, async (req) => {
     const cond = ownerWhere(req.user, req.query.ownerId);
-    const [cats, tags] = await Promise.all([
-      db.selectDistinct({ c: ta.category }).from(ta).where(and(cond, sql`${ta.category} is not null`)).orderBy(asc(ta.category)).limit(500),
-      db.selectDistinct({ t: sql<string>`unnest(${ta.tags})` }).from(ta).where(cond).orderBy(sql`1`).limit(500),
-    ]);
-    return { categories: cats.map((c) => c.c!), tags: tags.map((t) => t.t) };
+    const tags = await db.selectDistinct({ t: sql<string>`unnest(${ta.tags})` }).from(ta).where(cond).orderBy(sql`1`).limit(500);
+    return { tags: tags.map((t) => t.t) };
   });
 
   app.post('/api/tracked-accounts', { schema: { body: CreateBody } }, async (req, reply) => {
@@ -139,7 +129,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (req.audit) req.audit.target = display(p);
     const [row] = await db.insert(ta).values({
       userId: req.user.id, platform: p.platform, handle: p.handle, profileUrl: p.profileUrl, externalId: p.externalId,
-      displayName: blankToNull(b.displayName) ?? null, category: blankToNull(b.category) ?? null, tags: normTags(b.tags ?? []),
+      displayName: blankToNull(b.displayName) ?? null, tags: normTags(b.tags ?? []),
       favorite: b.favorite ?? false, notes: blankToNull(b.notes) ?? null,
     }).returning().catch((err) => {
       if (isUnique(err)) throw conflict(`已在追踪 ${display(p)}`, 'tracked.duplicate', { account: display(p) });
@@ -158,7 +148,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const cur = await getVisibleAccount(req.user, req.params.id);
     const b = req.body;
     const set: Partial<typeof ta.$inferInsert> = {};
-    for (const k of ['displayName', 'bio', 'category', 'notes'] as const) {
+    for (const k of ['displayName', 'bio', 'notes'] as const) {
       const v = blankToNull(b[k]);
       if (v !== undefined) set[k] = v;
     }

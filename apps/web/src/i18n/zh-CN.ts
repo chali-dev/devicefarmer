@@ -941,8 +941,6 @@ const zhCN = {
     searchPlaceholder: '账号 / 名称 / 备注',
     colAccount: '账号',
     colPlatform: '平台',
-    colCategory: '分类',
-    uncategorized: '未分类',
     tag: '标签',
     tags: '标签',
     owner: '所属用户',

@@ -177,8 +177,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <StatusTag kind="tracked" :status="acc.status" />
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
           </a-space>
-          <div class="muted small">
-            {{ acc.category || t('tracked.uncategorized') }}
+          <div v-if="acc.tags.length" class="muted small">
             <a-tag v-for="tg in acc.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
           </div>
           <div class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>

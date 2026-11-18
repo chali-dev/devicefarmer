@@ -105,18 +105,21 @@ try {
 
   // ---------------------------------------------------------------- CRUD
   let r = await http('POST', '/api/tracked-accounts', A.token, {
+    // `category` (removed: folded into tags) is what an old client may still send: silently ignored, not a 400.
     input: 'https://www.instagram.com/NatGeo/', category: 'Media', tags: ['Travel', 'travel', ' Photo '], notes: 'nat geo',
   });
   check('create (URL) 201, tags normalised, manual_only data mode', r.status === 201 && r.body.account.platform === 'instagram'
     && r.body.account.handle === 'natgeo' && JSON.stringify(r.body.account.tags) === '["travel","photo"]'
     && r.body.account.status === 'active' && r.body.account.dataMode === 'manual_only' && r.body.account.followers === null, r.text.slice(0, 160));
   const ig = r.body.account; accountIds.push(ig.id);
+  const igCat = async () => (await db.select({ c: schema.trackedAccounts.category }).from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, ig.id)))[0]?.c;
+  check('create: category in the body ignored (no category in the response, column stays null)', !('category' in ig) && await igCat() === null, r.text.slice(0, 160));
   r = await http('POST', '/api/tracked-accounts', A.token, { input: '@NATGEO', platform: 'instagram' });
   check('duplicate (same user, platform, handle) refused 409 tracked.duplicate', r.status === 409 && r.body.code === 'tracked.duplicate');
-  r = await http('POST', '/api/tracked-accounts', B.token, { input: 'natgeo', platform: 'instagram', category: 'B-cat' });
+  r = await http('POST', '/api/tracked-accounts', B.token, { input: 'natgeo', platform: 'instagram', tags: ['b-only'] });
   check('another user may track the same account', r.status === 201);
   const igB = r.body.account; accountIds.push(igB.id);
-  r = await http('POST', '/api/tracked-accounts', A.token, { input: `https://www.youtube.com/channel/${CH}`, category: 'Creators', tags: ['travel'] });
+  r = await http('POST', '/api/tracked-accounts', A.token, { input: `https://www.youtube.com/channel/${CH}`, tags: ['travel'] });
   const yt = r.body.account; accountIds.push(yt.id);
   check('YouTube account: external id from URL, data mode api_unconfigured (no key)', r.status === 201 && yt.externalId === CH && yt.dataMode === 'api_unconfigured', yt?.dataMode);
   r = await http('POST', '/api/tracked-accounts', A.token, { input: 'https://www.tiktok.com/@Khaby.Lame', favorite: true, displayName: 'Khaby' });
@@ -125,6 +128,9 @@ try {
 
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { displayName: 'National Geographic', bio: 'bio', avatarUrl: 'https://example.org/a.jpg' });
   check('update profile fields', r.status === 200 && r.body.account.displayName === 'National Geographic' && r.body.account.avatarUrl === 'https://example.org/a.jpg');
+  r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { notes: 'nat geo 2', category: 'Media' });
+  check('update: category ignored (200, no category in the response, column stays null)', r.status === 200 && r.body.account.notes === 'nat geo 2'
+    && !('category' in r.body.account) && await igCat() === null, r.text.slice(0, 160));
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { avatarUrl: 'javascript:alert(1)' });
   check('non-http avatar URL rejected 400', r.status === 400);
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, {});
@@ -200,14 +206,13 @@ try {
   const idsOf = (b: any) => b.items.map((x: any) => x.id).sort().join(',');
   const want = (...xs: any[]) => xs.map((x) => x.id).sort().join(',');
   check('filter platform', idsOf(await list('platform=instagram')) === want(ig));
-  check('filter category', idsOf(await list('category=Creators')) === want(yt));
-  check("filter category 'none'", idsOf(await list('category=none')) === want(tt));
+  check('removed category filter is ignored (all rows)', idsOf(await list('category=Creators')) === want(ig, yt, tt));
   check('filter tag (case-insensitive)', idsOf(await list('tag=TRAVEL')) === want(ig, yt));
   check('filter favorites', idsOf(await list('favorite=true')) === want(tt));
   check('filter status', idsOf(await list('status=paused')) === want(tt));
   check('search display name / handle', idsOf(await list('q=geographic')) === want(ig) && idsOf(await list('q=khaby')) === want(tt));
   const fac = (await http('GET', '/api/tracked-accounts/facets', A.token)).body;
-  check('facets: own categories and tags only', JSON.stringify(fac.categories) === '["Creators","Media"]' && JSON.stringify(fac.tags) === '["photo","travel"]', JSON.stringify(fac));
+  check('facets: own tags only, no categories', !('categories' in fac) && JSON.stringify(fac.tags) === '["photo","travel"]', JSON.stringify(fac));
   const all = await list('');
   check('list favorites first, total 3', all.total === 3 && all.items[0].id === tt.id);
 

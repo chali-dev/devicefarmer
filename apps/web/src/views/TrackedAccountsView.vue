@@ -30,7 +30,7 @@ const route = useRoute()
 const router = useRouter()
 
 const platforms = ref<TrackedPlatform[]>([])
-const facets = ref<{ categories: string[]; tags: string[] }>({ categories: [], tags: [] })
+const facets = ref<{ tags: string[] }>({ tags: [] })
 const users = ref<ManagedUser[]>([])
 const items = ref<TrackedAccount[]>([])
 const total = ref(0)
@@ -40,7 +40,7 @@ const loading = ref(false)
 const selectedKeys = ref<string[]>([])
 
 const filters = reactive({
-  q: '', platform: undefined as string | undefined, category: undefined as string | undefined, tag: undefined as string | undefined,
+  q: '', platform: undefined as string | undefined, tag: undefined as string | undefined,
   favorite: false, status: queryParam<TrackedStatus>(route.query, 'status', ['active', 'paused', 'error']), ownerId: undefined as string | undefined,
 })
 if (queryParam(route.query, 'platform')) filters.platform = queryParam(route.query, 'platform')
@@ -49,7 +49,7 @@ const platformLabel = (id: string) => platforms.value.find((p) => p.id === id)?.
 function query(): string {
   const p = new URLSearchParams({ page: String(page.value), pageSize: String(pageSize.value) })
   if (filters.q.trim()) p.set('q', filters.q.trim())
-  for (const k of ['platform', 'category', 'tag', 'status', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
+  for (const k of ['platform', 'tag', 'status', 'ownerId'] as const) if (filters[k]) p.set(k, filters[k]!)
   if (filters.favorite) p.set('favorite', 'true')
   return p.toString()
 }
@@ -76,7 +76,7 @@ async function loadPlatforms() {
 }
 function search() { page.value = 1; void load() }
 function reset() {
-  Object.assign(filters, { q: '', platform: undefined, category: undefined, tag: undefined, favorite: false, status: undefined, ownerId: undefined })
+  Object.assign(filters, { q: '', platform: undefined, tag: undefined, favorite: false, status: undefined, ownerId: undefined })
   search(); void loadFacets()
 }
 onMounted(async () => {
@@ -98,7 +98,7 @@ const columns = computed(() => [
   { title: '', key: 'favorite', width: 44 },
   { title: t('tracked.colAccount'), key: 'account', width: 250 },
   { title: t('tracked.colPlatform'), key: 'platform', width: 110 },
-  { title: t('tracked.colCategory'), key: 'category', width: 180 },
+  { title: t('tracked.tags'), key: 'tags', width: 180 },
   { title: t('tracked.metrics.followers'), key: 'followers', width: 130, align: 'right' as const },
   { title: t('tracked.lastChecked'), key: 'checked', width: 170 },
   ...(collectable.value.length ? [{ title: t('collect.schedule'), key: 'schedule', width: 170 }] : []),
@@ -167,11 +167,11 @@ function remove(a: TrackedAccount) {
 // ---- add
 const addOpen = ref(false)
 const adding = ref(false)
-const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', category: '', tags: [] as string[], favorite: false, notes: '' })
+const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', tags: [] as string[], favorite: false, notes: '' })
 const preview = ref<{ platform: string; handle: string; profileUrl: string } | null>(null)
 const previewError = ref('')
 function openAdd() {
-  Object.assign(addForm, { platform: undefined, input: '', displayName: '', category: '', tags: [], favorite: false, notes: '' })
+  Object.assign(addForm, { platform: undefined, input: '', displayName: '', tags: [], favorite: false, notes: '' })
   preview.value = null; previewError.value = ''
   addOpen.value = true
 }
@@ -187,7 +187,7 @@ async function saveAdd() {
   adding.value = true
   try {
     await api('POST', '/api/tracked-accounts', {
-      input: addForm.input, platform: addForm.platform, displayName: addForm.displayName || undefined, category: addForm.category || undefined,
+      input: addForm.input, platform: addForm.platform, displayName: addForm.displayName || undefined,
       tags: addForm.tags, favorite: addForm.favorite, notes: addForm.notes || undefined,
     })
     message.success(t('common.created'))
@@ -201,11 +201,11 @@ async function saveAdd() {
 const editOpen = ref(false)
 const editSaving = ref(false)
 const editing = ref<TrackedAccount | null>(null)
-const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', category: '', tags: [] as string[], status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
+const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', tags: [] as string[], status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
 function openEdit(a: TrackedAccount) {
   editing.value = a
   Object.assign(editForm, {
-    displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '', category: a.category ?? '', tags: [...a.tags],
+    displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '', tags: [...a.tags],
     status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '', interval: a.refreshIntervalHours ?? 0,
   })
   editOpen.value = true
@@ -215,7 +215,7 @@ async function saveEdit() {
   editSaving.value = true
   try {
     const r = await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${editing.value.id}`, {
-      displayName: editForm.displayName, avatarUrl: editForm.avatarUrl.trim() || null, bio: editForm.bio, category: editForm.category,
+      displayName: editForm.displayName, avatarUrl: editForm.avatarUrl.trim() || null, bio: editForm.bio,
       tags: editForm.tags, notes: editForm.notes,
       ...(editing.value.status === 'error' || editing.value.status !== editForm.status ? { status: editForm.status } : {}),
       ...((editing.value.refreshIntervalHours ?? 0) !== editForm.interval ? { refreshIntervalHours: editForm.interval || null } : {}),
@@ -234,7 +234,6 @@ const detail = ref<TrackedAccount | null>(null)
 function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = true }
 
 const tagOptions = computed(() => facets.value.tags.map((v) => ({ value: v })))
-const categoryOptions = computed(() => facets.value.categories.map((v) => ({ value: v })))
 </script>
 
 <template>
@@ -250,10 +249,6 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
         <a-input-search v-model:value="filters.q" :placeholder="t('tracked.searchPlaceholder')" allow-clear style="width: 220px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('tracked.colPlatform')" allow-clear style="width: 130px" @change="search">
           <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.label" /></a-select-option>
-        </a-select>
-        <a-select v-model:value="filters.category" :placeholder="t('tracked.colCategory')" allow-clear show-search style="width: 150px" @change="search">
-          <a-select-option value="none">{{ t('tracked.uncategorized') }}</a-select-option>
-          <a-select-option v-for="c in facets.categories" :key="c" :value="c">{{ c }}</a-select-option>
         </a-select>
         <a-select v-model:value="filters.tag" :placeholder="t('tracked.tag')" allow-clear show-search style="width: 130px" @change="search">
           <a-select-option v-for="tg in facets.tags" :key="tg" :value="tg">{{ tg }}</a-select-option>
@@ -294,9 +289,9 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
             </div>
           </template>
           <template v-else-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformLabel(record.platform)" /></template>
-          <template v-else-if="column.key === 'category'">
-            <div>{{ record.category || '—' }}</div>
+          <template v-else-if="column.key === 'tags'">
             <a-tag v-for="tg in record.tags" :key="tg" class="small-tag">{{ tg }}</a-tag>
+            <span v-if="!record.tags.length" class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'followers'">
             <a-tooltip :title="record.followers !== null ? record.followers.toLocaleString(dateLocale()) : undefined">
@@ -367,14 +362,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
         <a :href="preview.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(preview) }}</a>
       </div>
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="addForm.displayName" :maxlength="200" :placeholder="t('common.optional')" /></a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('tracked.colCategory')"><a-auto-complete v-model:value="addForm.category" :options="categoryOptions" :maxlength="50" /></a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('tracked.tags')"><a-select v-model:value="addForm.tags" mode="tags" :options="tagOptions" :max-tag-count="6" /></a-form-item>
-        </a-col>
-      </a-row>
+      <a-form-item :label="t('tracked.tags')"><a-select v-model:value="addForm.tags" mode="tags" :options="tagOptions" :max-tag-count="6" /></a-form-item>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="addForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
       <a-checkbox v-model:checked="addForm.favorite">{{ t('tracked.favorite') }}</a-checkbox>
     </a-form>
@@ -385,14 +373,7 @@ const categoryOptions = computed(() => facets.value.categories.map((v) => ({ val
       <a-form-item :label="t('tracked.displayName')"><a-input v-model:value="editForm.displayName" :maxlength="200" /></a-form-item>
       <a-form-item :label="t('tracked.avatarUrl')"><a-input v-model:value="editForm.avatarUrl" :maxlength="1000" :placeholder="URL_HINT" /></a-form-item>
       <a-form-item :label="t('tracked.bio')"><a-textarea v-model:value="editForm.bio" :maxlength="2000" :auto-size="{ minRows: 2, maxRows: 5 }" /></a-form-item>
-      <a-row :gutter="12">
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('tracked.colCategory')"><a-auto-complete v-model:value="editForm.category" :options="categoryOptions" :maxlength="50" /></a-form-item>
-        </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-form-item :label="t('tracked.tags')"><a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions" /></a-form-item>
-        </a-col>
-      </a-row>
+      <a-form-item :label="t('tracked.tags')"><a-select v-model:value="editForm.tags" mode="tags" :options="tagOptions" /></a-form-item>
       <a-row :gutter="12">
         <a-col :xs="24" :sm="12">
           <a-form-item :label="t('tracked.trackingStatus')">

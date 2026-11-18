@@ -297,7 +297,7 @@ export interface TrackedPlatform {
 export interface TrackedAccount {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; profileUrl: string
   externalId: string | null; displayName: string | null; avatarUrl: string | null; bio: string | null
-  category: string | null; tags: string[]; favorite: boolean; status: TrackedStatus; notes: string | null
+  tags: string[]; favorite: boolean; status: TrackedStatus; notes: string | null
   lastCheckedAt: string | null; lastError: string | null; lastErrorCode: string | null; lastSource: 'api' | 'manual' | null
   createdAt: string; updatedAt: string; dataMode: TrackedDataMode
   latest: { capturedAt: string; source: 'api' | 'manual'; followers: number | null; following: number | null; posts: number | null; views: number | null } | null

@@ -82,8 +82,9 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
     const s = latest.get(r.id);
     const f = fol.get(r.id);
     const { refId: _r, ...task } = tasks.get(r.id) ?? { refId: null };
+    const { category: _legacy, ...row } = r; // LEGACY column, no longer exposed (folded into tags)
     return {
-      ...r,
+      ...row,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       dataMode: modes.get(r.platform) ?? 'manual_only',
       latest: s ? {
