@@ -9,6 +9,8 @@ import { purgeOwnerMedia } from '../media/media.js';
 import { moveDeviceAccounts, type AccountMove } from '../social/assign.js';
 
 const Role = z.enum(['admin', 'user']);
+/** 自定义角色 (auth/roles.ts) of a role-'user' account; null = 普通用户. */
+const RoleId = z.string().uuid().nullable();
 const Id = z.object({ id: z.string().uuid() });
 const publicUser = {
   id: schema.users.id,
@@ -16,6 +18,7 @@ const publicUser = {
   displayName: schema.users.displayName,
   email: schema.users.email,
   role: schema.users.role,
+  roleId: schema.users.roleId,
   disabled: schema.users.disabled,
   builtin: schema.users.builtin,
   createdAt: schema.users.createdAt,
@@ -37,37 +40,59 @@ async function assertOtherEnabledAdmin(tx: Tx, exceptId: string, msg: string) {
   if (others.length === 0) throw badRequest(msg, 'users.last_admin');
 }
 
+/**
+ * A custom role only applies to role 'user': with role 'admin' a non-null roleId → 400 users.role_id_admin, and making
+ * a user an admin clears it. The role row is locked FOR SHARE so a parallel delete cannot leave a dangling reference.
+ */
+async function assertRole(tx: Tx, roleId: string) {
+  const [r] = await tx.select({ id: schema.roles.id }).from(schema.roles).where(eq(schema.roles.id, roleId)).for('share');
+  if (!r) throw badRequest('角色不存在', 'role.not_found');
+}
+const adminRoleId = () => badRequest('管理员不使用自定义角色', 'users.role_id_admin');
+/** Admins never carry a role id (an older colour may have left one when promoting). */
+const outUser = <U extends { role: string; roleId: string | null }>(u: U) => ({ ...u, roleId: u.role === 'admin' ? null : u.roleId });
+
 /** User management + device grants. Admin only. */
 export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.requireAdmin);
 
   app.get('/api/users', async () => {
-    const users = await db.select(publicUser).from(schema.users).orderBy(schema.users.createdAt);
+    const users = await db.select({ ...publicUser, roleName: schema.roles.name }).from(schema.users)
+      .leftJoin(schema.roles, eq(schema.roles.id, schema.users.roleId)).orderBy(schema.users.createdAt);
     const grants = await db.select().from(schema.instanceGrants);
     return {
-      users: users.map((u) => ({ ...u, instanceIds: grants.filter((g) => g.userId === u.id).map((g) => g.instanceId) })),
+      users: users.map((u) => {
+        const o = outUser(u);
+        return { ...o, roleName: o.roleId ? u.roleName : null, instanceIds: grants.filter((g) => g.userId === u.id).map((g) => g.instanceId) };
+      }),
     };
   });
 
   app.post('/api/users', {
-    schema: { body: z.object({ username: z.string().regex(/^[a-zA-Z0-9_.-]{3,32}$/), password: z.string().min(8), role: Role }) },
+    schema: { body: z.object({ username: z.string().regex(/^[a-zA-Z0-9_.-]{3,32}$/), password: z.string().min(8), role: Role, roleId: RoleId.optional() }) },
   }, async (req, reply) => {
+    const roleId = req.body.roleId ?? null;
+    if (roleId && req.body.role === 'admin') throw adminRoleId();
     const passwordHash = await bcrypt.hash(req.body.password, 10);
-    const [u] = await db.insert(schema.users).values({ username: req.body.username, passwordHash, role: req.body.role })
-      .onConflictDoNothing().returning(publicUser);
+    const u = await db.transaction(async (tx) => {
+      if (roleId) await assertRole(tx, roleId);
+      const [row] = await tx.insert(schema.users).values({ username: req.body.username, passwordHash, role: req.body.role, roleId })
+        .onConflictDoNothing().returning(publicUser);
+      return row;
+    });
     if (!u) throw conflict('用户名已存在', 'users.username_taken');
     reply.code(201);
-    return { user: u };
+    return { user: outUser(u) };
   });
 
   app.patch('/api/users/:id', {
     schema: {
       params: Id,
-      body: z.object({ role: Role.optional(), password: z.string().min(8).optional(), disabled: z.boolean().optional() }),
+      body: z.object({ role: Role.optional(), roleId: RoleId.optional(), password: z.string().min(8).optional(), disabled: z.boolean().optional() }),
     },
   }, async (req) => {
-    const { role, password, disabled } = req.body;
-    if (role === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
+    const { role, roleId, password, disabled } = req.body;
+    if (role === undefined && roleId === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
     const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
     return db.transaction(async (tx) => {
       const target = await lockUser(tx, req.params.id);
@@ -82,12 +107,21 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
       if (target.role === 'admin' && !target.disabled && (demote || disable)) {
         await assertOtherEnabledAdmin(tx, target.id, '至少需要保留一个启用的管理员');
       }
+      const finalRole = role ?? target.role;
+      if (roleId && finalRole === 'admin') throw adminRoleId();
+      if (roleId && roleId !== target.roleId) await assertRole(tx, roleId);
       const set: Partial<typeof schema.users.$inferInsert> = {};
       if (role !== undefined) set.role = role;
+      if (finalRole === 'admin') { if (target.roleId) set.roleId = null; }
+      else if (roleId !== undefined) set.roleId = roleId;
       if (disabled !== undefined) set.disabled = disabled;
       if (passwordHash) set.passwordHash = passwordHash;
+      if (!Object.keys(set).length) {
+        const [same] = await tx.select(publicUser).from(schema.users).where(eq(schema.users.id, target.id));
+        return { user: outUser(same!) };
+      }
       const [u] = await tx.update(schema.users).set(set).where(eq(schema.users.id, target.id)).returning(publicUser);
-      return { user: u! };
+      return { user: outUser(u!) };
     });
   });
 

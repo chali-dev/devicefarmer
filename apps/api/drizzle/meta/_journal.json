@@ -302,6 +302,13 @@
       "when": 1795003895038,
       "tag": "0042_task_backoff",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1795012466772,
+      "tag": "0043_custom_roles",
+      "breakpoints": true
     }
   ]
 }

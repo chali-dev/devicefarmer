@@ -75,7 +75,7 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     auditRequest(req, { action: 'auth.login', userId: u.id, username: u.username, target: u.username, targetId: u.id, status: 200 });
     return {
       token, user: { id: u.id, username: u.username, role: u.role, displayName: u.displayName, email: u.email, builtin: u.builtin },
-      menus: await effectiveMenus({ id: u.id, username: u.username, role: u.role }),
+      menus: await effectiveMenus({ id: u.id, username: u.username, role: u.role, roleId: u.roleId }),
     };
   });
 

@@ -31,7 +31,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   async function loadUser(sub: string): Promise<AuthUser> {
     const [u] = await db.select().from(schema.users).where(eq(schema.users.id, sub));
     if (!u || u.disabled) throw unauthorized('account disabled or removed', 'auth.account_disabled');
-    return { id: u.id, username: u.username, role: u.role };
+    return { id: u.id, username: u.username, role: u.role, roleId: u.roleId };
   }
 
   app.decorate('userFromToken', async (token: string) => {
@@ -54,10 +54,10 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     if (!rule) return;
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { return; }
-    const [u] = await db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role, disabled: schema.users.disabled })
+    const [u] = await db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role, roleId: schema.users.roleId, disabled: schema.users.disabled })
       .from(schema.users).where(eq(schema.users.id, payload.sub));
     if (!u || u.disabled) return;
-    await assertMenuAllowed({ id: u.id, username: u.username, role: u.role }, rule);
+    await assertMenuAllowed({ id: u.id, username: u.username, role: u.role, roleId: u.roleId }, rule);
   });
 
   app.decorate('requireAdmin', async (req: FastifyRequest) => {
