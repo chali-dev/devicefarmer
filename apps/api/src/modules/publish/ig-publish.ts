@@ -119,6 +119,20 @@ export function parseClipParcel(out: string): string | null {
   return best;
 }
 
+/** Where a read-back caption differs from the intended one (normalised like the comparison): lengths, first differing
+ * index, ±40 chars of context on both sides and the code points there. Texts are the user's own caption, no secrets. */
+export function captionDiff(want: string, got: string) {
+  const a = normText(want), b = normText(got);
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const cp = (x: string) => [...x.slice(i, i + 6)].map((c) => `U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`).join(' ');
+  return {
+    wantLength: a.length, gotLength: b.length, at: i,
+    want: a.slice(Math.max(0, i - 40), i + 40), got: b.slice(Math.max(0, i - 40), i + 40),
+    wantCodes: cp(a), gotCodes: cp(b),
+  };
+}
+
 /** "照片缩略图创建日期：2026年11月18日 13:21" → minutes since epoch in the phone's local time, else null. */
 export function thumbLocalMinute(desc: string): number | null {
   const m = /(\d{4})年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})/.exec(desc);
@@ -364,6 +378,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
       dirtyClip = false;
       if (normText(inputText) !== normText(input.text)) {
         const after = await s.screenshot().catch(() => null);
+        await log('warn', 'publish: caption read-back differs', captionDiff(input.text, inputText));
         throw fail('publish.device_text_mismatch', '配文输入框里的文字与要发布的文字不一致', { excerpt: `read back: ${inputText}`.slice(0, 200), shot: after ?? shot });
       }
       await log('info', 'publish: caption pasted and read back', { length: inputText.length });
