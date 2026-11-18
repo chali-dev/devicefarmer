@@ -625,7 +625,7 @@ async function verify() {
     check('secret-looking query values are [redacted] in the system log', !lr.text.includes(v) && lr.text.includes('token=[redacted]'), lr.text.slice(0, 300)); }
 
   // ------------------------------------------------ settings (read only)
-  const settings: [string, string][] = [['storage', '/api/settings/storage'], ['platforms', '/api/settings/platforms'], ['youtube', '/api/settings/youtube'], ['tasks', '/api/settings/tasks'],
+  const settings: [string, string][] = [['storage', '/api/settings/storage'], ['youtube', '/api/settings/youtube'], ['tasks', '/api/settings/tasks'],
     ['config', '/api/settings/config'], ['system', '/api/settings/system'], ['social', '/api/social/settings'], ['system mgmt', '/api/system/settings'], ['alerts', '/api/settings/alerts']];
   for (const [n, p] of settings) {
     r = await http('GET', p, T);

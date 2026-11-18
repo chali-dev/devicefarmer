@@ -140,7 +140,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-button v-if="canRetry" :disabled="busy" @click="openTime('retry')">{{ t('publish.retry') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
         </a-space>
-        <a-alert v-if="canOutcome" type="warning" show-icon :message="task.method === 'api' ? t('publish.operatorHintApi') : t('publish.operatorHint')" style="margin-bottom: 16px">
+        <a-alert v-if="canOutcome" type="warning" show-icon :message="t('publish.operatorHint')" style="margin-bottom: 16px">
           <template v-if="task.postType !== 'feed'" #description><b>{{ t('publish.operatorType', { type: t(`publish.type.${task.postType}`) }) }}</b></template>
         </a-alert>
         <a-alert v-if="errorMsg && (s === 'failed' || s === 'pending')" type="error" show-icon :message="errorMsg" :description="task.error && task.error !== errorMsg ? task.error : undefined" style="margin-bottom: 16px" />

@@ -9,6 +9,7 @@ import { migrateContentCategoryTexts } from './content-category-data-migration.j
 import { migrateSocialGroups } from './social-group-data-migration.js';
 import { migrateTrackedCategories } from './tracked-category-data-migration.js';
 import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
+import { migrateOfficialApiRemoval } from './official-api-removal-migration.js';
 
 // Data migration around the schema migrations (see proxy-data-migration.ts); both steps are idempotent.
 const stashed = await stashInlineProxies(sqlClient);
@@ -23,5 +24,6 @@ await migrateContentCategoryTexts(sqlClient);
 await migrateSocialGroups(sqlClient);
 await migrateTrackedCategories(sqlClient);
 await migrateTrackedIgSchedule(sqlClient);
+await migrateOfficialApiRemoval(sqlClient);
 console.log('migrations applied');
 await sqlClient.end();

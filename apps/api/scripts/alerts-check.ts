@@ -1,27 +1,23 @@
 /**
- * Alerts (告警通知) + account status monitoring (号状态监控) against the real API, DB, Redis, task centre
- * and the real YouTube API (no mocks).
+ * Alerts (告警通知) against the real API, DB, Redis and task centre (no mocks).
  * - device.down: placeholder `instances` rows (no Android container, adb ports 5591–5592) set to `running`;
  *   the API's real monitor finds no container and marks them `error`. The device "recovered" path of the
  *   monitor needs a real booted device, so recovery semantics are exercised by calling the real recover()
  *   from this script (the same function the monitor calls).
- * - account.problem: the manual "mark checked" route (problem + recovered), and a scheduled official-API
- *   check (scheduleAccountChecks) of an account holding a placeholder connection with a FAKE token: the
- *   REAL YouTube API rejects it → connection.expired + account.problem.
+ * - account.problem: the manual "mark checked" route (problem + recovered). The scheduled official-API account
+ *   check (号状态监控) and the connection.expired kind were removed on 2026-11-18 (see platforms-check.ts).
  * - publish.failed: a real distribution to a suspended (facebook, text-only) account fails in preflight.
  * - recipients/RBAC/isolation, cooldown, mark read, WebSocket delivery, rules RBAC/validation, audit, retention.
  * External alert channels (Telegram, fan-out, delivery failures) are covered by scripts/alert-channels-check.ts.
  * Creates two temporary users and removes everything afterwards (settings restored).
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/alerts-check.ts
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { and, eq, gte, inArray, like, or } from 'drizzle-orm';
 import WebSocket from 'ws';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
-import { sealSecret } from '../src/lib/secret-box.js';
 import { NOTIFY_CLEANUP_TASK, recover } from '../src/modules/notify/notify.js';
-import { scheduleAccountChecks } from '../src/modules/platforms/check.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -68,11 +64,10 @@ const [admin] = await db.select().from(schema.users).where(eq(schema.users.usern
 const uT = admin!.id;
 const tag = randomBytes(3).toString('hex');
 const h = (s: string) => `al_${tag}_${s}`;
-const FAKE_YT = `ya29.fake-${randomBytes(16).toString('hex')}`;
 const userIds: string[] = [];
 const fakeIds: string[] = [];
 const refIds: string[] = [];
-const saved = Object.fromEntries(await Promise.all(['alerts.rules', 'platform.apps'].map(async (k) =>
+const saved = Object.fromEntries(await Promise.all(['alerts.rules'].map(async (k) =>
   [k, (await db.select().from(schema.settings).where(eq(schema.settings.key, k)))[0]?.value ?? null] as const)));
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const sockets: WebSocket[] = [];
@@ -108,13 +103,16 @@ try {
   check('admin: negative cooldown → 400', r.status === 400);
   r = await http('PUT', '/api/settings/alerts', T, { kinds: { 'nope.kind': { inApp: true } } });
   check('admin: unknown kind → 400', r.status === 400);
-  r = await http('PUT', '/api/settings/alerts', T, { accountCheckHours: 0 });
-  check('admin: account check interval 0 → 400 (null = off)', r.status === 400);
-  const allOn = { 'device.down': { inApp: true }, 'account.problem': { inApp: true }, 'connection.expired': { inApp: true }, 'publish.failed': { inApp: true }, 'task.failed': { inApp: true }, 'channel.failed': { inApp: true } };
-  r = await http('PUT', '/api/settings/alerts', T, { kinds: allOn, cooldownMinutes: 60, notifyAdmins: true, recovered: true, retentionDays: 30, accountCheckHours: 24 });
+  r = await http('PUT', '/api/settings/alerts', T, { accountCheckHours: 24 });
+  check('admin: removed rule accountCheckHours → 400', r.status === 400);
+  r = await http('PUT', '/api/settings/alerts', T, { kinds: { 'connection.expired': { inApp: true } } });
+  check('admin: removed kind connection.expired → 400', r.status === 400);
+  const allOn = { 'device.down': { inApp: true }, 'account.problem': { inApp: true }, 'publish.failed': { inApp: true }, 'task.failed': { inApp: true }, 'collector.blocked': { inApp: true }, 'channel.failed': { inApp: true } };
+  r = await http('PUT', '/api/settings/alerts', T, { kinds: allOn, cooldownMinutes: 60, notifyAdmins: true, recovered: true, retentionDays: 30 });
   check('admin: save rules', r.status === 200 && r.body.rules.cooldownMinutes === 60 && r.body.rules.kinds['task.failed'].inApp === true, r.text);
   r = await http('GET', '/api/settings/alerts', T);
-  check('admin: GET rules lists 6 kinds with severity/recoverable', r.status === 200 && r.body.kinds.length === 6 && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable), r.text.slice(0, 200));
+  check('admin: GET rules lists 6 kinds with severity/recoverable (no connection.expired, no accountCheckHours)', r.status === 200 && r.body.kinds.length === 6
+    && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable) && !r.body.kinds.some((k: any) => k.kind === 'connection.expired') && !('accountCheckHours' in r.body.rules), r.text.slice(0, 300));
 
   // ---------------------------------------------------------------- device.down through the real monitor
   await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));
@@ -166,48 +164,6 @@ try {
   check('manual check logged_in → recovered notice', r.status === 200 && !!igRec);
   r = await http('POST', `/api/social/accounts/${ig}/checked`, A, { accountStatus: 'suspended' });
   check('manual check: account suspended → account.problem (reason suspended)', (await notes(uA, ig, 'account.problem')).some((x) => !x.recovered && x.params.reason === 'suspended'));
-
-  // ---------------------------------------------------------------- 号状态监控: scheduled official-API checks
-  r = await http('PUT', '/api/settings/platforms/youtube', T, { clientId: `000000000000-${tag}dummy.apps.googleusercontent.com`, clientSecret: `cs-${randomBytes(12).toString('hex')}` });
-  check('setup: dummy YouTube app credentials', r.status === 200, r.text);
-  r = await http('POST', '/api/social/accounts', A, { platform: 'youtube', handle: h('yt') });
-  const yt: string = r.body.account.id; refIds.push(yt);
-  r = await http('POST', '/api/social/accounts', A, { platform: 'youtube', handle: h('ytnoconn') });
-  const ytNo: string = r.body.account.id; refIds.push(ytNo);
-  await db.insert(schema.platformConnections).values({
-    socialAccountId: yt, userId: uA, platform: 'youtube', externalAccountId: 'UCfake', externalAccountName: 'Fake', scopes: ['fake.scope'],
-    accessTokenEnc: sealSecret(FAKE_YT), refreshTokenEnc: null, expiresAt: new Date(Date.now() + 3600_000), status: 'connected', connectedBy: uA,
-  });
-  await http('PUT', '/api/settings/alerts', T, { accountCheckHours: null });
-  let s = await scheduleAccountChecks();
-  check('schedule off (null) → no checks', s.hours === null && s.created === 0);
-  await http('PUT', '/api/settings/alerts', T, { accountCheckHours: 1 });
-  const period = 3600_000;
-  const offset = createHash('sha256').update(yt).digest().readUInt32BE(0) % period;
-  const slotAt = Math.floor((Date.now() - offset) / period) * period + offset; // this account's last slot (≤ now)
-  const fakeNow = new Date(slotAt + 60_000);
-  s = await scheduleAccountChecks(fakeNow, 10 * 60_000);
-  const auto = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'social-account-check'), like(schema.tasks.idempotencyKey, `auto:%`), inArray(schema.tasks.refId, [yt, ytNo])));
-  check('scheduler: one check for the connected account at its own offset, none for the account without a connection',
-    s.created >= 1 && auto.length === 1 && auto[0]!.refId === yt && auto[0]!.idempotencyKey === `auto:${yt}:1h:${Math.round((slotAt - offset) / period)}` && auto[0]!.createdBy === uA, JSON.stringify({ s, keys: auto.map((x) => x.idempotencyKey) }));
-  const again = await scheduleAccountChecks(fakeNow, 10 * 60_000);
-  const auto2 = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'social-account-check'), eq(schema.tasks.refId, yt)));
-  check('scheduler: idempotent per account + slot (second run creates nothing for it)', auto2.length === 1 && again.accounts === s.accounts);
-  const checkTask = await finished(auto[0]!.id);
-  check('scheduled check ran against the real YouTube API (fake token → authorisation invalid)', checkTask.status === 'success' && (checkTask.result as any)?.outcome === 'authorisation_invalid', JSON.stringify(checkTask.result ?? checkTask.error));
-  const [conn] = await db.select().from(schema.platformConnections).where(eq(schema.platformConnections.socialAccountId, yt));
-  check('connection marked expired', conn?.status === 'expired', conn?.status);
-  const nConn = (await notes(uA, yt, 'connection.expired'))[0];
-  check('connection.expired alert to the owner (status expired, code platform.auth_expired)', !!nConn && nConn.params.status === 'expired' && nConn.params.code === 'platform.auth_expired', JSON.stringify(nConn));
-  const nAcc = (await notes(uA, yt, 'account.problem'))[0];
-  check('account.problem alert from the check result (logged_out)', !!nAcc && nAcc.params.reason === 'logged_out', JSON.stringify(nAcc));
-  check('both alerts reached the admin, none reached B', (await notes(uT, yt)).length === 2 && (await notes(uB, yt)).length === 0);
-  const leakRows = await db.select().from(N).where(inArray(N.userId, [uA, uT]));
-  check('no token in any notification', !JSON.stringify(leakRows).includes(FAKE_YT));
-  // spread: different accounts get different offsets inside the period
-  const offs = [yt, ytNo, ig].map((id) => createHash('sha256').update(id).digest().readUInt32BE(0) % (24 * period));
-  check('scheduler offsets differ per account (spread over the period)', new Set(offs).size === 3);
-  await http('PUT', '/api/settings/alerts', T, { accountCheckHours: 24 });
 
   // ---------------------------------------------------------------- publish.failed via a real publish run
   r = await http('POST', '/api/social/accounts', A, { platform: 'facebook', handle: h('fb') });

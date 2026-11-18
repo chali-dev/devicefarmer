@@ -5,13 +5,12 @@ import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
 import { badRequest, conflict } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
-import { isTransientPlatformError } from '../platforms/http.js';
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
-import { methodsFor, type PublishInput, type PublishLogLevel, type PublishMethod } from './methods.js';
+import { MANUAL_METHOD, type PublishInput, type PublishLogLevel } from './methods.js';
 import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
 
 /**
@@ -20,12 +19,13 @@ import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './
  * run_at = scheduled time, max_attempts / timeout from config or the distribution).
  *
  * A run: claim the publish task (only the task-centre task it currently points at may run it), then the
- * checks — account owner, account status, platform method available, device linked + online and account
- * logged in when the method needs the device, media still ready and valid for the platform, no earlier
- * successful publish of the same content on the same account (unless re-publish) — each written to
- * publish_logs and the task log. Then the method: `api` → published; `manual` → awaiting_operator (the
- * task-centre task ends success, the operator records the outcome). Checks that can't change by waiting
- * fail at once (PublishCheckError, no retry); device offline is retried with backoff.
+ * checks — account owner, account status, media still ready and valid for the platform, no earlier
+ * successful publish of the same content on the same account (unless re-publish), device linked + online
+ * and account logged in — each written to publish_logs and the task log. Then the task is handed to an
+ * operator (awaiting_operator; the task-centre task ends success), who publishes by hand on the device
+ * and records the outcome. Publishing through official platform APIs was removed on 2026-11-18 (owner
+ * decision). Checks that can't change by waiting fail at once (PublishCheckError, no retry); device
+ * offline is retried with backoff.
  */
 
 const pt = schema.publishTasks;
@@ -35,28 +35,6 @@ export const TASK_TYPE = 'publish';
 /** Check failure that retrying won't fix: fails the run at once (no further attempts). */
 export class PublishCheckError extends UnrecoverableError {
   constructor(readonly code: string, message: string, readonly params: Record<string, unknown> = {}) { super(message); }
-}
-
-/**
- * Logged (publish_logs, per round) right before the request after which the post may exist on the
- * platform. A later attempt of the same round that finds it does not publish again: the outcome is
- * unknown, so the task goes to an operator who checks the account and records what happened.
- */
-const COMMIT_MSG = 'publish request sent to the platform';
-const UNKNOWN_MSG = 'outcome unknown: the publish request was sent, check the account before publishing again';
-
-async function committedRound(row: Pick<PublishTask, 'id' | 'attemptNo'>): Promise<boolean> {
-  const [hit] = await db.select({ id: schema.publishLogs.id }).from(schema.publishLogs)
-    .where(and(eq(schema.publishLogs.publishTaskId, row.id), eq(schema.publishLogs.attemptNo, row.attemptNo), eq(schema.publishLogs.message, COMMIT_MSG))).limit(1);
-  return !!hit;
-}
-
-/** Hands a possibly-published task to an operator (never retried automatically). */
-async function markOutcomeUnknown(row: PublishTask, taskId: string, error: string | null, method: string | null) {
-  const [done] = await db.update(pt).set({ status: 'awaiting_operator', errorCode: 'publish.uncertain', error: error?.slice(0, 1000) ?? null, ...(method ? { method } : {}) })
-    .where(and(eq(pt.id, row.id), eq(pt.taskId, taskId), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
-  if (done) await publishLog(done, 'warn', UNKNOWN_MSG, { code: 'publish.uncertain', ...(error ? { error: error.slice(0, 300) } : {}) });
-  return done;
 }
 
 // ---------------------------------------------------------------- logs
@@ -305,52 +283,24 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
   };
   await refreshContentStatus(row.contentId);
   await log('info', `run started (round ${row.attemptNo}, attempt ${ctx.attempt}/${ctx.task.maxAttempts})`, { postType: row.postType });
-  // An earlier attempt of this round already sent the publish request (then timed out / crashed):
-  // publishing again could post twice.
-  if (await committedRound(row)) {
-    await markOutcomeUnknown(row, ctx.task.id, 'an earlier attempt sent the publish request; its outcome is unknown', null);
-    await refreshContentStatus(row.contentId);
-    return { state: 'awaiting_operator', uncertain: true };
-  }
-  let committed = false;
-  let methodId: string | null = null;
   try {
-    const { method, input } = await preflight(row, log);
+    const input = await preflight(row, log);
     if (ctx.signal.aborted) throw ctx.signal.reason;
-    methodId = method.id;
-    await log('info', `publishing via ${method.id}`, { postType: row.postType });
-    const commit = async () => {
-      if (committed) return;
-      committed = true;
-      await log('info', COMMIT_MSG, { method: method.id });
-    };
-    const res = await method.publish(input, { log, signal: ctx.signal, commit });
-    const set = res.state === 'published'
-      ? { status: 'published' as const, method: method.id, externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: new Date() }
-      : { status: 'awaiting_operator' as const, method: method.id };
-    const [done] = await db.update(pt).set(set).where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
-    await log('info', res.state === 'published' ? 'published' : 'awaiting operator', { method: method.id, externalId: res.externalId ?? null, url: res.url ?? null, recorded: !!done });
-    return { state: res.state, method: method.id, externalId: res.externalId ?? null, url: res.url ?? null };
+    await log('info', 'handed over to an operator: publish by hand on the bound device, then record the outcome', { postType: input.postType });
+    const [done] = await db.update(pt).set({ status: 'awaiting_operator', method: MANUAL_METHOD })
+      .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
+    await log('info', 'awaiting operator', { method: MANUAL_METHOD, recorded: !!done });
+    return { state: 'awaiting_operator', method: MANUAL_METHOD };
   } catch (err) {
     const e = err as { code?: string; message?: string; params?: Record<string, unknown> };
     const code = typeof e.code === 'string' ? e.code : 'publish.failed';
-    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over
-    // (both see the commit log line and hand the task to an operator instead of publishing again).
+    // Timeout/cancel: the task centre already decided; the next attempt (or onFailure) takes over.
     if (!ctx.signal.aborted) {
-      if (committed) {
-        // The platform may have the post: never retry, let a person check and record the outcome.
-        await log('warn', `attempt failed after the publish request was sent: ${e.message}`, { code, ...(e.params ?? {}) });
-        await markOutcomeUnknown(row, ctx.task.id, e.message ?? String(err), methodId);
-        await refreshContentStatus(row.contentId);
-        return { state: 'awaiting_operator', uncertain: true, code };
-      }
-      // Only transient platform failures (429/5xx/network) and non-platform errors (e.g. device offline) are retried.
-      const permanent = err instanceof UnrecoverableError || (typeof code === 'string' && code.startsWith('platform.') && !isTransientPlatformError(err));
-      const final = permanent || ctx.attempt >= ctx.task.maxAttempts;
+      // Check failures (PublishCheckError) are final; device offline and other errors are retried while attempts remain.
+      const final = err instanceof UnrecoverableError || ctx.attempt >= ctx.task.maxAttempts;
       await db.update(pt).set({ status: final ? 'failed' : 'pending', error: (e.message ?? String(err)).slice(0, 1000), errorCode: code })
         .where(and(eq(pt.id, row.id), eq(pt.taskId, ctx.task.id), eq(pt.status, 'running')));
       await log(final ? 'error' : 'warn', final ? `failed: ${e.message}` : `attempt failed, will retry: ${e.message}`, { code, ...(e.params ?? {}) });
-      if (permanent && !(err instanceof UnrecoverableError)) throw new PublishCheckError(code, e.message ?? String(err), e.params ?? {});
     }
     throw err;
   } finally {
@@ -360,7 +310,7 @@ async function runPublish(ctx: TaskContext<Payload>): Promise<unknown> {
 
 type Log = (level: PublishLogLevel, message: string, data?: Record<string, unknown>) => Promise<void>;
 
-async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishMethod; input: PublishInput }> {
+async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
   if (!isPlatformEnabled(row.platform)) throw new PublishCheckError('platform.disabled', `platform ${row.platform} is disabled`, { platform: row.platform });
   // 1. account + owner
   const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
@@ -399,38 +349,23 @@ async function preflight(row: PublishTask, log: Log): Promise<{ method: PublishM
     if (dup) throw new PublishCheckError('publish.duplicate', 'this content was already published on this account', { publishTaskId: dup.id });
   }
   await log('info', 'check: not published before on this account');
-  // 5. method
-  const input: PublishInput = {
+  // 5. device + login (the operator publishes on the phone)
+  if (!acc.instanceId) throw new PublishCheckError('publish.no_device', 'the account is not linked to a device');
+  const [inst] = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
+    .from(schema.instances).where(eq(schema.instances.id, acc.instanceId));
+  if (!inst) throw new PublishCheckError('publish.no_device', 'the linked device no longer exists');
+  if (inst.status !== 'running' || inst.adbState !== 'device') {
+    // May recover (device starting / reconnecting): retried with backoff.
+    throw new TaskError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
+  }
+  await log('info', 'check: device online', { device: inst.name });
+  if (acc.loginStatus !== 'logged_in') throw new PublishCheckError('publish.not_logged_in', `account login status is ${acc.loginStatus}`, { status: acc.loginStatus });
+  await log('info', 'check: account logged in on the device');
+  return {
     publishTaskId: row.id, attemptNo: row.attemptNo, platform: row.platform, account: acc,
-    title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags, tags: row.hashtags,
-    privacy: typeof row.options.privacy === 'string' && ['public', 'unlisted', 'private'].includes(row.options.privacy) ? row.options.privacy as PublishInput['privacy'] : undefined,
+    title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags,
     text: composeText(row.caption, row.hashtags), options: row.options, media: ready, postType: row.postType,
   };
-  const reasons: Record<string, string> = {};
-  let method: PublishMethod | undefined;
-  for (const m of methodsFor(row.platform)) {
-    const why = await m.unavailableReason(acc, input);
-    if (!why) { method = m; break; }
-    reasons[m.id] = why.code;
-    await log('info', `method ${m.id} unavailable: ${why.message}`, { code: why.code });
-  }
-  if (!method) throw new PublishCheckError('publish.no_method', `no publish method available for ${row.platform}`, { platform: row.platform, reasons: JSON.stringify(reasons) });
-  await log('info', `check: method ${method.id} available`);
-  // 6. device + login (methods acting through the phone)
-  if (method.needsDevice) {
-    if (!acc.instanceId) throw new PublishCheckError('publish.no_device', 'the account is not linked to a device');
-    const [inst] = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
-      .from(schema.instances).where(eq(schema.instances.id, acc.instanceId));
-    if (!inst) throw new PublishCheckError('publish.no_device', 'the linked device no longer exists');
-    if (inst.status !== 'running' || inst.adbState !== 'device') {
-      // May recover (device starting / reconnecting): retried with backoff.
-      throw new TaskError('publish.device_offline', `device ${inst.name} is offline (${inst.status}/${inst.adbState ?? '-'})`);
-    }
-    await log('info', 'check: device online', { device: inst.name });
-    if (acc.loginStatus !== 'logged_in') throw new PublishCheckError('publish.not_logged_in', `account login status is ${acc.loginStatus}`, { status: acc.loginStatus });
-    await log('info', 'check: account logged in on the device');
-  }
-  return { method, input };
 }
 
 registerTaskHandler<Payload>(TASK_TYPE, {
@@ -447,14 +382,6 @@ registerTaskHandler<Payload>(TASK_TYPE, {
     const id = (task.payload as Payload | null)?.publishTaskId ?? task.refId;
     if (!id) return;
     const status = task.status === 'cancelled' ? 'cancelled' as const : 'failed' as const;
-    if (status === 'failed') {
-      // Last attempt timed out / was interrupted after the publish request went out: don't call it failed.
-      const [cur] = await db.select().from(pt).where(and(eq(pt.id, id), eq(pt.taskId, task.id)));
-      if (cur && ['pending', 'scheduled', 'running'].includes(cur.status) && await committedRound(cur)) {
-        const done = await markOutcomeUnknown(cur, task.id, task.error, null);
-        if (done) { await refreshContentStatus(done.contentId); return; }
-      }
-    }
     const [row] = await db.update(pt).set({ status, error: task.error, errorCode: task.errorCode ?? (status === 'cancelled' ? 'publish.cancelled' : 'publish.failed') })
       .where(and(eq(pt.id, id), eq(pt.taskId, task.id), inArray(pt.status, ['pending', 'scheduled', 'running']))).returning();
     if (row) {

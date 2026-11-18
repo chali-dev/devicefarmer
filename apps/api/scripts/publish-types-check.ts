@@ -4,10 +4,9 @@
  * with the default ENABLED_PLATFORMS).
  * - Devices are placeholder `instances` rows (no Android container) kept "online" by a test-only trigger, as in
  *   publish-check.ts. Accounts without a device fail the manual precheck (publish.no_device).
- * - Instagram API path: a placeholder connection with a FAKE token and fake app credentials. With local media
- *   storage the API method is unavailable (platform.media_url_unavailable) and the run falls back to the manual
- *   method; the container parameters for STORIES / REELS are then sent once to the real Graph API with the fake
- *   token (rejected with OAuthException 190). Nothing can be posted.
+ * - Publishing is manual only (official-API publishing removed on 2026-11-18): every run ends awaiting_operator
+ *   with method manual and logs no API method lines; a 1 s story video (formerly refused by the API-only 3 s limit)
+ *   is handed over like any other story.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-types-check.ts
  */
 import { execFile } from 'node:child_process';
@@ -18,10 +17,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { and, eq, gte, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
-import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { sealSecret } from '../src/lib/secret-box.js';
-import { instagramAdapter, singleContainerParams } from '../src/modules/platforms/instagram.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -81,7 +77,6 @@ const userIds: string[] = [];
 const fakeIds: string[] = [];
 const created: any[] = []; // A's publish tasks (latest copies)
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
-const [prevApps] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'platform.apps'));
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
 const waitStatus = (token: string, id: string, statuses: string[], ms = 60_000) =>
@@ -257,36 +252,21 @@ try {
   r = await dist(A, cImg1, [{ accountId: igB.id, postType: 'story' }]);
   check("A cannot target B's account", r.status === 404 || r.status === 400, r.text);
 
-  // ---------------------------------------------------------------- Instagram API path (fake token), fallback to manual
-  r = await http('PUT', '/api/settings/platforms/instagram', T, { clientId: `ptc${Date.now()}`, clientSecret: `fake-${randomBytes(12).toString('hex')}` });
-  check('fake Instagram app credentials stored (admin)', r.status === 200, r.text);
-  const FAKE = `IGfake${randomBytes(16).toString('hex')}`;
-  await db.insert(schema.platformConnections).values({
-    socialAccountId: igApi.id, userId: uA, platform: 'instagram', externalAccountId: '17841400000000000', externalAccountName: 'Fake', scopes: ['fake.scope'],
-    accessTokenEnc: sealSecret(FAKE), refreshTokenEnc: null, expiresAt: new Date(Date.now() + 30 * 86400_000), status: 'connected', connectedBy: uA,
-  });
+  // ---------------------------------------------------------------- manual only (no API method any more)
   r = await dist(A, cV5, [{ accountId: igApi.id, postType: 'reel' }]);
-  const apiReel = r.body.created?.[0];
-  d = await waitStatus(A, apiReel.id, ['awaiting_operator', 'failed', 'published']);
-  check('connected reel with local media: API method unavailable (coded) → manual → awaiting_operator',
-    d.task.status === 'awaiting_operator' && d.task.method === 'manual' && d.logs.some((l: any) => l.message.startsWith('method api unavailable') && l.data?.code === 'platform.media_url_unavailable'),
-    JSON.stringify(d.logs.map((l: any) => [l.message, l.data?.code])));
+  const manReel = r.body.created?.[0];
+  d = await waitStatus(A, manReel.id, ['awaiting_operator', 'failed', 'published']);
+  const noApi = (x: any) => !x.logs.some((l: any) => /^(method |publishing via|check: method|publish request sent)/.test(l.message));
+  check('reel → manual → awaiting_operator, no API method lines in the log', d.task.status === 'awaiting_operator' && d.task.method === 'manual' && noApi(d),
+    JSON.stringify(d.logs.map((l: any) => l.message)));
   remember(d.task);
-  const [m1] = await db.select().from(schema.mediaAssets).where(eq(schema.mediaAssets.id, v1.id));
-  const why = await instagramAdapter.publishUnavailableReason({ media: [m1!], postType: 'story' }, {});
-  check('adapter: story video shorter than 3 s → platform.video_duration (API-only limit, manual fallback)', why?.code === 'platform.video_duration', JSON.stringify(why));
-  const p1 = singleContainerParams('story', 'video', 'https://example.invalid/v.mp4', 'cap');
-  const p2 = singleContainerParams('reel', 'video', 'https://example.invalid/v.mp4', 'cap');
-  const p3 = singleContainerParams('story', 'image', 'https://example.invalid/i.jpg', 'cap');
-  const p4 = singleContainerParams('feed', 'image', 'https://example.invalid/i.jpg', 'cap');
-  check('container mapping: story → STORIES without caption; reel → REELS; feed image → image_url + caption',
-    p1.media_type === 'STORIES' && !('caption' in p1) && p1.video_url && p3.media_type === 'STORIES' && p3.image_url && !('caption' in p3)
-    && p2.media_type === 'REELS' && p2.caption === 'cap' && !p4.media_type && p4.image_url && p4.caption === 'cap', JSON.stringify({ p1, p2, p3, p4 }));
-  for (const [name, params] of [['STORIES', p1], ['REELS', p2]] as const) {
-    const res = await fetch(`${config.INSTAGRAM_GRAPH_BASE}/me/media`, { method: 'POST', headers: { authorization: `Bearer ${FAKE}`, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params) });
-    const b = await res.json().catch(() => null) as any;
-    check(`real Graph API, ${name} container with a fake token → rejected (OAuthException 190), nothing posted`, res.status >= 400 && b?.error?.code === 190, `${res.status} ${JSON.stringify(b)}`);
-  }
+  const cV1 = await content(A, 'short story', [v1.id]);
+  r = await dist(A, cV1, [{ accountId: igApi.id, postType: 'story' }]);
+  const shortStory = r.body.created?.[0];
+  check('a 1 s story video is accepted (no API-only duration limit)', r.status === 201 && !!shortStory, r.text);
+  d = await waitStatus(A, shortStory.id, ['awaiting_operator', 'failed', 'published']);
+  check('short story → awaiting_operator via manual', d.task.status === 'awaiting_operator' && d.task.method === 'manual' && noApi(d), `${d.task.status} ${d.task.errorCode}`);
+  remember(d.task);
 
   // ---------------------------------------------------------------- audit
   await sleep(500);
@@ -306,10 +286,8 @@ try {
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
   await sqlClient.unsafe('drop trigger if exists ptc_test_pin_online on instances').catch(() => undefined);
   await sqlClient.unsafe('drop function if exists ptc_test_pin_online()').catch(() => undefined);
-  if (prevApps) await db.insert(schema.settings).values(prevApps).onConflictDoUpdate({ target: schema.settings.key, set: { value: prevApps.value } });
-  else await db.delete(schema.settings).where(eq(schema.settings.key, 'platform.apps'));
   const left = await db.select().from(schema.publishTasks).where(inArray(schema.publishTasks.userId, userIds.length ? userIds : ['00000000-0000-0000-0000-000000000000']));
-  check('cleanup: users (with contents, accounts, publish tasks), device, trigger, app settings restored', left.length === 0);
+  check('cleanup: users (with contents, accounts, publish tasks), device, trigger', left.length === 0);
   await sqlClient.end();
   const failed = results.filter((x) => !x[1]).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed`);

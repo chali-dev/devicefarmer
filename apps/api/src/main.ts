@@ -40,16 +40,15 @@ import { platformRoutes } from './modules/platforms/routes.js';
 import { contentCategoryRoutes } from './modules/content/categories.js';
 import { contentRoutes } from './modules/content/routes.js';
 import { publishRoutes } from './modules/publish/routes.js';
-import './modules/publish/publish.js'; // registers the publish task handler + manual methods
-import './modules/publish/api-methods.js'; // official-API publish methods (modules/platforms)
+import './modules/publish/publish.js'; // registers the publish task handler (manual publishing)
 import { personaRoutes } from './modules/comments/personas.js';
-import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-sync / comment-reply task handlers
+import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-reply task handler
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { analyticsRoutes } from './modules/analytics/routes.js';
-import { scheduleDailyAccountStats } from './modules/analytics/analytics.js'; // account-stats task handler + dashboard widget
+import './modules/analytics/analytics.js'; // analytics dashboard widget (historical data only)
 import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task + dashboard widget
 import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly collection tick (tracked schedules, trending)
-import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels, account-check schedule
+import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels
 import { cleanupUploads } from './modules/apps/package.js';
 import { stf } from './services.js';
 import { logSink } from './modules/system/logs.js';
@@ -156,7 +155,6 @@ async function startBackground(): Promise<void> {
     void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
     void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
-    void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     alertsHourly(app.log);
@@ -164,7 +162,6 @@ async function startBackground(): Promise<void> {
   const firstRun = setTimeout(() => {
     void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
     void scheduleTaskCleanup().catch((err) => app.log.warn({ err }, 'task cleanup scheduling failed'));
-    void scheduleDailyAccountStats().catch((err) => app.log.warn({ err }, 'account stats scheduling failed'));
     void systemHourly().catch((err) => app.log.warn({ err }, 'system maintenance failed'));
     void scheduleCollection().catch((err) => app.log.warn({ err }, 'collection scheduling failed'));
     alertsHourly(app.log);

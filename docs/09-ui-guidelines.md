@@ -25,7 +25,7 @@
 | `PageContainer.vue` | 每个页面的外框 | props：`title?`（默认取菜单名）、`subtitle?`；slots：`extra`（右上角按钮，自动 `a-space wrap`）、`title-suffix`（标题旁的帮助按钮/标签）、`subtitle`、`title`、default（内容块，按 `--cp-gap` 纵向排列） |
 | `SearchBar.vue` | 表格上方的筛选栏 | default slot 放筛选控件（自己设 `style="width: …"`）；监听了才显示按钮：`@search`（查询，主按钮）、`@reset`（重置）、`@refresh`（刷新图标，配 `:loading`）；`#actions` 右对齐（批量按钮、统计文字）。自动换行 |
 | `StatusTag.vue` | 统一状态显示 | `<StatusTag kind="proxy" :status="x.status" />`；`kind` 默认 `instance`（徽标样式），其余默认 tag；`badge` 强制徽标；默认 slot 追加内容 |
-| `status.ts` | 状态族 → 颜色 + 文案 | `STATUS_FAMILIES`：instance、task、proxy、socialLogin、socialAccount、connection、tracked、content、publish、comment、commentReply、media、backup。另有 `statusColor/statusLabel/statusBadge`。新状态族在这里加一条 |
+| `status.ts` | 状态族 → 颜色 + 文案 | `STATUS_FAMILIES`：instance、task、proxy、socialLogin、socialAccount、tracked、content、publish、comment、commentReply、media、backup。另有 `statusColor/statusLabel/statusBadge`。新状态族在这里加一条 |
 | `StatCard.vue` | KPI 数字卡 | props：`title`、`value`、`suffix?`、`icon?`（图标组件）、`footer?`（或 `#footer`）、`to?`（整卡链接）、`tone?`（error/warning/success，值>0 时上色）、`loading?` |
 | `ui.ts` | 表格 / 弹窗约定 | `TABLE_SIZE`（'middle'）、`pagination(opts)`、`actionColumn(width)`、`MODAL_WIDTH {sm 480, md 640, lg 800}`、`DRAWER_WIDTH {md 520, lg 760}`、`confirmDanger({title, content?, okText?, onOk})`、`confirmAction(...)` |
 | `menu.ts` | 菜单数据 + 当前位置 | `MENU_GROUPS`、`MENU_KEYS`、`useMenuLocation()` → `{ itemKey, group, title }` |
@@ -121,7 +121,7 @@
 - `views/AnalyticsView.vue`（统计数字 → 可用 `StatCard`；详情 Drawer 760 → `DRAWER_WIDTH.lg`）。
 - `views/TrackedAccountsView.vue`（列表 + 两个 Modal；分页是自定义 onChange，换 `pagination()` 时保持后端分页）。
 - `views/CommentsView.vue`（tabs + 列表 + 3 个 Modal；状态 → `StatusTag kind="comment"/"commentReply"/"task"`）。
-- 组件：`comments/CommentDrawer.vue`、`tracked/TrackedAccountDrawer.vue`、`tracked/LineChart.vue`、`analytics/TrendCharts.vue`、`social/ConnectionCell.vue`（`kind="connection"`）、`social/PlatformTag.vue`。
+- 组件：`comments/CommentDrawer.vue`、`tracked/TrackedAccountDrawer.vue`、`tracked/LineChart.vue`、`analytics/TrendCharts.vue`、`social/PlatformTag.vue`。
 
 **C. 内容中心**
 - `views/MediaView.vue` + `components/media/MediaPanel.vue`（状态 → `kind="media"`）、`MediaUploader.vue`、`CategoryManager.vue`。

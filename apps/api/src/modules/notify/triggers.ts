@@ -1,13 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
-import type { Instance, PlatformConnection, PublishTask, SocialAccount, Task } from '../../db/schema.js';
+import type { Instance, PublishTask, SocialAccount, Task } from '../../db/schema.js';
 import { onTaskFailed } from '../tasks/core.js';
 import { notify, recover } from './notify.js';
 
 /**
  * Alert triggers: the kind-specific mapping from a state transition to notify()/recover(). Each is called
- * from the single place where that transition happens (monitor, device-op failure hook, account check,
- * connection state writes, publish failure hook, task centre). Never throw (notify/recover don't).
+ * from the single place where that transition happens (monitor, device-op failure hook, manual account
+ * check, collector, publish failure hook, task centre). Never throw (notify/recover don't).
  */
 
 /** Why a device went down (shown translated; also in Telegram texts). */
@@ -24,10 +24,10 @@ export async function deviceStatusChanged(inst: Pick<Instance, 'id' | 'name' | '
 const PROBLEM_LOGIN = new Set<string>(['logged_out', 'needs_verification']);
 const PROBLEM_ACCOUNT = new Set<string>(['limited', 'suspended', 'disabled']);
 
-/** Result of an account check (official API task or the manual "mark checked"). */
-export async function accountChecked(acc: Pick<SocialAccount, 'id' | 'platform' | 'handle' | 'loginStatus' | 'accountStatus'>, code?: string | null): Promise<void> {
+/** Result of the manual account check ("mark checked" on the social page). */
+export async function accountChecked(acc: Pick<SocialAccount, 'id' | 'platform' | 'handle' | 'loginStatus' | 'accountStatus'>): Promise<void> {
   const reason = PROBLEM_LOGIN.has(acc.loginStatus) ? acc.loginStatus : PROBLEM_ACCOUNT.has(acc.accountStatus) ? acc.accountStatus : null;
-  const a = { kind: 'account.problem' as const, refId: acc.id, params: { platform: acc.platform, handle: acc.handle, reason, code } };
+  const a = { kind: 'account.problem' as const, refId: acc.id, params: { platform: acc.platform, handle: acc.handle, reason } };
   if (reason) await notify(a);
   else if (acc.loginStatus === 'logged_in') await recover(a);
 }
@@ -36,21 +36,6 @@ async function accountOf(id: string) {
   const [acc] = await db.select({ id: schema.socialAccounts.id, platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle })
     .from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));
   return acc;
-}
-
-/** The official-API check task failed (network, quota…): the account's state is unknown. */
-export async function accountCheckFailed(accountId: string, code: string | null): Promise<void> {
-  const acc = await accountOf(accountId).catch(() => undefined);
-  if (acc) await notify({ kind: 'account.problem', refId: acc.id, params: { platform: acc.platform, handle: acc.handle, reason: 'check_failed', code } });
-}
-
-/** platform_connections.status written (modules/platforms/connections.ts). */
-export async function connectionChanged(conn: Pick<PlatformConnection, 'socialAccountId' | 'platform'>, status: PlatformConnection['status'], code?: string | null): Promise<void> {
-  const acc = await accountOf(conn.socialAccountId).catch(() => undefined);
-  if (!acc) return;
-  const a = { kind: 'connection.expired' as const, refId: acc.id, params: { platform: conn.platform, handle: acc.handle, status, code } };
-  if (status === 'connected') await recover(a);
-  else await notify(a);
 }
 
 /** The tracked-account collector device stopped on a challenge screen (blocked) or was resumed / read fine again. */
@@ -68,11 +53,11 @@ export async function publishFailed(row: Pick<PublishTask, 'id' | 'attemptNo' | 
 }
 
 /**
- * Generic task failure. Skipped: types with their own alert (publish, account check, device lifecycle ops →
+ * Generic task failure. Skipped: types with their own alert (publish, device lifecycle ops →
  * device.down; alert channel deliveries → channel.failed, in-app only, so a broken channel never loops).
  * Keyed per type + device/object, so a repeating failure is reported once per cooldown.
  */
-const OWN_ALERT = new Set(['publish', 'social-account-check', 'create', 'start', 'stop', 'restart', 'delete', 'set-proxy']);
+const OWN_ALERT = new Set(['publish', 'create', 'start', 'stop', 'restart', 'delete', 'set-proxy']);
 onTaskFailed(async (task: Task) => {
   if (OWN_ALERT.has(task.type) || task.type.startsWith('notify-')) return;
   await notify({

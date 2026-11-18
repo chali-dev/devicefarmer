@@ -130,27 +130,8 @@ const Env = z.object({
   TRACKED_DEVICE_MAX_PER_HOUR: z.coerce.number().int().min(1).max(600).default(60),
   /** Someone is viewing/controlling the collector device: the refresh is deferred by this many seconds. */
   TRACKED_DEVICE_BUSY_RETRY_SEC: z.coerce.number().int().min(5).max(86_400).default(300),
-  /**
-   * Official platform integrations (modules/platforms). OAuth redirect URIs are
-   * `${PUBLIC_BASE_URL}/api/platforms/<platform>/callback` (default: WEB_ORIGIN, whose /api is the API).
-   * Meta and TikTok only accept https redirect URIs, Google also allows http://localhost.
-   * The endpoints are overridable for a compatible test endpoint only.
-   */
+  /** Public URL of the web UI (reverse proxy), used for links in alert messages (default: WEB_ORIGIN). */
   PUBLIC_BASE_URL: z.string().url().optional(),
-  GOOGLE_OAUTH_AUTH_URL: z.string().url().default('https://accounts.google.com/o/oauth2/v2/auth'),
-  GOOGLE_OAUTH_TOKEN_URL: z.string().url().default('https://oauth2.googleapis.com/token'),
-  GOOGLE_OAUTH_REVOKE_URL: z.string().url().default('https://oauth2.googleapis.com/revoke'),
-  YOUTUBE_UPLOAD_BASE: z.string().url().default('https://www.googleapis.com/upload/youtube/v3'),
-  /** 账号分析: YouTube Analytics API v2 (per-day channel metrics). */
-  YOUTUBE_ANALYTICS_BASE: z.string().url().default('https://youtubeanalytics.googleapis.com/v2'),
-  INSTAGRAM_AUTH_URL: z.string().url().default('https://www.instagram.com/oauth/authorize'),
-  INSTAGRAM_TOKEN_URL: z.string().url().default('https://api.instagram.com/oauth/access_token'),
-  /** Unversioned = the app's default Graph API version; set e.g. https://graph.instagram.com/v24.0 to pin one. */
-  INSTAGRAM_GRAPH_BASE: z.string().url().default('https://graph.instagram.com'),
-  TIKTOK_AUTH_URL: z.string().url().default('https://www.tiktok.com/v2/auth/authorize/'),
-  TIKTOK_API_BASE: z.string().url().default('https://open.tiktokapis.com'),
-  /** Lifetime of presigned media URLs handed to platforms that fetch media by URL (Instagram). */
-  PLATFORM_MEDIA_URL_TTL_SEC: z.coerce.number().int().min(300).max(7 * 86400).default(3600),
   /** Publish scheduler: default attempts per scheduled run (a distribution may lower/raise it, 1–10), attempt timeout and retry backoff base. */
   PUBLISH_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
   PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10 * 60_000),

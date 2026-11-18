@@ -8,28 +8,24 @@ import { dateLocale } from '../../i18n'
 
 /**
  * Settings → Alerts (admin): which alert kinds go to the in-app bell, cooldown, recipients, "recovered"
- * notices, notification retention and the periodic account check (号状态监控). External channels
+ * notices and notification retention. External channels
  * (Telegram…) and the kinds each receives live on their own page (/alert-channels).
  */
 const { t } = useI18n()
 type KindRule = { inApp: boolean }
 interface Rules {
   kinds: Record<string, KindRule>; cooldownMinutes: number; notifyAdmins: boolean; recovered: boolean
-  retentionDays: number; accountCheckHours: number | null; updatedAt: string | null
+  retentionDays: number; updatedAt: string | null
 }
 interface KindInfo { kind: string; severity: 'info' | 'warning' | 'error'; recoverable: boolean }
 
 const kinds = ref<KindInfo[]>([])
-const limits = ref({ cooldownMax: 10080, retentionMax: 365, accountCheckMax: 168 })
+const limits = ref({ cooldownMax: 10080, retentionMax: 365 })
 const rules = ref<Rules | null>(null)
-const checkOff = ref(false)
-const checkHours = ref(24)
 const saving = ref(false)
 
 function setRules(r: Rules) {
   rules.value = r
-  checkOff.value = r.accountCheckHours === null
-  checkHours.value = r.accountCheckHours ?? 24
 }
 onMounted(async () => {
   try {
@@ -48,7 +44,7 @@ async function saveRules() {
     setRules((await api<{ rules: Rules }>('PUT', '/api/settings/alerts', {
       kinds: Object.fromEntries(Object.entries(r.kinds).map(([k, v]) => [k, { inApp: v.inApp }])),
       cooldownMinutes: r.cooldownMinutes, notifyAdmins: r.notifyAdmins, recovered: r.recovered,
-      retentionDays: r.retentionDays, accountCheckHours: checkOff.value ? null : checkHours.value,
+      retentionDays: r.retentionDays,
     })).rules)
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
@@ -95,14 +91,6 @@ const kindColumns = [
           </a-form-item>
           <a-form-item :label="t('alerts.settings.retention')" :extra="t('alerts.settings.retentionHint')">
             <a-input-number v-model:value="rules.retentionDays" :min="1" :max="limits.retentionMax" :precision="0" :addon-after="t('settings.retention.dayUnit')" style="width: 200px" />
-          </a-form-item>
-          <h4>{{ t('alerts.settings.accountCheckTitle') }}</h4>
-          <p class="muted">{{ t('alerts.settings.accountCheckHint') }}</p>
-          <a-form-item>
-            <a-checkbox v-model:checked="checkOff">{{ t('alerts.settings.accountCheckOff') }}</a-checkbox>
-          </a-form-item>
-          <a-form-item v-if="!checkOff" :label="t('alerts.settings.accountCheckEvery')">
-            <a-input-number v-model:value="checkHours" :min="1" :max="limits.accountCheckMax" :precision="0" :addon-after="t('alerts.settings.hours')" style="width: 200px" />
           </a-form-item>
           <a-space wrap>
             <a-button type="primary" :loading="saving" @click="saveRules">{{ t('common.save') }}</a-button>

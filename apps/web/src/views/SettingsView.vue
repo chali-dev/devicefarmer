@@ -6,7 +6,6 @@ import { api } from '../api/client'
 import type { SettingsConfig } from '../api/types'
 import AlertSettings from '../components/settings/AlertSettings.vue'
 import LanguageSettings from '../components/settings/LanguageSettings.vue'
-import PlatformSettings from '../components/settings/PlatformSettings.vue'
 import RetentionSettings from '../components/settings/RetentionSettings.vue'
 import SocialLimitsSettings from '../components/settings/SocialLimitsSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
@@ -25,7 +24,7 @@ const platforms = usePlatformsStore()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['storage', 'platforms', 'tracked', 'social', 'publish', 'languages', 'retention', 'system', 'alerts'] as const
+const TABS = ['storage', 'tracked', 'social', 'publish', 'languages', 'retention', 'system', 'alerts'] as const
 type Tab = (typeof TABS)[number]
 const tab = computed<Tab>({
   get: () => (TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : 'storage'),
@@ -58,7 +57,6 @@ const envGroups = computed(() => {
     <a-card :bordered="false">
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
         <a-tab-pane key="storage" :tab="t('settings.tabs.storage')"><StorageSettings /></a-tab-pane>
-        <a-tab-pane key="platforms" :tab="t('settings.tabs.platforms')"><PlatformSettings /></a-tab-pane>
         <a-tab-pane v-if="platforms.scope.features.youtubeKey || platforms.scope.features.trackedCollector" key="tracked" :tab="t('settings.tabs.tracked')">
           <TrackedCollectorSettings v-if="platforms.scope.features.trackedCollector" />
           <a-divider v-if="platforms.scope.features.youtubeKey && platforms.scope.features.trackedCollector" />

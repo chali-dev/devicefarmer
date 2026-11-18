@@ -9,10 +9,8 @@ import { db, schema } from '../../db/index.js';
 export const ALERT_KINDS = {
   /** Device became error/stopped outside a user action (monitor), or a lifecycle op failed. Params: name, status, reason[, op]. */
   'device.down': { severity: 'error', refType: 'instance', recoverable: true, defaultOn: true, channel: true },
-  /** Account check result is a problem (logged out, needs verification, suspended…, or the check failed). Params: platform, handle, reason[, code]. */
+  /** Manual account check ("mark checked") found a problem (logged out, needs verification, suspended…). Params: platform, handle, reason. */
   'account.problem': { severity: 'warning', refType: 'social_account', recoverable: true, defaultOn: true, channel: true },
-  /** Official-API authorisation expired / revoked / missing permission. Params: platform, handle, status[, code]. */
-  'connection.expired': { severity: 'error', refType: 'social_account', recoverable: true, defaultOn: true, channel: true },
   /** A publish run ended failed. Params: platform, handle, title[, code]. */
   'publish.failed': { severity: 'error', refType: 'publish', recoverable: false, defaultOn: true, channel: true },
   /** Any other task-centre task failed after its last attempt (off by default). Params: type, label[, code]. */
@@ -47,11 +45,9 @@ export interface AlertRules {
   recovered: boolean;
   /** Read in-app notifications are deleted after this many days (unread ones after max(days, 90)). */
   retentionDays: number;
-  /** 号状态监控: periodic official-API check of connected social accounts every N hours; null = off. */
-  accountCheckHours: number | null;
 }
 
-export const LIMITS = { cooldownMax: 7 * 24 * 60, retentionMax: 365, accountCheckMax: 24 * 7 } as const;
+export const LIMITS = { cooldownMax: 7 * 24 * 60, retentionMax: 365 } as const;
 const KEY = 'alerts.rules';
 
 export const defaultRules = (): AlertRules => ({
@@ -60,7 +56,6 @@ export const defaultRules = (): AlertRules => ({
   notifyAdmins: true,
   recovered: true,
   retentionDays: 30,
-  accountCheckHours: 24,
 });
 
 const int = (v: unknown, min: number, max: number, dflt: number) => (typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max ? v : dflt);
@@ -80,7 +75,6 @@ export function normalizeRules(raw: unknown): AlertRules {
     notifyAdmins: typeof v.notifyAdmins === 'boolean' ? v.notifyAdmins : d.notifyAdmins,
     recovered: typeof v.recovered === 'boolean' ? v.recovered : d.recovered,
     retentionDays: int(v.retentionDays, 1, LIMITS.retentionMax, d.retentionDays),
-    accountCheckHours: v.accountCheckHours === null ? null : int(v.accountCheckHours, 1, LIMITS.accountCheckMax, d.accountCheckHours!),
   };
 }
 

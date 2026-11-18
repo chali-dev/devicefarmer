@@ -7,7 +7,6 @@ import { forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
 import { mediaItem } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
-import { methodIdsFor } from './methods.js';
 import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
 import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish, retryPublish } from './publish.js';
 
@@ -88,9 +87,9 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
 export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
-  /** Capability table + available methods per platform. */
+  /** Capability table per platform (publishing is manual only). */
   app.get('/api/publish/platforms', async () => ({
-    platforms: enabledPlatforms().map((p) => ({ id: p.id, name: p.name, capability: capabilityOf(p.id), postTypes: postTypesOf(p.id), methods: methodIdsFor(p.id), known: p.id in PUBLISH_CAPABILITIES })),
+    platforms: enabledPlatforms().map((p) => ({ id: p.id, name: p.name, capability: capabilityOf(p.id), postTypes: postTypesOf(p.id), known: p.id in PUBLISH_CAPABILITIES })),
   }));
 
   app.get('/api/publish/tasks', { schema: { querystring: ListQuery } }, async (req) => {

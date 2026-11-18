@@ -9,9 +9,9 @@ import { pagination } from '../common/ui'
 
 /**
  * 帖子 tab of the analytics drawer: the account's own posts with per-post likes/comments as the last
- * official-API refresh stored them (Instagram /me/media). Links go to the post's permalink.
+ * official-API refresh stored them before the APIs were removed (history only). Links go to the post's permalink.
  */
-const props = defineProps<{ accountId: string; connected: boolean; reloadKey?: unknown }>()
+const props = defineProps<{ accountId: string }>()
 const { t, te } = useI18n()
 const SORTS = ['published', 'likes', 'comments'] as const
 const sort = ref<typeof SORTS[number]>('published')
@@ -28,7 +28,7 @@ async function load() {
   } catch (e) { message.error(errorText(e)) }
   finally { loading.value = false }
 }
-watch(() => [props.accountId, props.reloadKey], () => { page.value = 1; void load() }, { immediate: true })
+watch(() => props.accountId, () => { page.value = 1; void load() }, { immediate: true })
 watch(sort, () => { page.value = 1; void load() })
 function onChange(p: { current?: number; pageSize?: number }) {
   if (p.pageSize && p.pageSize !== pageSize.value) { pageSize.value = p.pageSize; page.value = 1 } else page.value = p.current ?? 1
@@ -36,7 +36,6 @@ function onChange(p: { current?: number; pageSize?: number }) {
 }
 
 const typeText = (v: string | null) => (v ? (te(`analytics.posts.types.${v}`) ? t(`analytics.posts.types.${v}`) : v) : null)
-const emptyText = computed(() => (!data.value?.apiPosts ? t('analytics.posts.noApi') : props.connected ? t('analytics.posts.emptyApi') : t('analytics.posts.emptyManual')))
 const columns = computed(() => [
   { title: t('analytics.posts.colPost'), key: 'post', ellipsis: true },
   { title: t('analytics.posts.colType'), key: 'type', width: 110 },
@@ -57,7 +56,7 @@ const columns = computed(() => [
     </span>
   </div>
   <a-table :data-source="data?.posts ?? []" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 640 }"
-    :pagination="pagination({ current: page, pageSize, total: data?.total ?? 0, hideOnSinglePage: true })" :locale="{ emptyText }" @change="onChange">
+    :pagination="pagination({ current: page, pageSize, total: data?.total ?? 0, hideOnSinglePage: true })" :locale="{ emptyText: t('analytics.posts.empty') }" @change="onChange">
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'post'">
         <a v-if="record.permalink" :href="record.permalink" target="_blank" rel="noopener noreferrer" :title="record.caption ?? undefined">{{ record.caption || t('analytics.posts.noCaption') }}</a>
