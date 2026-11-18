@@ -1123,7 +1123,6 @@ const zhCN = {
     title: '内容管理',
     add: '新建内容',
     edit: '编辑内容',
-    openScheduler: '定时发布',
     searchPlaceholder: '标题 / 文案',
     colTitle: '标题',
     colMedia: '素材',

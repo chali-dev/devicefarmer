@@ -1122,7 +1122,6 @@ const en: Messages = {
     title: 'Content',
     add: 'New content',
     edit: 'Edit content',
-    openScheduler: 'Publish scheduler',
     searchPlaceholder: 'Title / caption',
     colTitle: 'Title',
     colMedia: 'Media',

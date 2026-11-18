@@ -503,7 +503,6 @@ async function submitBatchForm() {
   <PageContainer :title="t('content.title')">
     <template #extra>
       <a-button @click="categoryManagerOpen = true">{{ t('content.categories.manage') }}</a-button>
-      <a-button @click="router.push('/publish')">{{ t('content.openScheduler') }}</a-button>
       <a-button type="primary" @click="openNew"><template #icon><PlusOutlined /></template>{{ t('content.add') }}</a-button>
     </template>
 
