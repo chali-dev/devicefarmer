@@ -416,7 +416,7 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'persona'"><span v-if="record.personaName">{{ record.personaName }}</span><span v-else class="muted">—</span></template>
           <template v-else-if="column.key === 'lang'">
-            <a-tooltip v-if="record.lang" :title="langName(record.lang)"><a-tag>{{ record.lang }}</a-tag></a-tooltip>
+            <a-tooltip v-if="record.lang" :title="record.lang"><a-tag>{{ langName(record.lang) }}</a-tag></a-tooltip>
             <span v-else class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'tags'">
