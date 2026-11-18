@@ -6,7 +6,7 @@
  *   tags, notes, varied statuses.
  * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them, plus up to 10 own posts each
  *   with likes/comments (帖子 tab; written with the refresh's own upsert, the only step that touches the DB directly).
- * - 追踪账号: 10 tracked Instagram accounts (categories, tags, favourites, weekly snapshots, posts).
+ * - 追踪账号: 10 tracked Instagram accounts (tags incl. the former categories 灵感/竞品/合作候选, favourites, weekly snapshots, posts).
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
  * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public), the rest by topic
  *   (旅行 / 美食 / 时尚 admin's, 生活 demo-user's); one account without persona.
@@ -168,18 +168,19 @@ function series(a: AccSpec): Day[] {
   return out;
 }
 
-interface TrackedSpec { input: string; handle: string; owner: Owner; displayName: string; category: string; tags: string[]; favorite: boolean; notes: string; f0: number; g: number }
+/** The former 分类 is just a tag now (last, like the category → tag data migration appends it). */
+interface TrackedSpec { input: string; handle: string; owner: Owner; displayName: string; tags: string[]; favorite: boolean; notes: string; f0: number; g: number }
 const TRACKED: TrackedSpec[] = [
-  { input: 'https://www.instagram.com/demo.alpine.lens/', handle: 'demo.alpine.lens', owner: 'admin', displayName: 'Alpine Lens', category: '灵感', tags: ['travel', 'photo'], favorite: true, notes: 'demo: 构图参考', f0: 128_000, g: 0.012 },
-  { input: '@demo.citybike.diaries', handle: 'demo.citybike.diaries', owner: 'admin', displayName: 'Citybike Diaries', category: '竞品', tags: ['travel'], favorite: false, notes: 'demo: 同类旅行号', f0: 21_500, g: 0.025 },
-  { input: 'instagram.com/demo.ramen.radar', handle: 'demo.ramen.radar', owner: 'admin', displayName: 'Ramen Radar', category: '竞品', tags: ['food', 'asia'], favorite: true, notes: 'demo: 东京拉面', f0: 64_300, g: 0.018 },
-  { input: '@demo.pastry.lab', handle: 'demo.pastry.lab', owner: 'admin', displayName: 'Pastry Lab', category: '合作候选', tags: ['food'], favorite: false, notes: 'demo: 可谈合作', f0: 9_700, g: 0.04 },
-  { input: 'https://www.instagram.com/demo.capsule.wardrobe/', handle: 'demo.capsule.wardrobe', owner: 'admin', displayName: 'Capsule Wardrobe', category: '灵感', tags: ['fashion'], favorite: false, notes: 'demo: 极简穿搭', f0: 210_000, g: 0.006 },
-  { input: '@demo.retro.kicks', handle: 'demo.retro.kicks', owner: 'admin', displayName: 'Retro Kicks', category: '竞品', tags: ['fashion', 'sneakers'], favorite: false, notes: 'demo: 粉丝下滑中', f0: 47_800, g: -0.008 },
-  { input: '@demo.indie.travel.tips', handle: 'demo.indie.travel.tips', owner: 'admin', displayName: 'Indie Travel Tips', category: '合作候选', tags: ['travel', 'budget'], favorite: false, notes: 'demo', f0: 3_900, g: 0.05 },
-  { input: '@demo.homegym.coach', handle: 'demo.homegym.coach', owner: 'user', displayName: 'Homegym Coach', category: '竞品', tags: ['fitness'], favorite: true, notes: 'demo: 居家健身', f0: 88_000, g: 0.015 },
-  { input: 'https://www.instagram.com/demo.balcony.garden/', handle: 'demo.balcony.garden', owner: 'user', displayName: 'Balcony Garden', category: '灵感', tags: ['lifestyle', 'plants'], favorite: false, notes: 'demo', f0: 15_200, g: 0.022 },
-  { input: '@demo.slow.mornings', handle: 'demo.slow.mornings', owner: 'user', displayName: 'Slow Mornings', category: '灵感', tags: ['lifestyle'], favorite: false, notes: 'demo', f0: 6_600, g: 0.01 },
+  { input: 'https://www.instagram.com/demo.alpine.lens/', handle: 'demo.alpine.lens', owner: 'admin', displayName: 'Alpine Lens', tags: ['travel', 'photo', '灵感'], favorite: true, notes: 'demo: 构图参考', f0: 128_000, g: 0.012 },
+  { input: '@demo.citybike.diaries', handle: 'demo.citybike.diaries', owner: 'admin', displayName: 'Citybike Diaries', tags: ['travel', '竞品'], favorite: false, notes: 'demo: 同类旅行号', f0: 21_500, g: 0.025 },
+  { input: 'instagram.com/demo.ramen.radar', handle: 'demo.ramen.radar', owner: 'admin', displayName: 'Ramen Radar', tags: ['food', 'asia', '竞品'], favorite: true, notes: 'demo: 东京拉面', f0: 64_300, g: 0.018 },
+  { input: '@demo.pastry.lab', handle: 'demo.pastry.lab', owner: 'admin', displayName: 'Pastry Lab', tags: ['food', '合作候选'], favorite: false, notes: 'demo: 可谈合作', f0: 9_700, g: 0.04 },
+  { input: 'https://www.instagram.com/demo.capsule.wardrobe/', handle: 'demo.capsule.wardrobe', owner: 'admin', displayName: 'Capsule Wardrobe', tags: ['fashion', '灵感'], favorite: false, notes: 'demo: 极简穿搭', f0: 210_000, g: 0.006 },
+  { input: '@demo.retro.kicks', handle: 'demo.retro.kicks', owner: 'admin', displayName: 'Retro Kicks', tags: ['fashion', 'sneakers', '竞品'], favorite: false, notes: 'demo: 粉丝下滑中', f0: 47_800, g: -0.008 },
+  { input: '@demo.indie.travel.tips', handle: 'demo.indie.travel.tips', owner: 'admin', displayName: 'Indie Travel Tips', tags: ['travel', 'budget', '合作候选'], favorite: false, notes: 'demo', f0: 3_900, g: 0.05 },
+  { input: '@demo.homegym.coach', handle: 'demo.homegym.coach', owner: 'user', displayName: 'Homegym Coach', tags: ['fitness', '竞品'], favorite: true, notes: 'demo: 居家健身', f0: 88_000, g: 0.015 },
+  { input: 'https://www.instagram.com/demo.balcony.garden/', handle: 'demo.balcony.garden', owner: 'user', displayName: 'Balcony Garden', tags: ['lifestyle', 'plants', '灵感'], favorite: false, notes: 'demo', f0: 15_200, g: 0.022 },
+  { input: '@demo.slow.mornings', handle: 'demo.slow.mornings', owner: 'user', displayName: 'Slow Mornings', tags: ['lifestyle', '灵感'], favorite: false, notes: 'demo', f0: 6_600, g: 0.01 },
 ];
 const SNAPSHOT_WEEKS = 8;
 /** Weekly snapshots, oldest first (captured at 09:00 UTC, n weeks before the anchor). */
@@ -352,7 +353,7 @@ for (const t of TRACKED) {
   let row = trackedByHandle.get(`${t.owner}:${t.handle}`);
   if (!row) {
     row = (await must('POST', '/api/tracked-accounts', tok, {
-      input: t.input, platform: 'instagram', displayName: t.displayName, category: t.category, tags: t.tags, favorite: t.favorite, notes: t.notes,
+      input: t.input, platform: 'instagram', displayName: t.displayName, tags: t.tags, favorite: t.favorite, notes: t.notes,
     })).account;
     counts.tracked++;
   }
@@ -781,12 +782,12 @@ try {
       const row = mine.find((t) => t.handle === s.handle)!;
       const snaps = snapshots(s);
       const cur = snaps.at(-1)!.followers; const prev = snaps.at(-2)!.followers;
-      if (!row || row.followers !== cur || row.followersDelta !== cur - prev || row.followersPrevAt !== snaps.at(-2)!.capturedAt || row.category !== s.category
+      if (!row || row.followers !== cur || row.followersDelta !== cur - prev || row.followersPrevAt !== snaps.at(-2)!.capturedAt || 'category' in row
         || row.tags.join() !== s.tags.join() || row.favorite !== s.favorite || row.profileUrl !== `https://www.instagram.com/${s.handle}/` || row.dataMode !== 'manual_only') {
         bad.push(`${s.handle}: ${row?.followers}/${row?.followersDelta} vs ${cur}/${cur - prev}`);
       }
     }
-    check('tracked: URL/@handle normalised, category/tags/favorite, latest followers + delta vs previous snapshot exact, manual_only', !bad.length, bad.join('; '));
+    check('tracked: URL/@handle normalised, tags/favorite (no category field), latest followers + delta vs previous snapshot exact, manual_only', !bad.length, bad.join('; '));
     const du = await listAll('/api/tracked-accounts', DU.token);
     check('tracked demo-user: only own rows', du.every((t) => t.userId === DU.id) && TRACKED.filter((s) => s.owner === 'user').every((s) => du.some((t) => t.handle === s.handle)));
     const adm = mine.find((t) => t.handle === 'demo.ramen.radar');
@@ -794,8 +795,8 @@ try {
     const iso2 = await http('GET', `/api/tracked-accounts/${adm.id}/snapshots`, DU.token);
     const iso3 = await http('GET', `/api/tracked-accounts?ownerId=${adminId}`, DU.token);
     check('tracked isolation: other owner\'s row 404, ownerId filter 403', iso.status === 404 && iso2.status === 404 && iso3.status === 403, `${iso.status} ${iso2.status} ${iso3.status}`);
-    const cat = await http('GET', `/api/tracked-accounts?category=${encodeURIComponent('竞品')}&ownerId=${adminId}&pageSize=200`, ADMIN);
-    check('filter category', cat.body.items.filter((t: any) => t.handle.startsWith('demo.')).map((t: any) => t.handle).sort().join() === TRACKED.filter((s) => s.owner === 'admin' && s.category === '竞品').map((s) => s.handle).sort().join());
+    const cat = await http('GET', `/api/tracked-accounts?tag=${encodeURIComponent('竞品')}&ownerId=${adminId}&pageSize=200`, ADMIN);
+    check('filter tag 竞品 (former category)', cat.body.items.filter((t: any) => t.handle.startsWith('demo.')).map((t: any) => t.handle).sort().join() === TRACKED.filter((s) => s.owner === 'admin' && s.tags.includes('竞品')).map((s) => s.handle).sort().join());
     const tag = await http('GET', `/api/tracked-accounts?tag=FOOD&ownerId=${adminId}&pageSize=200`, ADMIN);
     check('filter tag (case-insensitive)', tag.body.items.filter((t: any) => t.handle.startsWith('demo.')).map((t: any) => t.handle).sort().join() === 'demo.pastry.lab,demo.ramen.radar');
     const fav = await http('GET', `/api/tracked-accounts?favorite=true&ownerId=${adminId}&pageSize=200`, ADMIN);
@@ -806,7 +807,7 @@ try {
     const pg2 = await http('GET', `/api/tracked-accounts?ownerId=${adminId}&pageSize=3&page=2`, ADMIN);
     check('tracked pagination (favorites first)', pg1.body.items.length === 3 && pg2.body.items.length >= 1 && !pg1.body.items.some((a: any) => pg2.body.items.some((b: any) => b.id === a.id)) && pg1.body.items[0].favorite === true);
     const fac = await http('GET', '/api/tracked-accounts/facets', DU.token);
-    check('facets (demo-user): own categories/tags', fac.body.categories.includes('竞品') && fac.body.tags.includes('fitness') && !fac.body.tags.includes('sneakers'), fac.text);
+    check('facets (demo-user): own tags only, no categories', !('categories' in fac.body) && fac.body.tags.includes('竞品') && fac.body.tags.includes('fitness') && !fac.body.tags.includes('sneakers'), fac.text);
     const dup = await http('POST', '/api/tracked-accounts', ADMIN, { input: 'https://instagram.com/DEMO.Ramen.Radar' });
     check('duplicate (URL vs handle, case-insensitive) → 409 tracked.duplicate', dup.status === 409 && codeOf(dup) === 'tracked.duplicate', dup.text);
     const parse = await http('POST', '/api/tracked-accounts/parse', ADMIN, { input: 'https://www.instagram.com/demo.ramen.radar/?hl=en' });

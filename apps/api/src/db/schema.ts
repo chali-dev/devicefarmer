@@ -328,6 +328,7 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   displayName: text('display_name'),
   avatarUrl: text('avatar_url'),
   bio: text('bio'),
+  /** LEGACY: no longer read or written (categories were folded into `tags` by src/db/tracked-category-data-migration.ts); drop in a later release. */
   category: text('category'),
   /** Lowercase, deduplicated. */
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
@@ -351,6 +352,7 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   unique('tracked_accounts_user_platform_handle').on(t.userId, t.platform, t.handle),
   index('tracked_accounts_next_refresh_idx').on(t.nextRefreshAt).where(sql`refresh_interval_hours is not null`),
   index('tracked_accounts_user_status_idx').on(t.userId, t.status),
+  // LEGACY (with the `category` column): drop in a later release.
   index('tracked_accounts_user_category_idx').on(t.userId, t.category),
   index('tracked_accounts_user_favorite_idx').on(t.userId, t.favorite),
   index('tracked_accounts_tags_idx').using('gin', t.tags),
