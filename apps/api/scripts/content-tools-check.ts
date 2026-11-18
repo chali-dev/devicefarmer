@@ -168,11 +168,11 @@ try {
   const ytBusy = await track(A.token, `@ctBusy${tag}`, 'youtube');
   const ytFar = await track(A.token, `@ctFar${tag}`, 'youtube');
   const ytRace = await track(A.token, `@ctRace${tag}`, 'youtube');
-  const igA = await track(A.token, `ct${tag}`, 'instagram');
+  const igA = await track(A.token, `ct${tag}`, 'tiktok'); // a platform without a data source (TikTok)
   const ytB = await track(B.token, `@ctB${tag}`, 'youtube');
 
   r = await http('PATCH', `/api/tracked-accounts/${igA.id}`, A.token, { refreshIntervalHours: 6 });
-  check('manual-only platform cannot be scheduled (400 tracked.schedule_manual_only)', r.status === 400 && r.body.code === 'tracked.schedule_manual_only');
+  check('platform without a data source cannot be scheduled (400 tracked.schedule_manual_only)', r.status === 400 && r.body.code === 'tracked.schedule_manual_only');
   r = await http('PATCH', `/api/tracked-accounts/${ytA.id}`, A.token, { refreshIntervalHours: 5 });
   check('unsupported interval → 400', r.status === 400);
   r = await http('PATCH', `/api/tracked-accounts/${ytA.id}`, B.token, { refreshIntervalHours: 6 });
@@ -194,7 +194,7 @@ try {
   const slot = new Date(Math.ceil((Date.now() + 50 * 60_000) / 1000) * 1000);
   await db.update(TA).set({ nextRefreshAt: slot }).where(inArray(TA.id, [ytA.id, ytPaused.id, ytBusy.id, ytB.id]));
   await db.update(TA).set({ nextRefreshAt: new Date(Date.now() + 3 * 3600_000) }).where(eq(TA.id, ytFar.id));
-  // A legacy/odd row: manual-only platform with an interval (cannot be set via the API) must be skipped.
+  // A legacy/odd row: platform without a source with an interval (cannot be set via the API) must be skipped.
   await db.update(TA).set({ refreshIntervalHours: 6, nextRefreshAt: slot }).where(eq(TA.id, igA.id));
   // ytBusy has an unfinished refresh (a scheduled one far ahead) → skipped as in progress.
   const busyTask = (await createTask({ type: 'tracked-refresh', userId: A.id, label: 'busy', refType: 'tracked_account', refId: ytBusy.id, payload: { trackedAccountId: ytBusy.id }, runAt: new Date(Date.now() + 2 * 3600_000) })).task;
@@ -217,7 +217,7 @@ try {
   const p1 = await acct(ytPaused.id); const bz = await acct(ytBusy.id); const ig1 = await acct(igA.id);
   check('paused → skipped (tracked.paused), slot advanced, no task', p1.scheduleSkipCode === 'tracked.paused' && p1.nextRefreshAt!.getTime() > slot.getTime() && (await tasksOf(ytPaused.id)).length === 0);
   check('refresh in progress → skipped (tracked.refresh_in_progress)', bz.scheduleSkipCode === 'tracked.refresh_in_progress' && (await tasksOf(ytBusy.id)).length === 1);
-  check('manual-only platform → skipped (tracked.schedule_manual_only), no task', ig1.scheduleSkipCode === 'tracked.schedule_manual_only' && (await tasksOf(igA.id)).length === 0);
+  check('platform without a source → skipped (tracked.schedule_manual_only), no task', ig1.scheduleSkipCode === 'tracked.schedule_manual_only' && (await tasksOf(igA.id)).length === 0);
   check('not yet due → untouched', (await acct(ytFar.id)).nextRefreshAt!.getTime() === farBefore && (await tasksOf(ytFar.id)).length === 0);
   check('tick result lists skips with codes', tk.result.tracked.skipped.some((s: any) => s.id === ytPaused.id && s.code === 'tracked.paused'), JSON.stringify(tk.result.tracked).slice(0, 200));
 

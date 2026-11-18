@@ -1,6 +1,11 @@
 /**
  * Tracked accounts (追踪账号) test through the public API against the real API, DB and BullMQ queue (no mocks).
- * - Creates two temporary users (A, B), their tracked accounts, snapshots and posts; deletes everything afterwards.
+ * - Creates two temporary users (A, B) and their tracked accounts; deletes everything afterwards. Manual entry was
+ *   removed (POST …/snapshots and …/posts are 404 now); history rows (legacy `manual` and `device` ones) are seeded
+ *   directly in the DB to test deltas, ordering, approx flags and deletion.
+ * - Never touches a phone: an Instagram collector device configured in this DB is unset for the run and restored
+ *   afterwards (the collector itself is covered by tracked-device-check.ts).
+ * - Needs TikTok and YouTube enabled: run the API (and this script) with ENABLED_PLATFORMS=all.
  * - Never calls an external platform: the YouTube API key set here is a syntactically valid dummy that is cleared
  *   again before any refresh could use it. The real YouTube Data API path runs only when YOUTUBE_TEST_API_KEY is
  *   set (then it refreshes the public channel @YouTube once, costing ~3 quota units).
@@ -9,10 +14,11 @@
 import { randomBytes } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { refreshTrackedAccount } from '../src/modules/tracked/tracked.js';
+import { refreshTrackedAccount, upsertPosts } from '../src/modules/tracked/tracked.js';
+import { migrateTrackedIgSchedule } from '../src/db/tracked-schedule-migration.js';
 import { withCaptcha } from './lib/login.js';
 
-const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
+const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
 
@@ -47,6 +53,8 @@ let keyTouched = false;
 let keyWasSet = false;
 const DUMMY_KEY = `AIzaDummy${randomBytes(15).toString('hex')}`;
 const CH = 'UCX6OQ3DkcsbYNE6H8uQQuVA';
+const prevCollector = (await http('GET', '/api/settings/tracked-collectors', T)).body?.collectors?.find((c: any) => c.platform === 'instagram')?.instanceId ?? null;
+if (prevCollector) await http('PUT', '/api/settings/tracked-collectors/instagram', T, { instanceId: null });
 
 try {
   // ---------------------------------------------------------------- users
@@ -108,9 +116,10 @@ try {
     // `category` (removed: folded into tags) is what an old client may still send: silently ignored, not a 400.
     input: 'https://www.instagram.com/NatGeo/', category: 'Media', tags: ['Travel', 'travel', ' Photo '], notes: 'nat geo',
   });
-  check('create (URL) 201, tags normalised, manual_only data mode', r.status === 201 && r.body.account.platform === 'instagram'
+  check('create (URL) 201, tags normalised, collector data mode (no collector set), 定时采集 24 h by default', r.status === 201 && r.body.account.platform === 'instagram'
     && r.body.account.handle === 'natgeo' && JSON.stringify(r.body.account.tags) === '["travel","photo"]'
-    && r.body.account.status === 'active' && r.body.account.dataMode === 'manual_only' && r.body.account.followers === null, r.text.slice(0, 160));
+    && r.body.account.status === 'active' && r.body.account.dataMode === 'device_unconfigured' && r.body.account.followers === null
+    && r.body.account.refreshIntervalHours === 24 && !!r.body.account.nextRefreshAt, r.text.slice(0, 160));
   const ig = r.body.account; accountIds.push(ig.id);
   const igCat = async () => (await db.select({ c: schema.trackedAccounts.category }).from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, ig.id)))[0]?.c;
   check('create: category in the body ignored (no category in the response, column stays null)', !('category' in ig) && await igCat() === null, r.text.slice(0, 160));
@@ -121,7 +130,7 @@ try {
   const igB = r.body.account; accountIds.push(igB.id);
   r = await http('POST', '/api/tracked-accounts', A.token, { input: `https://www.youtube.com/channel/${CH}`, tags: ['travel'] });
   const yt = r.body.account; accountIds.push(yt.id);
-  check('YouTube account: external id from URL, data mode api_unconfigured (no key)', r.status === 201 && yt.externalId === CH && yt.dataMode === 'api_unconfigured', yt?.dataMode);
+  check('YouTube account: external id from URL, data mode api_unconfigured (no key), no default schedule', r.status === 201 && yt.externalId === CH && yt.dataMode === 'api_unconfigured' && yt.refreshIntervalHours === null, yt?.dataMode);
   r = await http('POST', '/api/tracked-accounts', A.token, { input: 'https://www.tiktok.com/@Khaby.Lame', favorite: true, displayName: 'Khaby' });
   const tt = r.body.account; accountIds.push(tt.id);
   check('create TikTok as favorite', r.status === 201 && tt.favorite === true && tt.displayName === 'Khaby');
@@ -142,64 +151,84 @@ try {
   r = await http('PATCH', `/api/tracked-accounts/${tt.id}`, A.token, { favorite: true });
   check('favorite again', r.body.account?.favorite === true);
 
-  // ---------------------------------------------------------------- snapshots + delta
+  // ---------------------------------------------------------------- data migration: existing Instagram rows → 定时采集 24 h, once
+  {
+    const TA = schema.trackedAccounts;
+    const marker = `migration.tracked_ig_schedule.test-${tag}`;
+    const legacy = await db.insert(TA).values([
+      { userId: A.id, platform: 'instagram', handle: `mig1${tag}`, profileUrl: `https://www.instagram.com/mig1${tag}/` },
+      { userId: A.id, platform: 'instagram', handle: `mig2${tag}`, profileUrl: `https://www.instagram.com/mig2${tag}/` },
+      { userId: A.id, platform: 'youtube', handle: `mig3${tag}`, profileUrl: `https://www.youtube.com/@mig3${tag}` },
+    ]).returning();
+    accountIds.push(...legacy.map((x) => x.id));
+    const ids = legacy.map((x) => x.id);
+    const m1 = await migrateTrackedIgSchedule(sqlClient, () => undefined, { marker, onlyIds: ids });
+    const after1 = await db.select().from(TA).where(inArray(TA.id, ids));
+    const ig1 = after1.filter((x) => x.platform === 'instagram');
+    check('IG schedule migration: existing Instagram rows without an interval → 24 h, first slot within the hour; YouTube untouched',
+      m1.updated === 2 && !m1.skipped && ig1.every((x) => x.refreshIntervalHours === 24 && !!x.nextRefreshAt && x.nextRefreshAt.getTime() - Date.now() <= 3600_000)
+      && after1.find((x) => x.platform === 'youtube')!.refreshIntervalHours === null, JSON.stringify(m1));
+    await db.update(TA).set({ refreshIntervalHours: null, nextRefreshAt: null }).where(eq(TA.id, ids[0]!));
+    const m2 = await migrateTrackedIgSchedule(sqlClient, () => undefined, { marker, onlyIds: ids });
+    const [off] = await db.select().from(TA).where(eq(TA.id, ids[0]!));
+    check('IG schedule migration runs once: rerun is a no-op, an interval switched off afterwards stays off', m2.skipped && m2.updated === 0 && off!.refreshIntervalHours === null);
+    await db.delete(schema.settings).where(eq(schema.settings.key, marker));
+    await db.delete(TA).where(inArray(TA.id, ids));
+  }
+
+  // ---------------------------------------------------------------- manual entry removed; history seeded in the DB
   const day = 86_400_000;
   const iso = (ms: number) => new Date(ms).toISOString();
   const now = Date.now();
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, {});
-  check('empty snapshot → 400 tracked.snapshot_empty', r.status === 400 && r.body.code === 'tracked.snapshot_empty');
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: 5, capturedAt: iso(now + 3600_000) });
-  check('future snapshot → 400 tracked.future_time', r.status === 400 && r.body.code === 'tracked.future_time');
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: -1 });
-  check('negative count → 400', r.status === 400);
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: 1000, following: 10, posts: 50, capturedAt: iso(now - 2 * day) });
-  check('manual snapshot 201 (source manual)', r.status === 201 && r.body.snapshot.source === 'manual' && r.body.snapshot.followers === 1000);
-  const snap1 = r.body.snapshot.id;
-  await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: 1200, posts: 52, capturedAt: iso(now - day) });
-  await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { following: 11, capturedAt: iso(now - 3600_000) });
+  const gone = await Promise.all([
+    http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: 1 }),
+    http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { externalId: 'x' }),
+  ]);
+  check('manual entry endpoints removed: POST …/snapshots and …/posts → 404', gone.every((x) => x.status === 404), gone.map((x) => x.status).join(','));
+  const TS = schema.trackedAccountSnapshots;
+  const seed = async (accountId: string, at: number, v: Partial<typeof TS.$inferInsert>) =>
+    (await db.insert(TS).values({ trackedAccountId: accountId, capturedAt: new Date(at), source: 'manual', ...v }).returning())[0]!;
+  const snap1 = (await seed(ig.id, now - 2 * day, { followers: 1000, following: 10, posts: 50 })).id;
+  await seed(ig.id, now - day, { followers: 1200, posts: 52, source: 'device', approx: ['followers'] });
+  await seed(ig.id, now - 3600_000, { following: 11, source: 'device' });
   r = await http('GET', `/api/tracked-accounts/${ig.id}`, A.token);
   let a = r.body.account;
-  check('latest followers 1200, delta +200 (snapshot without followers ignored)', a.followers === 1200 && a.followersDelta === 200 && a.latest.following === 11 && a.latest.followers === null,
+  check('seeded history: latest followers 1200, delta +200 (snapshot without followers ignored), latest source/approx exposed',
+    a.followers === 1200 && a.followersDelta === 200 && a.latest.following === 11 && a.latest.followers === null && a.latest.source === 'device' && Array.isArray(a.latest.approx),
     `followers=${a.followers} delta=${a.followersDelta}`);
-  check('manual entry updates last checked + source', a.lastSource === 'manual' && Math.abs(new Date(a.lastCheckedAt).getTime() - (now - 3600_000)) < 2000);
-  await http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, A.token, { followers: 1100 });
+  await seed(ig.id, now, { followers: 1100, source: 'device' });
   a = (await http('GET', `/api/tracked-accounts/${ig.id}`, A.token)).body.account;
   check('drop to 1100 → delta −100', a.followers === 1100 && a.followersDelta === -100);
   r = await http('GET', `/api/tracked-accounts/${ig.id}/snapshots`, A.token);
   const times = r.body.snapshots.map((s: any) => new Date(s.capturedAt).getTime());
-  check('snapshot history returned oldest first (4 rows)', r.body.snapshots.length === 4 && times.every((t: number, i: number) => i === 0 || t >= times[i - 1]));
+  check('snapshot history returned oldest first (4 rows), approx list and legacy manual rows readable',
+    r.body.snapshots.length === 4 && times.every((t: number, i: number) => i === 0 || t >= times[i - 1])
+    && r.body.snapshots[0].source === 'manual' && JSON.stringify(r.body.snapshots[1].approx) === '["followers"]');
   r = await http('DELETE', `/api/tracked-accounts/${ig.id}/snapshots/${snap1}`, A.token);
   check('delete snapshot 204', r.status === 204);
   r = await http('DELETE', `/api/tracked-accounts/${ig.id}/snapshots/${snap1}`, A.token);
   check('delete it again → 404 tracked.snapshot_not_found', r.status === 404 && r.body.code === 'tracked.snapshot_not_found');
-  r = await http('POST', `/api/tracked-accounts/${yt.id}/snapshots`, A.token, { followers: 300, capturedAt: iso(now - day) });
+  await seed(yt.id, now - day, { followers: 300, source: 'api' });
   r = await http('GET', `/api/tracked-accounts/${yt.id}`, A.token);
   check('single snapshot → delta null', r.body.account.followers === 300 && r.body.account.followersDelta === null);
 
-  // ---------------------------------------------------------------- posts (dedupe by external id)
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { externalId: 'C1', title: 'First', views: 10, publishedAt: iso(now - 3 * day) });
-  check('add post 201 created', r.status === 201 && r.body.created === true && r.body.post.title === 'First');
-  const first = r.body.post;
+  // ---------------------------------------------------------------- posts (upsert by external id; listing; delete)
+  const P = (externalId: string, extra: Record<string, unknown> = {}) => ({ externalId, url: null, title: null, publishedAt: null, views: null, likes: null, comments: null, ...extra });
+  const u1 = await upsertPosts(db, ig.id, [P('C1', { title: 'First', views: 10, publishedAt: new Date(now - 3 * day) })], 'api');
+  const [first] = await db.select().from(schema.trackedPosts).where(eq(schema.trackedPosts.id, u1.ids[0]!));
   await sleep(20);
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { externalId: 'C1', views: 20, likes: 3 });
-  const p2 = r.body.post;
-  check('same external id → 200 updated (title kept, metrics updated, first seen unchanged)', r.status === 200 && r.body.created === false
-    && p2.id === first.id && p2.title === 'First' && p2.views === 20 && p2.likes === 3 && p2.firstSeenAt === first.firstSeenAt
-    && new Date(p2.lastSeenAt) > new Date(first.lastSeenAt) && p2.publishedAt === first.publishedAt);
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { url: 'https://www.instagram.com/p/XYZ/', title: 'By URL', publishedAt: iso(now - day) });
-  const byUrl = r.body.post;
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { url: 'https://www.instagram.com/p/XYZ#frag' });
-  check('post without id deduplicated by URL', r.status === 200 && r.body.post.id === byUrl.id && byUrl.externalId === 'https://www.instagram.com/p/XYZ');
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { title: 'nothing' });
-  check('post without id or URL → 400 tracked.post_id_required', r.status === 400 && r.body.code === 'tracked.post_id_required');
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { url: 'javascript:alert(1)' });
-  check('non-http post URL rejected 400', r.status === 400);
-  await http('POST', `/api/tracked-accounts/${ig.id}/posts`, A.token, { externalId: 'undated', title: 'no date' });
+  const u2 = await upsertPosts(db, ig.id, [P('C1', { views: 20, likes: 3 })], 'api');
+  const [p2] = await db.select().from(schema.trackedPosts).where(eq(schema.trackedPosts.id, u2.ids[0]!));
+  check('post upsert: same external id updated (title kept, metrics updated, first seen unchanged)', u1.inserted === 1 && u2.inserted === 0
+    && p2!.id === first!.id && p2!.title === 'First' && p2!.views === 20 && p2!.likes === 3 && p2!.firstSeenAt.getTime() === first!.firstSeenAt.getTime()
+    && p2!.lastSeenAt > first!.lastSeenAt);
+  const u3 = await upsertPosts(db, ig.id, [P('XYZ', { url: 'https://www.instagram.com/p/XYZ/', publishedAt: new Date(now - day) }), P('undated', { title: 'no date' })], 'api');
   r = await http('GET', `/api/tracked-accounts/${ig.id}/posts`, A.token);
-  check('posts ordered by published date desc, undated last', r.body.total === 3 && r.body.posts.map((p: any) => p.externalId).join(',') === `https://www.instagram.com/p/XYZ,C1,undated`,
+  check('posts ordered by published date desc, undated last', r.body.total === 3 && r.body.posts.map((p: any) => p.externalId).join(',') === 'XYZ,C1,undated',
     r.body.posts.map((p: any) => p.externalId).join(','));
-  r = await http('DELETE', `/api/tracked-accounts/${ig.id}/posts/${byUrl.id}`, A.token);
+  r = await http('DELETE', `/api/tracked-accounts/${ig.id}/posts/${u3.ids[0]}`, A.token);
   check('delete post 204', r.status === 204);
+  void iso;
 
   // ---------------------------------------------------------------- filters + facets
   const list = async (qs: string, tok = A.token) => (await http('GET', `/api/tracked-accounts?${qs}`, tok)).body;
@@ -222,9 +251,8 @@ try {
     http('PATCH', `/api/tracked-accounts/${ig.id}`, B.token, { favorite: true }),
     http('DELETE', `/api/tracked-accounts/${ig.id}`, B.token),
     http('GET', `/api/tracked-accounts/${ig.id}/snapshots`, B.token),
-    http('POST', `/api/tracked-accounts/${ig.id}/snapshots`, B.token, { followers: 1 }),
+    http('DELETE', `/api/tracked-accounts/${ig.id}/snapshots/00000000-0000-0000-0000-000000000000`, B.token),
     http('GET', `/api/tracked-accounts/${ig.id}/posts`, B.token),
-    http('POST', `/api/tracked-accounts/${ig.id}/posts`, B.token, { externalId: 'x' }),
     http('POST', `/api/tracked-accounts/${ig.id}/refresh`, B.token),
   ]);
   check("user B gets 404 tracked.not_found on all of A's account routes", b404.every((x) => x.status === 404 && x.body.code === 'tracked.not_found'), b404.map((x) => x.status).join(','));
@@ -238,27 +266,23 @@ try {
   r = await http('GET', `/api/tracked-accounts/${ig.id}/snapshots`, T);
   check("admin can read A's history", r.status === 200 && r.body.snapshots.length === 3);
 
-  // ---------------------------------------------------------------- refresh only where an API source exists
+  // ---------------------------------------------------------------- refresh only where a data source exists
   // The web UI shows 刷新 / 立即刷新 / 批量刷新 and the 定时采集 controls only when dataMode !== 'manual_only'.
   const modes = Object.fromEntries((await list('', A.token)).items.map((x: any) => [x.platform, x.dataMode]));
-  check('data modes that drive the UI: Instagram + TikTok manual_only (no refresh / schedule shown), YouTube api_unconfigured (refresh + schedule kept)',
-    modes.instagram === 'manual_only' && modes.tiktok === 'manual_only' && modes.youtube === 'api_unconfigured', JSON.stringify(modes));
+  check('data modes that drive the UI: Instagram device_unconfigured (no collector), TikTok manual_only (no source), YouTube api_unconfigured',
+    modes.instagram === 'device_unconfigured' && modes.tiktok === 'manual_only' && modes.youtube === 'api_unconfigured', JSON.stringify(modes));
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { refreshIntervalHours: 6 });
-  check('schedule on a manual-only platform is refused by the API too (400 tracked.schedule_manual_only)', r.status === 400 && r.body.code === 'tracked.schedule_manual_only');
-  // ---------------------------------------------------------------- refresh via the real queue
-  // A direct API refresh of a manual-only account stays the documented no-op (the UI no longer offers it).
+  check('Instagram schedule can be changed (6 h)', r.status === 200 && r.body.account.refreshIntervalHours === 6);
+  r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { refreshIntervalHours: null });
+  check('Instagram schedule can be switched off', r.status === 200 && r.body.account.refreshIntervalHours === null && r.body.account.nextRefreshAt === null);
+  r = await http('PATCH', `/api/tracked-accounts/${tt.id}`, A.token, { refreshIntervalHours: 6 });
+  check('schedule on a platform without a source is refused (400 tracked.schedule_manual_only)', r.status === 400 && r.body.code === 'tracked.schedule_manual_only');
   r = await http('POST', `/api/tracked-accounts/${ig.id}/refresh`, A.token);
-  check('API refresh of a manual-only account → 202 no-op task (manualOnly)', r.status === 202 && !!r.body.taskId && r.body.manualOnly === true, r.text.slice(0, 120));
-  const t1 = await waitTask(r.body.taskId);
-  const [taskRow] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.body.taskId));
-  check('task row reaches succeeded (type tracked-refresh, ref tracked_account)', t1.status === 'success' && taskRow!.type === 'tracked-refresh'
-    && taskRow!.refType === 'tracked_account' && taskRow!.refId === ig.id && taskRow!.instanceId === null, `${t1.status} ${t1.error ?? ''}`);
-  a = (await http('GET', `/api/tracked-accounts/${ig.id}`, A.token)).body.account;
-  check('manual-only refresh leaves the account active without error; lastRefresh exposed', a.status === 'active' && !a.lastError && a.lastRefresh?.status === 'success');
+  check('Instagram refresh without a collector device → 400 tracked.collector_unset (no task)', r.status === 400 && r.body.code === 'tracked.collector_unset');
   // Refresh dedupe: an unfinished refresh task blocks another.
   const [fake] = await db.insert(schema.tasks).values({ type: 'tracked-refresh', refType: 'tracked_account', refId: ig.id, status: 'running', instanceName: 'test' }).returning();
-  r = await http('POST', `/api/tracked-accounts/${ig.id}/refresh`, A.token);
-  check('refresh while one is running → 409 tracked.refresh_in_progress', r.status === 409 && r.body.code === 'tracked.refresh_in_progress');
+  r = await http('POST', '/api/tracked-accounts/refresh', A.token, { ids: [ig.id] });
+  check('refresh while one is running → skipped tracked.refresh_in_progress', r.body.skipped?.[0]?.code === 'tracked.refresh_in_progress');
   await db.delete(schema.tasks).where(eq(schema.tasks.id, fake!.id));
   r = await http('POST', `/api/tracked-accounts/${tt.id}/refresh`, A.token);
   check('refresh paused account → 409 tracked.paused', r.status === 409 && r.body.code === 'tracked.paused');
@@ -266,9 +290,19 @@ try {
   check('refresh YouTube without API key → 400 tracked.youtube_no_api_key (no task)', r.status === 400 && r.body.code === 'tracked.youtube_no_api_key');
   r = await http('POST', '/api/tracked-accounts/refresh', A.token, { ids: [ig.id, yt.id, tt.id, igB.id] });
   const sk = Object.fromEntries((r.body.skipped ?? []).map((s: any) => [s.id, s.code]));
-  check('batch refresh: queued manual-only, skipped no-key / paused / foreign (not_found)', r.status === 202 && r.body.queued.length === 1 && r.body.queued[0].id === ig.id
-    && sk[yt.id] === 'tracked.youtube_no_api_key' && sk[tt.id] === 'tracked.paused' && sk[igB.id] === 'tracked.not_found', JSON.stringify(sk));
-  if (r.body.queued[0]) check('batch task succeeds', (await waitTask(r.body.queued[0].taskId)).status === 'success');
+  check('batch refresh: skipped no-collector / no-key / paused / foreign (not_found)', r.status === 202 && r.body.queued.length === 0
+    && sk[ig.id] === 'tracked.collector_unset' && sk[yt.id] === 'tracked.youtube_no_api_key' && sk[tt.id] === 'tracked.paused' && sk[igB.id] === 'tracked.not_found', JSON.stringify(sk));
+  // A platform without a source: a refresh is the documented no-op task (the UI does not offer it).
+  await http('PATCH', `/api/tracked-accounts/${tt.id}`, A.token, { status: 'active' });
+  r = await http('POST', `/api/tracked-accounts/${tt.id}/refresh`, A.token);
+  check('API refresh on a platform without a source → 202 no-op task (manualOnly)', r.status === 202 && !!r.body.taskId && r.body.manualOnly === true, r.text.slice(0, 120));
+  const t1 = await waitTask(r.body.taskId);
+  const [taskRow] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.body.taskId));
+  check('task row reaches succeeded (type tracked-refresh, ref tracked_account)', t1.status === 'success' && taskRow!.type === 'tracked-refresh'
+    && taskRow!.refType === 'tracked_account' && taskRow!.refId === tt.id && taskRow!.instanceId === null, `${t1.status} ${t1.error ?? ''}`);
+  a = (await http('GET', `/api/tracked-accounts/${tt.id}`, A.token)).body.account;
+  check('no-source refresh leaves the account active without error; lastRefresh exposed', a.status === 'active' && !a.lastError && a.lastRefresh?.status === 'success');
+  await http('PATCH', `/api/tracked-accounts/${tt.id}`, A.token, { status: 'paused' });
   // The job function itself (what a scheduler would call) with no key: coded error, account marked error.
   const err = await refreshTrackedAccount(yt.id).then(() => null, (e) => e as { code?: string });
   a = (await http('GET', `/api/tracked-accounts/${yt.id}`, A.token)).body.account;
@@ -277,7 +311,10 @@ try {
   check('error status filter', idsOf(await list('status=error')) === want(yt));
   r = await http('PATCH', `/api/tracked-accounts/${yt.id}`, A.token, { status: 'active' });
   check('error account can be set active again', r.body.account?.status === 'active');
-  check('refreshTrackedAccount on a manual-only platform → manual_only', (await refreshTrackedAccount(ig.id)).outcome === 'manual_only');
+  check('refreshTrackedAccount on a platform without a source → manual_only', (await refreshTrackedAccount(tt.id)).outcome === 'manual_only');
+  const igErr = await refreshTrackedAccount(ig.id).then(() => null, (e) => e as { code?: string });
+  check('refreshTrackedAccount(Instagram, no collector) → tracked.collector_unset, no phone touched', igErr?.code === 'tracked.collector_unset');
+  await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { status: 'active' });
 
   // ---------------------------------------------------------------- YouTube API key: admin only, write-only, encrypted
   r = await http('GET', '/api/settings/youtube', A.token);
@@ -297,7 +334,8 @@ try {
     check('GET shows only apiKeySet', g.body.youtube.apiKeySet === true && !g.text.includes(DUMMY_KEY) && !g.text.includes('v1:'));
     const plat = (await http('GET', '/api/tracked-accounts/platforms', A.token)).body.platforms;
     const ytp = plat.find((p: any) => p.id === 'youtube');
-    check('platforms: YouTube API configured; Instagram/TikTok manual only', ytp.api?.configured === true && plat.find((p: any) => p.id === 'instagram').api === null && !JSON.stringify(plat).includes(DUMMY_KEY));
+    check('platforms: YouTube API configured; Instagram a device source (not configured); TikTok none', ytp.api?.configured === true && ytp.api.kind === 'api'
+      && plat.find((p: any) => p.id === 'instagram').api?.kind === 'device' && plat.find((p: any) => p.id === 'tiktok').api === null && !JSON.stringify(plat).includes(DUMMY_KEY));
     const lst = (await http('GET', `/api/tracked-accounts/${yt.id}`, A.token)).body.account;
     check('account data mode becomes api', lst.dataMode === 'api');
     const [st] = await sqlClient`select value::text as v from settings where key = 'youtube'`;
@@ -329,7 +367,7 @@ try {
   await sleep(500);
   const acts = await sqlClient`select distinct action from audit_logs where action like 'tracked.%' or action = 'settings.youtube_api_key'`;
   const have = new Set(acts.map((x) => x.action as string));
-  const need = ['tracked.create', 'tracked.update', 'tracked.snapshot_add', 'tracked.snapshot_delete', 'tracked.post_add', 'tracked.post_delete', 'tracked.refresh', 'tracked.refresh_batch',
+  const need = ['tracked.create', 'tracked.update', 'tracked.snapshot_delete', 'tracked.post_delete', 'tracked.refresh', 'tracked.refresh_batch',
     ...(keyTouched ? ['settings.youtube_api_key'] : [])];
   check('audit actions recorded', need.every((x) => have.has(x)), [...have].sort().join(','));
   const [cr] = await sqlClient`select target, detail from audit_logs where action = 'tracked.create' and user_id = ${A.id} order by at limit 1`;
@@ -342,8 +380,8 @@ try {
   const leftS = await db.select().from(schema.trackedAccountSnapshots).where(eq(schema.trackedAccountSnapshots.trackedAccountId, ig.id));
   const leftP = await db.select().from(schema.trackedPosts).where(eq(schema.trackedPosts.trackedAccountId, ig.id));
   check('delete account 204; snapshots and posts cascade', r.status === 204 && leftS.length === 0 && leftP.length === 0);
-  await http('POST', `/api/tracked-accounts/${igB.id}/snapshots`, B.token, { followers: 7 });
-  await http('POST', `/api/tracked-accounts/${igB.id}/posts`, B.token, { externalId: 'b1' });
+  await seed(igB.id, Date.now(), { followers: 7, source: 'device' });
+  await upsertPosts(db, igB.id, [P('b1')], 'api');
   r = await http('DELETE', `/api/users/${B.id}`, T);
   const leftB = await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.userId, B.id));
   check('deleting a user with tracked data succeeds (cascade)', r.status === 204 && leftB.length === 0);
@@ -352,6 +390,7 @@ try {
   check(`unexpected error: ${(err as Error).stack ?? (err as Error).message}`, false);
 } finally {
   if (keyTouched) await http('PUT', '/api/settings/youtube', T, { apiKey: null });
+  if (prevCollector) await http('PUT', '/api/settings/tracked-collectors/instagram', T, { instanceId: prevCollector });
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (accountIds.length) await db.delete(schema.tasks).where(inArray(schema.tasks.refId, accountIds));
   const left = await db.select().from(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, accountIds.length ? accountIds : ['00000000-0000-0000-0000-000000000000']));

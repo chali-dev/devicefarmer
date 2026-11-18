@@ -1,4 +1,5 @@
-import { and, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -8,8 +9,9 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
 import { parseProfile, PLATFORM_IDS, platformDef, platformInfo } from './platforms.js';
-import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts, upsertPosts } from './tracked.js';
-import { firstSlot, SCHEDULE_INTERVALS } from './schedule.js';
+import { display, getVisibleAccount, pendingRefreshes, REF_TYPE, refreshRefusal, toPublicAccounts } from './tracked.js';
+import { SCHEDULE_INTERVALS } from './schedule.js';
+import { firstSlot, IG_DEFAULT_INTERVAL_HOURS } from './slots.js';
 import { normTags, TAG_LIMIT, TAG_MAX } from './tags.js';
 
 const ta = schema.trackedAccounts;
@@ -17,8 +19,6 @@ const ts = schema.trackedAccountSnapshots;
 const tp = schema.trackedPosts;
 
 const Id = z.object({ id: z.string().uuid() });
-const MAX_COUNT = 1e13;
-const Count = z.number().int().min(0).max(MAX_COUNT).nullable().optional();
 const HttpUrl = z.string().trim().max(1000).url().refine((u) => /^https?:\/\//i.test(u), 'http(s) URL required');
 const Tags = z.array(z.string().trim().min(1).max(TAG_MAX)).max(TAG_LIMIT);
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
@@ -67,26 +67,14 @@ const UpdateBody = z.object({
   /** 'error' is set by refreshes only. */
   status: z.enum(['active', 'paused']).optional(),
   notes: optText(1000),
-  /** 定时采集 interval in hours; null = off. Only for platforms with an official API source. */
+  /** 定时采集 interval in hours; null = off. Only for platforms with a data source (API or collector device). */
   refreshIntervalHours: z.number().int().refine((n) => SCHEDULE_INTERVALS.includes(n), 'unsupported interval').nullable().optional(),
-});
-
-const SnapshotBody = z.object({
-  capturedAt: z.string().datetime({ offset: true }).optional(),
-  followers: Count, following: Count, posts: Count, views: Count,
-});
-
-const PostBody = z.object({
-  externalId: z.string().trim().min(1).max(200).optional(),
-  url: HttpUrl.optional(),
-  title: optText(500),
-  publishedAt: z.string().datetime({ offset: true }).nullable().optional(),
-  views: Count, likes: Count, comments: Count,
 });
 
 /**
  * Tracked accounts (追踪账号): external public profiles a user observes, with follower history and
- * public posts. Data comes from official APIs (YouTube) or manual entry only.
+ * public posts. Data comes from official APIs (YouTube) or the collector device (Instagram, read in the app;
+ * owner decision 2026-11-18). Manual entry of snapshots/posts was removed (old rows stay readable/deletable).
  */
 export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
@@ -127,10 +115,14 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const b = req.body;
     const p = parseProfile(b.input, b.platform);
     if (req.audit) req.audit.target = display(p);
+    // Instagram (read on the collector device) is collected on a schedule by default (24 h; changeable / off per account).
+    const id = randomUUID();
+    const interval = p.platform === 'instagram' ? IG_DEFAULT_INTERVAL_HOURS : null;
     const [row] = await db.insert(ta).values({
-      userId: req.user.id, platform: p.platform, handle: p.handle, profileUrl: p.profileUrl, externalId: p.externalId,
+      id, userId: req.user.id, platform: p.platform, handle: p.handle, profileUrl: p.profileUrl, externalId: p.externalId,
       displayName: blankToNull(b.displayName) ?? null, tags: normTags(b.tags ?? []),
       favorite: b.favorite ?? false, notes: blankToNull(b.notes) ?? null,
+      refreshIntervalHours: interval, nextRefreshAt: interval ? firstSlot(id) : null,
     }).returning().catch((err) => {
       if (isUnique(err)) throw conflict(`已在追踪 ${display(p)}`, 'tracked.duplicate', { account: display(p) });
       throw err;
@@ -159,7 +151,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (b.refreshIntervalHours !== undefined && b.refreshIntervalHours !== cur.refreshIntervalHours) {
       if (b.refreshIntervalHours !== null) assertPlatformEnabled(cur.platform);
       if (b.refreshIntervalHours !== null && !platformDef(cur.platform).source) {
-        throw badRequest('该平台没有官方 API，只能手动录入，无法定时采集', 'tracked.schedule_manual_only');
+        throw badRequest('该平台没有数据来源，无法定时采集', 'tracked.schedule_manual_only');
       }
       set.refreshIntervalHours = b.refreshIntervalHours;
       set.nextRefreshAt = b.refreshIntervalHours === null ? null : firstSlot(cur.id);
@@ -187,23 +179,6 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { snapshots: rows.reverse() };
   });
 
-  app.post('/api/tracked-accounts/:id/snapshots', { schema: { params: Id, body: SnapshotBody } }, async (req, reply) => {
-    const acc = await getVisibleAccount(req.user, req.params.id);
-    const b = req.body;
-    if ([b.followers, b.following, b.posts, b.views].every((v) => v === undefined || v === null)) {
-      throw badRequest('至少填写一项数据', 'tracked.snapshot_empty');
-    }
-    const at = b.capturedAt ? new Date(b.capturedAt) : new Date();
-    if (at.getTime() > Date.now() + 5 * 60_000) throw badRequest('记录时间不能晚于当前时间', 'tracked.future_time');
-    const [row] = await db.insert(ts).values({
-      trackedAccountId: acc.id, capturedAt: at, source: 'manual', createdBy: req.user.id,
-      followers: b.followers ?? null, following: b.following ?? null, posts: b.posts ?? null, views: b.views ?? null,
-    }).returning();
-    await db.update(ta).set({ lastSource: 'manual', lastCheckedAt: sql`greatest(coalesce(${ta.lastCheckedAt}, ${at.toISOString()}::timestamptz), ${at.toISOString()}::timestamptz)` }).where(eq(ta.id, acc.id));
-    reply.code(201);
-    return { snapshot: row };
-  });
-
   app.delete('/api/tracked-accounts/:id/snapshots/:snapshotId', {
     schema: { params: z.object({ id: z.string().uuid(), snapshotId: z.string().uuid() }) },
   }, async (req, reply) => {
@@ -228,26 +203,6 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { posts: rows, total, page: req.query.page, pageSize: req.query.pageSize };
   });
 
-  /**
-   * Manual entry of one public post. Deduplicated by external id (or, without one, by the URL):
-   * an existing post is updated (missing values kept, first_seen_at unchanged).
-   */
-  app.post('/api/tracked-accounts/:id/posts', { schema: { params: Id, body: PostBody } }, async (req, reply) => {
-    const acc = await getVisibleAccount(req.user, req.params.id);
-    const b = req.body;
-    const externalId = b.externalId ?? (b.url ? b.url.replace(/#.*$/, '').replace(/\/+$/, '') : undefined);
-    if (!externalId) throw badRequest('请填写内容 ID 或链接', 'tracked.post_id_required');
-    if (req.audit) req.audit.extra = { externalId };
-    const r = await upsertPosts(db, acc.id, [{
-      externalId, url: b.url ?? null, title: blankToNull(b.title) ?? null, publishedAt: b.publishedAt ? new Date(b.publishedAt) : null,
-      views: b.views ?? null, likes: b.likes ?? null, comments: b.comments ?? null,
-    }], 'manual');
-    await db.update(ta).set({ lastSource: 'manual', lastCheckedAt: new Date() }).where(eq(ta.id, acc.id));
-    const [post] = await db.select().from(tp).where(eq(tp.id, r.ids[0]!));
-    reply.code(r.inserted ? 201 : 200);
-    return { post, created: r.inserted > 0 };
-  });
-
   app.delete('/api/tracked-accounts/:id/posts/:postId', {
     schema: { params: z.object({ id: z.string().uuid(), postId: z.string().uuid() }) },
   }, async (req, reply) => {
@@ -257,7 +212,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(204);
   });
 
-  // ------------------------------------------------------------ refresh (official API, async task)
+  // ------------------------------------------------------------ refresh (official API / collector device, async task)
   const enqueueRefresh = (acc: TrackedAccount, userId: string) => enqueueTask('tracked-refresh', { trackedAccountId: acc.id }, userId, {
     refType: REF_TYPE, refId: acc.id, label: display(acc),
   });

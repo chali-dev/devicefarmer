@@ -1,7 +1,8 @@
 /**
  * Account analytics (账号分析) test against the real API + DB + Redis and the real platform APIs (no mocks).
- * - Manual daily stats → exact per-day gains, per-day sums, totals, per-account sums, 7/30/1-day ranges,
- *   baseline before the window, idempotent upserts, partial manual updates, delete, validation.
+ * - Manual entry was removed (owner decision 2026-11-18): POST …/stats and DELETE …/stats/:day are 404. Daily rows
+ *   (legacy `manual` source) are seeded through the real upsert (upsertDay) → exact per-day gains, per-day sums, totals,
+ *   per-account sums, 7/30/1-day ranges, baseline before the window, idempotent upserts.
  * - RBAC: users only see their own accounts (others 404), admins all + owner filter; dashboard widget per role.
  * - "Refresh now" through the task centre with placeholder connections holding fake tokens: the REAL
  *   Instagram Graph / YouTube Data APIs reject them → task failed with platform.auth_expired, the account's
@@ -21,7 +22,7 @@ import { randomBytes } from 'node:crypto';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { sealSecret } from '../src/lib/secret-box.js';
-import { POST_PAGES, scheduleDailyAccountStats, upsertAccountPosts } from '../src/modules/analytics/analytics.js';
+import { POST_PAGES, scheduleDailyAccountStats, upsertAccountPosts, upsertDay } from '../src/modules/analytics/analytics.js';
 import { collectOwnPosts } from '../src/modules/platforms/instagram.js';
 import { createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
@@ -87,44 +88,28 @@ try {
   const igB = await mk(B, 'instagram', h('igb'));
   check('setup: 6 social accounts created', [igM, fb, igA, ytA, ttA, igB].every(Boolean));
 
-  // ---------------------------------------------------------------- manual stats
-  const add = async (token: string, id: string, body: Record<string, unknown>) => {
-    const r = await http('POST', `/api/analytics/accounts/${id}/stats`, token, body);
-    responses.push(r.text);
-    return r;
-  };
-  const seed: [string, Record<string, unknown>][] = [
-    [igM, { day: day(9), followers: 1000 }],
-    [igM, { day: day(6), followers: 1010, views: 50, shares: 3 }],
-    [igM, { day: day(3), followers: 1040, views: 70, shares: 5, likes: 9, comments: 2 }],
-    [igM, { day: day(0), followers: 1100, views: 100, shares: 7 }],
-    [fb, { day: day(7), followers: 200 }],
-    [fb, { day: day(1), followers: 230, views: 10 }],
+  // ---------------------------------------------------------------- manual entry removed; rows seeded through upsertDay
+  const gone = await Promise.all([
+    http('POST', `/api/analytics/accounts/${igM}/stats`, A, { day: day(0), followers: 1 }),
+    http('DELETE', `/api/analytics/accounts/${igM}/stats/${day(0)}`, A),
+    http('POST', `/api/analytics/accounts/${igM}/stats`, T, { followers: 1 }),
+  ]);
+  check('manual stats endpoints removed: POST …/stats and DELETE …/stats/:day → 404 (user and admin)', gone.every((x) => x.status === 404), gone.map((x) => x.status).join(','));
+  const seed: [string, string, Record<string, number>][] = [
+    [igM, day(9), { followers: 1000 }],
+    [igM, day(6), { followers: 1010, views: 50, shares: 3 }],
+    [igM, day(3), { followers: 1040, views: 70, shares: 5, likes: 9, comments: 2 }],
+    [igM, day(0), { followers: 1100, views: 100, shares: 7 }],
+    [fb, day(7), { followers: 200 }],
+    [fb, day(1), { followers: 230, views: 10 }],
+    [igB, day(2), { followers: 500 }],
+    [igB, day(0), { followers: 520, shares: 1 }],
   ];
-  let ok = true;
-  for (const [id, b] of seed) { const r = await add(A, id, b); ok &&= r.status === 201 && r.body.stats.source === 'manual'; }
-  const rb = await add(B, igB, { day: day(2), followers: 500 });
-  const rb2 = await add(B, igB, { day: day(0), followers: 520, shares: 1 });
-  check('manual stats entered (owner) → 201, source manual', ok && rb.status === 201 && rb2.status === 201);
-  let r = await add(A, igM, { day: day(0), followers: 1100, views: 100, shares: 7 });
+  for (const [id, d, v] of seed) await upsertDay(db, id, d, v, 'manual');
+  await upsertDay(db, igM, day(0), { followers: 1100, views: 100, shares: 7 }, 'manual');
   const rows0 = await db.select().from(schema.socialAccountStats).where(eq(schema.socialAccountStats.socialAccountId, igM));
-  check('same day again → upsert, still one row per day (4 rows)', r.status === 201 && rows0.length === 4);
-  r = await add(A, igM, { day: day(3), comments: 3 });
-  const [d3] = await db.select().from(schema.socialAccountStats).where(and(eq(schema.socialAccountStats.socialAccountId, igM), eq(schema.socialAccountStats.day, day(3))));
-  check('partial manual update keeps the other values', r.status === 201 && d3?.comments === 3 && d3.followers === 1040 && d3.views === 70 && d3.likes === 9);
-  r = await add(A, igM, { day: day(3), comments: 2 });
-  r = await add(A, igM, {});
-  check('empty entry → 400 analytics.stats_empty', r.status === 400 && r.body.code === 'analytics.stats_empty', r.text);
-  r = await add(A, igM, { day: day(-2), followers: 1 });
-  check('future day → 400 analytics.future_day', r.status === 400 && r.body.code === 'analytics.future_day', r.text);
-  r = await add(A, igM, { day: '2026-02-30', followers: 1 });
-  check('invalid date → 400', r.status === 400);
-  r = await add(A, igM, { followers: -1 });
-  check('negative count → 400', r.status === 400);
-  r = await add(A, fb, { day: day(20), followers: 1 });
-  const del = await http('DELETE', `/api/analytics/accounts/${fb}/stats/${day(20)}`, A);
-  const del2 = await http('DELETE', `/api/analytics/accounts/${fb}/stats/${day(20)}`, A);
-  check('delete a day → 204, again → 404 analytics.stats_not_found', r.status === 201 && del.status === 204 && del2.status === 404 && del2.body.code === 'analytics.stats_not_found');
+  check('seeded (legacy manual rows): same day again → upsert, still one row per day (4 rows)', rows0.length === 4 && rows0.every((x) => x.source === 'manual'));
+  let r: { status: number; body: any; text: string };
 
   // ---------------------------------------------------------------- aggregates (exact)
   r = await http('GET', '/api/analytics/summary', A);
@@ -170,10 +155,9 @@ try {
   r = await http('GET', '/api/analytics/summary', B);
   check('user B: summary = own account only (+20, shares 1)', r.status === 200 && r.body.accounts.length === 1 && r.body.totals.followersGained === 20 && r.body.totals.shares === 1, JSON.stringify(r.body.totals));
   const denied = await Promise.all([
-    http('GET', `/api/analytics/accounts/${igM}`, B), http('POST', `/api/analytics/accounts/${igM}/stats`, B, { followers: 1 }),
-    http('DELETE', `/api/analytics/accounts/${igM}/stats/${day(0)}`, B), http('POST', `/api/analytics/accounts/${igA}/refresh`, B),
+    http('GET', `/api/analytics/accounts/${igM}`, B), http('GET', `/api/analytics/accounts/${igM}/posts`, B), http('POST', `/api/analytics/accounts/${igA}/refresh`, B),
   ]);
-  check('user B on A\'s account: series / add / delete / refresh → 404 social.not_found', denied.every((x) => x.status === 404 && x.body.code === 'social.not_found'), denied.map((x) => x.status).join(','));
+  check('user B on A\'s account: series / posts / refresh → 404 social.not_found', denied.every((x) => x.status === 404 && x.body.code === 'social.not_found'), denied.map((x) => x.status).join(','));
   r = await http('GET', `/api/analytics/summary?ownerId=${uB}`, T);
   check('admin with owner filter = exactly that user\'s numbers', r.status === 200 && r.body.accounts.length === 1 && r.body.totals.followersGained === 20 && r.body.accounts[0].ownerName === `anb${tag}`);
   r = await http('GET', '/api/analytics/summary', T);
@@ -360,10 +344,9 @@ try {
 
   // ---------------------------------------------------------------- audit
   const acts = new Set(audits.map((a) => a.action));
-  const want = ['analytics.stats_add', 'analytics.stats_delete', 'analytics.refresh'];
+  const want = ['analytics.refresh'];
   check('audit actions recorded', want.every((x) => acts.has(x)), want.filter((x) => !acts.has(x)).join(','));
-  check('audit: stats entry names the account and the day',
-    audits.some((a) => a.action === 'analytics.stats_add' && a.target === `instagram @${h('igm')}` && a.targetId === igM && (a.detail as any)?.day === day(0)));
+  check('no audit entry for the removed manual endpoints', !acts.has('analytics.stats_add') && !acts.has('analytics.stats_delete'));
   check('audit: refused refresh recorded as failed', audits.some((a) => a.action === 'analytics.refresh' && a.status === 409 && a.targetId === igM));
   check('audit never stores the secret or tokens', !leaks(JSON.stringify(audits)).length);
 

@@ -288,26 +288,30 @@ export interface SocialAccountLog {
 export type TrackedStatus = 'active' | 'paused' | 'error'
 export const TRACKED_STATUS_COLOR: Record<TrackedStatus, string> = { active: 'success', paused: 'default', error: 'error' }
 export type TrackedMetric = 'followers' | 'following' | 'posts' | 'views'
-/** api = official API configured; api_unconfigured = API exists but no credentials; manual_only = manual entry only. */
-export type TrackedDataMode = 'api' | 'api_unconfigured' | 'manual_only'
+/**
+ * api / device = official API / collector phone ready; *_unconfigured = source exists but is not ready (no key,
+ * no collector device or collection paused); manual_only = no data source (manual entry was removed).
+ */
+export type TrackedDataMode = 'api' | 'api_unconfigured' | 'device' | 'device_unconfigured' | 'manual_only'
+export type TrackedSource = 'api' | 'manual' | 'device'
 export interface TrackedPlatform {
   id: string; label: string; metrics: TrackedMetric[]
-  api: { profile: boolean; recentPosts: boolean; metrics: TrackedMetric[]; configured: boolean } | null
+  api: { kind: 'api' | 'device'; profile: boolean; recentPosts: boolean; metrics: TrackedMetric[]; configured: boolean } | null
 }
 export interface TrackedAccount {
   id: string; userId: string; ownerName: string | null; platform: string; handle: string; profileUrl: string
   externalId: string | null; displayName: string | null; avatarUrl: string | null; bio: string | null
   tags: string[]; favorite: boolean; status: TrackedStatus; notes: string | null
-  lastCheckedAt: string | null; lastError: string | null; lastErrorCode: string | null; lastSource: 'api' | 'manual' | null
+  lastCheckedAt: string | null; lastError: string | null; lastErrorCode: string | null; lastSource: TrackedSource | null; verified: boolean | null
   createdAt: string; updatedAt: string; dataMode: TrackedDataMode
-  latest: { capturedAt: string; source: 'api' | 'manual'; followers: number | null; following: number | null; posts: number | null; views: number | null } | null
+  latest: { capturedAt: string; source: TrackedSource; approx: string[]; followers: number | null; following: number | null; posts: number | null; views: number | null } | null
   followers: number | null; followersDelta: number | null; followersPrevAt: string | null
   lastRefresh: { id: string; status: TaskStatus; error: string | null; createdAt: string; finishedAt: string | null } | null
   /** 定时采集: hours between scheduled refreshes (null = off), next slot, why the last due slot was skipped. */
   refreshIntervalHours: number | null; nextRefreshAt: string | null; scheduleSkipCode: string | null
 }
 export interface TrackedSnapshot {
-  id: string; capturedAt: string; source: 'api' | 'manual'
+  id: string; capturedAt: string; source: TrackedSource; approx: string[] | null
   followers: number | null; following: number | null; posts: number | null; views: number | null
 }
 export interface TrackedPost {

@@ -252,12 +252,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     }),
   },
   'DELETE /api/tracked-accounts/:id': { action: 'tracked.delete' },
-  'POST /api/tracked-accounts/:id/snapshots': {
-    action: 'tracked.snapshot_add',
-    detail: ({ body }) => ({ capturedAt: body.capturedAt, followers: body.followers, following: body.following, posts: body.posts, views: body.views }),
-  },
   'DELETE /api/tracked-accounts/:id/snapshots/:snapshotId': { action: 'tracked.snapshot_delete', detail: ({ params }) => ({ snapshotId: params.snapshotId }) },
-  'POST /api/tracked-accounts/:id/posts': { action: 'tracked.post_add', detail: ({ body }) => ({ url: body.url, publishedAt: body.publishedAt }) },
   'DELETE /api/tracked-accounts/:id/posts/:postId': { action: 'tracked.post_delete', detail: ({ params }) => ({ postId: params.postId }) },
   'POST /api/tracked-accounts/:id/refresh': { action: 'tracked.refresh' },
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
@@ -358,10 +353,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/content-categories/:id': { action: 'content_category.delete' },
   'POST /api/content-categories/:id/merge': { action: 'content_category.merge' },
   // account analytics (账号分析)
-  'POST /api/analytics/accounts/:id/stats': {
-    action: 'analytics.stats_add', detail: ({ body }) => ({ day: body.day, fields: Object.keys(body).filter((k) => k !== 'day' && body[k] !== undefined) }),
-  },
-  'DELETE /api/analytics/accounts/:id/stats/:day': { action: 'analytics.stats_delete', detail: ({ params }) => ({ day: params.day }) },
   'POST /api/analytics/accounts/:id/refresh': { action: 'analytics.refresh' },
   // task centre (任务中心)
   'POST /api/tasks/:id/cancel': { action: 'task.cancel' },
@@ -371,6 +362,9 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
   'PUT /api/settings/languages': { action: 'settings.languages', detail: ({ body }) => ({ languages: body.languages, defaultSource: body.defaultSource }) },
+  'PUT /api/settings/tracked-collectors/:platform': {
+    action: 'settings.tracked_collector', detail: ({ params, body }) => ({ platform: params.platform, instanceId: body.instanceId, resume: body.resume }),
+  },
   'PUT /api/settings/youtube': { action: 'settings.youtube_api_key', detail: ({ body }) => ({ set: typeof body.apiKey === 'string' }) },
   // alerts (告警通知): rules
   'PUT /api/settings/alerts': {

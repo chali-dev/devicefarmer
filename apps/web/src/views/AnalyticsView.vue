@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
-import type { Dayjs } from 'dayjs'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../api/client'
 import {
@@ -12,7 +11,7 @@ import {
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
+import { actionColumn, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import TrendCharts from '../components/analytics/TrendCharts.vue'
 import AccountPosts from '../components/analytics/AccountPosts.vue'
@@ -21,7 +20,7 @@ import { usePlatformsStore } from '../stores/platforms'
 
 /**
  * 账号分析: followers gained, views, likes, comments and shares per day (+ per-post counters) of the operator's own social accounts
- * (official APIs of connected accounts, or numbers entered by hand). Days are UTC.
+ * (official APIs of connected accounts; manual entry was removed, older entered rows are still shown). Days are UTC.
  */
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -97,46 +96,6 @@ async function loadDetail(id: string, quiet = false) {
 const detailTab = ref<'days' | 'posts'>('days')
 async function openDetail(a: AnalyticsAccount) { detail.value = null; detailTab.value = 'days'; detailOpen.value = true; await loadDetail(a.id) }
 const detailRows = computed(() => [...(detail.value?.days ?? [])].reverse().filter((d) => d.source !== null))
-function removeDay(day: string) {
-  const id = detail.value?.account.id
-  if (!id) return
-  confirmDanger({
-    title: t('analytics.deleteDayConfirm', { day: fmtDay(day) }),
-    async onOk() {
-      try { await api('DELETE', `/api/analytics/accounts/${id}/stats/${day}`); await load(true) } catch (e) { message.error(errorText(e)) }
-    },
-  })
-}
-
-// ---- manual entry
-const FIELDS = ['followers', 'following', 'posts', 'views', 'likes', 'shares', 'comments'] as const
-const entryOpen = ref(false)
-const entrySaving = ref(false)
-const entryAccount = ref<AnalyticsAccount | null>(null)
-const entry = reactive<{ day: string } & Record<typeof FIELDS[number], number | null>>({
-  day: '', followers: null, following: null, posts: null, views: null, likes: null, shares: null, comments: null,
-})
-const todayUtc = () => new Date().toISOString().slice(0, 10)
-function openEntry(a: AnalyticsAccount) {
-  entryAccount.value = a
-  Object.assign(entry, { day: todayUtc(), ...Object.fromEntries(FIELDS.map((f) => [f, null])) })
-  entryOpen.value = true
-}
-const disabledDate = (d: Dayjs) => d.format('YYYY-MM-DD') > todayUtc()
-async function saveEntry() {
-  if (!entryAccount.value) return
-  if (FIELDS.every((f) => entry[f] === null)) { message.warning(t('errors.analytics.stats_empty')); return }
-  entrySaving.value = true
-  try {
-    await api('POST', `/api/analytics/accounts/${entryAccount.value.id}/stats`, {
-      day: entry.day || undefined, ...Object.fromEntries(FIELDS.filter((f) => entry[f] !== null).map((f) => [f, entry[f]])),
-    })
-    message.success(t('common.saved'))
-    entryOpen.value = false
-    await load(true)
-  } catch (e) { message.error(errorText(e)) }
-  finally { entrySaving.value = false }
-}
 const userOptions = computed(() => users.value.map((u) => ({ value: u.id, label: u.username })))
 const totalStats = computed(() => {
   const x = data.value?.totals
@@ -221,7 +180,6 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
               <a-space :size="0">
                 <a-button size="small" type="link" @click="openDetail(record as AnalyticsAccount)">{{ t('common.view') }}</a-button>
                 <a-button v-if="canRefresh(record as AnalyticsAccount)" size="small" type="link" :loading="busy(record as AnalyticsAccount)" @click="refresh(record as AnalyticsAccount)">{{ t('analytics.refreshNow') }}</a-button>
-                <a-button size="small" type="link" @click="openEntry(record as AnalyticsAccount)">{{ t('analytics.enter') }}</a-button>
               </a-space>
             </template>
           </template>
@@ -234,7 +192,6 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
     <template v-if="detail" #extra>
       <a-space>
         <a-button v-if="canRefresh(detail.account)" :loading="busy(detail.account)" @click="refresh(detail.account)">{{ t('analytics.refreshNow') }}</a-button>
-        <a-button type="primary" @click="openEntry(detail.account)">{{ t('analytics.enter') }}</a-button>
       </a-space>
     </template>
     <template v-if="detail">
@@ -268,15 +225,11 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
           { title: t('analytics.metrics.shares'), key: 'shares', align: 'right' },
           { title: t('analytics.metrics.comments'), key: 'comments', align: 'right' },
           { title: t('analytics.colSource'), key: 'source', width: 80 },
-          { title: t('common.action'), key: 'ops', width: 70 },
         ]">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'day'">{{ fmtDay(record.day) }}</template>
           <template v-else-if="column.key === 'followersGained'">{{ signed(record.followersGained) }}</template>
           <template v-else-if="column.key === 'source'">{{ t(`analytics.sources.${record.source}`) }}</template>
-          <template v-else-if="column.key === 'ops'">
-            <a-button size="small" type="link" danger @click="removeDay(record.day)">{{ t('common.delete') }}</a-button>
-          </template>
           <template v-else>{{ record[column.key as string] === null || record[column.key as string] === undefined ? '—' : Number(record[column.key as string]).toLocaleString(dateLocale()) }}</template>
         </template>
       </a-table>
@@ -284,26 +237,6 @@ const sourceTip = (a: AnalyticsAccount, apiStats: boolean) => (a.connection ? un
     <a-skeleton v-else active />
   </a-drawer>
 
-  <a-modal v-model:open="entryOpen" :title="t('analytics.enterTitle', { account: entryAccount ? handle(entryAccount) : '' })" :width="MODAL_WIDTH.md"
-    :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="entrySaving" @ok="saveEntry">
-    <a-form layout="vertical">
-      <a-form-item :label="t('analytics.day')" :extra="t('analytics.dayHint')">
-        <a-date-picker v-model:value="entry.day" value-format="YYYY-MM-DD" :disabled-date="disabledDate" :allow-clear="false" />
-      </a-form-item>
-      <a-divider orientation="left" plain>{{ t('analytics.countersHint') }}</a-divider>
-      <a-row :gutter="12">
-        <a-col v-for="f in (['followers', 'following', 'posts'] as const)" :key="f" :xs="12" :sm="8">
-          <a-form-item :label="t(`analytics.metrics.${f}`)"><a-input-number v-model:value="entry[f]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
-        </a-col>
-      </a-row>
-      <a-divider orientation="left" plain>{{ t('analytics.activityHint') }}</a-divider>
-      <a-row :gutter="12">
-        <a-col v-for="f in (['views', 'likes', 'shares', 'comments'] as const)" :key="f" :xs="12" :sm="6">
-          <a-form-item :label="t(`analytics.metrics.${f}`)"><a-input-number v-model:value="entry[f]" :min="0" :precision="0" style="width: 100%" /></a-form-item>
-        </a-col>
-      </a-row>
-    </a-form>
-  </a-modal>
 </template>
 
 <style scoped>

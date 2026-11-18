@@ -4,15 +4,18 @@ import type { TrackedAccount } from '../../db/schema.js';
 import { HttpError, notFound } from '../../lib/errors.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
-import { PLATFORMS, platformDef, registerSource, type PostData } from './platforms.js';
+import { PLATFORMS, platformDef, registerSource, type PostData, type SourceContext } from './platforms.js';
 import { youtubeSource } from './youtube.js';
-import { registerTaskHandler } from '../tasks/core.js';
+import { instagramDeviceSource } from './instagram-device.js';
+import { CollectorDefer } from './collector.js';
+import { createTask, registerTaskHandler } from '../tasks/core.js';
 
 /**
  * Tracked accounts (追踪账号): service layer. Rows are private to their owner (`user_id`);
  * admins see all. Others get 404 so the existence of a row is not leaked.
  */
 registerSource('youtube', youtubeSource);
+registerSource('instagram', instagramDeviceSource);
 
 const ta = schema.trackedAccounts;
 const ts = schema.trackedAccountSnapshots;
@@ -31,19 +34,22 @@ export async function getVisibleAccount(user: AuthUser, id: string): Promise<Tra
   return row;
 }
 
-/** How data reaches this account: an official API (configured or not), or manual entry only. */
-export type DataMode = 'api' | 'api_unconfigured' | 'manual_only';
+/**
+ * How data reaches this account: an official API or the collector device (each configured or not), or no
+ * source at all (`manual_only`, kept as the value for compatibility: manual entry was removed, only old rows show).
+ */
+export type DataMode = 'api' | 'api_unconfigured' | 'device' | 'device_unconfigured' | 'manual_only';
 export async function dataModes(): Promise<Map<string, DataMode>> {
   const out = new Map<string, DataMode>();
   for (const { id } of PLATFORMS) {
     const src = isPlatformEnabled(id) ? platformDef(id).source : undefined;
-    out.set(id, !src ? 'manual_only' : (await src.isConfigured()) ? 'api' : 'api_unconfigured');
+    out.set(id, !src ? 'manual_only' : (await src.isConfigured()) ? src.kind : `${src.kind}_unconfigured`);
   }
   return out;
 }
 
 export interface LatestStats {
-  capturedAt: string; source: 'api' | 'manual';
+  capturedAt: string; source: 'api' | 'manual' | 'device'; approx: string[];
   followers: number | null; following: number | null; posts: number | null; views: number | null;
 }
 
@@ -88,7 +94,7 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       dataMode: modes.get(r.platform) ?? 'manual_only',
       latest: s ? {
-        capturedAt: s.capturedAt.toISOString(), source: s.source,
+        capturedAt: s.capturedAt.toISOString(), source: s.source, approx: s.approx ?? [],
         followers: s.followers, following: s.following, posts: s.posts, views: s.views,
       } satisfies LatestStats : null,
       followers: f?.cur ?? null,
@@ -124,24 +130,25 @@ export async function upsertPosts(
 }
 
 export type RefreshOutcome =
-  | { outcome: 'refreshed'; newPosts: number; posts: number }
+  | { outcome: 'refreshed'; newPosts: number; posts: number; approx?: string[] }
   | { outcome: 'manual_only' }
   | { outcome: 'gone' };
 
 /**
- * Refreshes one tracked account from its platform's official API: profile, a snapshot of the
- * counters and recent posts. Platforms without an API source are "manual only" (no change, no
- * error). On failure the account is marked `error` (paused stays paused) with a coded message,
- * and the error is rethrown so the task fails. Kept self-contained so a scheduler can call it.
+ * Refreshes one tracked account from its platform's source (official API, or the collector device):
+ * profile, a snapshot of the counters (source = the source's kind, approximate metrics listed) and recent
+ * posts when the source has them. Platforms without a source are a no-op (`manual_only`). On failure the
+ * account is marked `error` (paused stays paused) with a coded message, and the error is rethrown so the
+ * task fails. A `CollectorDefer` (device pace / busy) is rethrown untouched: nothing was read, nothing changes.
  */
-export async function refreshTrackedAccount(id: string): Promise<RefreshOutcome> {
+export async function refreshTrackedAccount(id: string, ctx: SourceContext = {}): Promise<RefreshOutcome> {
   const [acc] = await db.select().from(ta).where(eq(ta.id, id));
   if (!acc) return { outcome: 'gone' };
   const source = platformDef(acc.platform).source;
   if (!source) return { outcome: 'manual_only' };
   const now = new Date();
   try {
-    const profile = await source.fetchProfile(acc);
+    const profile = await source.fetchProfile(acc, ctx);
     const posts = source.capabilities.recentPosts ? await source.fetchRecentPosts(acc, profile, RECENT_POSTS) : [];
     let newPosts = 0;
     await db.transaction(async (tx) => {
@@ -150,17 +157,20 @@ export async function refreshTrackedAccount(id: string): Promise<RefreshOutcome>
         displayName: profile.displayName ?? acc.displayName,
         avatarUrl: profile.avatarUrl ?? acc.avatarUrl,
         bio: profile.bio ?? acc.bio,
+        ...(profile.verified !== undefined ? { verified: profile.verified } : {}),
         status: acc.status === 'error' ? 'active' : acc.status,
-        lastCheckedAt: now, lastSource: 'api', lastError: null, lastErrorCode: null,
+        lastCheckedAt: now, lastSource: source.kind, lastError: null, lastErrorCode: null,
       }).where(eq(ta.id, acc.id));
       await tx.insert(ts).values({
-        trackedAccountId: acc.id, capturedAt: now, source: 'api',
+        trackedAccountId: acc.id, capturedAt: now, source: source.kind,
         followers: profile.followers, following: profile.following, posts: profile.posts, views: profile.views,
+        approx: profile.approx?.length ? profile.approx : null,
       });
       newPosts = (await upsertPosts(tx, acc.id, posts, 'api', now)).inserted;
     });
-    return { outcome: 'refreshed', newPosts, posts: posts.length };
+    return { outcome: 'refreshed', newPosts, posts: posts.length, ...(profile.approx?.length ? { approx: profile.approx } : {}) };
   } catch (err) {
+    if (err instanceof CollectorDefer) throw err;
     const e = err as Error & { code?: string };
     await db.update(ta).set({
       status: acc.status === 'paused' ? 'paused' : 'error',
@@ -197,11 +207,17 @@ export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Pr
   return null;
 }
 
-// Device-less job on the unified task core. One attempt: a failed official-API call (quota, bad key)
-// is not helped by an automatic retry; the user can retry from the task centre.
+/** A refresh deferred more often than this (device busy for hours…) fails with the last deferral code. */
+const MAX_DEFERRALS = 30;
+
+// Device-less job on the unified task core (also for the collector device: it is not the task's device,
+// the visit is serialised and paced in collector.ts). One attempt: a failed official-API call (quota, bad
+// key) or a failed screen read is not helped by an automatic retry; the user can retry from the task centre.
 // A scheduled run (payload.scheduled) re-checks the account when it starts: paused, schedule switched off or
-// the API unconfigured since it was queued → a skipped no-op instead of an API call.
-registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean }>('tracked-refresh', {
+// the source unconfigured since it was queued → a skipped no-op instead of a call.
+// CollectorDefer (device pace, another visit running, someone viewing the device) ends this attempt as
+// `deferred` and creates the next refresh at the given time (same payload, deferrals + 1): never dropped.
+registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; deferrals?: number }>('tracked-refresh', {
   queue: 'task-ops',
   timeoutMs: 5 * 60_000,
   maxAttempts: 1,
@@ -215,6 +231,18 @@ registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean }>('tracked-
         return { outcome: 'skipped', code };
       }
     }
-    return refreshTrackedAccount(id);
+    try {
+      return await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal });
+    } catch (err) {
+      if (!(err instanceof CollectorDefer)) throw err;
+      const deferrals = (ctx.payload.deferrals ?? 0) + 1;
+      if (deferrals > MAX_DEFERRALS) throw new HttpError(409, err.message, err.code);
+      const { task } = await createTask({
+        type: 'tracked-refresh', userId: ctx.task.createdBy, label: ctx.task.instanceName, refType: REF_TYPE, refId: id,
+        payload: { ...ctx.payload, deferrals }, runAt: err.runAt, idempotencyKey: `deferred:${ctx.task.id}`,
+      });
+      await ctx.log('info', `deferred: ${err.code}`, { code: err.code, runAt: err.runAt.toISOString(), taskId: task.id });
+      return { outcome: 'deferred', code: err.code, runAt: err.runAt.toISOString(), taskId: task.id };
+    }
   },
 });

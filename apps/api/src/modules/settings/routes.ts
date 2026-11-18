@@ -9,6 +9,7 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
 import { getLanguageSettings, LanguageSettingsInput, saveLanguageSettings } from '../content/languages.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
+import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
 
 /** Platform settings (设置). Admin only. */
@@ -35,6 +36,22 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     assertPlatformEnabled('youtube');
     return { youtube: await saveYoutubeApiKey(req.body.apiKey) };
+  });
+
+  /**
+   * 追踪账号采集设备: per platform (Instagram) the device whose app is read for tracked accounts, its halt state
+   * (challenge screen → stopped until resumed) and the pace counters. `instanceId: null` unsets it.
+   */
+  app.get('/api/settings/tracked-collectors', async () => collectorSettings());
+  app.put('/api/settings/tracked-collectors/:platform', {
+    schema: {
+      params: z.object({ platform: z.enum(COLLECTOR_PLATFORMS) }),
+      body: z.object({ instanceId: z.string().uuid().nullable().optional(), resume: z.boolean().optional() })
+        .refine((b) => b.instanceId !== undefined || b.resume, 'nothing to update'),
+    },
+  }, async (req) => {
+    assertPlatformEnabled(req.params.platform);
+    return saveCollector(req.params.platform, req.body);
   });
 
   /** 多语言内容: languages offered in the content editor + default source language. */

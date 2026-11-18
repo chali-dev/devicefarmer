@@ -39,6 +39,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'connection.expired': { problem: '{platform} 账号 @{handle} 的官方接口授权失效：{status}', recovered: '{platform} 账号 @{handle} 的官方接口授权已恢复' },
       'publish.failed': { problem: '发布失败：{platform} @{handle}《{title}》' },
       'task.failed': { problem: '任务失败：{type}（{label}）' },
+      'collector.blocked': { problem: '采集设备 {name} 遇到 {platform} 验证/限制页面，采集已停止，需人工处理', recovered: '采集设备 {name} 的 {platform} 采集已恢复' },
       'channel.failed': { problem: '告警通道 {name} 发送失败', recovered: '告警通道 {name} 已恢复' },
     },
     words: {
@@ -57,6 +58,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'connection.expired': { problem: 'Official API authorisation of {platform} account @{handle} is no longer valid: {status}', recovered: 'Official API authorisation of {platform} account @{handle} works again' },
       'publish.failed': { problem: 'Publish failed: {platform} @{handle} "{title}"' },
       'task.failed': { problem: 'Task failed: {type} ({label})' },
+      'collector.blocked': { problem: 'Collector device {name} hit a {platform} verification / limit screen: collection stopped, needs a person', recovered: '{platform} collection on device {name} works again' },
       'channel.failed': { problem: 'Alert channel {name} failed to deliver', recovered: 'Alert channel {name} works again' },
     },
     words: {

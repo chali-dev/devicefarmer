@@ -1,12 +1,15 @@
 /**
- * 媒体矩阵 demo data + verification through the real HTTP API (no mocks; DB access only for the own posts below).
+ * 媒体矩阵 demo data + verification through the real HTTP API (no mocks). DB writes only where the product has no
+ * entry point any more: own posts, daily stats and tracked-account history (manual entry was removed on 2026-11-18;
+ * these demo rows use the legacy source `manual`, i.e. "entered", never `api`/`device`, so they don't pose as collected data).
  *
  * Seeds (idempotent, everything recognisable by the `demo` prefix, Instagram only):
  * - 社交号管理: 16 Instagram social accounts (admin + demo-user) with 账号人设 (personas are the grouping, see PERSONAS),
  *   tags, notes, varied statuses.
- * - 账号分析: manual daily stats (30–90 days, deterministic growth curves) for 13 of them, plus up to 10 own posts each
- *   with likes/comments (帖子 tab; written with the refresh's own upsert, the only step that touches the DB directly).
- * - 追踪账号: 10 tracked Instagram accounts (tags incl. the former categories 灵感/竞品/合作候选, favourites, weekly snapshots, posts).
+ * - 账号分析: demo daily stats (30–90 days, deterministic growth curves) for 13 of them, written with the real upsert
+ *   (upsertDay, source manual), plus up to 10 own posts each with likes/comments (帖子 tab; the refresh's own upsert).
+ * - 追踪账号: 10 tracked Instagram accounts (tags incl. the former categories 灵感/竞品/合作候选, favourites, weekly snapshots, posts; history written to the
+ *   DB as demo rows). Their 定时采集 is switched off, so the demo never sends the collector phone to these made-up handles.
  * - 评论互动: ~35 manual comments with threads, reply drafts in every review state, 3 templates with 人设 (one public, one demo-user's).
  * - 账号人设: demo-user's fitness accounts → 健身教练 (personal), two admin accounts → 品牌客服 (public), the rest by topic
  *   (旅行 / 美食 / 时尚 admin's, 生活 demo-user's); one account without persona.
@@ -299,6 +302,10 @@ for (const s of ACCOUNTS) {
 }
 
 // ---------------------------------------------------------------- seed: daily stats
+// Demo rows through the real upsert (DB): manual stats entry was removed from the API.
+const { upsertDay } = await import('../src/modules/analytics/analytics.js');
+const { db, schema } = await import('../src/db/index.js');
+const { upsertPosts } = await import('../src/modules/tracked/tracked.js');
 for (const s of ACCOUNTS) {
   const want = series(s);
   if (!want.length) continue;
@@ -308,7 +315,7 @@ for (const s of ACCOUNTS) {
     const h = have.get(d.day);
     if (h && h.source && (['followers', 'following', 'posts', 'views', 'likes', 'shares', 'comments'] as const).every((k) => h[k] === d[k])) continue;
     const { day, ...values } = d;
-    await must('POST', `/api/analytics/accounts/${acc.id}/stats`, tokenOf(s.owner), { day, ...values });
+    await upsertDay(db, acc.id, day, values, 'manual');
     counts.statDays++;
   }
 }
@@ -357,19 +364,20 @@ for (const t of TRACKED) {
     })).account;
     counts.tracked++;
   }
+  // Made-up handles: never collected on the phone (new Instagram accounts default to 定时采集 every 24 h).
+  if (row.refreshIntervalHours !== null) row = (await must('PATCH', `/api/tracked-accounts/${row.id}`, tok, { refreshIntervalHours: null })).account;
   const snaps = (await must('GET', `/api/tracked-accounts/${row.id}/snapshots`, tok)).snapshots as any[];
   if (!snaps.length) {
-    for (const s of snapshots(t)) { await must('POST', `/api/tracked-accounts/${row.id}/snapshots`, tok, s); counts.snapshots++; }
+    await db.insert(schema.trackedAccountSnapshots).values(snapshots(t).map((x) => ({ trackedAccountId: row.id, source: 'manual' as const, ...x, capturedAt: new Date(x.capturedAt) })));
+    counts.snapshots += SNAPSHOT_WEEKS;
   }
   const nPosts = 3 + (hashStr(t.handle) % 3);
-  for (let i = 0; i < nPosts; i++) {
-    const r = await must('POST', `/api/tracked-accounts/${row.id}/posts`, tok, {
-      externalId: `demo-${t.handle}-p${i + 1}`, url: `https://www.instagram.com/p/DEMO${(hashStr(t.handle + i) % 1e8).toString(36).toUpperCase()}/`,
-      title: POST_TITLES[(hashStr(t.handle) + i) % POST_TITLES.length], publishedAt: new Date((ANCHOR_N - i * 4 - 1) * DAY + 14 * 3600_000).toISOString(),
-      views: Math.round(t.f0 * (0.6 + rnd(t.handle, 100 + i))), likes: Math.round(t.f0 * 0.05 * (0.5 + rnd(t.handle, 200 + i))), comments: Math.round(t.f0 * 0.002 * (0.5 + rnd(t.handle, 300 + i))),
-    });
-    if ((r as any).created) counts.posts++;
-  }
+  const pr = await upsertPosts(db, row.id, Array.from({ length: nPosts }, (_, i) => ({
+    externalId: `demo-${t.handle}-p${i + 1}`, url: `https://www.instagram.com/p/DEMO${(hashStr(t.handle + i) % 1e8).toString(36).toUpperCase()}/`,
+    title: POST_TITLES[(hashStr(t.handle) + i) % POST_TITLES.length]!, publishedAt: new Date((ANCHOR_N - i * 4 - 1) * DAY + 14 * 3600_000),
+    views: Math.round(t.f0 * (0.6 + rnd(t.handle, 100 + i))), likes: Math.round(t.f0 * 0.05 * (0.5 + rnd(t.handle, 200 + i))), comments: Math.round(t.f0 * 0.002 * (0.5 + rnd(t.handle, 300 + i))),
+  })), 'manual');
+  counts.posts += pr.inserted;
   trackedByHandle.set(`${t.owner}:${t.handle}`, row);
 }
 
@@ -499,7 +507,7 @@ try {
       check(`tracked ${platform ?? 'youtube URL'} refused: platform.disabled`, t.status === 400 && codeOf(t) === 'platform.disabled', t.text);
     }
     const tp = await http('GET', '/api/tracked-accounts/platforms', ADMIN);
-    check('tracked platforms: only instagram, manual entry (no API source)', tp.status === 200 && tp.body.platforms.length === 1 && tp.body.platforms[0].id === 'instagram' && tp.body.platforms[0].api === null, tp.text);
+    check('tracked platforms: only instagram, read on the collector phone (device source)', tp.status === 200 && tp.body.platforms.length === 1 && tp.body.platforms[0].id === 'instagram' && tp.body.platforms[0].api?.kind === 'device', tp.text);
   }
 
   // ---------------------------------------------------------------- social: listing, filters, pagination
@@ -734,24 +742,18 @@ try {
     check('per-account series 30d: every day, values + daily gain exact, apiStats flag', sOk && ser.from === windowOf(30).from && typeof ser.apiStats === 'boolean');
     const ref = await http('POST', `/api/analytics/accounts/${acc.id}/refresh`, DU.token);
     check('refresh without platform connection refused (409 analytics.not_connected, no API call)', ref.status === 409 && codeOf(ref) === 'analytics.not_connected', ref.text);
-    // delete a day (throw-away account)
+    // daily gains on a throw-away account (rows written like the seed: manual entry is gone from the API)
     const t = (await must('POST', '/api/social/accounts', DU.token, { platform: 'instagram', handle: `demotmp.${tmpTag}.stats` })).account; tmpIds.push(t.id);
     const d = (k: number) => utcDay((TODAY_N - k) * DAY);
-    for (const [k, f, v] of [[3, 1000, 50], [2, 1030, 70], [1, 1100, 90], [0, 1105, 20]] as const) await must('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: d(k), followers: f, views: v });
-    let s7 = ((await must('GET', `/api/analytics/accounts/${t.id}?days=7`, DU.token)).days as any[]);
+    for (const [k, f, v] of [[3, 1000, 50], [2, 1030, 70], [1, 1100, 90], [0, 1105, 20]] as const) await upsertDay(db, t.id, d(k), { followers: f, views: v }, 'manual');
+    const s7 = ((await must('GET', `/api/analytics/accounts/${t.id}?days=7`, DU.token)).days as any[]);
     const gainOf = (day: string) => s7.find((x) => x.day === day)?.followersGained;
-    check('manual stats: daily gains 30/70/5', gainOf(d(2)) === 30 && gainOf(d(1)) === 70 && gainOf(d(0)) === 5);
-    await must('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: d(1), followers: 1100, views: 90 });
-    const again = ((await must('GET', `/api/analytics/accounts/${t.id}?days=7`, DU.token)).days as any[]).filter((x) => x.source).length;
-    check('same day twice = one row (upsert)', again === 4);
-    const dl = await http('DELETE', `/api/analytics/accounts/${t.id}/stats/${d(1)}`, DU.token);
-    s7 = ((await must('GET', `/api/analytics/accounts/${t.id}?days=7`, DU.token)).days as any[]);
-    check('delete a day: 204, day empty, next gain spans the gap (1105-1030=75)', dl.status === 204 && s7.find((x) => x.day === d(1))?.source === null && gainOf(d(0)) === 75);
-    const dl2 = await http('DELETE', `/api/analytics/accounts/${t.id}/stats/${d(1)}`, DU.token);
-    check('delete a missing day → 404 analytics.stats_not_found', dl2.status === 404 && codeOf(dl2) === 'analytics.stats_not_found');
-    const fut = await http('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: utcDay((TODAY_N + 1) * DAY), followers: 1 });
-    const emp = await http('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: d(5) });
-    check('validation: future day 400 analytics.future_day, empty 400 analytics.stats_empty', codeOf(fut) === 'analytics.future_day' && codeOf(emp) === 'analytics.stats_empty', `${fut.text} ${emp.text}`);
+    check('daily gains 30/70/5', gainOf(d(2)) === 30 && gainOf(d(1)) === 70 && gainOf(d(0)) === 5);
+    const gone = await Promise.all([
+      http('POST', `/api/analytics/accounts/${t.id}/stats`, DU.token, { day: d(1), followers: 1 }),
+      http('DELETE', `/api/analytics/accounts/${t.id}/stats/${d(1)}`, DU.token),
+    ]);
+    check('manual stats entry removed: POST …/stats and DELETE …/stats/:day → 404', gone.every((x) => x.status === 404), gone.map((x) => x.status).join(','));
   }
 
   // ---------------------------------------------------------------- 账号分析 → 帖子 (own posts)
@@ -783,11 +785,11 @@ try {
       const snaps = snapshots(s);
       const cur = snaps.at(-1)!.followers; const prev = snaps.at(-2)!.followers;
       if (!row || row.followers !== cur || row.followersDelta !== cur - prev || row.followersPrevAt !== snaps.at(-2)!.capturedAt || 'category' in row
-        || row.tags.join() !== s.tags.join() || row.favorite !== s.favorite || row.profileUrl !== `https://www.instagram.com/${s.handle}/` || row.dataMode !== 'manual_only') {
+        || row.tags.join() !== s.tags.join() || row.favorite !== s.favorite || row.profileUrl !== `https://www.instagram.com/${s.handle}/` || !['device', 'device_unconfigured'].includes(row.dataMode) || row.refreshIntervalHours !== null) {
         bad.push(`${s.handle}: ${row?.followers}/${row?.followersDelta} vs ${cur}/${cur - prev}`);
       }
     }
-    check('tracked: URL/@handle normalised, tags/favorite (no category field), latest followers + delta vs previous snapshot exact, manual_only', !bad.length, bad.join('; '));
+    check('tracked: URL/@handle normalised, tags/favorite (no category field), latest followers + delta vs previous snapshot exact, collector data mode, 定时采集 off', !bad.length, bad.join('; '));
     const du = await listAll('/api/tracked-accounts', DU.token);
     check('tracked demo-user: only own rows', du.every((t) => t.userId === DU.id) && TRACKED.filter((s) => s.owner === 'user').every((s) => du.some((t) => t.handle === s.handle)));
     const adm = mine.find((t) => t.handle === 'demo.ramen.radar');
@@ -812,31 +814,30 @@ try {
     check('duplicate (URL vs handle, case-insensitive) → 409 tracked.duplicate', dup.status === 409 && codeOf(dup) === 'tracked.duplicate', dup.text);
     const parse = await http('POST', '/api/tracked-accounts/parse', ADMIN, { input: 'https://www.instagram.com/demo.ramen.radar/?hl=en' });
     check('parse URL → instagram handle', parse.body.profile?.platform === 'instagram' && parse.body.profile?.handle === 'demo.ramen.radar', parse.text);
-    const sch = await http('PATCH', `/api/tracked-accounts/${adm.id}`, ADMIN, { refreshIntervalHours: 24 });
-    check('schedule for manual-only Instagram refused → 400 tracked.schedule_manual_only', sch.status === 400 && codeOf(sch) === 'tracked.schedule_manual_only', sch.text);
+    check('demo tracked accounts: Instagram read on the collector phone (device data mode), 定时采集 off for the made-up handles',
+      ['device', 'device_unconfigured'].includes(adm.dataMode) && adm.refreshIntervalHours === null, `${adm.dataMode} ${adm.refreshIntervalHours}`);
     const snaps = (await must('GET', `/api/tracked-accounts/${adm.id}/snapshots`, ADMIN)).snapshots as any[];
-    check('snapshots history oldest first, 8 weekly manual readings', snaps.length === SNAPSHOT_WEEKS && snaps.every((s, i) => i === 0 || s.capturedAt > snaps[i - 1].capturedAt) && snaps.every((s) => s.source === 'manual'));
+    check('snapshots history oldest first, 8 weekly demo readings (source manual)', snaps.length === SNAPSHOT_WEEKS && snaps.every((s, i) => i === 0 || s.capturedAt > snaps[i - 1].capturedAt) && snaps.every((s) => s.source === 'manual'));
     const posts = await must('GET', `/api/tracked-accounts/${adm.id}/posts`, ADMIN);
     check('posts listed newest first', posts.total === 3 + (hashStr('demo.ramen.radar') % 3) && posts.posts.every((p: any, i: number) => i === 0 || p.publishedAt <= posts.posts[i - 1].publishedAt));
-    const re = await must('POST', `/api/tracked-accounts/${adm.id}/posts`, ADMIN, { externalId: 'demo-demo.ramen.radar-p1' });
+    const re = await upsertPosts(db, adm.id, [{ externalId: 'demo-demo.ramen.radar-p1', url: null, title: null, publishedAt: null, views: null, likes: null, comments: null }], 'manual');
     const post1 = (posts.posts as any[]).find((p) => p.externalId === 'demo-demo.ramen.radar-p1');
-    check('posts dedupe by external id: 200, values + first_seen_at kept', re.created === false && re.post.views === post1.views && re.post.firstSeenAt === post1.firstSeenAt);
+    const after = ((await must('GET', `/api/tracked-accounts/${adm.id}/posts`, ADMIN)).posts as any[]).find((p) => p.externalId === 'demo-demo.ramen.radar-p1');
+    check('posts dedupe by external id: no new row, values + first_seen_at kept', re.inserted === 0 && after.views === post1.views && after.firstSeenAt === post1.firstSeenAt);
+    const noEntry = await http('POST', `/api/tracked-accounts/${adm.id}/posts`, ADMIN, { externalId: 'x' });
+    check('manual post entry removed → 404', noEntry.status === 404);
     // throw-away tracked account: snapshot delta + delete
     const tt = (await must('POST', '/api/tracked-accounts', DU.token, { input: `@demotmp.${tmpTag}.t`, platform: 'instagram' })).account;
-    await must('POST', `/api/tracked-accounts/${tt.id}/snapshots`, DU.token, { capturedAt: new Date(Date.now() - 2 * DAY).toISOString(), followers: 500 });
-    const sn2 = (await must('POST', `/api/tracked-accounts/${tt.id}/snapshots`, DU.token, { followers: 480, views: 10 })).snapshot;
+    await must('PATCH', `/api/tracked-accounts/${tt.id}`, DU.token, { refreshIntervalHours: null });
+    await db.insert(schema.trackedAccountSnapshots).values({ trackedAccountId: tt.id, source: 'manual', capturedAt: new Date(Date.now() - 2 * DAY), followers: 500 });
+    const [sn2] = await db.insert(schema.trackedAccountSnapshots).values({ trackedAccountId: tt.id, source: 'manual', followers: 480, views: 10 }).returning();
     let ttRow = (await must('GET', `/api/tracked-accounts/${tt.id}`, DU.token)).account;
     const d1 = ttRow.followersDelta;
-    await must('DELETE', `/api/tracked-accounts/${tt.id}/snapshots/${sn2.id}`, DU.token);
+    await must('DELETE', `/api/tracked-accounts/${tt.id}/snapshots/${sn2!.id}`, DU.token);
     ttRow = (await must('GET', `/api/tracked-accounts/${tt.id}`, DU.token)).account;
-    const fut = await http('POST', `/api/tracked-accounts/${tt.id}/snapshots`, DU.token, { capturedAt: new Date(Date.now() + DAY).toISOString(), followers: 1 });
-    check('tracked delta -20, after deleting latest: 500 with no delta; future snapshot refused', d1 === -20 && ttRow.followers === 500 && ttRow.followersDelta === null && codeOf(fut) === 'tracked.future_time');
-    const rf = await http('POST', `/api/tracked-accounts/${tt.id}/refresh`, DU.token);
-    check('refresh of manual-only account: 202 manualOnly (no-op task, no external call)', rf.status === 202 && rf.body.manualOnly === true, rf.text);
-    if (rf.body?.taskId) {
-      const done = await waitFor('tracked-refresh', async () => { const t = await must('GET', `/api/tasks/${rf.body.taskId}`, DU.token); return ['success', 'failed'].includes(t.task?.status) && t.task; }, 20_000);
-      check('manual-only refresh task completes as success', done?.status === 'success', JSON.stringify(done)?.slice(0, 200));
-    }
+    const fut = await http('POST', `/api/tracked-accounts/${tt.id}/snapshots`, DU.token, { followers: 1 });
+    check('tracked delta -20, after deleting latest: 500 with no delta; manual snapshot entry gone (404)', d1 === -20 && ttRow.followers === 500 && ttRow.followersDelta === null && fut.status === 404);
+    // No refresh here: with a collector device configured it would open the made-up profile on the phone.
     await must('DELETE', `/api/tracked-accounts/${tt.id}`, DU.token);
   }
 

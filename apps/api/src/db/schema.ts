@@ -316,7 +316,9 @@ export const mediaFavorites = pgTable('media_favorites', {
  * Tracked accounts (追踪账号): external public profiles a user observes. Private per user (admins see all);
  * entirely separate from the user's own managed social accounts. `platform` is a code registry id
  * (modules/tracked/platforms.ts), `handle` its normalised identity (lowercase handle, or a YouTube channel id).
- * Data comes from official APIs (YouTube Data API) or manual entry only, never scraping.
+ * Data comes from official APIs (YouTube Data API) or, for Instagram, from reading the profile header in the
+ * Instagram app on the admin-configured collector device (owner decision 2026-11-18, modules/tracked/collector.ts).
+ * Manual entry was removed; old `manual` rows stay readable.
  */
 export const trackedAccounts = pgTable('tracked_accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -328,6 +330,8 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   displayName: text('display_name'),
   avatarUrl: text('avatar_url'),
   bio: text('bio'),
+  /** Verified badge as last read on the collector device (Instagram); null = unknown. */
+  verified: boolean('verified'),
   /** LEGACY: no longer read or written (categories were folded into `tags` by src/db/tracked-category-data-migration.ts); drop in a later release. */
   category: text('category'),
   /** Lowercase, deduplicated. */
@@ -338,7 +342,8 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastError: text('last_error'),
   lastErrorCode: text('last_error_code'),
-  lastSource: text('last_source', { enum: ['api', 'manual'] }),
+  /** `manual`: legacy rows only (manual entry was removed). `device`: read on the collector device. */
+  lastSource: text('last_source', { enum: ['api', 'manual', 'device'] }),
   notes: text('notes'),
   /** 定时采集: refresh every N hours (null = off). The hourly collection tick enqueues `tracked-refresh` for due rows. */
   refreshIntervalHours: integer('refresh_interval_hours'),
@@ -363,11 +368,13 @@ export const trackedAccountSnapshots = pgTable('tracked_account_snapshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   trackedAccountId: uuid('tracked_account_id').notNull().references(() => trackedAccounts.id, { onDelete: 'cascade' }),
   capturedAt: timestamp('captured_at', { withTimezone: true }).notNull().defaultNow(),
-  source: text('source', { enum: ['api', 'manual'] }).notNull(),
+  source: text('source', { enum: ['api', 'manual', 'device'] }).notNull(),
   followers: bigint('followers', { mode: 'number' }),
   following: bigint('following', { mode: 'number' }),
   posts: bigint('posts', { mode: 'number' }),
   views: bigint('views', { mode: 'number' }),
+  /** Metrics that are approximate (the app abbreviated them, e.g. "3.2万" / "12.5K"); null/empty = all exact. */
+  approx: text('approx').array(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
 }, (t) => [index('tracked_snapshots_account_at_idx').on(t.trackedAccountId, t.capturedAt)]);
 
