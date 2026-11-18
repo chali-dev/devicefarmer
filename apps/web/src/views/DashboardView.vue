@@ -10,6 +10,7 @@ import {
 } from '../api/types'
 import { fmtSize } from '../components/media/media'
 import StatLink from '../components/dashboard/StatLink.vue'
+import SystemStatus from '../components/dashboard/SystemStatus.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import StatCard from '../components/common/StatCard.vue'
 import { pagination } from '../components/common/ui'
@@ -19,8 +20,9 @@ import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 
 /**
- * Dashboard (概览): GET /api/dashboard, RBAC-scoped on the server. Each number links to the list page
- * with the matching filter. Refreshes on task/device events (debounced) and every 30 s.
+ * Dashboard (仪表板): GET /api/dashboard, RBAC-scoped on the server. Each number links to the list page
+ * with the matching filter. Refreshes on task/device events (debounced) and every 30 s. Admins also get the
+ * 系统状态 section (SystemStatus, own request to /api/settings/system), hidden while viewing as a user.
  */
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -369,11 +371,15 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         </a-col>
       </a-row>
     </a-spin>
+
+    <!-- system status (admin only; not part of a user's view) -->
+    <SystemStatus v-if="auth.isAdmin && !asUser" class="system" />
   </PageContainer>
 </template>
 
 <style scoped>
 .kpis { margin-bottom: var(--cp-gap); }
+.system { margin-top: var(--cp-gap); }
 .card { height: 100%; }
 .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }

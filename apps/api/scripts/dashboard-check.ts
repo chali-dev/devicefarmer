@@ -1,5 +1,5 @@
 /**
- * Dashboard (概览) + Settings (设置) test through the public API against the real API, DB and Redis (no mocks).
+ * Dashboard (仪表板) + Settings (设置) test through the public API against the real API, DB and Redis (no mocks).
  * - Seeds rows across modules directly in the DB (placeholder devices without containers, proxies, social
  *   accounts, tracked accounts + snapshots, contents + publish runs, tasks, media rows) for the
  *   admin, user A and user B, then checks that GET /api/dashboard returns exactly the seeded numbers per role

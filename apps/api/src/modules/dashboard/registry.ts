@@ -1,7 +1,7 @@
 import type { AuthUser } from '../auth/rbac.js';
 
 /**
- * Dashboard (概览) widget registry. Each module registers one provider that returns its widget data
+ * Dashboard (仪表板) widget registry. Each module registers one provider that returns its widget data
  * for a request context, already filtered by RBAC, or null when the widget does not apply (e.g. an
  * admin-only widget for a user). Providers must use aggregate SQL (no per-row queries).
  *

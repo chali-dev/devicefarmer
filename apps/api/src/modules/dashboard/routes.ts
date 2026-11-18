@@ -9,7 +9,7 @@ import './widgets.js'; // registers the core widgets
 
 const validTz = (tz: string) => { try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; } catch { return false; } };
 
-/** Dashboard (概览): one RBAC-scoped aggregate of every module's widget (see registry.ts). */
+/** Dashboard (仪表板): one RBAC-scoped aggregate of every module's widget (see registry.ts). */
 export const dashboardRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -25,7 +25,7 @@ export const dashboardRoutes: FastifyPluginAsyncZod = async (app) => {
   }, async (req) => {
     let scope: AuthUser = req.user;
     if (req.query.userId && req.query.userId !== req.user.id) {
-      if (!isAdmin(req.user)) throw forbidden('仅管理员可以查看其他用户的概览', 'dashboard.admin_only');
+      if (!isAdmin(req.user)) throw forbidden('仅管理员可以查看其他用户的仪表板', 'dashboard.admin_only');
       const [u] = await db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(eq(schema.users.id, req.query.userId));
       if (!u) throw notFound('用户不存在', 'users.not_found');
       scope = { id: u.id, username: u.username, role: 'user' };
