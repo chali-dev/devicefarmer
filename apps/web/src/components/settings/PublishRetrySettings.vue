@@ -8,7 +8,7 @@ import { dateLocale } from '../../i18n'
 /**
  * 系统配置 → 发布任务 (admin): attempts per publish round, the base delay of the exponential backoff and the timeout
  * of one attempt (GET/PUT /api/settings/publish-retry, keys `publish.retry` + `publish.timeout`). The env values are
- * the defaults (hint under each field); a saved value is used for every round created or started again from then on
+ * the defaults; a saved value is used for every round created or started again from then on
  * (a running round keeps its own).
  */
 interface Retry { maxAttempts: number; backoffSec: number; backoffMs: number; timeoutSec: number; timeoutMs: number; updatedAt: string | null }
@@ -31,34 +31,30 @@ async function save() {
   } catch (e) { message.error(errorText(e)) }
   finally { saving.value = false }
 }
-/** Waits before each retry with the values in the form (attempt n waits base · 2^(n-1)). */
-const waits = () => Array.from({ length: Math.max(0, (form.maxAttempts || 1) - 1) }, (_, i) => `${(form.backoffSec || 1) * 2 ** i} s`).join(' → ')
 </script>
 
 <template>
   <div class="settings-pane">
     <a-spin :spinning="!state">
       <a-typography-title :level="5">{{ t('settings.publishRetry.title') }}</a-typography-title>
-      <a-typography-paragraph type="secondary">{{ t('settings.publishRetry.hint') }}</a-typography-paragraph>
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.maxAttempts')" :extra="state ? t('settings.envDefault', { v: state.defaults.maxAttempts, env: 'PUBLISH_MAX_ATTEMPTS' }) : undefined">
+            <a-form-item :label="t('settings.publish.maxAttempts')">
               <a-input-number v-model:value="form.maxAttempts" :min="1" :max="10" :precision="0" style="width: 100%" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.backoff')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.backoffSec} s`, env: 'PUBLISH_RETRY_BACKOFF_MS' }) : undefined">
+            <a-form-item :label="t('settings.publish.backoff')">
               <a-input-number v-model:value="form.backoffSec" :min="1" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.timeout')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.timeoutSec} s`, env: 'PUBLISH_TIMEOUT_MS' }) : undefined">
+            <a-form-item :label="t('settings.publish.timeout')">
               <a-input-number v-model:value="form.timeoutSec" :min="60" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
             </a-form-item>
           </a-col>
         </a-row>
-        <a-alert type="info" show-icon class="block" :message="form.maxAttempts > 1 ? t('settings.publishRetry.waits', { waits: waits() }) : t('settings.publishRetry.noRetry')" />
         <a-space wrap>
           <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
           <span v-if="state?.retry.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(state.retry.updatedAt).toLocaleString(dateLocale()) }) }}</span>

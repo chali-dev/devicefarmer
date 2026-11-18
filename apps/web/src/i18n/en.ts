@@ -1903,9 +1903,6 @@ const en: Messages = {
     },
     publishRetry: {
       title: 'Publish tasks',
-      hint: 'How often and how far apart a failed publish round (e.g. phone offline) is retried, and the timeout of one attempt (a timeout counts as a failed attempt). Saved values apply to rounds created or started again from now on; a running round keeps its values.',
-      waits: 'Wait before each retry: {waits}',
-      noRetry: 'One attempt only, no automatic retry',
     },
     ai: {
       title: 'AI drafts (Anthropic)',
@@ -1926,7 +1923,7 @@ const en: Messages = {
       publishTitle: 'Publish tasks',
       maxAttempts: 'Max attempts',
       timeout: 'Attempt timeout',
-      backoff: 'Retry backoff base',
+      backoff: 'Retry interval',
       mediaTitle: 'Media upload limits',
       imageMax: 'Max image size',
       videoMax: 'Max video size',

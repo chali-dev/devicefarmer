@@ -1914,9 +1914,6 @@ const zhCN = {
     },
     publishRetry: {
       title: '发布任务',
-      hint: '一轮发布失败（如云手机离线）后自动重试的次数和间隔，以及单次尝试的超时（超时算一次失败）。保存后对新创建或重新开始的发布轮次生效，已在运行的轮次保持原值。',
-      waits: '每次重试前等待：{waits}',
-      noRetry: '只尝试 1 次，失败后不自动重试',
     },
     ai: {
       title: 'AI 草稿（Anthropic）',
@@ -1937,7 +1934,7 @@ const zhCN = {
       publishTitle: '发布任务',
       maxAttempts: '最大尝试次数',
       timeout: '单次尝试超时',
-      backoff: '重试退避基数',
+      backoff: '重试间隔',
       mediaTitle: '素材上传限制',
       imageMax: '图片大小上限',
       videoMax: '视频大小上限',
