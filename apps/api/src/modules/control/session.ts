@@ -39,6 +39,8 @@ const ClientMsg = z.discriminatedUnion('type', [
 
 const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
 
+/** An open session re-checks its user (disabled / removed), device grant and 我的云机 menu this often. */
+const RECHECK_MS = 15_000;
 const MAX_BUFFERED = 2 * 1024 * 1024; // drop frames for slow clients instead of queueing
 
 /** Authenticated remote-control sessions per device in this process (the tracked-account collector waits while > 0). */
@@ -93,6 +95,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
     const stopSecure = () => { secureStream?.destroy(); secureStream = null; };
     const fail = (message: string, code = 4000) => { send({ type: 'error', message }); client.close(code, message.slice(0, 100)); };
     const authTimer = setTimeout(() => { if (!authed) fail('auth timeout', 4001); }, 5000);
+    let recheck: NodeJS.Timeout | null = null;
 
     client.on('message', async (raw, isBinary) => {
       if (isBinary) return;
@@ -119,6 +122,16 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
           authed = true;
           countSession(instanceId, 1);
           clearTimeout(authTimer);
+          // Disabling the user, removing the device grant or switching 我的云机 off ends an open session too.
+          recheck = setInterval(() => {
+            void (async () => {
+              const u = await app.reloadUser(user.id);
+              await assertInstanceAccess(u, instanceId, 'control');
+              if (!(await menuEnabled(u, 'instances'))) throw new HttpError(403, '该菜单未对用户角色开放', 'rbac.menu_disabled', { menu: 'instances' });
+            })().catch((err) => {
+              if (err instanceof HttpError) fail(err.message, err.statusCode === 401 ? 4001 : 4003);
+            });
+          }, RECHECK_MS);
           req.log.info({ instanceId, user: user.username }, 'control session opened');
 
           // The screen port changes whenever STF re-creates the device worker: always resolve it fresh.
@@ -232,6 +245,7 @@ export const controlRoutes: FastifyPluginAsync = async (app) => {
 
     client.on('close', () => {
       clearTimeout(authTimer);
+      if (recheck) clearInterval(recheck);
       if (authed) countSession(instanceId, -1);
       upstream?.close();
       secureStream?.destroy();

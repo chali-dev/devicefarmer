@@ -11,5 +11,12 @@
 }
 
 {$SITE_ADDRESS} {
+	# Baseline security headers for the web and the API (the UI is never framed; no CSP yet: Ant Design injects inline styles).
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
 	import /etc/caddy/active/upstream.caddy
 }

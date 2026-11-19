@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
@@ -23,6 +24,9 @@ async function loadProfile(id: string) {
   if (!u) throw unauthorized('account disabled or removed', 'auth.account_disabled');
   return u;
 }
+
+/** A real hash of a random secret: comparing against it costs as much as a real check (no timing hint that a username is unknown). */
+const DUMMY_HASH = bcrypt.hashSync(randomBytes(16).toString('hex'), 10);
 
 // '' (after trimming) clears the field.
 const emptyToNull = (v: string) => (v === '' ? null : v);
@@ -62,7 +66,7 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     const [u] = await db.select().from(schema.users).where(eq(schema.users.username, req.body.username));
     // Compare even when the user is missing to keep timing similar.
-    const ok = await bcrypt.compare(req.body.password, u?.passwordHash ?? '$2b$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
+    const ok = await bcrypt.compare(req.body.password, u?.passwordHash ?? DUMMY_HASH);
     if (!u || !ok || u.disabled) {
       // Excluded from the generic hook; only the attempted username is kept, never the password.
       auditRequest(req, {

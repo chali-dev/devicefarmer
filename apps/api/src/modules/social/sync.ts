@@ -361,7 +361,20 @@ export async function recordSyncCheck(inst: Pick<Instance, 'id' | 'name'>, r: { 
 }
 
 // New type on its own queue (a draining old leader never sees it). One attempt, like the account check.
-registerTaskHandler<Payload>(ACCOUNT_SYNC_TYPE, { queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run });
+registerTaskHandler<Payload>(ACCOUNT_SYNC_TYPE, {
+  queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run,
+  // Retry (task centre) replays the stored payload: the caller must still operate the phone and the stored owner must
+  // still be the one the phone's assignment gives (else e.g. a former user could record the new user's account as theirs).
+  async beforeRetry(task, user) {
+    const p = task.payload as Payload;
+    const inst = await getInstance(p.instanceId);
+    if (!inst) throw notFound('设备不存在', 'instances.not_found');
+    await assertInstanceAccess(user, inst.id, 'operate');
+    if ((await syncOwner(user, inst, p.ownerId)) !== p.ownerId) {
+      throw badRequest(`账号归属必须是云手机 ${inst.name} 分配的用户（未分配时为执行同步的管理员）`, 'account_sync.owner_mismatch', { device: inst.name });
+    }
+  },
+});
 
 // ---------------------------------------------------------------- 自动发现
 

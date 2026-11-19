@@ -273,8 +273,10 @@ export const proxyRoutes: FastifyPluginAsyncZod = async (app) => {
     let password = blankToNull(req.body.password) ?? null;
     if (!password && id) {
       const cur = await mustGet(id);
-      // Only reuse the stored password for the same username (a changed user must not get the old secret).
-      if (cur.passwordEnc && username && username === cur.username) password = openSecret(cur.passwordEnc);
+      // Only reuse the stored password for the same endpoint and username: a changed user or a changed host/port/type
+      // must not receive the stored (write-only) secret.
+      const same = username === cur.username && type === cur.type && host === cur.host && port === cur.port;
+      if (cur.passwordEnc && username && same) password = openSecret(cur.passwordEnc);
     }
     if (password && !username) throw badRequest('设置密码时必须填写用户名', 'proxy.password_without_username');
     const result = await probeProxy({ type, host, port, ...(username ? { username } : {}), ...(password ? { password } : {}) })

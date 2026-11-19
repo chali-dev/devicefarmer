@@ -9,6 +9,8 @@ import { getInstance } from '../instances/repo.js';
 import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { autoCheckUnsupported } from '../social/check.js';
+import { visibleAccount } from '../social/social.js';
+import { getVisibleAccount } from '../tracked/tracked.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
 import { phonesAllowed, trackedPhoneRefusal } from '../tracked/phone.js';
@@ -237,7 +239,16 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
 }
 
 // New type on its own queue (a draining old leader never sees it). One attempt: the next slot or 立即采集 runs again.
-registerTaskHandler<Payload>(FEED_TYPE, { queue: QUEUE, concurrency: 2, timeoutMs: 15 * 60_000, maxAttempts: 1, run });
+registerTaskHandler<Payload>(FEED_TYPE, {
+  queue: QUEUE, concurrency: 2, timeoutMs: 15 * 60_000, maxAttempts: 1, run,
+  // Retry (task centre) replays the stored payload: re-check what the request checked, as the caller (the account may
+  // have moved to another user with its phone since the task was created).
+  async beforeRetry(task, user) {
+    const p = task.payload as Payload;
+    if (p.kind === 'tracked') await getVisibleAccount(user, p.accountId);
+    else await visibleAccount(user, p.accountId);
+  },
+});
 
 /**
  * Hourly: every Instagram social account on a running, not halted phone and every scheduled (refresh on, not

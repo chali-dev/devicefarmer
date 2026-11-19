@@ -13,7 +13,7 @@ import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
 import { platformById } from './platforms.js';
-import { writeLogs, type LogEntry } from './social.js';
+import { visibleAccount, writeLogs, type LogEntry } from './social.js';
 
 /**
  * 社交号自动检测 (owner decision 2026-11-18, replaces the manual "mark checked"): task `account-device-check`
@@ -201,7 +201,12 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
 
 // New type on its own queue (a draining old leader never sees it, see CLAUDE.md). One attempt: a failed
 // screen read is not helped by an automatic retry; the next scheduled check or 立即检测 runs again.
-registerTaskHandler<Payload>(ACCOUNT_CHECK_TYPE, { queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run });
+registerTaskHandler<Payload>(ACCOUNT_CHECK_TYPE, {
+  queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run,
+  // Retry (task centre) replays the stored payload: re-check what the request checked, as the caller (the account may
+  // have moved to another user with its phone since the task was created).
+  async beforeRetry(task, user) { await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? ''); },
+});
 
 /**
  * Periodic checks (风控 accountCheckHours, null = off): every Instagram account linked to a running device
