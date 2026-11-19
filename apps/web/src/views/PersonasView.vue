@@ -13,12 +13,14 @@ import { useScopedList } from '../components/common/scopedList'
 import { actionColumn, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import DraftPreviewModal from '../components/comments/DraftPreviewModal.vue'
 import PersonaFormDrawer from '../components/comments/PersonaFormDrawer.vue'
+import PersonaPromptModal from '../components/comments/PersonaPromptModal.vue'
 import { useAuthStore } from '../stores/auth'
 
 /**
  * 人设 page: the scoped persona list (`/api/personas`, rules in `useScopedList` / `lib/scoped-list.ts`) with its uses
  * (账号人设 accounts → /social; 范例 count → opens the form, the 话术库 page /scripts was removed 2026-11-18) and its
- * 发文/评论 tone; row actions 编辑 / AI测试 (preview of one draft, a style test, never stored: DraftPreviewModal) / 更多.
+ * 发文/评论 tone; row actions 编辑 / AI测试 (preview of one draft, a style test, never stored: DraftPreviewModal) / 更多
+ * (提示词 = PersonaPromptModal: the prompt sent to the model + 自定义 prompt, 复制, 删除).
  * `?edit=<id>` opens the form of that persona (插入话术 links here). 复制到我的人设 on every row (any visible persona → a
  * personal copy with all 范例; admins pick the owner in the 全部用户 tab), then the copy's form opens.
  * Daily AI drafts are set per social account (社交号 → AI 草稿), not on personas. Public personas are managed by admins; personal ones by their owner (admins: all).
@@ -83,6 +85,11 @@ const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0)
 const previewFor = ref<ScopedItem | null>(null)
 const previewOpen = ref(false)
 function preview(p: ScopedItem) { previewFor.value = p; previewOpen.value = true }
+
+// ---- 提示词: what AI测试 / AI生成草稿 send, and the persona's custom prompt (PersonaPromptModal)
+const promptFor = ref<ScopedItem | null>(null)
+const promptOpen = ref(false)
+function showPrompt(p: ScopedItem) { promptFor.value = p; promptOpen.value = true }
 
 // ---- create / edit: the persona form drawer
 const formOpen = ref(false)
@@ -162,7 +169,10 @@ async function doCopy() {
       <a-table :data-source="rows" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
         :locale="{ emptyText: tx('empty') }" :pagination="pagination({ defaultPageSize: 50, totalText: (n) => t('personas.total', { n }) })">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'name'"><span class="strong">{{ record.name }}</span></template>
+          <template v-if="column.key === 'name'">
+            <span class="strong">{{ record.name }}</span>
+            <div v-if="record.hasCustomPrompt"><a-tag color="purple" class="small-tag">{{ t('personas.prompt.listTag') }}</a-tag></div>
+          </template>
           <template v-else-if="column.key === 'description'">
             <span v-if="record.description" class="clamp">{{ record.description }}</span><span v-else class="muted">—</span>
             <div v-if="record.style" class="muted small">{{ t(`personas.tones.${record.style.tone}`) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
@@ -188,6 +198,7 @@ async function doCopy() {
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
                   <a-menu>
+                    <a-menu-item key="prompt" @click="showPrompt(record as ScopedItem)">{{ t('personas.prompt.action') }}</a-menu-item>
                     <a-menu-item key="copy" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
                   </a-menu>
@@ -221,11 +232,13 @@ async function doCopy() {
 
     <PersonaFormDrawer v-model:open="formOpen" :persona-id="editingId" :scope="pageTab === 'public' ? 'public' : 'mine'" :owner-id="newOwner" @saved="load" />
     <DraftPreviewModal v-model:open="previewOpen" :persona-id="previewFor?.id ?? null" :persona-name="previewFor?.name" />
+    <PersonaPromptModal v-model:open="promptOpen" :persona-id="promptFor?.id ?? null" :persona-name="promptFor?.name" @saved="load" />
   </PageContainer>
 </template>
 
 <style scoped>
 .tabs-card :deep(.ant-card-body) { padding-top: 4px; }
 .strong { font-weight: 500; }
+.small-tag { margin-top: 2px; font-size: 11px; line-height: 16px; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

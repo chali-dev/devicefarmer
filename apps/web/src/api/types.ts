@@ -596,6 +596,19 @@ export interface ScopedItem extends PersonaRef {
   accounts?: number
   /** 人设 only: style (with defaults). */
   style?: PersonaStyle
+  /** 人设 only: a custom prompt replaces the generated one. */
+  hasCustomPrompt?: boolean
+}
+/** GET /api/personas/:id/prompt: what AI测试 / 「AI生成草稿」 send (custom or generated), no model call. */
+export interface PersonaPrompt {
+  prompt: { system: string; user: string; custom: boolean; examples: number; recent: number }
+  customPrompt: { system: string; user: string } | null
+  /** The generated prompt with placeholders: the starting point of 自定义. */
+  template: { system: string; user: string }
+  model: string
+  schema: Record<string, unknown>
+  placeholders: string[]
+  maxLength: number
 }
 /** POST /api/personas/:id/drafts/preview {topic?} (AI测试): one draft, a style test, nothing stored. */
 export interface DraftPreview {

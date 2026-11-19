@@ -372,6 +372,14 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'DELETE /api/personas/:id': { action: 'persona.delete' },
   // AI测试: never the draft texts nor the topic text (only whether one was given); the route adds model / ok / error code.
   'POST /api/personas/:id/drafts/preview': { action: 'persona.draft_preview', detail: ({ body }) => ({ topic: !!(body?.topic as string | undefined)?.trim() }) },
+  // 自定义提示词: only whether a custom prompt is set now and its lengths, never the text.
+  'PUT /api/personas/:id/prompt': {
+    action: 'persona.prompt_update',
+    detail: ({ body }) => {
+      const c = body.customPrompt as { system?: string; user?: string } | null | undefined;
+      return c ? { custom: true, systemLength: c.system?.length ?? 0, userLength: c.user?.length ?? 0 } : { custom: false };
+    },
+  },
   // (social.ai_drafts / social.ai_drafts_generate: only on older rows; the daily switch and 立即生成 were removed 2026-11-18)
   // 「AI生成草稿」 preview (never texts: whether a topic was given; the route adds model / ok / error code) and its save
   // (media count, translation given, 存草稿 / 立即 / 排程; the route adds the content id, edited, publish tasks / error code).
