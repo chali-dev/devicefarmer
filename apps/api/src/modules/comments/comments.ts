@@ -15,6 +15,7 @@ import { recordRiskEvent } from '../risk/events.js';
 import { activeStorage } from '../settings/storage.js';
 import { platformById } from '../social/platforms.js';
 import { visibleAccount, type Tx } from '../social/social.js';
+import { assertAccountDevice, ownerHoldsDevice } from '../social/assign.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { accountPersonaIds, assertNoBannedWords } from './persona-style.js';
 import { CollectorDefer, deviceHalt, haltDevice, lockFor, onDeviceResumed, withDevice } from '../tracked/collector.js';
@@ -316,6 +317,7 @@ export async function editReply(user: AuthUser, r: CommentTask, b: { text?: stri
 /** draft → scheduled: the send task of round 1 is created at once (runAt = scheduledAt). No approval step. */
 export async function submitReply(user: AuthUser, r: CommentTask, scheduledAt?: Date | null): Promise<CommentTask> {
   if (r.status !== 'draft') throw conflict(`当前状态（${r.status}）不能提交`, 'comment.bad_status', { status: r.status });
+  await assertReplyDevice(user, r);
   // The persona may have changed since the draft was written: checked again when it is scheduled.
   await assertNoBannedWords(await accountPersonaIds([r.accountId]), [r.text]);
   const rules = await getRules();
@@ -364,7 +366,14 @@ async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<Com
  * (no task) is refused with comment.device_halted (恢复 on the 风控 page queues it). The text was checked when it
  * was scheduled and is unchanged, so no rule is re-checked here.
  */
+/** 排程 / 改期 make the account's phone send: a non-admin must hold it (403 social.device_not_granted). */
+async function assertReplyDevice(user: AuthUser, r: CommentTask) {
+  const [acc] = await db.select({ instanceId: schema.socialAccounts.instanceId }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, r.accountId));
+  if (acc) await assertAccountDevice(user, acc);
+}
+
 export async function rescheduleReply(user: AuthUser, r: CommentTask, scheduledAt: Date | null): Promise<CommentTask> {
+  await assertReplyDevice(user, r);
   const now = new Date();
   const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
   const { prev, next } = await db.transaction(async (tx) => {
@@ -451,6 +460,8 @@ async function planReply(r: CommentTask): Promise<ReplyPlan> {
   if (!acc) return { kind: 'manual', reason: 'comment.account_gone' };
   if (!platformById(acc.platform)?.deviceCheck || !isPlatformEnabled(acc.platform)) return { kind: 'manual', reason: 'comment.device_unsupported_platform' };
   if (!acc.instanceId) return { kind: 'manual', reason: 'comment.device_no_device' };
+  // the account's owner no longer holds the phone (unassigned / disabled, owner decision 2026-11-19): by hand
+  if (!(await ownerHoldsDevice(acc))) return { kind: 'manual', reason: 'comment.device_not_granted' };
   const inst = await getInstance(acc.instanceId);
   if (!inst) return { kind: 'manual', reason: 'comment.device_no_device' };
   const P = schema.socialAccountPosts;

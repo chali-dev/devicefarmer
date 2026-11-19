@@ -11,6 +11,7 @@ import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { autoCheckUnsupported } from '../social/check.js';
 import { visibleAccount } from '../social/social.js';
+import { assertAccountDevice, DEVICE_NOT_GRANTED, devicesHeld, ownerHoldsDevice } from '../social/assign.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevice } from '../tracked/collector.js';
@@ -76,6 +77,7 @@ const feedTask = (kind: FeedKind, acc: SocialAccount | TrackedAccount, userId: s
 
 /** 立即采集 (API only since the merged 同步 button): queues a collection now (coded refusals). */
 export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: SocialAccount | TrackedAccount) {
+  if (kind === 'social') await assertAccountDevice(user, acc as SocialAccount);
   // 防并发: refusal check (incl. feed.in_progress) and creation alone per account
   return withMutex(feedMutex(kind, acc.id), async () => {
     const no = await feedRefusal(kind, acc);
@@ -195,6 +197,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
     if (!acc) return skip('feed.account_gone');
     const why = socialFeedUnsupported(acc as SocialAccount);
     if (why) return skip(why);
+    if (!(await ownerHoldsDevice(acc as SocialAccount))) return skip(DEVICE_NOT_GRANTED);
     inst = await getInstance((acc as SocialAccount).instanceId!);
   } else {
     [acc] = await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, id));
@@ -253,7 +256,7 @@ registerTaskHandler<Payload>(FEED_TYPE, {
   async beforeRetry(task, user) {
     const p = task.payload as Payload;
     if (p.kind === 'tracked') await getVisibleAccount(user, p.accountId);
-    else await visibleAccount(user, p.accountId);
+    else await assertAccountDevice(user, await visibleAccount(user, p.accountId));
   },
 });
 
@@ -269,7 +272,7 @@ export async function scheduleFeedCollects(now = new Date(), windowMs = 65 * 60_
   const halts = await deviceHalts();
   let skipped = 0;
   const sa = schema.socialAccounts;
-  const social = await db.select({ id: sa.id, platform: sa.platform, handle: sa.handle, instanceId: sa.instanceId, status: schema.instances.status })
+  const social = await db.select({ id: sa.id, userId: sa.userId, platform: sa.platform, handle: sa.handle, instanceId: sa.instanceId, status: schema.instances.status })
     .from(sa).innerJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
     .where(and(eq(sa.platform, 'instagram'), isNotNull(sa.instanceId)));
   const ta = schema.trackedAccounts;
@@ -277,6 +280,7 @@ export async function scheduleFeedCollects(now = new Date(), windowMs = 65 * 60_
     .from(ta).innerJoin(schema.instances, eq(schema.instances.id, ta.instanceId))
     .where(and(eq(ta.platform, 'instagram'), isNotNull(ta.refreshIntervalHours), sql`${ta.status} <> 'paused'`));
   const allowed = await phonesAllowed(trackedRows);
+  const held = await devicesHeld(social);
   const tracked = trackedRows.filter((a) => {
     const ok = a.status === 'running' && !halts[a.instanceId!] && allowed.has(`${a.userId}:${a.instanceId}`);
     if (!ok) skipped++;
@@ -285,7 +289,7 @@ export async function scheduleFeedCollects(now = new Date(), windowMs = 65 * 60_
   const from = now.getTime() - 5 * 60_000;
   let created = 0;
   const items: { kind: FeedKind; id: string; label: string }[] = [
-    ...social.filter((a) => { const ok = a.status === 'running' && !halts[a.instanceId!]; if (!ok) skipped++; return ok; }).map((a) => ({ kind: 'social' as const, id: a.id, label: `${a.platform} @${a.handle}` })),
+    ...social.filter((a) => { const ok = a.status === 'running' && !halts[a.instanceId!] && held.has(`${a.userId}:${a.instanceId}`); if (!ok) skipped++; return ok; }).map((a) => ({ kind: 'social' as const, id: a.id, label: `${a.platform} @${a.handle}` })),
     ...tracked.map((a) => ({ kind: 'tracked' as const, id: a.id, label: `${a.platform} @${a.handle}` })),
   ];
   for (const it of items) {

@@ -15,6 +15,7 @@ import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevic
 import { approxOf, classifyIgDump, dumpExcerpt, igDeviceAccounts, requireApp, screenProblem, visitIgScreen, type IgScreen, type UiNode } from '../tracked/instagram-device.js';
 import { autoCheckUnsupported } from './check.js';
 import { visibleAccount } from './social.js';
+import { assertAccountDevice, DEVICE_NOT_GRANTED, devicesHeld, ownerHoldsDevice } from './assign.js';
 import { followingCounter, isFollowList, listSwipe, listTab, parseFollowingScreen, type FollowListKind } from './following-ui.js';
 
 /**
@@ -85,6 +86,7 @@ export async function requestFollowingSync(user: AuthUser, acc: SocialAccount) {
   const why = followingUnsupported(acc);
   if (why === 'following.no_device') throw new HttpError(400, '账号未绑定云手机，不能读取追踪列表', why);
   if (why) throw new HttpError(400, '该平台不支持从云手机读取追踪列表', why, { platform: acc.platform });
+  await assertAccountDevice(user, acc);
   if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'following.device_halted');
   // 防并发: checked and created alone per account (also against step 3 of 同步, queueFollowingAfter)
   return withMutex(mutexKey(acc.id), async () => {
@@ -414,6 +416,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   if (!acc) return skip('following.account_gone');
   const why = followingUnsupported(acc);
   if (why) return skip(why);
+  if (!(await ownerHoldsDevice(acc))) return skip(DEVICE_NOT_GRANTED);
   if (await deviceHalt(acc.instanceId!)) return skip('following.device_halted');
   const inst = await getInstance(acc.instanceId!);
   if (!inst) return skip('following.no_device');
@@ -488,7 +491,7 @@ registerTaskHandler<Payload>(FOLLOWING_TYPE, {
   queue: QUEUE, concurrency: 2, timeoutMs: TASK_TIMEOUT_MS, maxAttempts: 1, run,
   // Retry (task centre) replays the stored payload: re-check what the request checked, as the caller (the account may
   // have moved to another user with its phone since the task was created).
-  async beforeRetry(task, user) { await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? ''); },
+  async beforeRetry(task, user) { await assertAccountDevice(user, await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? '')); },
 });
 
 /**
@@ -500,14 +503,15 @@ export async function scheduleFollowingSyncs(now = new Date(), windowMs = 65 * 6
   if (!hours) return { hours, created: 0, skipped: 0 };
   const period = hours * 3600_000;
   const sa = schema.socialAccounts;
-  const rows = await db.select({ id: sa.id, platform: sa.platform, handle: sa.handle, instanceId: sa.instanceId, status: schema.instances.status })
+  const rows = await db.select({ id: sa.id, userId: sa.userId, platform: sa.platform, handle: sa.handle, instanceId: sa.instanceId, status: schema.instances.status })
     .from(sa).innerJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
     .where(and(eq(sa.platform, 'instagram'), isNotNull(sa.instanceId)));
   const halts = await deviceHalts();
+  const held = await devicesHeld(rows);
   const from = now.getTime() - 5 * 60_000;
   let created = 0; let skipped = 0;
   for (const acc of rows) {
-    if (followingUnsupported(acc) || acc.status !== 'running' || halts[acc.instanceId!]) { skipped++; continue; }
+    if (followingUnsupported(acc) || acc.status !== 'running' || halts[acc.instanceId!] || !held.has(`${acc.userId}:${acc.instanceId}`)) { skipped++; continue; }
     const offset = createHash('sha256').update(`following:${acc.id}`).digest().readUInt32BE(0) % period;
     for (let slot = Math.ceil((from - offset) / period); slot * period + offset < now.getTime() + windowMs; slot++) {
       const r = await createTask({

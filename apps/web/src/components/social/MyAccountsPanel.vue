@@ -291,6 +291,7 @@ const LOG_COLOR: Record<SocialAccountLog['action'], string> = { create: 'green',
 const LOG_MSG: Record<string, string> = {
   'device deleted': 'social.msgDeviceDeleted', 'group deleted': 'social.msgGroupDeleted', 'persona deleted': 'social.msgPersonaDeleted', 'persona merged': 'social.msgPersonaMerged',
   'synced from device': 'social.msgSynced', 'phone assigned': 'social.msgPhoneAssigned',
+  'phone unassigned': 'social.msgPhoneUnassigned', 'owner disabled': 'social.msgOwnerDisabled', 'owner deleted': 'social.msgOwnerDeleted',
 }
 /** Log message text; `group migrated: <name>` comes from the 分组 → 人设 data migration (older logs may mention groups). */
 function logMessage(m: string) {

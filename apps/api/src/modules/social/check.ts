@@ -15,6 +15,7 @@ import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevic
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
 import { platformById } from './platforms.js';
 import { visibleAccount, writeLogs, type LogEntry } from './social.js';
+import { assertAccountDevice, DEVICE_NOT_GRANTED, devicesHeld, ownerHoldsDevice } from './assign.js';
 
 /**
  * 社交号自动检测 (owner decision 2026-11-18, replaces the manual "mark checked"): task `account-device-check`
@@ -66,6 +67,7 @@ export async function requestAccountCheck(user: AuthUser, acc: SocialAccount) {
   const why = autoCheckUnsupported(acc);
   if (why === 'account_check.no_device') throw new HttpError(400, '账号未绑定云手机，不能自动检测', why);
   if (why) throw new HttpError(400, '该平台不支持自动检测', why, { platform: acc.platform });
+  await assertAccountDevice(user, acc);
   if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'account_check.device_halted');
   // 防并发: checked and created alone per account (double click, two tabs, two API processes)
   return withMutex(`task:${ACCOUNT_CHECK_TYPE}:${acc.id}`, async () => {
@@ -176,6 +178,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const skip = async (code: string) => { await ctx.log('info', `account check skipped: ${code}`, { code }); return { outcome: 'skipped', code }; };
   const unsupported = autoCheckUnsupported(acc);
   if (unsupported) return skip(unsupported);
+  if (!(await ownerHoldsDevice(acc))) return skip(DEVICE_NOT_GRANTED);
   if (ctx.payload.scheduled && (await getRiskSettings()).accountCheckHours === null) return skip('account_check.schedule_off');
   if (await deviceHalt(acc.instanceId!)) return skip('account_check.device_halted');
   const inst = await getInstance(acc.instanceId!);
@@ -209,7 +212,7 @@ registerTaskHandler<Payload>(ACCOUNT_CHECK_TYPE, {
   queue: QUEUE, concurrency: 2, timeoutMs: 3 * 60_000, maxAttempts: 1, run,
   // Retry (task centre) replays the stored payload: re-check what the request checked, as the caller (the account may
   // have moved to another user with its phone since the task was created).
-  async beforeRetry(task, user) { await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? ''); },
+  async beforeRetry(task, user) { await assertAccountDevice(user, await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? '')); },
 });
 
 /**
@@ -227,10 +230,12 @@ export async function scheduleAccountDeviceChecks(now = new Date(), windowMs = 6
     .from(sa).innerJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
     .where(and(inArray(sa.platform, platforms), isNotNull(sa.instanceId)));
   const halts = await deviceHalts();
+  const held = await devicesHeld(rows);
   const from = now.getTime() - 5 * 60_000;
   let created = 0; let skipped = 0;
   for (const acc of rows) {
-    if (acc.status !== 'running' || halts[acc.instanceId!]) { skipped++; continue; }
+    // the owner no longer holds the phone (unassigned / disabled): skipped like a stopped phone
+    if (acc.status !== 'running' || halts[acc.instanceId!] || !held.has(`${acc.userId}:${acc.instanceId}`)) { skipped++; continue; }
     const offset = createHash('sha256').update(acc.id).digest().readUInt32BE(0) % period;
     for (let slot = Math.ceil((from - offset) / period); slot * period + offset < now.getTime() + windowMs; slot++) {
       const r = await createTask({
