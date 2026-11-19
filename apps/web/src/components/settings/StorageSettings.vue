@@ -116,11 +116,11 @@ async function saveStorage() {
           <a-alert type="warning" show-icon class="note" :message="t('media.storage.bucketWarning')" />
         </template>
         <a-alert
-          v-if="testResult" :type="testResult.ok ? 'success' : 'error'" show-icon class="note"
+          v-if="isS3 && testResult" :type="testResult.ok ? 'success' : 'error'" show-icon class="note"
           :message="testResult.ok ? t('media.storage.testOk', { ms: testResult.latencyMs }) : t('media.storage.testFailed', { error: testResult.error ?? '' })"
         />
         <a-space wrap>
-          <a-button :loading="storageTesting" @click="testStorage">{{ t('media.storage.test') }}</a-button>
+          <a-button v-if="isS3" :loading="storageTesting" @click="testStorage">{{ t('media.storage.test') }}</a-button>
           <a-button type="primary" :loading="storageSaving" @click="saveStorage">{{ t('common.save') }}</a-button>
         </a-space>
       </a-form>
