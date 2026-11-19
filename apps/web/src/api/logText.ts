@@ -126,6 +126,7 @@ const EXACT: Record<string, string> = {
   'publish: last screen before sharing reached': 'pubLastScreen',
   'publish: caption pasted and read back': 'pubCaption',
   'publish: caption page closed with 确定 (caption read back again)': 'pubCaptionPageDone',
+  'publish: still on the caption page after tapping 确定': 'pubCaptionPageStuck',
   'publish: caption could not be read again on the caption page, the first read-back stands': 'pubCaptionPageUnread',
   'publish: caption changed after the keyboard was hidden': 'pubCaptionChanged',
   'publish: test mode, not shared; draft discarded': 'pubTestDone',

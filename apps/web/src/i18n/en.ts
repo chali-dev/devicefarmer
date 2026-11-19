@@ -2393,6 +2393,7 @@ const en: Messages = {
       pubLastScreen: 'Reached the step before “Share”',
       pubCaption: 'Caption pasted and read back',
       pubCaptionPageDone: 'Caption page closed with OK (caption checked again with the keyboard hidden)',
+      pubCaptionPageStuck: 'Still on the caption page after tapping OK, trying again',
       pubCaptionPageUnread: 'Could not read the caption again on the caption page; the first check stands',
       pubCaptionChanged: 'The caption changed after the keyboard was hidden; not published',
       pubTestDone: 'Test mode: not shared, draft discarded',

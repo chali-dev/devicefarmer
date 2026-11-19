@@ -417,12 +417,23 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
         await log('warn', 'publish: caption changed after the keyboard was hidden', captionDiff(input.text, again));
         throw fail('publish.device_text_mismatch', '收起键盘后配文被改动（可能是自动补全），未发布', { excerpt: `read back: ${again}`.slice(0, 200), shot: after ?? shot });
       }
-      await s.tap(done);
-      await log('info', 'publish: caption page closed with 确定 (caption read back again)');
-      now = (await s.waitFor((n) => !!shareButton(input.postType, n) || !!screenProblem(n), 10_000, 1200)).nodes;
+      // The read-back leaves the whole caption selected; its floating 剪切/复制 bar can sit over 确定 (2026-11-19: a tap
+      // on 确定 did nothing). Collapse the selection (cursor to the end), then tap 确定, up to 3 times.
+      await s.sh('input keyevent 123');
+      await sleep(800, undefined, { signal: input.signal });
+      let at: { x: number; y: number } | null = captionPageDone(await s.dump()) ?? done;
+      for (let i = 1; i <= 3 && at; i++) {
+        await s.tap(at);
+        now = (await s.waitFor((n) => !!shareButton(input.postType, n) || !!screenProblem(n) || !captionPageDone(n), 6000, 1200)).nodes;
+        if (!captionPageDone(now)) { await log('info', 'publish: caption page closed with 确定 (caption read back again)', { taps: i }); break; }
+        await log('warn', 'publish: still on the caption page after tapping 确定', { tap: i, at, excerpt: dumpExcerpt(now, 200) });
+        at = captionPageDone(now);
+        if (i === 3) throw fail('publish.device_timeout', '点了「确定」仍停在配文页，未发布', { retry: true, excerpt: dumpExcerpt(now), shot: await s.screenshot().catch(() => null) ?? shot });
+      }
+      if (!shareButton(input.postType, now)) now = (await s.waitFor((n) => !!shareButton(input.postType, n) || !!screenProblem(n), 10_000, 1200)).nodes;
     }
     const shareAt = shareButton(input.postType, now);
-    if (!shareAt) throw fail('publish.device_timeout', '找不到“分享”按钮', { retry: true, excerpt: dumpExcerpt(now) });
+    if (!shareAt) throw fail('publish.device_timeout', '找不到“分享”按钮', { retry: true, excerpt: dumpExcerpt(now), shot: await s.screenshot().catch(() => null) ?? shot });
     // Evidence = the screen as it is shared (keyboard hidden), else the one after the paste.
     screenshot = await s.screenshot().catch(() => null) ?? screenshot;
     const sharedAt = new Date();

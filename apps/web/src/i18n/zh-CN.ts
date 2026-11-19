@@ -2404,6 +2404,7 @@ const zhCN = {
       pubLastScreen: '已到“分享”前一步',
       pubCaption: '配文已粘贴并回读核对',
       pubCaptionPageDone: '配文页已点「确定」（收起键盘后再次核对配文）',
+      pubCaptionPageStuck: '点了「确定」后仍停在配文页，再试一次',
       pubCaptionPageUnread: '配文页上没能再次读取配文，以第一次核对为准',
       pubCaptionChanged: '收起键盘后配文被改动，未发布',
       pubTestDone: '测试模式：未分享，草稿已放弃',
