@@ -158,3 +158,22 @@ export async function purgeLogFiles(days: number, now = Date.now()): Promise<str
   }
   return deleted;
 }
+
+/**
+ * 系统配置 → 日志 清除: every daily file goes (today's UTC file is truncated instead, since this and other API
+ * processes keep it open in append mode) and the in-memory ring is emptied, so 系统日志 shows only lines written after
+ * the clear. Returns the number of files deleted or truncated.
+ */
+export async function clearLogs(now = Date.now()): Promise<number> {
+  ring.fill(undefined);
+  head = 0;
+  count = 0;
+  const today = dayOf(now);
+  let n = 0;
+  for (const f of await listLogFiles()) {
+    const p = fileFor(f.date);
+    const done = f.date >= today ? fs.promises.truncate(p, 0) : fs.promises.unlink(p);
+    await done.then(() => { n++; }, () => undefined);
+  }
+  return n;
+}

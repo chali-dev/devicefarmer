@@ -11,7 +11,11 @@
  *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
  * - Retention (系统配置 → 日志, one form): log files, device history, audit log (env AUDIT_RETENTION_DAYS = default
  *   only), task logs (tasks.retention, null = keep), 风控记录, notifications (alerts.rules, one stored value):
- *   strict validation, defaults, single stored values, and 立即清理 runs every purge on seeded old rows with counts.
+ *   strict validation, defaults, single stored values, and POST /api/system/maintenance (the hourly purge) still deletes
+ *   by days on seeded old rows with counts.
+ * - 系统配置 → 日志 sizes (GET /api/system/log-sizes: shape, RBAC) and each row's 清除 = everything of that kind now
+ *   (seeded rows of today and older gone, unfinished tasks kept, log files gone / today's truncated + the ring emptied,
+ *   sizes drop, one audit row after clearing the audit log), then the hourly purge still by days.
  * - Admin-only routes (a user gets 403) and audit entries.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3104 npx tsx --env-file=../../.env scripts/sysadmin-check.ts
  */
@@ -84,6 +88,7 @@ if (!distinctive) console.log('  (DB password is part of the user/db name: check
 const leaks = (s: string) => (distinctive ? s.includes(dbPassword) : false) || s.includes(config.DATABASE_URL) || s.includes(`:${dbPassword}@`) || /PGPASSWORD=[^\s"]/.test(s);
 let userId = '';
 const fakeIds: string[] = [];
+const clearTaskIds: string[] = [];
 const backupIds: string[] = [];
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const before = (await http('GET', '/api/system/settings', T)).body?.settings;
@@ -165,17 +170,8 @@ try {
     && mKeep.body.result.auditDeleted >= 1 && mKeep.body.result.riskEventsDeleted >= 1 && mKeep.body.result.notificationsDeleted >= 1
     && ['logFilesDeleted', 'historyDeleted', 'tasksDeleted', 'taskLogsDeleted'].every((k) => k in mKeep.body.result), JSON.stringify(mKeep.body.result));
   check('立即清理: task logs at 3 days keep the 2-day-old finished task', await exists(schema.tasks, tOld!.id) && mKeep.body.result.tasksDeleted === 0);
-  // one row's 立即清理: only that kind
-  const [rOnly] = await db.insert(schema.riskEvents).values({ source: 'collector', code: `test.ret1_${tag}`, at: ago(7) }).returning();
-  const one = await http('POST', '/api/system/purge/risk', T);
-  check('row 立即清理 (purge/risk): only 风控记录 past retention deleted, the old audit row untouched, count returned',
-    one.status === 200 && one.body.result.deleted >= 1 && !(await exists(schema.riskEvents, rOnly!.id)) && await exists(schema.auditLogs, aNew!.id), JSON.stringify(one.body));
   const [pBad, pUser] = await Promise.all([http('POST', '/api/system/purge/nope', T), http('POST', '/api/system/purge/audit', U)]);
-  check('row 立即清理: unknown kind 400, user 403', pBad.status === 400 && pUser.status === 403, `${pBad.status} ${pUser.status}`);
-  const pTasks = await http('POST', '/api/system/purge/tasks', T);
-  check('row 立即清理 (purge/tasks) at 3 days: the 2-day-old task kept, deleted + logs counts', pTasks.status === 200 && pTasks.body.result.deleted === 0 && 'logs' in pTasks.body.result && await exists(schema.tasks, tOld!.id), JSON.stringify(pTasks.body));
-  const pFiles = await http('POST', '/api/system/purge/logs', T);
-  check('row 立即清理 (purge/logs): a number of files', pFiles.status === 200 && typeof pFiles.body.result.deleted === 'number', JSON.stringify(pFiles.body));
+  check('row 清除: unknown kind 400, user 403', pBad.status === 400 && pUser.status === 403, `${pBad.status} ${pUser.status}`);
   await http('PUT', '/api/system/settings', T, { taskRetentionDays: 1, auditRetentionDays: 10 });
   const mTasks = await http('POST', '/api/system/maintenance', T);
   check('立即清理: task logs past 1 day deleted; audit row now past 10 days deleted', !(await exists(schema.tasks, tOld!.id)) && mTasks.body.result.tasksDeleted >= 1
@@ -185,8 +181,6 @@ try {
     .orderBy(schema.auditLogs.at).then((rows) => rows.filter((x) => (x.detail as any)?.riskEventsRetentionDays === 5));
   check('audit: system.settings records the retention values', !!retAudit && (retAudit.detail as any).auditRetentionDays === 30 && (retAudit.detail as any).taskRetentionDays === 1, JSON.stringify(retAudit?.detail));
   const riskView = (await http('GET', '/api/risk/settings', T)).body;
-  const purgeAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.action, 'system.purge')));
-  check('audit: system.purge with the kind', purgeAudit.some((a) => (a.detail as any)?.kind === 'risk' && a.status === 200), JSON.stringify(purgeAudit.map((a) => [a.status, a.detail])));
   check('风控 settings report the 风控记录 retention from the setting', riskView.eventRetentionDays === 5, String(riskView.eventRetentionDays));
 
   // ---------------------------------------------------------------- backup now ×3 (keep 2)
@@ -436,9 +430,99 @@ try {
   check('audit: delete names the backup file', !!delEntry?.target?.endsWith('.dump'), JSON.stringify(delEntry));
   check('audit: refused user attempts recorded (403)', audit.some((a) => a.action === 'system.backup_create' && a.status === 403));
   check('no DB password in audit entries', !leaks(JSON.stringify(audit)));
+
+  // ---------------------------------------------------------------- 清除 (系统配置 → 日志): everything of a kind + sizes
+  const KINDS = ['logs', 'history', 'audit', 'tasks', 'risk', 'notifications'] as const;
+  const sz0 = await http('GET', '/api/system/log-sizes', T);
+  const S0 = sz0.body?.sizes;
+  check('sizes: every kind with bytes; files for logs, rows for the tables, unfinished for tasks', sz0.status === 200
+    && KINDS.every((k) => typeof S0?.[k]?.bytes === 'number') && typeof S0.logs.files === 'number' && S0.logs.files >= 1 && S0.logs.bytes > 0
+    && ['history', 'audit', 'tasks', 'risk', 'notifications'].every((k) => typeof S0[k].rows === 'number' && S0[k].bytes > 0) && typeof S0.tasks.unfinished === 'number', JSON.stringify(S0));
+  check('sizes: user 403, anonymous 401', (await http('GET', '/api/system/log-sizes', U)).status === 403 && (await http('GET', '/api/system/log-sizes', null)).status === 401);
+  const files0 = (await http('GET', '/api/system/logs/files', T)).body.files as any[];
+  check('sizes: logs = sum + count of the daily files', S0.logs.files === files0.length && S0.logs.bytes >= files0.reduce((a, f) => a + f.size, 0) - 65536, `${JSON.stringify(S0.logs)} ${JSON.stringify(files0)}`);
+  // seeded rows of today and long ago
+  const cTag = `test.clear_${tag}`;
+  await db.insert(schema.instanceStatusEvents).values([
+    { instanceId: D3.id, field: 'status', from: 'stopped', to: 'starting', status: 'starting', at: ago(0) },
+    { instanceId: D3.id, field: 'status', from: 'starting', to: 'stopped', status: 'stopped', at: ago(60) },
+  ]);
+  await db.insert(schema.riskEvents).values([{ source: 'collector', code: cTag, at: ago(0) }, { source: 'collector', code: cTag, at: ago(200) }]);
+  await db.insert(schema.notifications).values([
+    { userId: admin.id, kind: 'task.failed', severity: 'warning', params: {}, createdAt: ago(0) },
+    { userId: admin.id, kind: 'task.failed', severity: 'warning', params: {}, readAt: ago(100), createdAt: ago(100) },
+  ] as any);
+  await db.insert(schema.auditLogs).values([
+    { action: cTag, method: 'PUT', path: '/x', status: 200, ok: true, at: ago(0) },
+    { action: cTag, method: 'PUT', path: '/x', status: 200, ok: true, at: ago(300) },
+  ]);
+  const finished = await db.insert(schema.tasks).values([
+    { type: 'test.clear', status: 'success', finishedAt: ago(0), payload: {} },
+    { type: 'test.clear', status: 'failed', finishedAt: ago(100), payload: {} },
+    { type: 'test.clear', status: 'cancelled', finishedAt: ago(0), payload: {} },
+  ] as any).returning();
+  const unfinished = await db.insert(schema.tasks).values([
+    { type: 'test.clear', status: 'pending', payload: {} },
+    { type: 'test.clear', status: 'scheduled', runAt: new Date(Date.now() + 86_400_000), payload: {} },
+    { type: 'test.clear', status: 'running', startedAt: new Date(), payload: {} },
+  ] as any).returning();
+  clearTaskIds.push(...finished.map((x: any) => x.id), ...unfinished.map((x: any) => x.id));
+  await db.insert(schema.taskLogs).values([...finished, ...unfinished].flatMap((x: any) => [{ taskId: x.id, level: 'info' as const, message: 'a' }, { taskId: x.id, level: 'info' as const, message: 'b' }]));
+  const oldLog = path.resolve(config.LOG_DIR, 'api-2000-01-02.log');
+  fs.writeFileSync(oldLog, '{}\n'.repeat(1000));
+  const todayLog = path.resolve(config.LOG_DIR, `api-${today}.log`);
+  const count = async (tbl: string) => (await sqlClient.unsafe(`select count(*)::int as n from ${tbl}`))[0]!.n as number;
+
+  const cHist = await http('POST', '/api/system/purge/history', T);
+  check('清除 history: every device log row gone (today\'s too), count returned', cHist.status === 200 && cHist.body.result.deleted >= 2 && await count('instance_status_events') === 0, JSON.stringify(cHist.body));
+  const cRisk = await http('POST', '/api/system/purge/risk', T);
+  check('清除 risk: every 风控记录 gone, count returned', cRisk.status === 200 && cRisk.body.result.deleted >= 2 && await count('risk_events') === 0, JSON.stringify(cRisk.body));
+  const cNote = await http('POST', '/api/system/purge/notifications', T);
+  check('清除 notifications: every notification gone (unread of today too)', cNote.status === 200 && cNote.body.result.deleted >= 2 && await count('notifications') === 0, JSON.stringify(cNote.body));
+  const cTasks = await http('POST', '/api/system/purge/tasks', T);
+  const leftIds = (await db.select({ id: schema.tasks.id }).from(schema.tasks).where(inArray(schema.tasks.id, clearTaskIds))).map((x) => x.id);
+  const leftLogs = await db.select({ id: schema.taskLogs.id }).from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, clearTaskIds));
+  check('清除 tasks: every finished task + its logs gone (today\'s too), pending / scheduled / running kept with theirs', cTasks.status === 200
+    && cTasks.body.result.deleted >= 3 && cTasks.body.result.logs >= 6 && finished.every((x: any) => !leftIds.includes(x.id))
+    && unfinished.every((x: any) => leftIds.includes(x.id)) && leftLogs.length === 6, `${JSON.stringify(cTasks.body)} left ${leftIds.length} logs ${leftLogs.length}`);
+  const cLogs = await http('POST', '/api/system/purge/logs', T);
+  const ringAfter = await http('GET', `/api/system/logs?q=probe%3D${tag}&limit=50`, T);
+  check('清除 logs: old file deleted, today\'s truncated (count returned)', cLogs.status === 200 && cLogs.body.result.deleted >= 2 && !fs.existsSync(oldLog)
+    && fs.existsSync(todayLog) && !fs.readFileSync(todayLog, 'utf8').includes(`probe=${tag}`), JSON.stringify(cLogs.body));
+  check('清除 logs: the ring is empty of older lines (the earlier probe line gone)', ringAfter.status === 200 && ringAfter.body.entries.length === 0, JSON.stringify(ringAfter.body).slice(0, 300));
+  await fetch(`${API}/api/health?probe2=${tag}`);
+  const ring2 = await waitFor('new log line', async () => {
+    const r = await http('GET', `/api/system/logs?q=probe2%3D${tag}&limit=50`, T);
+    return r.body?.entries?.length ? r.body : null;
+  }, 10_000).catch(() => null);
+  check('清除 logs: lines written afterwards show up again (ring + today\'s file)', !!ring2 && fs.readFileSync(todayLog, 'utf8').includes(`probe2=${tag}`));
+  const S1 = (await http('GET', '/api/system/log-sizes', T)).body.sizes;
+  check('sizes after 清除: history / risk / notifications 0 rows and smaller, tasks only the unfinished ones, logs = today\'s file only',
+    ['history', 'risk', 'notifications'].every((k) => S1[k].rows === 0 && S1[k].bytes <= S0[k].bytes && S1[k].bytes <= 64 * 1024)
+    && S1.tasks.unfinished >= 3 && S1.tasks.rows - S1.tasks.unfinished <= 3 && S1.logs.files === 1 && S1.logs.bytes < 64 * 1024, JSON.stringify(S1));
+  console.log(`  sizes before ${JSON.stringify(S0)}\n  sizes after  ${JSON.stringify(S1)}`);
+  const cAudit = await http('POST', '/api/system/purge/audit', T);
+  await new Promise((r) => setTimeout(r, 500));
+  const auditLeft = await db.select().from(schema.auditLogs);
+  check('清除 audit: every row gone, then exactly the clear itself audited (system.purge, kind audit, deleted count)', cAudit.status === 200 && cAudit.body.result.deleted >= 2
+    && auditLeft.length === 1 && auditLeft[0]!.action === 'system.purge' && (auditLeft[0]!.detail as any)?.kind === 'audit' && (auditLeft[0]!.detail as any)?.deleted === cAudit.body.result.deleted, JSON.stringify(auditLeft));
+  const S2 = (await http('GET', '/api/system/log-sizes', T)).body.sizes;
+  console.log(`  audit after 清除: ${JSON.stringify(S2.audit)}`);
+  check('sizes: audit = 1 row, a few KB', S2.audit.rows === 1 && S2.audit.bytes <= 128 * 1024, JSON.stringify(S2.audit));
+  // the hourly purge (POST /api/system/maintenance) still deletes by days only
+  const [rKeep, rGone] = await db.insert(schema.riskEvents).values([{ source: 'collector', code: cTag, at: ago(0) }, { source: 'collector', code: cTag, at: ago(200) }]).returning();
+  const [kTask, gTask] = await db.insert(schema.tasks).values([
+    { type: 'test.clear', status: 'success', finishedAt: ago(0), payload: {} }, { type: 'test.clear', status: 'success', finishedAt: ago(100), payload: {} },
+  ] as any).returning();
+  clearTaskIds.push(kTask!.id, gTask!.id);
+  const mDays = await http('POST', '/api/system/maintenance', T);
+  check('hourly purge after the change: still by days (old risk row + old task gone, today\'s kept)', mDays.status === 200
+    && await exists(schema.riskEvents, rKeep!.id) && !(await exists(schema.riskEvents, rGone!.id)) && await exists(schema.tasks, kTask!.id) && !(await exists(schema.tasks, gTask!.id)), JSON.stringify(mDays.body.result));
 } catch (err) {
   check(`unexpected error: ${(err as Error).message}`, false);
 } finally {
+  if (clearTaskIds.length) await db.delete(schema.tasks).where(inArray(schema.tasks.id, clearTaskIds));
+  await db.delete(schema.riskEvents).where(like(schema.riskEvents.code, 'test.clear_%'));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
   if (userId) await http('DELETE', `/api/users/${userId}`, T);
   for (const id of backupIds) await http('DELETE', `/api/system/backups/${id}`, T);

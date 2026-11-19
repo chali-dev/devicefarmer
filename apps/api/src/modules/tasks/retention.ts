@@ -58,6 +58,11 @@ export interface CleanupResult { days: number | null; cutoff: string | null; tas
 export async function purgeTasks(days: number | null, now = new Date()): Promise<CleanupResult> {
   if (!days) return { days, cutoff: null, tasks: 0, logs: 0 };
   const cutoff = new Date(now.getTime() - days * 86_400_000);
+  return { days, cutoff: cutoff.toISOString(), ...(await deleteFinishedTasks(cutoff)) };
+}
+
+/** Deletes every eligible task finished before `cutoff` (系统配置 → 日志 清除 passes now: every finished task). */
+export async function deleteFinishedTasks(cutoff: Date): Promise<{ tasks: number; logs: number }> {
   let tasks = 0; let logs = 0;
   for (;;) {
     const ids = (await db.select({ id: schema.tasks.id }).from(schema.tasks).where(eligible(cutoff)).limit(BATCH)).map((r) => r.id);
@@ -68,7 +73,7 @@ export async function purgeTasks(days: number | null, now = new Date()): Promise
     tasks += deleted.length; logs += l?.n ?? 0;
     if (ids.length < BATCH) break;
   }
-  return { days, cutoff: cutoff.toISOString(), tasks, logs };
+  return { tasks, logs };
 }
 
 registerTaskHandler(CLEANUP_TYPE, {
