@@ -1749,7 +1749,7 @@ const en: Messages = {
       role_create: 'Add role',
       role_update: 'Update role',
       role_delete: 'Delete role',
-      settings_publish_retry: 'Change publish task settings',
+      settings_task_timeout: 'Change a task timeout',
       settings_media_limits: 'Change media upload limits',
       settings_task_cleanup: 'Run task cleanup',
       system_settings: 'Change system settings',
@@ -1915,13 +1915,32 @@ const en: Messages = {
     tabs: {
       data: 'Data',
       logRetention: 'Logs',
-      publishRetry: 'Publish tasks',
+      timeouts: 'Task timeouts',
       media: 'File uploads',
       storage: 'Storage',
       ai: 'AI',
     },
-    publishRetry: {
-      title: 'Publish tasks',
+    timeouts: {
+      min: 'min',
+      none: 'No limit',
+      default: 'Default {n} min',
+      defaultNone: 'Default: no limit',
+      types: {
+        publish: 'Post',
+        'comment-reply': 'Comment',
+        'account-device-sync': 'Sync account',
+        'account-device-check': 'Account check',
+        'feed-collect': 'Posts & comments',
+        'account-following': 'Following & followers',
+        'tracked-refresh': 'Tracked account',
+        'trending-refresh': 'Trending',
+        'media-process': 'Media processing',
+        'install-apk': 'Install app',
+        'import-app': 'Import app',
+        'push-asset': 'Push media',
+        'db-backup': 'Database backup',
+        'db-restore': 'Database import',
+      },
     },
     ai: {
       title: 'AI drafts (Anthropic)',
@@ -1935,9 +1954,6 @@ const en: Messages = {
       workspaceHint: 'A key created for all workspaces must name a workspace on every request, otherwise Anthropic answers 400. Copy it from the ID column in Claude Console → Settings → Workspaces (wrkspc_…); leave empty for a key scoped to one workspace.',
       model: 'Model',
       models: { 'claude-opus-5-5': 'Claude Opus 5.5 (default, best quality)', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-haiku-5-5': 'Claude Haiku 5.5 (cheapest, no refusal fallback)' },
-    },
-    publish: {
-      timeout: 'Timeout',
     },
     mediaLimits: {
       images: 'Images',
@@ -2729,6 +2745,8 @@ const en: Messages = {
     },
     settings: {
       storage_test_failed: 'Storage connection test failed, not saved: {error}',
+      task_timeout_unknown: 'Unknown task type',
+      task_timeout_range: 'Timeout must be {min}–{max} min',
       secret_required: 'Endpoint, bucket or access key changed; the Secret Access Key is required again',
     },
     social: {

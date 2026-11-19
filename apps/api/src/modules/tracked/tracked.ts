@@ -7,7 +7,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { PLATFORMS, platformDef, registerSource, type PostData, type SourceContext } from './platforms.js';
 import { youtubeSource } from './youtube.js';
 import { instagramDeviceSource } from './instagram-device.js';
-import { CollectorDefer } from './collector.js';
+import { CollectorDefer, lockFor } from './collector.js';
 import { phoneViews, type PhoneView } from './phone.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
 import { queueFeedAfter } from '../feed/collect.js';
@@ -242,7 +242,7 @@ registerTaskHandler<{ trackedAccountId: string; scheduled?: boolean; feed?: bool
       }
     }
     try {
-      const r = await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal, userId: ctx.task.createdBy });
+      const r = await refreshTrackedAccount(id, { log: ctx.log, signal: ctx.signal, userId: ctx.task.createdBy, lockMs: lockFor(ctx.task.timeoutMs) });
       if (!ctx.payload.feed || r.outcome !== 'refreshed') return r;
       return { ...r, feed: await queueFeedAfter('tracked', id, ctx.task.createdBy, ctx.task.id, ctx.log) };
     } catch (err) {

@@ -5,12 +5,14 @@
  *   held by a test-only trigger against the monitor (created and dropped by this script).
  *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
  *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
- * - No automatic publish retries (2026-11-18): every round is one attempt. 系统配置 → 发布任务 (`publish.timeout`) is
- *   set to 120 s for the run (strict: maxAttempts/backoffSec → 400, audit detail timeout only); distribute's maxAttempts
+ * - 系统配置 → 任务超时 (`tasks.timeouts`, 2026-11-19): the publish.timeout data migration (twice), GET defaults per type,
+ *   strict PUTs, unknown type 404, null = default, a new task takes the value (createTask), audit, old path 404; the
+ *   发帖 row is set to 2 min for the run.
+ * - No automatic publish retries (2026-11-18): every round is one attempt; distribute's maxAttempts
  *   is stripped (1 attempt); the POST …/retry endpoint is gone (404); the TikTok round on the offline phone fails once with publish.device_offline (1 attempt, no "will
  *   retry", no new round queued); 编辑后重新发布 = the content edited + distributed again to that account → a NEW
  *   publish task with the edited text (the failed one stays, no `republish` needed), the content status follows the
- *   newest task per account; a new round takes a changed timeout (300 s). The previous `publish.timeout` row is restored.
+ *   newest task per account; a new round takes a changed timeout (5 min). The previous timeout rows are restored.
  * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
  *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
@@ -24,8 +26,10 @@ import { promisify } from 'node:util';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
+import { cancelTask, closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type (for the idempotency checks below)
+import '../src/modules/media/media.js'; // registers media-process (任务超时 check)
+import { migrateTaskTimeouts } from '../src/db/task-timeouts-migration.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 import { withCaptcha } from './lib/login.js';
@@ -75,7 +79,8 @@ const ptIds = new Set<string>();
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
 // 发布任务 (timeout) for this run (restored in finally).
-const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, ['publish.timeout']));
+const TIMEOUT_KEYS = ['tasks.timeouts', 'publish.timeout', 'publish.retry'];
+const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
 async function waitStatus(token: string, id: string, statuses: string[], ms = 60_000) {
@@ -89,24 +94,62 @@ async function waitStatus(token: string, id: string, statuses: string[], ms = 60
 const contentStatus = async (token: string, id: string) => (await http('GET', `/api/contents/${id}`, token)).body.content.status as string;
 
 try {
-  // ---------------------------------------------------------------- 发布任务 setting (admin, strict; timeout only)
+  // ---------------------------------------------------------------- 任务超时 setting (admin, strict, one row per type)
   {
-    const bad = await Promise.all([{ timeoutSec: 59 }, { timeoutSec: 3601 }, { timeoutSec: 90.5 }, { timeoutSec: 120, extra: 1 }, { timeoutSec: '120' }, { maxAttempts: 'x', timeoutSec: 120 }]
-      .map((b) => http('PUT', '/api/settings/publish-retry', T, b)));
-    check('publish task setting: timeout 59/3601/fraction/string, unknown field, non-numeric legacy field → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
-    const ok = await http('PUT', '/api/settings/publish-retry', T, { timeoutSec: 120 });
-    check('publish task setting saved (timeout 120 s); no attempts/backoff in the response; default = env', ok.status === 200 && ok.body.retry.timeoutSec === 120 && ok.body.retry.timeoutMs === 120_000
-      && !('maxAttempts' in ok.body.retry) && !('backoffSec' in ok.body.retry) && !('maxAttempts' in ok.body.defaults)
-      && ok.body.defaults.timeoutMs === Number(process.env.PUBLISH_TIMEOUT_MS ?? 600_000), ok.text.slice(0, 300));
-    const old = await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 4, backoffSec: 2 });
-    const old2 = await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 7, backoffSec: 9, timeoutSec: 120 });
-    const after = await http('GET', '/api/settings/publish-retry', T);
-    check('the removed maxAttempts / backoffSec → 400 (strict), timeout kept', old.status === 400 && old2.status === 400 && after.body.retry.timeoutSec === 120, `${old.status} ${old2.status}`);
+    // data migration of the former 发布任务 setting: publish.timeout {timeoutSec} → tasks.timeouts.publish, rows deleted
+    await db.delete(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
+    await db.insert(schema.settings).values([{ key: 'publish.timeout', value: { timeoutSec: 240 } }, { key: 'publish.retry', value: { maxAttempts: 3, backoffSec: 60 } }]);
+    const m1 = await migrateTaskTimeouts(sqlClient);
+    const m2 = await migrateTaskTimeouts(sqlClient);
+    const rows = await db.select().from(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
+    check('data migration: publish.timeout 240 s → tasks.timeouts.publish 4 min, publish.timeout + publish.retry deleted, second run = no-op',
+      m1 && !m2 && rows.length === 1 && rows[0]!.key === 'tasks.timeouts' && JSON.stringify(rows[0]!.value) === JSON.stringify({ publish: 240_000 }), JSON.stringify(rows));
+    await db.delete(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
+
+    const g = await http('GET', '/api/settings/task-timeouts', T);
+    const by = Object.fromEntries((g.body?.items ?? []).map((i: any) => [i.type, i]));
+    const want: Record<string, number | null> = {
+      publish: Number(process.env.PUBLISH_TIMEOUT_MS ?? 600_000) / 60_000, 'comment-reply': 6, 'account-device-sync': 3, 'account-device-check': 3,
+      'feed-collect': 15, 'account-following': 20, 'tracked-refresh': 5, 'trending-refresh': 2, 'media-process': 15,
+      'install-apk': null, 'import-app': null, 'push-asset': null, 'db-backup': 60, 'db-restore': 180,
+    };
+    check('GET task timeouts: one row per type in order, defaults = the handlers\' values (install-apk etc. no limit), none custom',
+      g.status === 200 && Object.keys(by).join() === Object.keys(want).join() && Object.entries(want).every(([k, v]) => by[k].timeoutMin === v && by[k].defaultMin === v && by[k].custom === false)
+      && by['db-restore'].max === 1440 && by.publish.min === 1, g.text.slice(0, 400));
+    const bad = await Promise.all([{ timeoutMin: 0 }, { timeoutMin: 61 }, { timeoutMin: 1.5 }, { timeoutMin: '2' }, { timeoutMin: 2, extra: 1 }, {}]
+      .map((b) => http('PUT', '/api/settings/task-timeouts/publish', T, b)));
+    check('PUT strict: 0 / 61 (range 1–60) / fraction / string / unknown field / missing → 400', bad.every((x) => x.status === 400) && bad[0]!.body.code === 'settings.task_timeout_range'
+      && bad[1]!.body.params?.max === 60, bad.map((x) => `${x.status}:${x.body?.code}`).join(','));
+    const unk = await http('PUT', '/api/settings/task-timeouts/collection-schedule', T, { timeoutMin: 5 });
+    check('a type not in the list (scheduler) → 404 settings.task_timeout_unknown', unk.status === 404 && unk.body.code === 'settings.task_timeout_unknown', unk.text.slice(0, 160));
+    const fc = await http('PUT', '/api/settings/task-timeouts/feed-collect', T, { timeoutMin: 30 });
+    const fcBack = await http('PUT', '/api/settings/task-timeouts/feed-collect', T, { timeoutMin: null });
+    const fcRow = (x: any) => x.body.items.find((i: any) => i.type === 'feed-collect');
+    check('PUT feed-collect 30 → custom 30 (default 15); null → back to the default', fcRow(fc).timeoutMin === 30 && fcRow(fc).custom && fcRow(fc).defaultMin === 15
+      && fcRow(fcBack).timeoutMin === 15 && !fcRow(fcBack).custom, `${JSON.stringify(fcRow(fc))} ${JSON.stringify(fcRow(fcBack))}`);
+    const ia = await http('PUT', '/api/settings/task-timeouts/install-apk', T, { timeoutMin: 45 });
+    const iaRow = ia.body.items.find((i: any) => i.type === 'install-apk');
+    await http('PUT', '/api/settings/task-timeouts/install-apk', T, { timeoutMin: null });
+    check('install-apk (default no limit) can get a timeout: 45 min', iaRow.timeoutMin === 45 && iaRow.defaultMin === null && iaRow.custom, JSON.stringify(iaRow));
+    const ok = await http('PUT', '/api/settings/task-timeouts/publish', T, { timeoutMin: 2 });
+    const [stored] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'tasks.timeouts'));
+    check('PUT publish 2 min → stored as tasks.timeouts { publish: 120000 } only', ok.status === 200 && JSON.stringify(stored?.value) === JSON.stringify({ publish: 120_000 }), JSON.stringify(stored?.value));
+    // a newly created task of the type carries it (createTask in this process reads the same settings row)
+    const { task: mp } = await createTask({ type: 'media-process', label: `pc-timeout-${tag}`, payload: { assetId: '00000000-0000-0000-0000-000000000000' }, runAt: new Date(Date.now() + 3600_000), idempotencyKey: `pc-timeout-${tag}` });
+    await http('PUT', '/api/settings/task-timeouts/media-process', T, { timeoutMin: 7 });
+    await new Promise((res) => setTimeout(res, 5200)); // this process's 5 s cache of the row
+    const { task: mp2 } = await createTask({ type: 'media-process', label: `pc-timeout-${tag}`, payload: { assetId: '00000000-0000-0000-0000-000000000000' }, runAt: new Date(Date.now() + 3600_000), idempotencyKey: `pc-timeout2-${tag}` });
+    await http('PUT', '/api/settings/task-timeouts/media-process', T, { timeoutMin: null });
+    for (const x of [mp, mp2]) await cancelTask(x, null);
+    await sqlClient`delete from tasks where id in (${mp.id}, ${mp2.id})`;
+    check('createTask: a new media-process task takes the default 15 min, after PUT 7 min a new one takes 420000 ms', mp.timeoutMs === 900_000 && mp2.timeoutMs === 420_000, `${mp.timeoutMs} ${mp2.timeoutMs}`);
     await new Promise((res) => setTimeout(res, 1500));
-    const aus = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'settings.publish_retry'), gte(schema.auditLogs.at, t0), eq(schema.auditLogs.status, 200)))
+    const aus = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'settings.task_timeout'), gte(schema.auditLogs.at, t0), eq(schema.auditLogs.status, 200)))
       .orderBy(schema.auditLogs.at);
-    check('audit settings.publish_retry with timeoutSec only (no maxAttempts/backoffSec)', (aus[0]?.detail as any)?.timeoutSec === 120
-      && aus.every((a) => !('maxAttempts' in ((a.detail as any) ?? {})) && !('backoffSec' in ((a.detail as any) ?? {}))), JSON.stringify(aus.map((a) => a.detail)));
+    check('audit settings.task_timeout per PUT with type + minutes (target = type)', aus.some((a) => (a.detail as any)?.type === 'publish' && (a.detail as any)?.timeoutMin === 2 && a.target === 'publish')
+      && aus.some((a) => (a.detail as any)?.type === 'feed-collect' && (a.detail as any)?.timeoutMin === null), JSON.stringify(aus.map((a) => [a.target, a.detail])));
+    const gone = await http('GET', '/api/settings/publish-retry', T);
+    check('the former /api/settings/publish-retry is gone (404)', gone.status === 404, String(gone.status));
   }
   // ---------------------------------------------------------------- setup: users, placeholder devices, accounts, media
   const pw = randomBytes(12).toString('base64url');
@@ -116,6 +159,11 @@ try {
   }
   const [uA, uB] = userIds as [string, string];
   const A = await login(`pca${tag}`, pw);
+  {
+    const g = await http('GET', '/api/settings/task-timeouts', A);
+    const p = await http('PUT', '/api/settings/task-timeouts/publish', A, { timeoutMin: 30 });
+    check('task timeouts: a user gets 403 on GET and PUT', g.status === 403 && p.status === 403, `${g.status} ${p.status}`);
+  }
   const B = await login(`pcb${tag}`, pw);
   // The monitor marks container-less rows as error every 5 s. A test-only trigger keeps placeholder rows whose
   // image is PINNED "online" (running + adb device); it is dropped in `finally`.
@@ -521,7 +569,7 @@ try {
   check('content with a failed round shows it (not published everywhere)', ['partially_published', 'failed', 'scheduled'].includes(await contentStatus(A, cVid.id)));
   // Distribute again to the failed account → a NEW publish task. cVid is already published on YouTube, so it is LOCKED
   // (已发布的内容不能编辑, 2026-11-19): editing its texts is refused and the new task takes the content's own text.
-  await http('PUT', '/api/settings/publish-retry', T, { timeoutSec: 300 });
+  await http('PUT', '/api/settings/task-timeouts/publish', T, { timeoutMin: 5 });
   await db.update(schema.instances).set({ status: 'running', adbState: 'device', image: PINNED }).where(eq(schema.instances.id, DOFF.id));
   {
     const cur = (await http('GET', `/api/contents/${cVid.id}`, A)).body.content;
@@ -632,7 +680,7 @@ try {
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
-  await db.delete(schema.settings).where(inArray(schema.settings.key, ['publish.timeout']));
+  await db.delete(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
   if (prevRetryRows.length) await db.insert(schema.settings).values(prevRetryRows);
   // Users first: their contents, accounts, publish tasks and private media go with them.
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);

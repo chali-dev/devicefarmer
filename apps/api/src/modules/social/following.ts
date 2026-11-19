@@ -10,7 +10,7 @@ import { getInstance } from '../instances/repo.js';
 import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
-import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, classifyIgDump, dumpExcerpt, igDeviceAccounts, requireApp, screenProblem, visitIgScreen, type IgScreen, type UiNode } from '../tracked/instagram-device.js';
 import { autoCheckUnsupported } from './check.js';
 import { visibleAccount } from './social.js';
@@ -451,7 +451,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
         await risk(code, detail);
       });
       return { r: read, w: lw, followers: fol, profiles: prof };
-    }, { lockMs: TASK_TIMEOUT_MS, weight, what: 'following' }));
+    }, { lockMs: lockFor(ctx.task.timeoutMs, TASK_TIMEOUT_MS), weight, what: 'following' }));
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

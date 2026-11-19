@@ -6,6 +6,7 @@ import { migrateTaskStatuses } from './task-data-migration.js';
 import { migrateTelegramSettings } from './alert-channel-migration.js';
 import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
 import { migrateTrackedPhones } from './tracked-phone-migration.js';
+import { migrateTaskTimeouts } from './task-timeouts-migration.js';
 
 /**
  * Schema migrations plus the idempotent TS data migrations around them (`npm run db:migrate`). Also run by
@@ -22,4 +23,5 @@ export async function runMigrations(log: (msg: string) => void = console.log): P
   await migrateTelegramSettings(sqlClient);
   await migrateTrackedIgSchedule(sqlClient);
   await migrateTrackedPhones(sqlClient);
+  if (await migrateTaskTimeouts(sqlClient)) log('task timeouts: publish.timeout moved to tasks.timeouts');
 }

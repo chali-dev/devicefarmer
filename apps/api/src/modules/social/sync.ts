@@ -12,7 +12,7 @@ import { isUniqueViolation } from '../proxies/pool.js';
 import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
-import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
 import { queueFeedAfter } from '../feed/collect.js';
 import { queueFollowingAfter } from './following.js';
@@ -276,7 +276,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const offline = () => new HttpError(503, `设备 ${inst.name} 不在线`, 'account_sync.offline', { name: inst.name });
   let read: Read | { result: 'offline' };
   try {
-    read = await withDevice(inst, ctx.log, offline, (dev) => readOnDevice(dev, ctx, !!p.auto));
+    read = await withDevice(inst, ctx.log, offline, (dev) => readOnDevice(dev, ctx, !!p.auto), { lockMs: lockFor(ctx.task.timeoutMs) });
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (p.deferrals ?? 0) + 1;

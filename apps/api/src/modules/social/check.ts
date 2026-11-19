@@ -10,7 +10,7 @@ import { accountChecked } from '../notify/triggers.js';
 import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
-import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
 import { platformById } from './platforms.js';
 import { visibleAccount, writeLogs, type LogEntry } from './social.js';
@@ -179,7 +179,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const offline = () => new HttpError(503, `设备 ${inst.name} 不在线`, 'account_check.offline', { name: inst.name });
   let o: CheckOutcome;
   try {
-    o = await withDevice(inst, ctx.log, offline, (dev) => checkOnDevice(acc, dev, ctx), { what: 'check' });
+    o = await withDevice(inst, ctx.log, offline, (dev) => checkOnDevice(acc, dev, ctx), { what: 'check', lockMs: lockFor(ctx.task.timeoutMs) });
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

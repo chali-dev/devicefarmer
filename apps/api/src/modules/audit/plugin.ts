@@ -399,7 +399,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // settings
   // The key itself is never stored in the log.
   'PUT /api/settings/role-menus': { action: 'settings.role_menus', detail: ({ body }) => ({ menus: body.menus }) },
-  'PUT /api/settings/publish-retry': { action: 'settings.publish_retry', detail: ({ body }) => ({ timeoutSec: body.timeoutSec }) },
+  'PUT /api/settings/task-timeouts/:type': { action: 'settings.task_timeout', target: ({ params }) => String(params.type), detail: ({ params, body }) => ({ type: params.type, timeoutMin: body.timeoutMin }) },
   'PUT /api/settings/media-limits': {
     action: 'settings.media_limits', detail: ({ body }) => ({ imageMaxMb: body.imageMaxMb, videoMaxMb: body.videoMaxMb, allowedTypes: body.allowedTypes }),
   },
