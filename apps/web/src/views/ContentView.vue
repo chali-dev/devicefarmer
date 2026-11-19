@@ -150,22 +150,16 @@ async function loadLangs() { try { langCfg.value = await api<ContentLanguages>('
 const langOptions = computed(() => langCfg.value.languages.map((l) => ({ value: l, label: `${langName(l)} (${l})` })))
 onMounted(() => { void load(); void loadUsers(); void loadLangs(); void loadCategories(); void openFromQuery() })
 
-/**
- * 编辑后重新发布 (from a failed publish task: `?edit=<content>&account=<account>&postType=`): opens the content in the
- * editor; its 发布 / 排程发布 then preselects only that account (a NEW publish task with the edited texts and media).
- */
-const republishTo = ref<{ contentId: string; accountId: string; postType: PostType } | null>(null)
+/** `?edit=<content>` opens that content in the editor (older links may still carry `account` / `postType`: ignored). */
 async function openFromQuery() {
-  const { edit, account, postType, ...rest } = route.query
+  const { edit, account: _a, postType: _p, ...rest } = route.query
   if (typeof edit !== 'string') return
   void router.replace({ query: rest })
   try {
     const r = await api<{ content: Content }>('GET', `/api/contents/${edit}`)
     await openEdit(r.content)
-    if (typeof account === 'string') republishTo.value = { contentId: r.content.id, accountId: account, postType: (['feed', 'reel', 'story'].includes(String(postType)) ? postType : 'feed') as PostType }
   } catch (e) { message.error(errorText(e)) }
 }
-const republishHandle = computed(() => editorTasks.value.find((x) => x.accountId === republishTo.value?.accountId)?.account?.handle ?? null)
 
 const columns = computed(() => [
   { title: t('content.colTitle'), key: 'title', width: 260 },
@@ -373,11 +367,10 @@ function fillForm(c: Content | null) {
 const platformsReady = () => platforms.load().catch(() => undefined)
 async function openNew() {
   await platformsReady()
-  republishTo.value = null; editing.value = null; editorTasks.value = []; langTab.value = SRC; textTab.value = primary.value
+  editing.value = null; editorTasks.value = []; langTab.value = SRC; textTab.value = primary.value
   fillForm(null); fillTranslations([]); editorOpen.value = true
 }
 async function openEdit(c: Content) {
-  republishTo.value = null
   await platformsReady()
   editing.value = c
   langTab.value = SRC
@@ -507,7 +500,6 @@ const distributeMode = ref<'now' | 'at'>('now')
 function openDistribute(c: Content, mode: 'now' | 'at') { distributing.value = c; distributeMode.value = mode; distributeOpen.value = true }
 
 /** Already published or scheduled: no 发布 button in the row; publishing to more accounts stays under 更多. */
-const PUBLISHED_OR_SCHEDULED: string[] = ['published', 'partially_published', 'scheduled']
 
 async function setArchived(c: Content, archived: boolean) {
   try {
@@ -678,20 +670,11 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
-              <template v-if="record.stage !== 'archived'">
-                <a-button v-if="!PUBLISHED_OR_SCHEDULED.includes(record.status)" type="link" size="small" @click="openDistribute(record, 'now')">{{ t('content.publish') }}</a-button>
-              </template>
-              <a-button v-else type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
-              <a-dropdown>
-                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item v-if="record.stage !== 'archived' && PUBLISHED_OR_SCHEDULED.includes(record.status)" key="publish" @click="openDistribute(record, 'now')">{{ t('content.publishMore') }}</a-menu-item>
-                    <a-menu-item v-if="record.stage !== 'archived'" key="archive" :disabled="hasUnfinished(record)" @click="setArchived(record, true)">{{ t('content.archive') }}</a-menu-item>
-                    <a-menu-item key="delete" danger @click="remove(record)">{{ t('common.delete') }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
+              <a-button v-if="record.stage === 'archived'" type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
+              <a-tooltip v-else :title="hasUnfinished(record) ? t('content.archiveBlocked') : undefined">
+                <a-button type="link" size="small" :disabled="hasUnfinished(record)" @click="setArchived(record, true)">{{ t('content.archive') }}</a-button>
+              </a-tooltip>
+              <a-button type="link" size="small" danger @click="remove(record)">{{ t('common.delete') }}</a-button>
             </a-space>
           </template>
         </template>
@@ -709,7 +692,6 @@ async function submitBatchForm() {
         </div>
       </template>
     </a-alert>
-    <a-alert v-if="republishTo && republishTo.contentId === editing?.id" type="info" show-icon class="ai-notice" :message="t('content.republishTo', { handle: republishHandle ?? '—' })" />
     <a-row :gutter="24">
     <a-col :xs="24" :lg="15">
     <a-alert v-if="sourceLang && sourceLang !== SOURCE_LANG" type="info" show-icon class="lang-missing" :message="t('content.lang.legacySource', { lang: langName(sourceLang) })" />
@@ -826,7 +808,6 @@ async function submitBatchForm() {
             </div>
             </div>
             <template #actions>
-              <a v-if="item.status === 'failed' || item.status === 'cancelled'" @click="republishTo = { contentId: item.contentId, accountId: item.accountId, postType: item.postType }">{{ t('publish.editRepublish') }}</a>
               <a @click="router.push({ path: '/publish', query: { tab: 'queue', task: item.id } })">{{ t('common.view') }}</a>
             </template>
           </a-list-item>
@@ -859,8 +840,7 @@ async function submitBatchForm() {
   </a-drawer>
 
   <MediaPicker v-model:open="pickerOpen" :exclude="form.media.map((m) => m.id)" @pick="onPick" />
-  <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" :account-ids="republishTo && republishTo.contentId === distributing?.id ? [republishTo.accountId] : undefined"
-    :post-type="republishTo && republishTo.contentId === distributing?.id ? republishTo.postType : undefined" @done="republishTo = null; load()" />
+  <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" @done="load()" />
   <BatchPublishModal v-model:open="batchPublishOpen" :ids="batchPublishIds" :titles="batchTitles" @done="onBatchPublished" />
   <ScopedListManager v-model:open="categoryManagerOpen" path="/api/content-categories" list-key="categories" texts="content.categories" @changed="categoriesChanged" />
 </template>

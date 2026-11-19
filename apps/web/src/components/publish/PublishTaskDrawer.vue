@@ -4,13 +4,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { logText } from '../../api/logText'
 import { api, codeText, errorText } from '../../api/client'
 import { deviceListLink } from '../../api/query'
 import type { PublishAttempt, PublishLog, PublishRun, PublishTaskItem } from '../../api/types'
 import StatusTag from '../common/StatusTag.vue'
-import { confirmAction, confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
+import { confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
 import MediaStrip from '../content/MediaStrip.vue'
 import PlatformTextTabs from '../content/PlatformTextTabs.vue'
 import { textMax } from '../social/platformMeta'
@@ -29,7 +28,6 @@ import EvidenceModal from '../feed/EvidenceModal.vue'
 const props = defineProps<{ open: boolean; taskId: string | null }>()
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>()
 const { t } = useI18n()
-const router = useRouter()
 
 const task = ref<PublishTaskItem | null>(null)
 const logs = ref<PublishLog[]>([])
@@ -59,10 +57,6 @@ defineExpose({ reload: load })
 const s = computed(() => task.value?.status)
 const canCancel = computed(() => s.value === 'pending' || s.value === 'scheduled' || s.value === 'awaiting_operator')
 const canReschedule = computed(() => s.value === 'pending' || s.value === 'scheduled')
-// dry_run = a test-mode rehearsal left by an old colour (test mode removed 2026-11-18). send_uncertain = 分享 was
-// tapped but the post wasn't seen: it may be online, so publishing again needs a confirmation (and cancels this task).
-const uncertain = computed(() => s.value === 'awaiting_operator' && task.value?.errorCode === 'publish.send_uncertain')
-const canRepublish = computed(() => !!task.value?.content && (s.value === 'failed' || s.value === 'cancelled' || s.value === 'dry_run' || uncertain.value))
 const evidenceOpen = ref(false)
 const canOutcome = computed(() => s.value === 'awaiting_operator')
 const errorMsg = computed(() => (task.value?.errorCode ? codeText(task.value.errorCode, undefined, task.value.error ?? task.value.errorCode) : null))
@@ -75,22 +69,6 @@ function cancel() {
   confirmDanger({
     title: t('publish.cancelConfirm'), okText: t('publish.cancel'),
     onOk: () => act(() => api('POST', `/api/publish/tasks/${task.value!.id}/cancel`), t('publish.cancelled')),
-  })
-}
-
-function goEdit() {
-  const tk = task.value!
-  emit('update:open', false)
-  void router.push({ path: '/content', query: { edit: tk.contentId, account: tk.accountId, postType: tk.postType } })
-}
-function editRepublish() {
-  if (!uncertain.value) { goEdit(); return }
-  confirmAction({
-    title: t('publish.uncertainTitle'), content: t('publish.uncertainConfirm'), okText: t('publish.uncertainOk'),
-    onOk: async () => {
-      busy.value = true
-      try { await api('POST', `/api/publish/tasks/${task.value!.id}/cancel`); emit('changed'); goEdit() } catch (e) { message.error(errorText(e)) } finally { busy.value = false }
-    },
   })
 }
 
@@ -168,7 +146,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-button v-if="task.hasEvidence" @click="evidenceOpen = true">{{ t('publish.evidence') }}</a-button>
           <a-button v-if="canReschedule && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
           <a-button v-if="canReschedule" :disabled="busy" @click="openTime">{{ t('publish.reschedule') }}</a-button>
-          <a-button v-if="canRepublish" :type="uncertain ? 'default' : 'primary'" :disabled="busy" @click="editRepublish">{{ t('publish.editRepublish') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
         </a-space>
         <a-alert v-if="canOutcome" type="warning" show-icon :message="t('publish.operatorHint')" style="margin-bottom: 16px">
