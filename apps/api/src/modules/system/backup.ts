@@ -9,7 +9,7 @@ import { db, schema } from '../../db/index.js';
 import type { DbBackup } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { activeStorage, storageFor } from '../settings/storage.js';
-import { createTask, registerTaskHandler, TaskError } from '../tasks/core.js';
+import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { redactText } from './logs.js';
 import { getSystemSettings } from './settings.js';
 
@@ -18,26 +18,32 @@ import { getSystemSettings } from './settings.js';
  * `${PG_DUMP_CMD} --format=custom --compress=6` against DATABASE_URL into a temp file, checks the
  * custom-format magic (PGDMP), stores it through the active storage backend under `backups/` and keeps
  * the newest N successful backups. The password reaches the child only through PGPASSWORD (never argv,
- * task payload, logs or audit). Restore is manual (CLAUDE.md).
+ * task payload, logs or audit). 导入 (restore from one of them) is restore.ts.
  */
 
 export const BACKUP_TYPE = 'db-backup';
-const MAGIC = Buffer.from('PGDMP');
+export const MAGIC = Buffer.from('PGDMP');
 
-function dumpCommand() {
+/** Connection of DATABASE_URL as pg_* arguments; the password only in the env (PGPASSWORD). */
+export function pgConnection() {
   const u = new URL(config.DATABASE_URL);
-  const [cmd, ...pre] = config.PG_DUMP_CMD.trim().split(/\s+/);
   const dbName = decodeURIComponent(u.pathname.slice(1));
-  const env: NodeJS.ProcessEnv = { ...process.env, PGPASSWORD: decodeURIComponent(u.password) };
+  const password = decodeURIComponent(u.password);
+  const env: NodeJS.ProcessEnv = { ...process.env, PGPASSWORD: password };
   const sslmode = u.searchParams.get('sslmode');
   if (sslmode) env.PGSSLMODE = sslmode;
-  const args = [...pre, '--format=custom', '--compress=6', '--no-password',
-    '--host', u.hostname, '--port', u.port || '5432', '--username', decodeURIComponent(u.username), '--dbname', dbName];
-  return { cmd: cmd!, args, env, dbName, password: decodeURIComponent(u.password) };
+  const args = ['--no-password', '--host', u.hostname, '--port', u.port || '5432', '--username', decodeURIComponent(u.username), '--dbname', dbName];
+  return { args, env, dbName, password };
+}
+
+function dumpCommand() {
+  const [cmd, ...pre] = config.PG_DUMP_CMD.trim().split(/\s+/);
+  const c = pgConnection();
+  return { cmd: cmd!, args: [...pre, '--format=custom', '--compress=6', ...c.args], env: c.env, dbName: c.dbName, password: c.password };
 }
 
 /** Error text from the child, with the password (should it ever appear) and secret-looking parts removed. */
-function scrub(s: string, password: string): string {
+export function scrub(s: string, password: string): string {
   return redactText(password ? s.split(password).join('***') : s).trim().slice(0, 1000);
 }
 
@@ -87,38 +93,46 @@ export async function applyBackupKeep(keep: number): Promise<number> {
   return old.length;
 }
 
+export type BackupTrigger = 'manual' | 'scheduled' | 'pre-restore';
+
+/**
+ * One backup into the active storage: a `db_backups` row (running → ok | failed) owned by the task that runs it.
+ * `keep` false skips the retention: the safety backup before a restore must never delete the backup being restored.
+ */
+export async function takeBackup(ctx: TaskContext<unknown>, trigger: BackupTrigger, keep = true) {
+  const storage = await activeStorage();
+  const { dbName } = dumpCommand();
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const key = `backups/${dbName.replace(/[^\w-]/g, '_')}-${stamp}.dump`;
+  const [row] = await db.insert(schema.dbBackups).values({
+    trigger, storage: storage.kind, key, taskId: ctx.task.id, createdBy: ctx.task.createdBy,
+  }).returning();
+  const tmp = path.join(os.tmpdir(), `cloudphone-backup-${randomUUID()}.dump`);
+  try {
+    await ctx.log('info', `pg_dump of ${dbName} started`, { backupId: row!.id });
+    await runDump(tmp, ctx.signal);
+    const { size } = await fs.promises.stat(tmp);
+    await storage.put(key, tmp, size, 'application/octet-stream');
+    await db.update(schema.dbBackups).set({ status: 'ok', size, finishedAt: new Date() }).where(eq(schema.dbBackups.id, row!.id));
+    await ctx.log('info', `backup stored (${size} bytes)`, { backupId: row!.id, storage: storage.kind, key });
+    const removed = keep ? await applyBackupKeep((await getSystemSettings()).backup.keep) : 0;
+    if (removed) await ctx.log('info', `deleted ${removed} old backups`, { removed });
+    return { backupId: row!.id, storage: storage.kind, key, size, removed };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db.update(schema.dbBackups).set({ status: 'failed', error: msg.slice(0, 1000), finishedAt: new Date() }).where(eq(schema.dbBackups.id, row!.id));
+    throw err;
+  } finally {
+    await fs.promises.unlink(tmp).catch(() => undefined);
+  }
+}
+
 registerTaskHandler<{ trigger?: 'manual' | 'scheduled' }>(BACKUP_TYPE, {
   queue: 'system-ops',
   concurrency: 1,
   timeoutMs: 60 * 60_000,
   maxAttempts: 1,
-  async run(ctx) {
-    const storage = await activeStorage();
-    const { dbName } = dumpCommand();
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const key = `backups/${dbName.replace(/[^\w-]/g, '_')}-${stamp}.dump`;
-    const [row] = await db.insert(schema.dbBackups).values({
-      trigger: ctx.payload.trigger === 'scheduled' ? 'scheduled' : 'manual', storage: storage.kind, key, taskId: ctx.task.id, createdBy: ctx.task.createdBy,
-    }).returning();
-    const tmp = path.join(os.tmpdir(), `cloudphone-backup-${randomUUID()}.dump`);
-    try {
-      await ctx.log('info', `pg_dump of ${dbName} started`, { backupId: row!.id });
-      await runDump(tmp, ctx.signal);
-      const { size } = await fs.promises.stat(tmp);
-      await storage.put(key, tmp, size, 'application/octet-stream');
-      await db.update(schema.dbBackups).set({ status: 'ok', size, finishedAt: new Date() }).where(eq(schema.dbBackups.id, row!.id));
-      await ctx.log('info', `backup stored (${size} bytes)`, { backupId: row!.id, storage: storage.kind, key });
-      const removed = await applyBackupKeep((await getSystemSettings()).backup.keep);
-      if (removed) await ctx.log('info', `deleted ${removed} old backups`, { removed });
-      return { backupId: row!.id, storage: storage.kind, key, size, removed };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await db.update(schema.dbBackups).set({ status: 'failed', error: msg.slice(0, 1000), finishedAt: new Date() }).where(eq(schema.dbBackups.id, row!.id));
-      throw err;
-    } finally {
-      await fs.promises.unlink(tmp).catch(() => undefined);
-    }
-  },
+  run: (ctx) => takeBackup(ctx, ctx.payload.trigger === 'scheduled' ? 'scheduled' : 'manual'),
 });
 
 export async function startBackup(userId: string) {

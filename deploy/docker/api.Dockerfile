@@ -50,10 +50,10 @@ RUN --mount=type=cache,target=/root/.npm npm ci --workspace @cloudphone/api --om
 
 # ---- runtime ----
 FROM ${NODE_IMAGE}
-# ssh: BitBrowser adb tunnels; pg_dump 17 (= Postgres major in deploy/compose.shared.yml): backups;
+# ssh: BitBrowser adb tunnels; pg_dump + pg_restore 17 (= Postgres major in deploy/compose.shared.yml): backups + 导入;
 # ffmpeg/ffprobe: media processing; procps: pkill of stale tunnels; tini: PID 1 reaps ssh children.
 RUN apk add --no-cache openssh-client-default postgresql17-client ffmpeg procps-ng tini \
-  && pg_dump --version && ffprobe -version | head -1 && ssh -V
+  && pg_dump --version && pg_restore --version && ffprobe -version | head -1 && ssh -V
 WORKDIR /app/apps/api
 COPY --from=prod-deps --chown=root:root /app/node_modules /app/node_modules
 COPY --chown=root:root package.json /app/package.json

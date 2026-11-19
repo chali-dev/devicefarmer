@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import { assertInstanceAccess } from '../auth/rbac.js';
 import { deleteBackup, listBackups, openBackup, startBackup } from './backup.js';
+import { startRestore } from './restore.js';
 import { connectionPanel, deviceHistory, deviceLogs } from './connections.js';
 import { LEVELS, listLogFiles, readLogs, type LevelName } from './logs.js';
 import { getRules, LIMITS as ALERT_LIMITS, saveRules } from '../notify/rules.js';
@@ -70,6 +71,14 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
       .header('cache-control', 'no-store');
     if (backup.size !== null) reply.header('content-length', String(backup.size));
     return reply.send(stream);
+  });
+
+  /** 导入: replaces the whole database with this backup (task db-restore, safety backup first; restore.ts). */
+  app.post('/api/system/backups/:id/restore', { ...admin, schema: { params: IdParam } }, async (req, reply) => {
+    const { task, backup } = await startRestore(req.user.id, req.params.id);
+    if (req.audit) { req.audit.target = path.basename(backup.key); req.audit.extra = { taskId: task.id, backupId: backup.id }; }
+    reply.code(202);
+    return { task: { id: task.id, status: task.status } };
   });
 
   app.delete('/api/system/backups/:id', { ...admin, schema: { params: IdParam } }, async (req, reply) => {
