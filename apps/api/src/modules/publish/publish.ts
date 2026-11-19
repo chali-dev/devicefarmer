@@ -1,5 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
@@ -293,7 +293,14 @@ export async function editPublish(user: AuthUser, row: PublishTask, b: { title?:
   const media = await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, row.mediaIds.length ? row.mediaIds : ['00000000-0000-0000-0000-000000000000']));
   const bad = validateForPlatform(row.platform, row.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m): m is MediaAsset => !!m), next);
   if (bad) throw badRequest(bad.message, bad.code, bad.params);
-  const [done] = await db.update(pt).set({ title: next.title, caption: next.caption, hashtags: next.hashtags, options: next.options })
+  // 防并发: only the fields this request changes are written (options merged in SQL), so two edits of different fields
+  // at the same time (two tabs) both survive.
+  const set: Omit<Partial<typeof pt.$inferInsert>, 'options'> & { options?: SQL } = { updatedAt: new Date() };
+  if (b.title !== undefined) set.title = next.title;
+  if (b.caption !== undefined || noText) set.caption = next.caption;
+  if (b.hashtags !== undefined || noText) set.hashtags = next.hashtags;
+  if (b.options) set.options = sql`${pt.options} || ${JSON.stringify(b.options)}::jsonb`;
+  const [done] = await db.update(pt).set(set)
     .where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
   if (!done) throw conflict('任务状态已变化', 'publish.bad_status', { status: 'changed' });
   await publishLog(done, 'info', 'edited', { fields: Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined) }, user);

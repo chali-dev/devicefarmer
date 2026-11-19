@@ -190,6 +190,9 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   app.delete('/api/personas/:id', { schema: { params: Id } }, async (req, reply) => {
     const p = await manageablePersona(req.user, req.params.id);
     await db.transaction(async (tx) => {
+      // 防并发: the persona row first (范例 create locks it too, comments/routes.ts assertExampleRoom), so a 范例 written
+      // at the same time is either deleted with it or refused, never left behind without its persona (FK set null).
+      await tx.select({ id: P.id }).from(P).where(eq(P.id, p.id)).for('update');
       const moved = await tx.delete(TPL).where(eq(TPL.personaId, p.id)).returning({ id: TPL.id });
       const accounts = await tx.update(SA).set({ personaId: null }).where(eq(SA.personaId, p.id)).returning({ id: SA.id });
       await logAccountPersona(tx, req.user, accounts.map((a) => a.id), p.name, null, 'persona deleted');

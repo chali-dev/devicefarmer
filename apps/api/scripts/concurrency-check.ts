@@ -253,6 +253,20 @@ try {
     const unfinished = await db.select().from(PT).where(and(eq(PT.contentId, c1), inArray(PT.status, [...UNFINISHED])));
     check('re-distribute ×10 after cancel → exactly 1 new unfinished task', unfinished.length === 1 && count(rp, 201) === 1, `${unfinished.length} ${statuses(rp)}`);
 
+    // 发布任务 编辑 from two tabs at once (title in one, caption in the other): both survive
+    let lost = '';
+    for (let r = 0; r < 6 && !lost; r++) {
+      const es = await Promise.all([
+        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { title: `T${r}` }),
+        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { caption: `C${r}` }),
+        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { hashtags: [`h${r}`] }),
+      ]);
+      const [x] = await db.select().from(PT).where(eq(PT.id, unfinished[0]!.id));
+      if (es.some((e) => e.status !== 200)) lost = `round ${r}: ${statuses(es)} ${es.find((e) => e.status !== 200)?.text}`;
+      else if (x!.title !== `T${r}` || x!.caption !== `C${r}` || x!.hashtags.join() !== `h${r}`) lost = `round ${r}: ${x!.title} / ${x!.caption} / ${x!.hashtags.join()}`;
+    }
+    check('publish task PATCH of title / caption / hashtags at once ×6 → all three survive', !lost, lost);
+
     // B5: 批量发布 ×10 at once over 3 contents with 2 targets each → one task per content + account
     const bc = [await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2])];
     const br = await Promise.all(Array.from({ length: 10 }, () => http('POST', '/api/contents/batch', A.token, { ids: bc, action: 'publish', scheduledAt: future(5) })));
@@ -408,6 +422,20 @@ try {
     const names = copies.map((x) => x.body?.persona?.name as string);
     check('复制到我的人设 ×12 at once → 12 personas with distinct 副本 names', copies.every((x) => x.status === 201) && new Set(names).size === 12,
       `${statuses(copies)} ${codes(copies)} ${names.join(' | ')}`);
+    // 人设 delete racing 范例 create: no 5xx, no template left on a deleted persona
+    const tr: { status: number; text: string }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const p = (await http('POST', '/api/personas', U.token, { scope: 'mine', name: `cc删人设${tag}${i}` })).body.persona.id as string;
+      tr.push(...await Promise.all([
+        http('DELETE', `/api/personas/${p}`, U.token),
+        ...Array.from({ length: 4 }, (_, k) => http('POST', '/api/comment-templates', U.token, { personaId: p, kind: 'post', name: `t${k}`, text: `范例 ${k}` })),
+      ]));
+    }
+    const orphans = await db.select().from(schema.commentTemplates).where(and(eq(schema.commentTemplates.userId, U.id), sql`${schema.commentTemplates.name} in ('t0','t1','t2','t3')`,
+      sql`(${schema.commentTemplates.personaId} is null or not exists (select 1 from personas p where p.id = ${schema.commentTemplates.personaId}))`));
+    check('人设 delete racing 范例 create ×6 → every delete 204, no 5xx, no template left without its persona', tr.every((x) => x.status < 500) && !orphans.length
+      && tr.filter((_, i) => i % 5 === 0).every((x) => x.status === 204),
+      `${orphans.length} orphans; ${statuses(tr)} ${tr.filter((x) => x.status >= 300).map((x) => x.text.slice(0, 100)).join(' | ')}`);
     const ccname = `cc分类${tag}`;
     await one('内容分类 create (same name, case variants)', 12, () => http('POST', '/api/content-categories', U.token, { scope: 'mine', name: Math.random() < 0.5 ? ccname : ccname.toUpperCase() }), 'content_category.exists',
       () => n(db.select().from(schema.contentCategories).where(sql`lower(${schema.contentCategories.name}) = lower(${ccname})`)));
