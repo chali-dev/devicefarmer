@@ -87,8 +87,18 @@ async function syncEnded(id: string) {
   } catch (e) { message.error(errorText(e)) }
   void loadFollowing()
 }
+/**
+ * Every account-following task of this account counts, not only the tab's own 同步: step 3 of the row's 同步 button
+ * and scheduled reads are queued elsewhere (owner 2026-11-19 「关注有6个 没有数据录入」: the list was stored, the
+ * opened tab never reloaded). A queued one is followed like the tab's own; one that ends reloads the list.
+ */
 const off = store.onTaskEvent((ev) => {
-  if (ev.type === 'task.updated' && ev.task.id === syncTask.value && ['success', 'failed', 'cancelled'].includes(ev.task.status)) void syncEnded(ev.task.id)
+  if (ev.type !== 'task.updated') return
+  const ended = ['success', 'failed', 'cancelled'].includes(ev.task.status)
+  if (ev.task.id === syncTask.value) { if (ended) void syncEnded(ev.task.id); return }
+  if (ev.task.type !== 'account-following' || ev.task.refId !== props.account.id) return
+  if (!ended) { if (!syncTask.value) syncTask.value = ev.task.id }
+  else if (fw.value) void loadFollowing()
 })
 onBeforeUnmount(off)
 
