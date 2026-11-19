@@ -55,13 +55,13 @@ const stateOptions = computed(() => [
   { value: 'gone', label: t('social.audience.stateGone') },
 ])
 const columns = computed(() => [
-  { title: t('social.audience.colAccount'), key: 'handle', ellipsis: true },
-  { title: t('social.audience.colName'), key: 'displayName', ellipsis: true },
-  { title: t('social.audience.colFollowers'), key: 'followers', width: 96, align: 'right' as const },
-  { title: t('social.audience.colFollowing'), key: 'following', width: 96, align: 'right' as const },
+  { title: t('social.audience.colAccount'), key: 'handle', width: 240, ellipsis: true },
+  { title: t('social.audience.colName'), key: 'displayName', width: 180, ellipsis: true },
+  { title: t('social.audience.colFollowers'), key: 'followers', width: 90, align: 'center' as const },
+  { title: t('social.audience.colFollowing'), key: 'following', width: 90, align: 'center' as const },
   ...(isFollowers.value
-    ? [{ title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 190 }]
-    : [{ title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 180 }, { title: t('social.audience.colStatus'), key: 'status', width: 200 }]),
+    ? [{ title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 180 }]
+    : [{ title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 180 }, { title: t('social.audience.colStatus'), key: 'status', width: 120 }]),
   { title: '', key: 'open', width: 56, align: 'center' as const },
 ])
 /** A listed account's counter as read from its profile: ≈ when the app abbreviated it, — when unknown. */
