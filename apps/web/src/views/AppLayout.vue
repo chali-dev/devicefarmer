@@ -283,6 +283,9 @@ async function savePassword() {
   background: var(--cp-bg-container); border-bottom: 1px solid var(--cp-border-secondary);
 }
 .crumbs { min-width: 0; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }
+/* Links in the breadcrumb are clearly links (owner 2026-11-19 「显示明显一点；用蓝色的」). */
+.crumbs :deep(.link a) { color: var(--cp-primary); font-weight: 500; }
+.crumbs :deep(.link a:hover) { color: var(--cp-primary); text-decoration: underline; background: transparent; }
 .spacer { flex: 1; }
 .user-trigger {
   display: inline-flex; align-items: center; gap: 8px; color: inherit; cursor: pointer;
