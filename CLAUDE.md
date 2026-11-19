@@ -138,6 +138,7 @@ The API is the only thing browsers talk to. It enforces RBAC and relays STF; STF
   | 内容管理 `/content` | 管理员 / 一般用户 | status tabs, phone preview, 批量 发布 / 删除 / 归档 … |
   | 排程发布 `/publish` | 管理员 / 一般用户 | week calendar, drag to reschedule, today / queue / history |
 
+  **历史路由** (owner 2026-11-19, `components/common/VisitedPages.vue`, one line in `AppLayout.vue` under the header): the last 10 pages the router landed on (redirects / old paths / the catch-all never land, login is outside the layout), one tag per path with the latest full URL (query kept), a path with a param (`/instances/:id`, `/social/accounts/:id`) is its own tag labelled with the breadcrumb's last label; tags keep their place, over 10 the least recently visited goes; × closes (closing the current one opens the most recent other, else `/dashboard`), 清空 keeps the current; localStorage `cp.visited.<userId>` (try/catch), removed on logout / another user's login.
   仪表板 stays on top. The admin part (owner's spec of 2026-11-18, replacing the single 系统管理 group) is three groups:
   | 组 | 菜单 | 内容 |
   |---|---|---|

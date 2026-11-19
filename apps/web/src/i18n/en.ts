@@ -118,6 +118,11 @@ const en: Messages = {
     expandMenu: 'Expand menu',
     notifications: 'Notification center',
   },
+  visited: {
+    title: 'Recently visited',
+    close: 'Close {name}',
+    clear: 'Clear',
+  },
   profile: {
     displayName: 'Display name',
     displayNamePlaceholder: 'Leave empty to show the username',

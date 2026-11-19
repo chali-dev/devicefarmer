@@ -10,6 +10,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import NotificationBell from '../components/notify/NotificationBell.vue'
+import VisitedPages from '../components/common/VisitedPages.vue'
 import { roleText } from '../api/types'
 import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { isDark, setThemeMode } from '../theme'
@@ -225,6 +226,7 @@ async function savePassword() {
           </template>
         </a-dropdown>
       </a-layout-header>
+      <VisitedPages :label="crumbs[crumbs.length - 1]?.label" />
       <a-layout-content class="content">
         <router-view />
       </a-layout-content>

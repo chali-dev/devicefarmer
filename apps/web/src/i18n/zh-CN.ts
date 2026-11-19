@@ -119,6 +119,11 @@ const zhCN = {
     expandMenu: '展开菜单',
     notifications: '通知中心',
   },
+  visited: {
+    title: '最近访问',
+    close: '关闭 {name}',
+    clear: '清空',
+  },
   profile: {
     displayName: '显示名称',
     displayNamePlaceholder: '留空则显示用户名',
