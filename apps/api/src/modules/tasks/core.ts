@@ -6,6 +6,7 @@ import { db, schema } from '../../db/index.js';
 import { TASK_FINAL, type Task, type TaskLog, type TaskStatus } from '../../db/schema.js';
 import { conflict } from '../../lib/errors.js';
 import { events } from '../../lib/events.js';
+import { withMutex } from '../../lib/locks.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { publicTask, updateTask } from '../instances/repo.js';
 
@@ -245,15 +246,20 @@ export async function retryTask(task: Task, user: AuthUser): Promise<Task> {
   const h = handlers.get(task.type);
   if (task.status !== 'failed' && task.status !== 'cancelled') throw conflict('只能重试失败或已取消的任务', 'tasks.not_retryable_status', { status: task.status });
   if (!h || h.retryable === false) throw conflict('该类型的任务不能重试', 'tasks.not_retryable', { type: task.type });
-  await h.beforeRetry?.(task, user);
-  const { task: created } = await createTask({
-    type: task.type, userId: user.id,
-    instance: task.instanceId ? { id: task.instanceId, name: task.instanceName ?? '' } : null,
-    label: task.instanceName, refType: task.refType, refId: task.refId,
-    payload: task.payload ?? {}, maxAttempts: task.maxAttempts, timeoutMs: task.timeoutMs, backoffMs: task.backoffMs, priority: task.priority, retryOf: task.id,
+  // 防并发: a double click / two tabs on 重试 get the same new task while it is unfinished (never runs the work twice).
+  return withMutex(`task-retry:${task.id}`, async () => {
+    const [open] = await db.select().from(schema.tasks).where(and(eq(schema.tasks.retryOf, task.id), inArray(schema.tasks.status, NON_FINAL))).limit(1);
+    if (open) return open;
+    await h.beforeRetry?.(task, user);
+    const { task: created } = await createTask({
+      type: task.type, userId: user.id,
+      instance: task.instanceId ? { id: task.instanceId, name: task.instanceName ?? '' } : null,
+      label: task.instanceName, refType: task.refType, refId: task.refId,
+      payload: task.payload ?? {}, maxAttempts: task.maxAttempts, timeoutMs: task.timeoutMs, backoffMs: task.backoffMs, priority: task.priority, retryOf: task.id,
+    });
+    await taskLog(task, 'info', 'retried as a new task', { newTaskId: created.id, by: user.username });
+    return created;
   });
-  await taskLog(task, 'info', 'retried as a new task', { newTaskId: created.id, by: user.username });
-  return created;
 }
 
 // ---------------------------------------------------------------- worker

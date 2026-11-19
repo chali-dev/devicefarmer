@@ -130,6 +130,19 @@ async function blocked(r: { accountId: string; commentId?: string | null; commen
   return err;
 }
 
+/**
+ * A rule block decided inside a transaction that holds a lock. Thrown there without touching the DB; `settleBlock`
+ * logs it (blocked) once the transaction has ended: the log must survive the rollback, and writing it through a second
+ * pooled connection while parallel requests wait on the lock (each holding a connection) could starve the pool.
+ */
+class PendingBlock extends Error {
+  constructor(readonly r: Parameters<typeof blocked>[0], readonly actor: AuthUser | null, readonly err: ReturnType<typeof conflict>, readonly data?: Record<string, unknown>) { super(err.message); }
+}
+async function settleBlock(err: unknown): Promise<never> {
+  if (err instanceof PendingBlock) throw await blocked(err.r, err.actor, err.err, err.data);
+  throw err;
+}
+
 // ---------------------------------------------------------------- visibility
 
 export async function visibleComment(user: AuthUser, id: string, exec: Exec = db): Promise<Comment> {
@@ -221,6 +234,17 @@ const isUnique = (err: unknown) => {
   return e.code === '23505' || e.cause?.code === '23505';
 };
 
+/**
+ * 防并发: the sending account's row FOR SHARE in the writing transaction, returning its current owner (a reply row
+ * belongs to the account's owner). A parallel 分配 (social/assign.ts moveDeviceAccounts, FOR UPDATE) either waits for
+ * the new draft (then refuses: instances.assign_account_busy) or has moved the account before it is read here.
+ */
+async function lockedAccountOwner(tx: Tx, user: AuthUser, accountId: string, notFoundErr: () => Error): Promise<string> {
+  const [a] = await tx.select({ userId: schema.socialAccounts.userId }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId)).for('share');
+  if (!a || (!isAdmin(user) && a.userId !== user.id)) throw notFoundErr();
+  return a.userId;
+}
+
 /** Duplicate-text rule: throws (and logs) when the same text was already used `duplicateMax` times in the window. */
 async function assertNotDuplicate(tx: Tx, actor: AuthUser | null, r: Pick<CommentTask, 'id' | 'accountId' | 'commentId' | 'textHash'> & { id: string | null }, rules: CommentRules): Promise<void> {
   await lockKey(tx, `comment-dup:${r.accountId}`);
@@ -230,7 +254,7 @@ async function assertNotDuplicate(tx: Tx, actor: AuthUser | null, r: Pick<Commen
     r.id ? ne(R.id, r.id) : undefined,
   ));
   if (n >= rules.duplicateMax) {
-    throw await blocked({ accountId: r.accountId, commentId: r.commentId, commentTaskId: r.id }, actor,
+    throw new PendingBlock({ accountId: r.accountId, commentId: r.commentId, commentTaskId: r.id }, actor,
       conflict(`相同的回复内容在 ${rules.duplicateWindowHours} 小时内已使用 ${n} 次（上限 ${rules.duplicateMax}），请针对这条评论单独撰写`, 'comment.duplicate_text',
         { max: rules.duplicateMax, hours: rules.duplicateWindowHours, count: n }), { count: n });
   }
@@ -248,13 +272,14 @@ export async function createReply(user: AuthUser, comment: Comment, b: ReplyInpu
   try {
     row = await db.transaction(async (tx) => {
       await lockKey(tx, `comment-reply:${comment.id}`);
+      const ownerId = await lockedAccountOwner(tx, user, comment.accountId, () => notFound('评论不存在', 'comment.not_found'));
       const [prior] = await tx.select({ id: R.id, status: R.status }).from(R).where(and(eq(R.commentId, comment.id), inArray(R.status, REPLY_ACTIVE)));
       if (prior) {
-        throw await blocked({ accountId: comment.accountId, commentId: comment.id }, user,
+        throw new PendingBlock({ accountId: comment.accountId, commentId: comment.id }, user,
           conflict('这条评论已有回复（每条评论只能回复一次，除非之前的回复失败或被取消）', 'comment.already_replied', { status: prior.status }), { existing: prior.id, status: prior.status });
       }
       const [r] = await tx.insert(R).values({
-        userId: comment.userId, accountId: comment.accountId, commentId: comment.id, platform: comment.platform, text, textHash: textHash(text),
+        userId: ownerId, accountId: comment.accountId, commentId: comment.id, platform: comment.platform, text, textHash: textHash(text),
         templateId: b.templateId ?? null, status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS,
         authorId: user.id, authorName: user.username,
       }).returning();
@@ -265,7 +290,7 @@ export async function createReply(user: AuthUser, comment: Comment, b: ReplyInpu
     if (isUnique(err)) {
       throw await blocked({ accountId: comment.accountId, commentId: comment.id }, user, conflict('这条评论已有回复', 'comment.already_replied', { status: 'unknown' }));
     }
-    throw err;
+    return settleBlock(err);
   }
   if (comment.status === 'new') await db.update(C).set({ status: 'read' }).where(and(eq(C.id, comment.id), eq(C.status, 'new')));
   return row;
@@ -306,7 +331,7 @@ export async function submitReply(user: AuthUser, r: CommentTask, scheduledAt?: 
     if (!done) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
     await replyLog(done, { action: 'submitted', message: 'submitted', actor: user }, tx);
     return done;
-  });
+  }).catch(settleBlock);
   return scheduleSend(row, user);
 }
 
@@ -663,12 +688,15 @@ export async function createPostComment(user: AuthUser, acc: SocialAccount, post
   await assertNoBannedWords([acc.personaId], [text]);
   const [post] = await db.select().from(schema.socialAccountPosts).where(and(eq(schema.socialAccountPosts.id, postId), eq(schema.socialAccountPosts.socialAccountId, acc.id)));
   if (!post) throw notFound('帖子不存在', 'feed.post_not_found');
-  const [row] = await db.insert(R).values({
-    userId: acc.userId, accountId: acc.id, commentId: null, postId: post.id, platform: acc.platform, text, textHash: textHash(text),
-    status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS, authorId: user.id, authorName: user.username,
-  }).returning();
-  await replyLog(row!, { action: 'created', message: 'post comment written', data: { postId: post.id }, actor: user });
-  return row!;
+  return db.transaction(async (tx) => {
+    const ownerId = await lockedAccountOwner(tx, user, acc.id, () => notFound('账号不存在', 'social.not_found'));
+    const [row] = await tx.insert(R).values({
+      userId: ownerId, accountId: acc.id, commentId: null, postId: post.id, platform: acc.platform, text, textHash: textHash(text),
+      status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS, authorId: user.id, authorName: user.username,
+    }).returning();
+    await replyLog(row!, { action: 'created', message: 'post comment written', data: { postId: post.id }, actor: user }, tx);
+    return row!;
+  });
 }
 
 // ---------------------------------------------------------------- 评论追踪账号的帖子 (own account on a tracked post)
@@ -701,12 +729,13 @@ export async function createTrackedComment(user: AuthUser, acc: SocialAccount, p
         await lockKey(tx, `comment-reply:tracked:${comment.id}`);
         const [prior] = await tx.select({ id: R.id, status: R.status }).from(R).where(and(eq(R.trackedCommentId, comment.id), inArray(R.status, REPLY_ACTIVE)));
         if (prior) {
-          throw await blocked({ accountId: acc.id }, user,
+          throw new PendingBlock({ accountId: acc.id }, user,
             conflict('这条评论已有回复（每条评论只能回复一次，除非之前的回复失败或被取消）', 'comment.already_replied', { status: prior.status }), { existing: prior.id, status: prior.status, trackedCommentId: comment.id });
         }
       }
+      const ownerId = await lockedAccountOwner(tx, user, acc.id, () => notFound('账号不存在', 'social.not_found'));
       const [r] = await tx.insert(R).values({
-        userId: acc.userId, accountId: acc.id, commentId: null, postId: null, trackedPostId: post.id, trackedCommentId: comment?.id ?? null,
+        userId: ownerId, accountId: acc.id, commentId: null, postId: null, trackedPostId: post.id, trackedCommentId: comment?.id ?? null,
         platform: acc.platform, text, textHash: textHash(text), status: 'draft', scheduledAt: b.scheduledAt ?? null, maxAttempts: REPLY_MAX_ATTEMPTS,
         authorId: user.id, authorName: user.username,
       }).returning();
@@ -716,7 +745,7 @@ export async function createTrackedComment(user: AuthUser, acc: SocialAccount, p
     });
   } catch (err) {
     if (isUnique(err)) throw await blocked({ accountId: acc.id }, user, conflict('这条评论已有回复', 'comment.already_replied', { status: 'unknown' }));
-    throw err;
+    return settleBlock(err);
   }
   return row;
 }

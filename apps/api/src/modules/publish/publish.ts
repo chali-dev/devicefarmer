@@ -122,6 +122,9 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
     if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
     const out: DistributeResult = { created: [], existing: [] };
     for (const t of targets) {
+      // FOR SHARE: a parallel 分配 (social/assign.ts moveDeviceAccounts, FOR UPDATE) either waits for this task (then
+      // refuses: instances.assign_account_busy) or has moved the account before it is read here.
+      await tx.select({ id: schema.socialAccounts.id }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, t.accountId)).for('share');
       const acc = await visibleAccount(user, t.accountId, tx);
       assertPlatformEnabled(acc.platform);
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');

@@ -371,6 +371,181 @@ try {
       await db.delete(schema.dbBackups).where(eq(schema.dbBackups.id, fake!.id));
     });
   }
+
+  // ================================================================ D. unique names: one 201, the rest coded 409 (never 5xx)
+  if (want('unique')) {
+    const U = await newUser('un');
+    const one = async (name: string, n: number, req: () => Promise<{ status: number; body: any; text: string }>, code: string, rows: () => Promise<number>) => {
+      const rs = await Promise.all(Array.from({ length: n }, req));
+      const left = await rows();
+      check(`${name} ×${n} at once → one 201, ${n - 1}× 409 ${code}, one row`, count(rs, 201) === 1 && left === 1
+        && rs.every((x) => x.status === 201 || (x.status === 409 && x.body?.code === code)), `${statuses(rs)} ${codes(rs)} rows ${left} ${rs.find((x) => x.status >= 500)?.text ?? ''}`);
+    };
+    const n = async (q: Promise<unknown[]>) => (await q).length;
+    const uname = `ccdup${tag}`;
+    await one('用户 create (same username)', 15, () => http('POST', '/api/users', admin, { username: uname, password: pw, role: 'user' }), 'users.username_taken',
+      () => n(db.select().from(schema.users).where(eq(schema.users.username, uname))));
+    cleanup.push(() => db.delete(schema.users).where(eq(schema.users.username, uname)));
+    const rname = `cc角色${tag}`;
+    await one('自定义角色 create (same name)', 15, () => http('POST', '/api/roles', admin, { name: rname, menus: ['content'] }), 'role.name_taken',
+      () => n(db.select().from(schema.roles).where(eq(schema.roles.name, rname))));
+    cleanup.push(() => db.delete(schema.roles).where(eq(schema.roles.name, rname)));
+    const pname = `cc人设${tag}`;
+    await one('人设 create with 范例 (same name)', 15, () => http('POST', '/api/personas', U.token, { scope: 'mine', name: pname, examples: { post: ['示例一'], comment: ['评论一'] } }), 'persona.exists',
+      () => n(db.select().from(schema.personas).where(eq(schema.personas.name, pname))));
+    const [persona] = await db.select().from(schema.personas).where(eq(schema.personas.name, pname));
+    const tpl = await db.select().from(schema.commentTemplates).where(eq(schema.commentTemplates.personaId, persona!.id));
+    check('人设 create race: the losers leave no 范例 behind (2 = the winner\'s)', tpl.length === 2, `${tpl.length} templates`);
+    const copies = await Promise.all(Array.from({ length: 12 }, () => http('POST', `/api/personas/${persona!.id}/copy`, U.token, {})));
+    const names = copies.map((x) => x.body?.persona?.name as string);
+    check('复制到我的人设 ×12 at once → 12 personas with distinct 副本 names', copies.every((x) => x.status === 201) && new Set(names).size === 12,
+      `${statuses(copies)} ${codes(copies)} ${names.join(' | ')}`);
+    const ccname = `cc分类${tag}`;
+    await one('内容分类 create (same name, case variants)', 12, () => http('POST', '/api/content-categories', U.token, { scope: 'mine', name: Math.random() < 0.5 ? ccname : ccname.toUpperCase() }), 'content_category.exists',
+      () => n(db.select().from(schema.contentCategories).where(sql`lower(${schema.contentCategories.name}) = lower(${ccname})`)));
+    await one('素材分类 create (same name, case variants)', 12, () => http('POST', '/api/media/categories', U.token, { scope: 'mine', name: Math.random() < 0.5 ? ccname : ccname.toUpperCase() }), 'media_category.exists',
+      () => n(db.select().from(schema.mediaCategories).where(sql`lower(${schema.mediaCategories.name}) = lower(${ccname})`)));
+    const h = `cc_${tag}_dup`;
+    await one('媒体号 create (same handle, case variants)', 12, () => http('POST', '/api/social/accounts', U.token, { platform: 'tiktok', handle: Math.random() < 0.5 ? h : h.toUpperCase() }), 'social.account_exists',
+      () => n(db.select().from(schema.socialAccounts).where(sql`lower(${schema.socialAccounts.handle}) = ${h}`)));
+    await one('追踪号 create (same profile)', 12, () => http('POST', '/api/tracked-accounts', U.token, { input: `https://www.tiktok.com/@${h}` }), 'tracked.duplicate',
+      () => n(db.select().from(schema.trackedAccounts).where(and(eq(schema.trackedAccounts.userId, U.id), sql`lower(${schema.trackedAccounts.handle}) = ${h}`))));
+    const chName = `cc通道${tag}`;
+    await one('告警通道 create (same name)', 10, () => http('POST', '/api/alert-channels', admin, { name: chName, type: 'telegram', enabled: false, config: { botToken: '123456:ABCdefGHIjklMNOpqrSTUvwxYZ0123456789', chatId: '-100123' } }), 'alerts.channel_name_taken',
+      () => n(db.select().from(schema.alertChannels).where(eq(schema.alertChannels.name, chName))));
+    cleanup.push(() => db.delete(schema.alertChannels).where(eq(schema.alertChannels.name, chName)));
+
+    // 自定义角色 delete racing 用户 assignment: never a dangling role, never 5xx
+    const bad: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const role = (await http('POST', '/api/roles', admin, { name: `cc删${tag}${i}`, menus: ['media'] })).body.role.id as string;
+      const rs = await Promise.all([
+        http('DELETE', `/api/roles/${role}`, admin),
+        http('PATCH', `/api/users/${U.id}`, admin, { roleId: role }),
+        http('PATCH', `/api/users/${U.id}`, admin, { roleId: role }),
+      ]);
+      const [u] = await db.select().from(schema.users).where(eq(schema.users.id, U.id));
+      const [r] = await db.select().from(schema.roles).where(eq(schema.roles.id, role));
+      if (rs.some((x) => x.status >= 500)) bad.push(rs.map((x) => x.text.slice(0, 80)).join(' / '));
+      if (u!.roleId === role && !r) bad.push('dangling role_id');
+      await http('PATCH', `/api/users/${U.id}`, admin, { roleId: null });
+      await db.delete(schema.roles).where(eq(schema.roles.id, role));
+    }
+    check('role delete racing user assignment ×6 → no dangling role, no 5xx', !bad.length, bad.join(' | '));
+  }
+
+  // ================================================================ E. replies: draft → 排程 → send task, never twice
+  if (want('replies')) {
+    const U = await newUser('re');
+    const acc = (await http('POST', '/api/social/accounts', U.token, { platform: 'instagram', handle: `cc_${tag}_re` })).body.account.id as string;
+    const comment = async () => (await http('POST', '/api/comments', U.token, { accountId: acc, text: `评论 ${randomBytes(3).toString('hex')}`, authorName: 'someone' })).body.comment.id as string;
+    const R = schema.commentTasks;
+    const c1 = await comment();
+    const cr = await Promise.all(Array.from({ length: 12 }, (_, i) => http('POST', `/api/comments/${c1}/replies`, U.token, { text: `回复 ${i}` })));
+    const drafts = await db.select().from(R).where(eq(R.commentId, c1));
+    check('reply create ×12 at once on one comment → one draft, the rest 409 comment.already_replied', drafts.length === 1 && count(cr, 201) === 1
+      && cr.every((x) => x.status === 201 || (x.status === 409 && x.body.code === 'comment.already_replied')), `${drafts.length} drafts ${statuses(cr)} ${codes(cr)}`);
+    const id = drafts[0]!.id;
+    const sr = await Promise.all(Array.from({ length: 12 }, () => http('POST', `/api/comment-replies/${id}/submit`, U.token, { scheduledAt: future(2) })));
+    const sendTasks = await db.select().from(TK).where(and(eq(TK.type, 'comment-reply'), eq(TK.refId, id)));
+    check('排程 ×12 at once → one send task, one 200, the rest 409 comment.bad_status', sendTasks.length === 1 && count(sr, 200) === 1
+      && sr.every((x) => x.status === 200 || (x.status === 409 && x.body.code === 'comment.bad_status')), `${sendTasks.length} tasks ${statuses(sr)} ${codes(sr)}`);
+    // delete racing 排程 on fresh drafts: either gone without a task, or scheduled with exactly one task
+    let odd = 0;
+    for (let i = 0; i < 8; i++) {
+      const c = await comment();
+      const d = (await http('POST', `/api/comments/${c}/replies`, U.token, { text: `回复 x${i}` })).body.reply.id as string;
+      await Promise.all([
+        http('DELETE', `/api/comment-replies/${d}`, U.token), http('POST', `/api/comment-replies/${d}/submit`, U.token, { scheduledAt: future(2) }),
+        http('DELETE', `/api/comment-replies/${d}`, U.token), http('PATCH', `/api/comment-replies/${d}`, U.token, { text: `改 ${i}` }),
+      ]);
+      const [row] = await db.select().from(R).where(eq(R.id, d));
+      const ts = await db.select().from(TK).where(and(eq(TK.type, 'comment-reply'), eq(TK.refId, d), inArray(TK.status, ['pending', 'scheduled', 'running'])));
+      if (row ? !(row.status === 'scheduled' ? ts.length === 1 : row.status === 'draft' && ts.length === 0) : ts.length > 0) odd++;
+    }
+    check('draft delete / edit racing 排程 ×8 → deleted without a task or scheduled with exactly one', odd === 0, `${odd} inconsistent`);
+    // cancel ×10 at once of the scheduled reply
+    const xr = await Promise.all(Array.from({ length: 10 }, () => http('POST', `/api/comment-replies/${id}/cancel`, U.token)));
+    const [cx] = await db.select().from(R).where(eq(R.id, id));
+    const live = await db.select().from(TK).where(and(eq(TK.type, 'comment-reply'), eq(TK.refId, id), inArray(TK.status, ['pending', 'scheduled', 'running'])));
+    check('reply cancel ×10 at once → cancelled, no live task, no 5xx', cx!.status === 'cancelled' && !live.length && xr.every((x) => x.status < 500), `${cx!.status} live ${live.length} ${statuses(xr)}`);
+  }
+
+  // ================================================================ F. misc: captcha single use, alert de-dup, task retry, grants
+  if (want('misc')) {
+    const { solveCaptcha } = await import('./lib/login.js');
+    const cap = await solveCaptcha(API);
+    if (cap) {
+      const rs = await Promise.all(Array.from({ length: 20 }, () => http('POST', '/api/auth/login', null, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD, captcha: cap })));
+      check('login with one solved captcha ×20 at once → exactly one 200 (single use)', count(rs, 200) === 1 && rs.every((x) => x.status === 200 || x.status === 400), `${statuses(rs)} ${codes(rs)}`);
+    }
+
+    const [dev] = await placeholderDevices(1, 'misc');
+    const { notify } = await import('../src/modules/notify/notify.js');
+    const before = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, adminRow!.id));
+    const sent = await Promise.all(Array.from({ length: 20 }, () => notify({ kind: 'device.down', refId: dev!.id, params: { device: dev!.name } } as any)));
+    const after = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, adminRow!.id));
+    check('notify() of one alert ×20 at once → delivered once (one in-app row for the admin)', sent.filter(Boolean).length === 1 && after.length - before.length === 1,
+      `${sent.filter(Boolean).length} delivered, ${after.length - before.length} rows`);
+    cleanup.push(() => db.delete(schema.alertStates).where(eq(schema.alertStates.key, dev!.id)));
+
+    // 任务中心 重试 ×10 of one failed task → one new task (the others get the same one)
+    const { createTask } = await import('../src/modules/tasks/core.js');
+    await import('../src/modules/tasks/test-handlers.js');
+    const { task: t } = await createTask({ type: 'test.echo', userId: adminRow!.id, label: `cc-${tag}`, payload: { failTimes: 1, sleepMs: 2500 }, maxAttempts: 1 });
+    await waitFor('test task failed', async () => (await db.select().from(TK).where(eq(TK.id, t.id)))[0]!.status === 'failed', 30_000);
+    const rr = await Promise.all(Array.from({ length: 10 }, () => http('POST', `/api/tasks/${t.id}/retry`, admin)));
+    const retries = await db.select().from(TK).where(eq(TK.retryOf, t.id));
+    check('task retry ×10 at once → one new task, every answer 202 with it', retries.length === 1 && rr.every((x) => x.status === 202 && x.body.task?.id === retries[0]?.id),
+      `${retries.length} retries ${statuses(rr)} ${codes(rr)}`);
+    await waitFor('retries done', async () => (await db.select().from(TK).where(and(eq(TK.retryOf, t.id), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 30_000).catch(() => undefined);
+    cleanup.push(() => db.delete(TK).where(inArray(TK.id, [t.id, ...retries.map((x) => x.id)])));
+
+    // two admins assigning one phone to different users at once: one user per phone
+    const [u1, u2, u3] = [await newUser('g1'), await newUser('g2'), await newUser('g3')];
+    let multi = 0;
+    for (let i = 0; i < 6; i++) {
+      await http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [] });
+      await Promise.all([
+        http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [u1.id] }),
+        http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [u2.id] }),
+        http('PUT', `/api/users/${u3.id}/grants`, admin, { instanceIds: [dev!.id] }),
+      ]);
+      const g = await db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, dev!.id));
+      if (g.length !== 1) multi++;
+    }
+    check('assigning one phone to 3 users at once ×6 → always exactly one user', multi === 0, `${multi} rounds with ≠ 1 user`);
+
+    // 分配 racing the current owner's 发布 / 回复草稿 on the phone's account: an unfinished publish task / reply always
+    // belongs to the account's owner (the move is refused while one exists)
+    await http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [u1.id] });
+    const acc = (await http('POST', '/api/social/accounts', u1.token, { platform: 'instagram', handle: `cc_${tag}_mv` })).body.account.id as string;
+    await linkAccount(acc, dev!.id);
+    const imgOf = new Map([[u1.id, await uploadPng(u1.token)], [u2.id, await uploadPng(u2.token)]]);
+    let wrong = 0;
+    const errs: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const [from, to] = i % 2 === 0 ? [u1, u2] : [u2, u1];
+      const content = (await http('POST', '/api/contents', from.token, { title: `cc-${tag} mv`, body: 'x', mediaIds: [imgOf.get(from.id)!] })).body.content?.id as string | undefined;
+      const cmt = (await http('POST', '/api/comments', from.token, { accountId: acc, text: `评论 mv${i}`, authorName: 'x' })).body.comment?.id as string | undefined;
+      if (!content || !cmt) { errs.push(`setup round ${i}`); break; }
+      const rs = await Promise.all([
+        http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [to.id] }),
+        http('POST', `/api/contents/${content}/distribute`, from.token, { targets: [{ accountId: acc, scheduledAt: future(3) }] }),
+        http('POST', `/api/comments/${cmt}/replies`, from.token, { text: `回复 mv${i}` }),
+      ]);
+      errs.push(...rs.filter((x) => x.status >= 500).map((x) => x.text.slice(0, 100)));
+      const [a] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, acc));
+      const pubs = await db.select().from(PT).where(and(eq(PT.accountId, acc), inArray(PT.status, [...UNFINISHED])));
+      const reps = await db.select().from(schema.commentTasks).where(and(eq(schema.commentTasks.accountId, acc), inArray(schema.commentTasks.status, ['draft', 'scheduled', 'sending', 'awaiting_operator'])));
+      if ([...pubs, ...reps].some((x) => x.userId !== a!.userId)) wrong++;
+      // clear the way for the next move (cancel the publish task, delete the draft), owner back to the grant's user
+      for (const p of pubs) await http('POST', `/api/publish/tasks/${p.id}/cancel`, admin);
+      for (const r of reps) await db.delete(schema.commentTasks).where(eq(schema.commentTasks.id, r.id));
+      await http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [to.id] });
+    }
+    check('分配 racing 发布 + 回复草稿 ×8 → unfinished work always belongs to the account\'s owner, no 5xx', wrong === 0 && !errs.length, `${wrong} wrong owner; ${errs.join(' | ')}`);
+  }
 } catch (err) {
   check('script ran to the end', false, (err as Error).stack ?? String(err));
 } finally {
