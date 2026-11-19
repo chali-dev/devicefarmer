@@ -71,12 +71,12 @@ const rows = computed(() => {
 function reset() { q.value = ''; ownerId.value = undefined }
 
 const columns = computed(() => [
-  { title: t('personas.colName'), key: 'name', width: 180 },
-  { title: t('personas.colDesc'), key: 'description', width: 240 },
-  { title: t('personas.colScope'), key: 'scope', width: 140 },
-  { title: t('personas.colAccounts'), key: 'accounts', width: 100, align: 'right' as const },
-  { title: t('personas.colTemplates'), key: 'count', width: 100, align: 'right' as const },
-  actionColumn(160),
+  { title: t('personas.colName'), key: 'name', width: 160, ellipsis: true },
+  { title: t('personas.colDesc'), key: 'description', width: 300 },
+  { title: t('personas.colScope'), key: 'scope', width: 130 },
+  { title: t('personas.colAccounts'), key: 'accounts', width: 80, align: 'center' as const },
+  { title: t('personas.colTemplates'), key: 'count', width: 80, align: 'center' as const },
+  actionColumn(300),
 ])
 const scrollX = computed(() => columns.value.reduce((n, c) => n + (c.width ?? 0), 0))
 
@@ -194,16 +194,9 @@ async function doCopy() {
             <a-space v-if="record.writable" :size="0">
               <a-button type="link" size="small" @click="openForm(record as ScopedItem)">{{ t('common.edit') }}</a-button>
               <a-button type="link" size="small" @click="preview(record as ScopedItem)">{{ t('personas.aiTest') }}</a-button>
-              <a-dropdown>
-                <a-button type="link" size="small">{{ t('common.more') }}</a-button>
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item key="prompt" @click="showPrompt(record as ScopedItem)">{{ t('personas.prompt.action') }}</a-menu-item>
-                    <a-menu-item key="copy" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-menu-item>
-                    <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
+              <a-button type="link" size="small" @click="showPrompt(record as ScopedItem)">{{ t('personas.prompt.action') }}</a-button>
+              <a-button type="link" size="small" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-button>
+              <a-button type="link" size="small" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-button>
             </a-space>
             <a-button v-else type="link" size="small" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-button>
           </template>
