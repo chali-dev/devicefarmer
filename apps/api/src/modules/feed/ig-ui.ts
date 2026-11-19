@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { adb } from '../../services.js';
 import type { CollectorDevice } from '../tracked/collector.js';
-import { ID, parseCompactCount, parseUiDump, PKG, type UiNode } from '../tracked/instagram-device.js';
+import { ID, parseCompactCount, parseUiDump, PKG, restartIg, type UiNode } from '../tracked/instagram-device.js';
 
 /**
  * Instagram app screens beyond the profile header (account feed: posts + comments, and comments sent from the
@@ -248,6 +248,9 @@ export class IgScreenSession {
   constructor(readonly dev: CollectorDevice, readonly signal?: AbortSignal) {}
 
   sh(cmd: string, timeoutMs = 20_000) { return adb.shell(this.dev.adbPort, cmd, timeoutMs); }
+
+  /** Closes Instagram so the operation starts from a fresh app (see restartIg); first step of a flow only. */
+  async restartApp(): Promise<void> { await restartIg(this.dev.adbPort, this.signal); }
 
   async open(url: string): Promise<void> {
     const out = await this.sh(`am start -a android.intent.action.VIEW -d '${url.replace(/'/g, '')}' -p ${PKG}`);

@@ -21,7 +21,7 @@ import type { Metric, ProfileData, SourceContext, TrackedSource } from './platfo
  */
 export const PKG = 'com.instagram.android';
 export const ID = `${PKG}:id/`;
-const PROFILE_WAIT_MS = 15_000;
+const PROFILE_WAIT_MS = 20_000; // includes a cold start (the app is force-stopped first)
 const FIRST_DUMP_DELAY_MS = 2500;
 const POLL_GAP_MS = 1200;
 const IG_HANDLE = /^[a-z0-9._]{1,30}$/;
@@ -177,7 +177,17 @@ export async function requireApp(dev: CollectorDevice, code = 'tracked.collector
 }
 
 /**
- * One visit: opens `url` in the Instagram app (`am start -p`), polls `uiautomator dump` (≤ PROFILE_WAIT_MS)
+ * Closes Instagram (`am force-stop`) so the next deep link starts it fresh: with the app left on another screen
+ * (a post, the camera, a sheet) `instagram://profile` / a profile link did not switch to the profile (sync
+ * timeouts on 2026-11-19). Only at the START of an operation, never after 分享 (the upload runs in the app).
+ */
+export async function restartIg(port: number, signal?: AbortSignal): Promise<void> {
+  await adb.shell(port, `am force-stop ${PKG}`, 15_000);
+  await sleep(800, undefined, { signal });
+}
+
+/**
+ * One visit: closes Instagram, then opens `url` in it (`am start -p`), polls `uiautomator dump` (≤ PROFILE_WAIT_MS)
  * until a known screen shows (profile header, login, challenge, not found) and returns it. Always back to the
  * launcher (HOME) and no dump file left behind, also after a failure or cancel. Navigation + screen reads only.
  */
@@ -186,6 +196,7 @@ export async function visitIgScreen(dev: CollectorDevice, url: string, handle: s
   const port = dev.adbPort;
   const file = `/data/local/tmp/cp-ig-${randomBytes(6).toString('hex')}.xml`;
   try {
+    await restartIg(port, ctx.signal);
     const started = await adb.shell(port, `am start -a android.intent.action.VIEW -d '${url}' -p ${PKG}`, 20_000);
     if (/Error:|Exception/.test(started)) throw coded(502, `无法在设备上打开 Instagram：${started.trim().slice(0, 150)}`, 'tracked.collector_open_failed', { error: started.trim().slice(0, 150) });
     await log('info', 'collector: profile link opened', { url: handle ? url : 'instagram://profile' });

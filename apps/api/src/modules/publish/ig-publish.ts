@@ -255,13 +255,14 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
 
   try {
     await requireApp(dev, 'publish.device_app_missing');
+    await s.restartApp(); // before anything else; never again after 分享 (the upload runs in the app)
     // ---- 1. the logged-in account must be this one (like the automatic account check)
     const accounts = await igDeviceAccounts(dev);
     if (!accounts.length) throw fail('publish.device_logged_out', '设备上的 Instagram 未登录');
     if (input.externalId && !accounts.includes(input.externalId)) throw fail('publish.device_wrong_account', `设备上登录的 Instagram 账号（${accounts.join(', ')}）不是 @${input.handle}`);
     if (!input.externalId || accounts.length > 1) {
       await s.open('instagram://profile');
-      const { nodes } = await s.waitFor((n) => ['profile', 'challenge', 'login'].includes(classifyIgDump(n, null).kind), 15_000, 2500);
+      const { nodes } = await s.waitFor((n) => ['profile', 'challenge', 'login'].includes(classifyIgDump(n, null).kind), 20_000, 2500);
       const own = classifyIgDump(nodes, null);
       if (own.kind === 'challenge') throw fail('publish.device_challenge', 'Instagram 显示了验证/限制页面', { challenge: true, excerpt: dumpExcerpt(nodes) });
       if (own.kind === 'login') throw fail('publish.device_logged_out', '设备上的 Instagram 未登录');

@@ -88,10 +88,11 @@ export async function collectIgFeed(dev: CollectorDevice, handle: string, opts: 
   const res: FeedResult = { posts: [], postsCount: null, private: false, sessionPk: null, screens: 0, skipped: [] };
   try {
     await requireApp(dev, 'feed.app_missing');
+    await s.restartApp();
     await s.open(`https://www.instagram.com/${handle}/`);
     await log('info', 'feed: profile opened', { handle });
     const decided = (nodes: UiNode[]) => ['profile', 'challenge', 'login', 'not_found'].includes(classifyIgDump(nodes, handle).kind);
-    let { nodes } = await s.waitFor(decided, 15_000, 2500);
+    let { nodes } = await s.waitFor(decided, 20_000, 2500); // cold start
     const screen = classifyIgDump(nodes, handle);
     if (screen.kind === 'challenge' || screen.kind === 'login' || screen.kind === 'not_found') throw problemError(screen.kind, nodes, `Instagram 主页 @${handle}`);
     if (screen.kind === 'shell') throw problemError('not_found', nodes, `Instagram 主页 @${handle}`);
@@ -232,10 +233,11 @@ export async function sendIgComment(dev: CollectorDevice, input: SendInput): Pro
   let dirty = false;
   try {
     await requireApp(dev, 'comment.device_app_missing');
+    await s.restartApp();
     if (!input.externalId) {
       // Unknown numeric id: the logged-in account's own profile must show this handle.
       await s.open('instagram://profile');
-      const { nodes } = await s.waitFor((n) => ['profile', 'challenge', 'login'].includes(classifyIgDump(n, null).kind), 15_000, 2500);
+      const { nodes } = await s.waitFor((n) => ['profile', 'challenge', 'login'].includes(classifyIgDump(n, null).kind), 20_000, 2500);
       const own = classifyIgDump(nodes, null);
       if (own.kind === 'challenge') throw fail('comment.device_challenge', 'Instagram 显示了验证/限制页面', { final: true, challenge: true, excerpt: dumpExcerpt(nodes) });
       if (own.kind === 'login') throw fail('comment.device_logged_out', '设备上的 Instagram 未登录');
@@ -245,7 +247,7 @@ export async function sendIgComment(dev: CollectorDevice, input: SendInput): Pro
     }
     await s.open(`https://www.instagram.com/p/${input.shortcode}/`);
     await log('info', 'reply: post opened', { shortcode: input.shortcode });
-    let { nodes } = await s.waitFor((n) => !!parsePostScreen(n, null) || !!screenProblem(n), 15_000, 2500);
+    let { nodes } = await s.waitFor((n) => !!parsePostScreen(n, null) || !!screenProblem(n), 20_000, 2500);
     const post = parsePostScreen(nodes, null);
     if (!post) {
       const p = screenProblem(nodes);

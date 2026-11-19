@@ -95,8 +95,9 @@ export async function readFollowingList(dev: CollectorDevice, acc: Pick<SocialAc
   const s = new IgScreenSession(dev, ctx.signal);
   let swipes = 0;
   try {
+    await s.restartApp();
     await s.open('instagram://profile');
-    const prof = await s.waitFor((n) => { const k = classifyIgDump(n, null).kind; return k === 'profile' || k === 'challenge' || k === 'login'; }, 15_000, 2500);
+    const prof = await s.waitFor((n) => { const k = classifyIgDump(n, null).kind; return k === 'profile' || k === 'challenge' || k === 'login'; }, 20_000, 2500);
     const screen = classifyIgDump(prof.nodes, null);
     if (screen.kind !== 'profile') throw problemError(prof.nodes, 'following.timeout');
     if (!screen.handle || screen.handle.toLowerCase() !== acc.handle.toLowerCase()) {
