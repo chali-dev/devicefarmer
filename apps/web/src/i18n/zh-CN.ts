@@ -1962,7 +1962,6 @@ const zhCN = {
   settings: {
     updatedAt: '更新于 {at}',
     readOnlyEnv: '环境变量 {name}，只读',
-    envDefault: '默认值 = 环境变量 {env}（{v}）',
     tabs: {
       data: '数据',
       logRetention: '日志',

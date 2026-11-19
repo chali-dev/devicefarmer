@@ -1951,7 +1951,6 @@ const en: Messages = {
   settings: {
     updatedAt: 'Updated {at}',
     readOnlyEnv: 'env {name}, read-only',
-    envDefault: 'Default = env {env} ({v})',
     tabs: {
       data: 'Data',
       logRetention: 'Logs',

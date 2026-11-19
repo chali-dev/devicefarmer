@@ -7,7 +7,7 @@ import { dateLocale } from '../../i18n'
 
 /**
  * 系统配置 → 素材上传 (admin): size limit per kind and the allowed formats of media uploads
- * (GET/PUT /api/settings/media-limits, key `media.limits`). The env values are the defaults (hint under each field);
+ * (GET/PUT /api/settings/media-limits, key `media.limits`). The env values are the defaults (not shown in the page since 2026-11-19);
  * a save applies to the next upload (the upload pages read GET /api/media/limits).
  */
 interface Limits { imageMaxMb: number; videoMaxMb: number; allowedTypes: string[] }
@@ -54,20 +54,17 @@ async function save() {
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.imageMax')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.imageMaxMb} MB`, env: 'MEDIA_IMAGE_MAX_MB' }) : undefined">
+            <a-form-item :label="t('settings.publish.imageMax')">
               <a-input-number v-model:value="form.imageMaxMb" :min="1" :max="state?.max.imageMaxMb ?? 100" :precision="0" addon-after="MB" style="width: 100%" />
             </a-form-item>
           </a-col>
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.videoMax')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.videoMaxMb} MB`, env: 'MEDIA_VIDEO_MAX_MB' }) : undefined">
+            <a-form-item :label="t('settings.publish.videoMax')">
               <a-input-number v-model:value="form.videoMaxMb" :min="1" :max="state?.max.videoMaxMb ?? 4096" :precision="0" addon-after="MB" style="width: 100%" />
             </a-form-item>
           </a-col>
         </a-row>
-        <a-form-item
-          :label="t('settings.publish.types')"
-          :extra="state ? t('settings.envDefault', { v: state.defaults.allowedTypes.join(', '), env: 'MEDIA_ALLOWED_TYPES' }) : undefined"
-        >
+        <a-form-item :label="t('settings.publish.types')">
           <a-checkbox-group v-model:value="form.allowedTypes" class="types">
             <div class="muted small">{{ t('settings.mediaLimits.images') }}</div>
             <div class="row"><a-checkbox v-for="o in imageTypes" :key="o.value" :value="o.value">{{ o.label }}</a-checkbox></div>
