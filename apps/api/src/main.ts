@@ -64,7 +64,12 @@ import { logSink } from './modules/system/logs.js';
 import { systemRoutes } from './modules/system/routes.js'; // also registers the db-backup task handler
 import { systemHourly } from './modules/system/maintenance.js';
 
-const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug', stream: logSink } });
+// One log line per request instead of Fastify's two ("incoming request" + "request completed"): the completed line
+// carries the request too (method / url / host / remote, status, time), so 系统日志 shows the same at half the volume.
+const app = Fastify({ logger: { level: config.NODE_ENV === 'production' ? 'info' : 'debug', stream: logSink }, disableRequestLogging: true });
+app.addHook('onResponse', async (req, reply) => {
+  req.log.info({ req, res: reply, responseTime: reply.elapsedTime }, 'request completed');
+});
 app.setValidatorCompiler(validatorCompiler);
 app.setSerializerCompiler(serializerCompiler);
 

@@ -147,21 +147,23 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     const byStat = q.status?.length ? inArray(pt.status, q.status) : undefined;
     const cond = and(...base, byStat, byType);
     const order = q.sort === 'scheduled_asc' ? [asc(pt.scheduledAt), asc(pt.id)] : q.sort === 'updated_desc' ? [desc(pt.updatedAt), desc(pt.id)] : [desc(pt.scheduledAt), desc(pt.id)];
-    const [rows, [total], byStatus] = await Promise.all([
+    // total = the (status, type) counts that pass both filters (both columns are NOT NULL), so no separate count(*)
+    // over the same rows: with group=content each of these queries is a full newest-per-pair anti-join.
+    const [rows, byStatus] = await Promise.all([
       db.select().from(pt).where(cond).orderBy(...order).limit(q.limit).offset(q.offset),
-      db.select({ n: count() }).from(pt).where(cond),
       db.select({ s: pt.status, t: pt.postType, n: count() }).from(pt).where(and(...base)).groupBy(pt.status, pt.postType),
     ]);
     const sum = (f: (r: typeof byStatus[number]) => boolean) => byStatus.filter(f).reduce((a, r) => a + r.n, 0);
     const typeOk = (t: string) => !q.postType?.length || (q.postType as string[]).includes(t);
     const statOk = (s: string) => !q.status?.length || (q.status as string[]).includes(s);
+    const total = sum((r) => statOk(r.s) && typeOk(r.t));
     const items = await toPublishItems(rows, req.user);
     if (q.group === 'content') {
       const all = await attemptsOf(rows);
       for (const it of items) (it as typeof it & { previous: unknown }).previous = (all.get(pairKey(it)) ?? []).filter((a) => a.id !== it.id).slice(0, 20);
     }
     return {
-      items, total: total?.n ?? 0,
+      items, total,
       byStatus: Object.fromEntries(PUBLISH_STATUSES.map((s) => [s, sum((r) => r.s === s && typeOk(r.t))])),
       byPostType: Object.fromEntries(POST_TYPES.map((t) => [t, sum((r) => r.t === t && statOk(r.s))])),
     };

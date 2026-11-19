@@ -136,17 +136,18 @@ registerDashboardWidget('publishing', async (ctx) => {
       .where(and(own(ctx, pt.userId), inArray(pt.status, ['pending', 'scheduled']), lt(pt.scheduledAt, inWeek)))
       .orderBy(pt.scheduledAt, pt.id).limit(5),
     // Published (by published_at) and failed (by last update) per day in the viewer's time zone, 14 days.
-    // updated_at >= published_at, so the updated_at prefilter is a superset for both series.
+    // updated_at >= published_at, so the updated_at prefilter (publish_tasks_updated_idx) is a superset for both series.
+    // Counted once per series and day, then joined to the 14 days (days without rows = 0).
     db.execute<{ day: string; published: number; failed: number }>(sql`
       with days as (select generate_series(date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}) - interval '13 days',
         date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}), interval '1 day')::date as d),
       p as (select status, (coalesce(published_at, updated_at) at time zone ${ctx.tz})::date as pd, (updated_at at time zone ${ctx.tz})::date as ud
         from publish_tasks p where ${scope} and p.status in ('published', 'failed')
-          and p.updated_at >= (date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}) - interval '13 days') at time zone ${ctx.tz})
-      select to_char(days.d, 'YYYY-MM-DD') as day,
-        (select count(*) from p where p.status = 'published' and p.pd = days.d)::int as published,
-        (select count(*) from p where p.status = 'failed' and p.ud = days.d)::int as failed
-      from days order by days.d`),
+          and p.updated_at >= (date_trunc('day', ${at(ctx.now)} at time zone ${ctx.tz}) - interval '13 days') at time zone ${ctx.tz}),
+      pub as (select pd as d, count(*) as n from p where status = 'published' group by pd),
+      fail as (select ud as d, count(*) as n from p where status = 'failed' group by ud)
+      select to_char(days.d, 'YYYY-MM-DD') as day, coalesce(pub.n, 0)::int as published, coalesce(fail.n, 0)::int as failed
+      from days left join pub on pub.d = days.d left join fail on fail.d = days.d order by days.d`),
   ]);
   const c = counts[0];
   return {
