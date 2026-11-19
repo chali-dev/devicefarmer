@@ -16,7 +16,7 @@ import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import { useNotificationsStore } from '../stores/notifications'
-import { MENU_GROUPS, navLabel, useMenuLocation } from '../components/common/menu'
+import { MENU_GROUPS, navLabel, pageCrumb, useMenuLocation } from '../components/common/menu'
 import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
@@ -41,13 +41,15 @@ const selected = computed(() => [loc.itemKey.value])
 /** All remaining groups start open (sub-menu keys are prefixed: 'content' and 'risk' are also item keys). */
 const openKeys = ref<string[]>(MENU_GROUPS.map((g) => `group-${g.key}`))
 
-/** Breadcrumb from the menu: module › page (› device name on a device's own page). */
+/** Breadcrumb from the menu: module › page (› device name on a device's own page, › a page's own `pageCrumb`). */
 const crumbs = computed(() => {
   const out: { label: string; to?: string }[] = []
   if (loc.group.value && !loc.group.value.flat) out.push({ label: t(`nav.group.${loc.group.value.key}`) })
-  const sub = route.name === 'instance' ? store.byId.get(String(route.params.id))?.name ?? String(route.params.id).slice(0, 8) : null
-  out.push({ label: loc.title.value, to: sub ? `/${loc.itemKey.value}` : undefined })
-  if (sub) out.push({ label: sub })
+  const sub = route.name === 'instance'
+    ? { label: store.byId.get(String(route.params.id))?.name ?? String(route.params.id).slice(0, 8) }
+    : pageCrumb.value
+  out.push({ label: loc.title.value, to: sub ? sub.parentTo ?? `/${loc.itemKey.value}` : undefined })
+  if (sub) out.push({ label: sub.label })
   return out
 })
 
@@ -178,7 +180,7 @@ async function savePassword() {
           <MenuUnfoldOutlined v-if="collapsed" /><MenuFoldOutlined v-else />
         </a-button>
         <a-breadcrumb class="crumbs">
-          <a-breadcrumb-item v-for="(c, i) in crumbs" :key="i">
+          <a-breadcrumb-item v-for="(c, i) in crumbs" :key="i" :class="{ link: c.to }">
             <router-link v-if="c.to" :to="c.to">{{ c.label }}</router-link>
             <template v-else>{{ c.label }}</template>
           </a-breadcrumb-item>
@@ -294,6 +296,7 @@ async function savePassword() {
 @media (max-width: 640px) {
   .header { padding: 0 8px 0 4px; gap: 4px; }
   .who { display: none; }
-  .crumbs :deep(li:not(:last-child)) { display: none; }
+  /* phones: the current page plus the level that leads back (if any) */
+  .crumbs :deep(li:not(:last-child):not(.link)) { display: none; }
 }
 </style>

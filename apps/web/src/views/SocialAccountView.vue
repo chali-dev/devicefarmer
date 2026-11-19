@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowLeftOutlined, DownOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { SyncOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -7,9 +7,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api, errorText } from '../api/client'
 import { compactNumber, type AccountFollowers, type AccountFollowing, type SocialAccount } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
+import { usePageCrumb } from '../components/common/menu'
 import StatusTag from '../components/common/StatusTag.vue'
-import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
-import AccountAiGenerateModal from '../components/social/AccountAiGenerateModal.vue'
 import AudienceList from '../components/social/AudienceList.vue'
 import InitialAvatar from '../components/social/InitialAvatar.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
@@ -18,7 +17,7 @@ import { dateLocale } from '../i18n'
 
 /**
  * A media account's 关注 / 粉丝 page (/social/accounts/:id, owner 2026-11-19, replaces the row expansion of 我的媒体号):
- * header with the account and its one 同步 button, tabs 关注 (the following list read from its cloud phone) and 粉丝
+ * header breadcrumb 我的媒体 / @handle (owner 2026-11-19), the account card with its one 同步 button, tabs 关注 (the following list read from its cloud phone) and 粉丝
  * (the account's own follower count, then only its newest ≤ 20 followers read from the phone; owner 2026-11-19).
  * RBAC = the account's (owner + admins; others get the API's 404 → not-found state).
  */
@@ -62,14 +61,9 @@ const tab = computed<'following' | 'followers'>({
 
 const { syncing, syncLabel, syncDisabled, syncNow } = useAccountSync(() => { void loadAccount(); void loadFollowers() })
 
-const feedOpen = ref(false)
-const aiOpen = ref(false)
-function onMore({ key }: { key: string | number }) {
-  if (key === 'detail') feedOpen.value = true
-  else if (key === 'ai') aiOpen.value = true
-}
 const profileLink = computed(() => account.value?.profileUrl || (account.value?.platform === 'instagram' ? `https://www.instagram.com/${account.value.handle}/` : null))
 const back = () => router.push({ path: '/social', query: { tab: 'accounts' } })
+usePageCrumb(() => (account.value ? { label: `@${account.value.handle}`, parentTo: '/social?tab=accounts' } : null))
 
 function loadAll() { void loadAccount(); void loadFollowers(); void loadFollowingCount() }
 onMounted(loadAll)
@@ -77,13 +71,7 @@ watch(id, loadAll)
 </script>
 
 <template>
-  <PageContainer :title="t('social.audience.page.open')">
-    <template #title>
-      <span class="title">
-        <a-button type="text" :aria-label="t('social.audience.page.back')" @click="back"><template #icon><ArrowLeftOutlined /></template></a-button>
-        {{ t('social.audience.page.open') }}
-      </span>
-    </template>
+  <PageContainer title="">
 
     <a-card v-if="notFound" :bordered="false">
       <a-result status="404" :sub-title="t('social.audience.page.notFound')">
@@ -113,15 +101,6 @@ watch(id, loadAll)
                 <template #icon><SyncOutlined /></template>{{ syncLabel(account.id) }}
               </a-button>
             </a-tooltip>
-            <a-dropdown>
-              <a-button>{{ t('social.more') }} <DownOutlined /></a-button>
-              <template #overlay>
-                <a-menu @click="onMore">
-                  <a-menu-item key="detail">{{ t('social.audience.page.detail') }}</a-menu-item>
-                  <a-menu-item key="ai" :disabled="!account.personaId" :title="account.personaId ? undefined : t('social.aiDrafts.noPersonaGenerate')">{{ t('social.aiDrafts.generateNow') }}</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
           </a-space>
         </div>
       </a-card>
@@ -137,14 +116,10 @@ watch(id, loadAll)
         </a-tabs>
       </a-card>
     </template>
-
-    <SocialAccountFeedDrawer v-model:open="feedOpen" :account="account" />
-    <AccountAiGenerateModal v-model:open="aiOpen" :account="account" />
   </PageContainer>
 </template>
 
 <style scoped>
-.title { display: inline-flex; align-items: center; gap: 4px; }
 .head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .who { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
