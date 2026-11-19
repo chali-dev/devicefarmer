@@ -35,6 +35,26 @@ const CONCURRENCY = 2
 
 watch(open, (v) => { if (v && !entries.value.some((e) => e.state === 'uploading' || e.state === 'waiting')) entries.value = [] })
 
+/**
+ * Paste (Ctrl/⌘+V) while the dialog is open: image / video files from the clipboard go the same way as picked ones
+ * (owner 2026-11-19 「可以支持剪贴簿贴上不?」). A screenshot arrives as an unnamed "image.png": it gets a time-based name.
+ * Plain text pastes (e.g. into the editor's name field) are left alone.
+ */
+function onPaste(ev: ClipboardEvent) {
+  if (!open.value) return
+  const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/') || f.type.startsWith('video/'))
+  if (!files.length) return
+  ev.preventDefault()
+  const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '')
+  files.forEach((f, i) => {
+    const generic = /^image\.\w+$/i.test(f.name) || !f.name
+    const ext = f.type.split('/')[1]?.replace('jpeg', 'jpg').replace('quicktime', 'mov') ?? 'png'
+    add(generic ? new File([f], `${t('media.pastedName')}-${stamp}${files.length > 1 ? `-${i + 1}` : ''}.${ext}`, { type: f.type, lastModified: Date.now() }) : f)
+  })
+}
+window.addEventListener('paste', onPaste)
+onBeforeUnmount(() => window.removeEventListener('paste', onPaste))
+
 const stats = computed(() => ({
   total: entries.value.length,
   done: entries.value.filter((e) => e.state === 'done').length,
@@ -137,6 +157,7 @@ onBeforeUnmount(() => {
       <p style="margin: 0">{{ t('media.drop') }}</p>
       <p class="muted small" style="margin: 4px 8px 8px">{{ hint }}</p>
       <p class="muted small" style="margin: 0 8px 8px">{{ t('media.dropEditHint') }}</p>
+      <p class="muted small" style="margin: 0 8px 8px">{{ t('media.pasteHint') }}</p>
     </a-upload-dragger>
 
     <div v-if="entries.length" class="files">
