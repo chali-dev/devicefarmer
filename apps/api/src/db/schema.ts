@@ -697,7 +697,6 @@ export const publishTasks = pgTable('publish_tasks', {
   platform: text('platform').notNull(),
   title: text('title'),
   caption: text('caption').notNull().default(''),
-  hashtags: text('hashtags').array().notNull().default(sql`'{}'::text[]`),
   /** Platform options, e.g. { privacy: 'public' | 'unlisted' | 'private' }. */
   options: jsonb('options').$type<Record<string, unknown>>().notNull().default({}),
   /** Snapshot of the content's ordered media at distribution. */

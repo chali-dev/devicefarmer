@@ -424,7 +424,7 @@ export interface ContentTranslation {
 export interface ContentLanguages { source: string; configured: string[]; languages: string[] }
 export interface PublishTaskItem {
   id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
-  title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
+  title: string | null; /** The text as posted (the content's, in the account's language). */ caption: string; options: Record<string, unknown>; mediaIds: string[]
   scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | 'device' | null; attemptNo: number; maxAttempts: number; taskId: string | null
   externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
   postType: PostType
@@ -433,7 +433,7 @@ export interface PublishTaskItem {
   /** Language of the snapshot texts (account language when translated, else the source); null = unknown (older rows). */
   lang: string | null
   createdAt: string; updatedAt: string
-  content: { id: string; title: string; userId: string; /** 已发布的内容不能编辑 */ locked: boolean } | null
+  content: { id: string; title: string; userId: string } | null
   account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
   media: ContentMedia[]
@@ -462,7 +462,7 @@ export interface PublishCapability {
   media: MediaRule
   postTypes?: Partial<Record<'reel' | 'story', { media: MediaRule; caption: boolean }>>
   title: { required: boolean; max: number } | null
-  captionMax: number; hashtagsMax: number; privacy?: string[]
+  captionMax: number; privacy?: string[]
 }
 export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; known: boolean }
 

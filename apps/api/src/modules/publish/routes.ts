@@ -5,12 +5,12 @@ import { db, schema } from '../../db/index.js';
 import { POST_TYPES, PUBLISH_STATUSES, type PublishTask } from '../../db/schema.js';
 import { forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
-import { mediaItem, publishedCounts } from '../content/content.js';
+import { mediaItem } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
-import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
+import { PUBLISH_CAPABILITIES, capabilityOf, postTypesOf } from './platforms.js';
 import { storageFor } from '../settings/storage.js';
 import { DevicePublishBody, getDevicePublishRules, saveDevicePublishRules } from './device-rules.js';
-import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish } from './publish.js';
+import { cancelPublish, recordOutcome, REF_TYPE, reschedulePublish } from './publish.js';
 
 const pt = schema.publishTasks;
 /** The day a task belongs to: when it was published, else when it is (was) due. */
@@ -84,14 +84,13 @@ export async function visiblePublishTask(user: AuthUser, id: string): Promise<Pu
 /** Publish tasks with account, device, content and media summaries. */
 export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
   if (!rows.length) return [];
-  const [accs, contents, owners, media, published] = await Promise.all([
+  const [accs, contents, owners, media] = await Promise.all([
     db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, displayName: schema.socialAccounts.displayName, platform: schema.socialAccounts.platform,
       loginStatus: schema.socialAccounts.loginStatus, accountStatus: schema.socialAccounts.accountStatus, instanceId: schema.socialAccounts.instanceId })
       .from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))),
     db.select({ id: schema.contents.id, title: schema.contents.title, userId: schema.contents.userId }).from(schema.contents).where(inArray(schema.contents.id, idsOf(rows.map((r) => r.contentId)))),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
     db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, idsOf(rows.flatMap((r) => r.mediaIds)))),
-    publishedCounts(db, [...new Set(rows.map((r) => r.contentId))]),
   ]);
   const insts = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
     .from(schema.instances).where(inArray(schema.instances.id, idsOf(accs.map((a) => a.instanceId))));
@@ -105,10 +104,8 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
       // evidence: the storage key stays server-side; the screenshot is served by GET …/evidence
       evidence: r.evidence ? { at: r.evidence.at, inputText: r.evidence.inputText ?? null, excerpt: r.evidence.excerpt ?? null } : null,
       hasEvidence: !!r.evidence?.key,
-      text: composeText(r.caption, r.hashtags),
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
-      // locked: 已发布的内容不能编辑 (a task of the content is published), so the drawer offers no text edit.
-      content: content ? { ...content, locked: (published.get(content.id) ?? 0) > 0 } : null,
+      content: content ?? null,
       account: acc ? { id: acc.id, handle: acc.handle, displayName: acc.displayName, platform: acc.platform, loginStatus: acc.loginStatus, accountStatus: acc.accountStatus } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
       media: r.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m) => !!m && !m.deletedAt).map((m) => mediaItem(m!)),
@@ -200,21 +197,6 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     const next = await reschedulePublish(req.user, row, req.body.scheduledAt ? new Date(req.body.scheduledAt) : null);
     if (req.audit) req.audit.extra = { taskId: next.taskId, attemptNo: next.attemptNo };
     return { task: (await toPublishItems([next], req.user))[0] };
-  });
-
-  app.patch('/api/publish/tasks/:id', {
-    schema: {
-      params: Id,
-      body: z.object({
-        title: z.string().trim().max(100).nullable().optional(),
-        caption: z.string().max(5000).optional(),
-        hashtags: z.array(z.string().trim().min(1).max(100)).max(30).optional(),
-        options: z.object({ privacy: z.string().max(20).optional() }).strict().optional(),
-      }),
-    },
-  }, async (req) => {
-    const row = await visiblePublishTask(req.user, req.params.id);
-    return { task: (await toPublishItems([await editPublish(req.user, row, req.body)], req.user))[0] };
   });
 
   /** 云手机发帖: the screenshot of the last screen before 分享 (or of the failing screen). */

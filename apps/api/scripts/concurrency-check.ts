@@ -253,19 +253,27 @@ try {
     const unfinished = await db.select().from(PT).where(and(eq(PT.contentId, c1), inArray(PT.status, [...UNFINISHED])));
     check('re-distribute ×10 after cancel → exactly 1 new unfinished task', unfinished.length === 1 && count(rp, 201) === 1, `${unfinished.length} ${statuses(rp)}`);
 
-    // 发布任务 编辑 from two tabs at once (title in one, caption in the other): both survive
-    let lost = '';
-    for (let r = 0; r < 6 && !lost; r++) {
-      const es = await Promise.all([
-        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { title: `T${r}` }),
-        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { caption: `C${r}` }),
-        http('PATCH', `/api/publish/tasks/${unfinished[0]!.id}`, A.token, { hashtags: [`h${r}`] }),
-      ]);
-      const [x] = await db.select().from(PT).where(eq(PT.id, unfinished[0]!.id));
-      if (es.some((e) => e.status !== 200)) lost = `round ${r}: ${statuses(es)} ${es.find((e) => e.status !== 200)?.text}`;
-      else if (x!.title !== `T${r}` || x!.caption !== `C${r}` || x!.hashtags.join() !== `h${r}`) lost = `round ${r}: ${x!.title} / ${x!.caption} / ${x!.hashtags.join()}`;
+    // No per-account text edit any more (owner 2026-11-19): the task's text is the content's at distribution. A
+    // distribution while an edit of the content is saving waits for it and snapshots the EDITED text (the texts are
+    // read under the content row lock, not before it). The edit is held open in a transaction of this script.
+    {
+      const cE = await newContent('ready');
+      const edited = `edited while distributing ${tag}`;
+      let pending: Promise<Awaited<ReturnType<typeof http>>> | null = null;
+      let waited = false;
+      await db.transaction(async (tx) => {
+        await tx.select({ id: schema.contents.id }).from(schema.contents).where(eq(schema.contents.id, cE)).for('update');
+        await tx.update(schema.contents).set({ body: edited, updatedAt: new Date() }).where(eq(schema.contents.id, cE));
+        pending = http('POST', `/api/contents/${cE}/distribute`, A.token, { targets: [{ accountId: acc, scheduledAt: future(4) }] });
+        const quick = await Promise.race([pending.then(() => 'answered'), sleep(1500).then(() => 'waiting')]);
+        waited = quick === 'waiting';
+      });
+      const dr = await pending!;
+      const [snap] = await db.select().from(PT).where(eq(PT.contentId, cE));
+      check('distribute during a content edit: waits for it, the task snapshots the edited text (no stale text, nothing to fix per account later)',
+        waited && dr.status === 201 && snap?.caption === edited, `waited ${waited}, ${dr.status} ${dr.text.slice(0, 120)}, caption ${JSON.stringify(snap?.caption)}`);
+      if (snap) await http('POST', `/api/publish/tasks/${snap.id}/cancel`, A.token);
     }
-    check('publish task PATCH of title / caption / hashtags at once ×6 → all three survive', !lost, lost);
 
     // B5: 批量发布 ×10 at once over 3 contents with 2 targets each → one task per content + account
     const bc = [await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2])];

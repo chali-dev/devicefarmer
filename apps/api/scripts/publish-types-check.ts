@@ -166,9 +166,9 @@ try {
   check('rejected distributions created nothing', noneCreated.length === 0);
 
   // ---------------------------------------------------------------- immediate: story via the manual method (device online)
-  r = await dist(A, cV5, [{ accountId: igOn.id, postType: 'story', caption: 'ignored caption', hashtags: ['ignored'] }]);
+  r = await dist(A, cV5, [{ accountId: igOn.id, postType: 'story' }]);
   const story = r.body.created?.[0];
-  check('immediate story: 201, postType story, caption + hashtags dropped (stories have none)', r.status === 201 && story?.postType === 'story' && story.caption === '' && story.hashtags.length === 0 && story.text === '', r.text);
+  check("immediate story: 201, postType story, the content's text dropped (stories have none)", r.status === 201 && story?.postType === 'story' && story.caption === '', r.text);
   let d = await waitStatus(A, story.id, ['awaiting_operator', 'failed']);
   check('story run → awaiting_operator via manual', d.task.status === 'awaiting_operator' && d.task.method === 'manual', JSON.stringify(d.task.errorCode));
   check('publish logs carry the post type (distributed, run started, handed over)',
@@ -204,8 +204,7 @@ try {
   r = await dist(A, cImg1, [{ accountId: igOn.id, scheduledAt: later.toISOString(), postType: 'story' }]);
   const storyLater = r.body.created?.[0];
   remember(storyLater);
-  r = await http('PATCH', `/api/publish/tasks/${storyLater.id}`, A, { caption: 'try a caption', hashtags: ['x'] });
-  check('editing a story keeps it caption-free', r.status === 200 && r.body.task.caption === '' && r.body.task.hashtags.length === 0, r.text);
+  check('scheduled story: caption-free snapshot', storyLater?.caption === '' && storyLater?.postType === 'story', JSON.stringify(storyLater?.caption));
   r = await http('POST', `/api/publish/tasks/${storyLater.id}/reschedule`, A, { scheduledAt: new Date(later.getTime() + 3600_000).toISOString() });
   check('reschedule keeps the post type', r.status === 200 && r.body.task.postType === 'story' && r.body.task.status === 'scheduled', r.text);
   remember(r.body.task);
@@ -278,7 +277,7 @@ try {
   const distAudit = audit.filter((a) => a.action === 'content.distribute' && a.status === 201);
   check('audit: content.distribute details carry the post types', distAudit.some((a) => JSON.stringify((a.detail as any).postTypes) === '["story"]') && distAudit.some((a) => JSON.stringify((a.detail as any).postTypes) === '["reel"]'),
     JSON.stringify(distAudit.map((a) => a.detail)));
-  check('audit: outcome + reschedule + edit recorded', ['publish.outcome_published', 'publish.reschedule', 'publish.update'].every((x) => audit.some((a) => a.action === x)));
+  check('audit: outcome + reschedule recorded', ['publish.outcome_published', 'publish.reschedule'].every((x) => audit.some((a) => a.action === x)));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {

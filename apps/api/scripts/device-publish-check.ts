@@ -224,7 +224,7 @@ try {
       const [row] = await db.select().from(pt).where(eq(pt.id, taskId));
       const logs: string[] = [];
       const ctx = { row: row!, log: async (_l: string, m: string) => { logs.push(m); }, task: { task: { timeoutMs: timeoutMs ?? null } as any, payload: {}, attempt: 1, signal: new AbortController().signal, log: async () => undefined } };
-      const input = { publishTaskId: row!.id, attemptNo: row!.attemptNo, platform: 'instagram', account: accRow!, caption: row!.caption, hashtags: [], text: row!.caption, options: {}, media: [], postType: 'feed' as const };
+      const input = { publishTaskId: row!.id, attemptNo: row!.attemptNo, platform: 'instagram', account: accRow!, caption: row!.caption, options: {}, media: [], postType: 'feed' as const };
       let out: any; let err: any = null;
       try { out = await runDevicePublish(input as any, ctx as any, { withDevice: fakeDevice, flow }); } catch (e) { err = e; }
       const [after] = await db.select().from(pt).where(eq(pt.id, taskId));
