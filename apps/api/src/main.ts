@@ -12,7 +12,6 @@ import { startLeaderElection } from './lib/leader.js';
 import { closeAllTunnels } from './adapters/bitbrowser-tunnel.js';
 import { authPlugin } from './modules/auth/plugin.js';
 import { authRoutes } from './modules/auth/routes.js';
-import { startAuditRetention } from './modules/audit/audit.js';
 import { auditPlugin } from './modules/audit/plugin.js';
 import { auditRoutes } from './modules/audit/routes.js';
 import { controlRoutes } from './modules/control/session.js';
@@ -165,7 +164,6 @@ async function startBackground(): Promise<void> {
   if (stopping) return;
   const workers = startTaskWorkers();
   const stopMonitor = startMonitor(app.log);
-  const stopAuditRetention = startAuditRetention(app.log);
   const hourly = () => {
     void cleanupUploads().catch((err) => app.log.warn({ err }, 'upload cleanup failed'));
     void purgeDeletedMedia(app.log).catch((err) => app.log.warn({ err }, 'media purge failed'));
@@ -197,7 +195,6 @@ async function startBackground(): Promise<void> {
       stopMonitor();
       clearTimeout(firstRun);
       clearInterval(cleanupTimer);
-      stopAuditRetention();
       await workers.close(); // waits for running jobs
       closeAllTunnels();
     },

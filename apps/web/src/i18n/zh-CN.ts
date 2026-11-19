@@ -1961,7 +1961,6 @@ const zhCN = {
   },
   settings: {
     updatedAt: '更新于 {at}',
-    readOnlyEnv: '环境变量 {name}，只读',
     tabs: {
       data: '数据',
       logRetention: '日志',
@@ -1999,19 +1998,6 @@ const zhCN = {
       videos: '视频',
       typesRequired: '至少选择一种格式',
       heic: 'HEIC 需要支持 HEVC 的 libvips 构建，否则上传后处理会失败；且不能裁切/压缩。',
-    },
-    retention: {
-      tasksTitle: '任务中心保留期',
-      tasksHint: '每小时清理一次已结束且超过保留期的任务及其日志；未结束或仍被业务引用的任务不会删除。',
-      keepForever: '永久保留（不清理）',
-      days: '保留天数',
-      dayUnit: '天',
-      default: '默认 {n} 天',
-      runNow: '立即清理',
-      started: '已创建清理任务',
-      lastRun: '最近一次清理',
-      lastResult: '删除 {tasks} 个任务、{logs} 条日志',
-      auditTitle: '操作日志保留期',
     },
   },
   sysadmin: {
@@ -2062,11 +2048,17 @@ const zhCN = {
       limit: '条数',
       message: '消息',
       request: '请求',
-      retention: '保留期',
-      logRetention: '日志文件保留',
-      historyRetention: '连线历史保留',
+      fields: {
+        logRetentionDays: '系统日志',
+        historyRetentionDays: '设备日志',
+        auditRetentionDays: '操作日志',
+        taskRetentionDays: '任务日志',
+        riskEventsRetentionDays: '风控记录',
+        notificationRetentionDays: '通知',
+      },
+      keepForever: '永久保留',
       cleanNow: '立即清理',
-      cleaned: '已清理：删除 {files} 个日志文件、{rows} 条连线历史',
+      cleaned: '已清理：日志文件 {files}、设备日志 {history}、操作日志 {audit}、任务 {tasks}、风控记录 {risk}、通知 {notes}',
       empty: '没有匹配的日志',
     },
     conn: {
@@ -2548,8 +2540,6 @@ const zhCN = {
       notifyAdmins: '所有管理员都接收告警',
       notifyAdminsHint: '关闭后只发给对象的所有者或已授权用户',
       recovered: '问题恢复时发送“已恢复”通知',
-      retention: '已读通知保留',
-      retentionHint: '每小时清理；未读通知至少保留 90 天',
     },
   },
   alertChannels: {

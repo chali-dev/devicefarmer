@@ -6,7 +6,9 @@ import { assertInstanceAccess } from '../auth/rbac.js';
 import { deleteBackup, listBackups, openBackup, startBackup } from './backup.js';
 import { connectionPanel, deviceHistory, deviceLogs } from './connections.js';
 import { LEVELS, listLogFiles, readLogs, type LevelName } from './logs.js';
-import { systemHourly } from './maintenance.js';
+import { getRules, LIMITS as ALERT_LIMITS, saveRules } from '../notify/rules.js';
+import { DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention } from '../tasks/retention.js';
+import { runAllPurges } from './maintenance.js';
 import { getSystemSettings, saveSystemSettings, SYSTEM_DEFAULTS, SystemSettings } from './settings.js';
 
 /**
@@ -17,11 +19,36 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
   const admin = { preHandler: app.requireAdmin };
   const IdParam = z.object({ id: z.string().uuid() });
 
-  app.get('/api/system/settings', admin, async () => ({ settings: await getSystemSettings(), defaults: SYSTEM_DEFAULTS }));
-  app.put('/api/system/settings', { ...admin, schema: { body: SystemSettings.partial() } }, async (req) => ({ settings: await saveSystemSettings(req.body) }));
+  /**
+   * 系统配置 → 日志 shows every retention in one form. Two of them keep their own single stored value elsewhere:
+   * 任务日志 = `tasks.retention` (null = keep forever), 通知 = `alerts.rules.retentionDays`.
+   */
+  const settingsView = async () => {
+    const [s, tasks, rules] = await Promise.all([getSystemSettings(), getRetention(), getRules()]);
+    return {
+      settings: { ...s, taskRetentionDays: tasks.days, notificationRetentionDays: rules.retentionDays },
+      defaults: { ...SYSTEM_DEFAULTS, taskRetentionDays: DEFAULT_RETENTION_DAYS, notificationRetentionDays: 30 },
+      max: {
+        logRetentionDays: 365, historyRetentionDays: 90, auditRetentionDays: 3650, riskEventsRetentionDays: 3650,
+        taskRetentionDays: MAX_RETENTION_DAYS, notificationRetentionDays: ALERT_LIMITS.retentionMax,
+      },
+    };
+  };
+  const SettingsBody = SystemSettings.partial().extend({
+    taskRetentionDays: z.number().int().min(1).max(MAX_RETENTION_DAYS).nullable().optional(),
+    notificationRetentionDays: z.number().int().min(1).max(ALERT_LIMITS.retentionMax).optional(),
+  }).strict();
+  app.get('/api/system/settings', admin, async () => settingsView());
+  app.put('/api/system/settings', { ...admin, schema: { body: SettingsBody } }, async (req) => {
+    const { taskRetentionDays, notificationRetentionDays, ...system } = req.body;
+    if (Object.keys(system).length) await saveSystemSettings(system);
+    if (taskRetentionDays !== undefined) await saveRetention(taskRetentionDays);
+    if (notificationRetentionDays !== undefined) await saveRules({ retentionDays: notificationRetentionDays });
+    return settingsView();
+  });
 
-  /** Runs the hourly maintenance now (retention, crashed backups, daily backup schedule). */
-  app.post('/api/system/maintenance', admin, async () => ({ result: await systemHourly() }));
+  /** 立即清理: every retention purge now + the hourly maintenance (crashed backups, daily backup schedule). */
+  app.post('/api/system/maintenance', admin, async () => ({ result: await runAllPurges() }));
 
   // ------------------------------------------------------------ backups
   app.get('/api/system/backups', admin, async () => ({ backups: await listBackups(), pgDumpCmd: config.PG_DUMP_CMD }));

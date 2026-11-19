@@ -4,9 +4,8 @@ import { db, schema } from '../../db/index.js';
 /**
  * 风控记录 (risk_events): one short coded row per problem the automatic device work met (collector visit,
  * account check). Written fire-and-forget (a failed insert never fails the visit), listed on the 风控 page,
- * purged after RETENTION_DAYS by the hourly system maintenance (fixed, like a log: no setting).
+ * purged after `system.riskEventsRetentionDays` (default 90) by the hourly system maintenance.
  */
-export const RISK_RETENTION_DAYS = 90;
 const E = schema.riskEvents;
 
 export interface RiskEventInput {
@@ -49,7 +48,7 @@ export async function listRiskEvents(q: { instanceId?: string; code?: string; so
   return { events: rows, total, codes };
 }
 
-export async function purgeRiskEvents(days = RISK_RETENTION_DAYS): Promise<number> {
+export async function purgeRiskEvents(days: number): Promise<number> {
   const r = await db.delete(E).where(lt(E.at, new Date(Date.now() - days * 86_400_000))).returning({ id: E.id });
   return r.length;
 }

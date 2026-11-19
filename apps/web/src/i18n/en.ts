@@ -1950,7 +1950,6 @@ const en: Messages = {
   },
   settings: {
     updatedAt: 'Updated {at}',
-    readOnlyEnv: 'env {name}, read-only',
     tabs: {
       data: 'Data',
       logRetention: 'Logs',
@@ -1988,19 +1987,6 @@ const en: Messages = {
       videos: 'Videos',
       typesRequired: 'Select at least one format',
       heic: 'HEIC needs a libvips build with HEVC, otherwise processing fails after the upload; it cannot be cropped or compressed.',
-    },
-    retention: {
-      tasksTitle: 'Task Center retention',
-      tasksHint: 'Finished tasks older than the retention period are deleted with their logs every hour; unfinished or still referenced tasks are kept.',
-      keepForever: 'Keep forever (no cleanup)',
-      days: 'Retention (days)',
-      dayUnit: 'days',
-      default: 'Default {n} days',
-      runNow: 'Clean up now',
-      started: 'Cleanup task created',
-      lastRun: 'Last cleanup',
-      lastResult: '{tasks} tasks and {logs} log lines deleted',
-      auditTitle: 'Audit log retention',
     },
   },
   sysadmin: {
@@ -2051,11 +2037,17 @@ const en: Messages = {
       limit: 'Lines',
       message: 'Message',
       request: 'Request',
-      retention: 'Retention',
-      logRetention: 'Keep log files',
-      historyRetention: 'Keep connection history',
+      fields: {
+        logRetentionDays: 'System logs',
+        historyRetentionDays: 'Device logs',
+        auditRetentionDays: 'Audit log',
+        taskRetentionDays: 'Task logs',
+        riskEventsRetentionDays: 'Risk events',
+        notificationRetentionDays: 'Notifications',
+      },
+      keepForever: 'Keep forever',
       cleanNow: 'Clean up now',
-      cleaned: 'Cleaned up: {files} log files and {rows} connection history rows deleted',
+      cleaned: 'Cleaned up: log files {files}, device logs {history}, audit {audit}, tasks {tasks}, risk events {risk}, notifications {notes}',
       empty: 'No matching log lines',
     },
     conn: {
@@ -2537,8 +2529,6 @@ const en: Messages = {
       notifyAdmins: 'All admins receive alerts',
       notifyAdminsHint: 'When off, only the owner or granted users of the object receive them',
       recovered: 'Send a "recovered" notice when a problem clears',
-      retention: 'Keep read notifications',
-      retentionHint: 'Cleaned up hourly; unread notifications are kept at least 90 days',
     },
   },
   alertChannels: {
