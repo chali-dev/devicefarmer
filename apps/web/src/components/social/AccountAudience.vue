@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { SyncOutlined } from '@ant-design/icons-vue'
+import { SyncOutlined, TeamOutlined, UserAddOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -7,7 +7,7 @@ import { api, codeText, errorText } from '../../api/client'
 import { compactNumber, dayTs, type AccountFollowers, type AccountFollowing, type SocialAccount, type Task } from '../../api/types'
 import { dateLocale } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
-import { pagination, TABLE_SIZE } from '../common/ui'
+import { pagination } from '../common/ui'
 import LineChart from '../tracked/LineChart.vue'
 
 /**
@@ -54,8 +54,8 @@ function search() { page.current = 1; void loadFollowing() }
 function onTable(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void loadFollowing() }
 const columns = computed(() => [
   { title: t('social.audience.colAccount'), key: 'handle' },
-  { title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 180 },
-  { title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 180 },
+  { title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 170 },
+  { title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 170 },
 ])
 const unsupportedText = computed(() => (fw.value?.unsupported ? codeText(fw.value.unsupported, {}, fw.value.unsupported) : ''))
 const lastRunText = computed(() => {
@@ -108,8 +108,11 @@ watch(tab, (v) => { if (v === 'following' && !fw.value) void loadFollowing() })
 
 <template>
   <div class="audience">
-    <a-tabs v-model:active-key="tab" size="small">
-      <a-tab-pane key="followers" :tab="t('social.audience.followers')">
+    <a-tabs v-model:active-key="tab" type="card" class="audience-tabs">
+      <a-tab-pane key="followers">
+        <template #tab>
+          <span class="tab-label"><TeamOutlined />{{ t('social.audience.followers') }}<span v-if="fol?.current" class="tab-count">{{ compactNumber(fol.current.followers) }}</span></span>
+        </template>
         <a-spin :spinning="folLoading">
           <a-empty v-if="fol && !fol.current" :description="t('social.audience.followersEmpty')" />
           <template v-else-if="fol?.current">
@@ -129,7 +132,10 @@ watch(tab, (v) => { if (v === 'following' && !fw.value) void loadFollowing() })
         </a-spin>
       </a-tab-pane>
 
-      <a-tab-pane key="following" :tab="t('social.audience.following')">
+      <a-tab-pane key="following">
+        <template #tab>
+          <span class="tab-label"><UserAddOutlined />{{ t('social.audience.following') }}<span v-if="fw" class="tab-count">{{ fw.following }}</span></span>
+        </template>
         <a-spin :spinning="fwLoading && !fw">
           <div class="bar">
             <a-space wrap>
@@ -150,16 +156,19 @@ watch(tab, (v) => { if (v === 'following' && !fw.value) void loadFollowing() })
           <a-alert v-if="fw?.unsupported" type="info" show-icon :message="unsupportedText" class="gap" />
           <a-empty v-if="fw && !fw.total && !q.text && !q.gone" :description="t('social.audience.followingEmpty', { max: fw.settings.max })" />
           <a-table
-            v-else-if="fw" :data-source="fw.items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="fwLoading"
+            v-else-if="fw" :data-source="fw.items" :columns="columns" row-key="id" size="small" :loading="fwLoading"
             :pagination="pagination({ current: page.current, pageSize: page.pageSize, total: fw.total, totalText: (n: number) => t('social.total', { n }) })"
             @change="onTable"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'handle'">
-                <a :href="`https://www.instagram.com/${record.handle}/`" target="_blank" rel="noopener noreferrer">{{ '@' + record.handle }}</a>
-                <a-tag v-if="record.verified" color="blue" class="ml">{{ t('social.audience.verified') }}</a-tag>
-                <a-tag v-if="record.goneAt" class="ml">{{ t('social.audience.gone', { time: fmt(record.goneAt) }) }}</a-tag>
-                <div v-if="record.displayName" class="muted small">{{ record.displayName }}</div>
+                <div class="who">
+                  <span class="avatar" aria-hidden="true">{{ (record.displayName || record.handle).slice(0, 1).toUpperCase() }}</span>
+                  <a :href="`https://www.instagram.com/${record.handle}/`" target="_blank" rel="noopener noreferrer">{{ '@' + record.handle }}</a>
+                  <span v-if="record.displayName" class="muted">{{ record.displayName }}</span>
+                  <a-tag v-if="record.verified" color="blue">{{ t('social.audience.verified') }}</a-tag>
+                  <a-tag v-if="record.goneAt">{{ t('social.audience.gone', { time: fmt(record.goneAt) }) }}</a-tag>
+                </div>
               </template>
               <template v-else-if="column.key === 'firstSeenAt'">{{ fmt(record.firstSeenAt) }}</template>
               <template v-else-if="column.key === 'lastSeenAt'">{{ fmt(record.lastSeenAt) }}</template>
@@ -173,11 +182,16 @@ watch(tab, (v) => { if (v === 'following' && !fw.value) void loadFollowing() })
 </template>
 
 <style scoped>
-.audience { padding: 0 8px 8px; max-width: 1100px; }
+.audience { padding: 4px 8px 8px; max-width: 1100px; }
+.audience-tabs :deep(.ant-tabs-nav) { margin-bottom: 12px; }
+.tab-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.tab-count { min-width: 20px; padding: 0 6px; border-radius: 10px; font-size: 12px; line-height: 18px; text-align: center; background: var(--cp-fill-alter); color: var(--cp-text-secondary); }
+.who { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.who .ant-tag { margin-inline-end: 0; }
+.avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; background: var(--cp-primary-bg); color: var(--cp-primary); flex: none; }
 .stats { margin-bottom: 8px; }
 .bar { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .gap { margin-bottom: 8px; }
-.ml { margin-left: 6px; }
 .up :deep(.ant-statistic-content) { color: var(--cp-success); }
 .down :deep(.ant-statistic-content) { color: var(--cp-error); }
 </style>
