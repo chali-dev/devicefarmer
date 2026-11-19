@@ -2,7 +2,8 @@
 import { dateLocale } from '../i18n'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { DownOutlined, PlusOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined } from '@ant-design/icons-vue'
+import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText, type ErrorParams } from '../api/client'
@@ -24,7 +25,6 @@ import VNodes from '../components/common/VNodes'
 import ContentAccountsCell from '../components/content/ContentAccountsCell.vue'
 import ContentMediaUpload from '../components/content/ContentMediaUpload.vue'
 import ContentTargetPicker from '../components/content/ContentTargetPicker.vue'
-import DistributeModal from '../components/content/DistributeModal.vue'
 import MediaPicker from '../components/content/MediaPicker.vue'
 import MediaStrip from '../components/content/MediaStrip.vue'
 import PhonePreview from '../components/content/PhonePreview.vue'
@@ -489,17 +489,37 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
   } catch (e) { message.error(errorText(e)); return null } finally { saving.value = false }
 }
 /** 排程发布 / 立即发布 in the editor: save as ready (closes the editor), then the publishing step for that content. */
-async function saveAndPublish(mode: 'now' | 'at') {
+/**
+ * 立即发布 / 排程发布 straight from the editor (owner 2026-11-19 「点立即发布直接创建发布任务；点排程就配置下时间；不要再多一个弹窗」):
+ * save, then distribute to the content's 发布目标 (minus accounts it is already published on) with the post type of the
+ * phone preview (帖子 / Reels / 限动); 排程 only picks the time in a small popover on the button. API refusals (media,
+ * banned words, platform rules…) come back as messages; the content stays saved.
+ */
+const schedOpen = ref(false)
+const schedAt = ref<Dayjs | null>(null)
+const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
+function openSchedule(v: boolean) { if (v && !schedAt.value) schedAt.value = dayjs().add(1, 'hour').startOf('hour'); schedOpen.value = v }
+async function saveAndPublish(at: Dayjs | null) {
+  if (!form.targets.length) { message.warning(t('content.publishNoTargets')); return }
+  if (at && !at.isAfter(dayjs())) { message.warning(t('distribute.pickTime')); return }
   const c = await save('ready')
-  if (c) openDistribute(c, mode)
+  if (!c) return
+  const done = new Set(editorTasks.value.filter((x) => x.status === 'published').map((x) => x.accountId))
+  const ids = form.targets.filter((id) => !done.has(id))
+  if (!ids.length) { message.info(t('content.publishAllDone')); return }
+  saving.value = true
+  try {
+    const r = await api<{ created: PublishTaskItem[]; existing: PublishTaskItem[] }>('POST', `/api/contents/${c.id}/distribute`, {
+      targets: ids.map((accountId) => ({ accountId, scheduledAt: at ? at.toISOString() : null, ...(previewType.value !== 'feed' ? { postType: previewType.value } : {}) })),
+    })
+    schedOpen.value = false
+    if (r.created.length) message.success(t('distribute.created', { n: r.created.length }))
+    if (r.existing.length) message.info(t('distribute.existing', { n: r.existing.length }))
+    editorOpen.value = false
+    void load()
+  } catch (e) { message.error(errorText(e)) } finally { saving.value = false }
 }
 // ---------------------------------------------------------------- actions
-const distributeOpen = ref(false)
-const distributing = ref<Content | null>(null)
-const distributeMode = ref<'now' | 'at'>('now')
-function openDistribute(c: Content, mode: 'now' | 'at') { distributing.value = c; distributeMode.value = mode; distributeOpen.value = true }
-
-/** Already published or scheduled: no 发布 button in the row; publishing to more accounts stays under 更多. */
 
 async function setArchived(c: Content, archived: boolean) {
   try {
@@ -826,21 +846,21 @@ async function submitBatchForm() {
       <a-button v-if="editing?.stage === 'archived'" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
       <template v-else>
         <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
-        <a-dropdown-button type="primary" :loading="saving" :trigger="['click']" @click="saveAndPublish('at')">
-          {{ t('content.publishLater') }}
-          <template #icon><DownOutlined /></template>
-          <template #overlay>
-            <a-menu @click="saveAndPublish('now')">
-              <a-menu-item key="now">{{ t('content.publishNow') }}</a-menu-item>
-            </a-menu>
+        <a-popover :open="schedOpen" trigger="click" placement="topRight" @open-change="openSchedule">
+          <template #content>
+            <a-space>
+              <a-date-picker v-model:value="schedAt" show-time format="YYYY-MM-DD HH:mm" :disabled-date="pastDay" :allow-clear="false" />
+              <a-button type="primary" :loading="saving" @click="saveAndPublish(schedAt)">{{ t('common.ok') }}</a-button>
+            </a-space>
           </template>
-        </a-dropdown-button>
+          <a-button :loading="saving">{{ t('content.publishLater') }}</a-button>
+        </a-popover>
+        <a-button type="primary" :loading="saving" @click="saveAndPublish(null)">{{ t('content.publishNow') }}</a-button>
       </template>
     </template>
   </a-drawer>
 
   <MediaPicker v-model:open="pickerOpen" :exclude="form.media.map((m) => m.id)" @pick="onPick" />
-  <DistributeModal v-model:open="distributeOpen" :content="distributing" :mode="distributeMode" @done="load()" />
   <BatchPublishModal v-model:open="batchPublishOpen" :ids="batchPublishIds" :titles="batchTitles" @done="onBatchPublished" />
   <ScopedListManager v-model:open="categoryManagerOpen" path="/api/content-categories" list-key="categories" texts="content.categories" @changed="categoriesChanged" />
 </template>

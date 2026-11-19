@@ -1284,6 +1284,8 @@ const zhCN = {
     publishNow: '立即发布',
     publishLater: '排程发布',
     archive: '归档',
+    publishNoTargets: '请先在「发布目标」里选择要发布的媒体号',
+    publishAllDone: '所选媒体号都已发布过这条内容',
     archiveBlocked: '还有未完成的发布任务，不能归档',
     unarchive: '取消归档',
     archived: '已归档',

@@ -1283,6 +1283,8 @@ const en: Messages = {
     publishNow: 'Publish now',
     publishLater: 'Schedule',
     archive: 'Archive',
+    publishNoTargets: 'Pick the media accounts to publish to under Targets first',
+    publishAllDone: 'This content is already published on every selected account',
     archiveBlocked: 'Unfinished publish tasks: cannot archive',
     unarchive: 'Unarchive',
     archived: 'Archived',
