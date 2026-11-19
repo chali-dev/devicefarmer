@@ -8,7 +8,7 @@ import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-en
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { assertNoBannedWords } from '../comments/persona-style.js';
-import { contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
+import { assertNotPublished, contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
@@ -103,6 +103,8 @@ function postFor(content: Content, texts: AccountTexts, platform: string, t: Dis
 export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[], opts: { republish?: boolean } = {}): Promise<DistributeResult> {
   if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
+  // 已发布的内容不能编辑: the remaining accounts get the content's own texts, no per-account text overrides.
+  if (targets.some((t) => t.title?.trim() || t.caption != null || t.hashtags?.length)) await assertNotPublished(db, content.id);
   const media = await contentMediaOf(db, content.id);
   const notReady = media.find((m) => m.status !== 'ready');
   if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
@@ -260,6 +262,8 @@ export async function recordOutcome(user: AuthUser, row: PublishTask, o: { resul
 /** Edit texts/options while the task waits. */
 export async function editPublish(user: AuthUser, row: PublishTask, b: { title?: string | null; caption?: string; hashtags?: string[]; options?: Record<string, unknown> }): Promise<PublishTask> {
   if (row.status !== 'pending' && row.status !== 'scheduled') throw conflict(`当前状态（${row.status}）不能修改`, 'publish.bad_status', { status: row.status });
+  // 已发布的内容不能编辑: once a post of the content is online, the other accounts' texts stay the content's.
+  if (b.title !== undefined || b.caption !== undefined || b.hashtags !== undefined) await assertNotPublished(db, row.contentId);
   const noText = postTypeRule(row.platform, row.postType)?.caption === false;
   const next = {
     title: b.title !== undefined ? (b.title?.trim() || null) : row.title,

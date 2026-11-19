@@ -179,6 +179,26 @@ export async function assertNoUnfinishedPublish(exec: Exec, contentId: string, a
   }
 }
 
+// ---------------------------------------------------------------- 已发布的内容不能编辑 (owner 2026-11-19)
+
+/**
+ * A content is LOCKED as soon as one of its publish tasks is `published` (a post is online). Its texts, media, targets,
+ * source language and translations can no longer be changed (409 content.published_locked), nor the texts of its
+ * unfinished publish tasks; category, stage (归档 / 取消归档), tags, deletion (its own rules) and distributing to accounts
+ * it is not yet published on (with the content's texts, no per-account text overrides) stay allowed.
+ */
+export async function publishedCounts(exec: Exec, contentIds: string[]): Promise<Map<string, number>> {
+  if (!contentIds.length) return new Map();
+  const rows = await exec.select({ id: pt.contentId, n: sql<number>`count(*)::int` }).from(pt)
+    .where(and(inArray(pt.contentId, contentIds), eq(pt.status, 'published'))).groupBy(pt.contentId);
+  return new Map(rows.map((r) => [r.id, r.n]));
+}
+
+export async function assertNotPublished(exec: Exec, contentId: string): Promise<void> {
+  const n = (await publishedCounts(exec, [contentId])).get(contentId) ?? 0;
+  if (n > 0) throw conflict('已发布的内容不能编辑', 'content.published_locked', { count: n });
+}
+
 // ---------------------------------------------------------------- shaping
 
 export interface ContentMediaItem {
@@ -234,7 +254,7 @@ export async function publishSummaries(viewer: AuthUser, contentIds: string[]): 
 export async function toContentItems(rows: Content[], viewer: AuthUser) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [tagRows, mediaRows, owners, counts, langs, targetRows, cats, summaries] = await Promise.all([
+  const [tagRows, mediaRows, owners, counts, langs, targetRows, cats, summaries, published] = await Promise.all([
     db.select({ contentId: schema.contentTagLinks.contentId, name: schema.contentTags.name }).from(schema.contentTagLinks)
       .innerJoin(schema.contentTags, eq(schema.contentTags.id, schema.contentTagLinks.tagId))
       .where(inArray(schema.contentTagLinks.contentId, ids)).orderBy(asc(schema.contentTags.name)),
@@ -253,6 +273,7 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
       .where(inArray(schema.contentTargets.contentId, ids)).orderBy(asc(schema.contentTargets.position)),
     categoriesByIds(rows.flatMap((r) => (r.categoryId ? [r.categoryId] : []))),
     publishSummaries(viewer, ids),
+    publishedCounts(db, ids),
   ]);
   return rows.map(({ category: _legacy, ...r }) => ({
     ...r,
@@ -262,6 +283,8 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),
     media: mediaRows.filter((m) => m.contentId === r.id).map((m) => mediaItem(m.a)),
     publishCounts: counts.get(r.id) ?? {},
+    /** 已发布的内容不能编辑: a publish task of it is published (any account, also ones the viewer doesn't see). */
+    locked: (published.get(r.id) ?? 0) > 0,
     /** 媒体号 of the viewer-visible publish tasks (latest task per account) + next due / last published time. */
     publishAccounts: summaries.get(r.id)?.accounts ?? [],
     nextPublishAt: summaries.get(r.id)?.nextPublishAt ?? null,

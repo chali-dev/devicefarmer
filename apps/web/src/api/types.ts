@@ -394,6 +394,8 @@ export interface Content {
   categoryId: string | null; category: ContentCategoryRef | null
   stage: 'draft' | 'ready' | 'archived'; status: ContentStatus; platformHints: ContentHints
   tags: string[]; media: ContentMedia[]; publishCounts: Partial<Record<PublishStatus, number>>
+  /** 已发布的内容不能编辑: a publish task of it is published (texts, media, targets, translations are read only). */
+  locked: boolean
   /** Source language (BCP-47) and the languages that have a translation. */
   lang: string | null; translations: string[]
   /** 发布目标: the content's default target accounts, in order. */
@@ -442,7 +444,7 @@ export interface PublishTaskItem {
   /** Language of the snapshot texts (account language when translated, else the source); null = unknown (older rows). */
   lang: string | null
   createdAt: string; updatedAt: string
-  content: { id: string; title: string; userId: string } | null
+  content: { id: string; title: string; userId: string; /** 已发布的内容不能编辑 */ locked: boolean } | null
   account: { id: string; handle: string; displayName: string | null; platform: string; loginStatus: SocialLoginStatus; accountStatus: SocialAccountStatus } | null
   instance: { id: string; name: string; status: string; adbState: string | null; online: boolean; accessible: boolean } | null
   media: ContentMedia[]

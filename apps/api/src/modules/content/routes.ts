@@ -2,7 +2,7 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'd
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { CONTENT_STATUSES, POST_TYPES, type ContentPlatformHints } from '../../db/schema.js';
+import { CONTENT_STATUSES, POST_TYPES, type Content, type ContentPlatformHints } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { accountPersonaIds, assertNoBannedWords } from '../comments/persona-style.js';
@@ -10,7 +10,7 @@ import { distribute } from '../publish/publish.js';
 import { csv, toPublishItems } from '../publish/routes.js';
 import { BATCH_ACTIONS, BATCH_MAX, batchContents } from './batch.js';
 import {
-  assertNoUnfinishedPublish, assertTargetAccounts, assertUsableMedia, ownerOf, refreshContentStatus, setContentMedia, setContentTags, setContentTargets,
+  assertNoUnfinishedPublish, assertNotPublished, assertTargetAccounts, assertUsableMedia, ownerOf, type Tx, refreshContentStatus, setContentMedia, setContentTags, setContentTargets,
   toContentItems, visibleContent,
 } from './content.js';
 import { assertCategoryFor } from './categories.js';
@@ -73,6 +73,32 @@ async function assertContentWords(contentId: string | null, targetIds: string[] 
   await assertNoBannedWords([...await accountPersonaIds(ids), aiPersonaId], texts);
 }
 const UpdateBody = z.object({ ...Editable, title: Editable.title.optional() });
+
+/** Key-order independent JSON (undefined values dropped), to tell a changed value from the stored one. */
+const stable = (v: unknown): string => (v && typeof v === 'object' && !Array.isArray(v)
+  ? `{${Object.keys(v).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort()
+    .map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(',')}}`
+  : JSON.stringify(v));
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * 已发布的内容不能编辑: on a content with a published task, any CHANGE of title, body, platform texts, media, targets or
+ * source language is refused with 409 content.published_locked (values sent unchanged, category, stage and tags pass).
+ */
+async function assertUnlockedChange(exec: typeof db | Tx, cur: Content, b: z.infer<typeof UpdateBody>) {
+  const changes = (b.title !== undefined && b.title !== cur.title) || (b.body !== undefined && b.body !== cur.body)
+    || (b.platformHints !== undefined && stable(b.platformHints) !== stable(cur.platformHints ?? {}))
+    || (b.lang !== undefined && b.lang !== cur.lang);
+  let other = false;
+  if (!changes && (b.mediaIds || b.targetIds)) {
+    const [media, targets] = await Promise.all([
+      b.mediaIds ? exec.select({ id: schema.contentMedia.assetId }).from(schema.contentMedia).where(eq(schema.contentMedia.contentId, cur.id)).orderBy(asc(schema.contentMedia.position)) : [],
+      b.targetIds ? exec.select({ id: schema.contentTargets.accountId }).from(schema.contentTargets).where(eq(schema.contentTargets.contentId, cur.id)).orderBy(asc(schema.contentTargets.position)) : [],
+    ]);
+    other = (!!b.mediaIds && !sameList([...new Set(b.mediaIds)], media.map((r) => r.id))) || (!!b.targetIds && !sameList([...new Set(b.targetIds)], targets.map((r) => r.id)));
+  }
+  if (changes || other) await assertNotPublished(exec, cur.id);
+}
 
 const ListQuery = z.object({
   /** One status or a csv (list tabs: draft | ready,scheduled | published,partially_published | failed | archived). */
@@ -224,6 +250,8 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/contents/:id', { schema: { params: Id, body: UpdateBody } }, async (req) => {
     const cur = await visibleContent(req.user, req.params.id);
     const b = req.body;
+    // 已发布的内容不能编辑: checked first (before media / banned-word validation) and again under the row lock.
+    await assertUnlockedChange(db, cur, b);
     const media = b.mediaIds ? await assertUsableMedia(req.user, await ownerOf(cur.userId), b.mediaIds) : null;
     const targets = b.targetIds ? await assertTargetAccounts(req.user, cur.userId, b.targetIds) : null;
     const category = b.categoryId ? await assertCategoryFor(cur.userId, b.categoryId) : null;
@@ -234,6 +262,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     await db.transaction(async (tx) => {
       const locked = await visibleContent(req.user, cur.id, tx, true);
+      await assertUnlockedChange(tx, locked, b);
       const set: Partial<typeof c.$inferInsert> = {};
       if (b.title !== undefined) set.title = b.title;
       if (b.body !== undefined) set.body = b.body;
@@ -295,9 +324,11 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
     const { lang } = req.params;
     const b = req.body;
     const pre = await visibleContent(req.user, req.params.id);
+    await assertNotPublished(db, pre.id);
     await assertContentWords(pre.id, null, pre.aiGenerated?.personaId, [b.title, b.body, ...hintTexts(b.platformHints)]);
     const row = await db.transaction(async (tx) => {
       const cur = await visibleContent(req.user, req.params.id, tx, true);
+      await assertNotPublished(tx, cur.id);
       if (cur.lang === lang) throw badRequest('译文语言不能与原文语言相同', 'content.translation_same_lang', { lang });
       const values = { title: b.title, body: b.body ?? '', platformHints: b.platformHints ?? {} };
       const [existing] = await tx.select({ id: ct.id }).from(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, lang)));
@@ -314,6 +345,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.delete('/api/contents/:id/translations/:lang', { schema: { params: LangParams } }, async (req, reply) => {
     const cur = await visibleContent(req.user, req.params.id);
+    await assertNotPublished(db, cur.id);
     const gone = await db.delete(ct).where(and(eq(ct.contentId, cur.id), eq(ct.lang, req.params.lang))).returning({ id: ct.id });
     if (!gone.length) throw notFound('译文不存在', 'content.translation_not_found', { lang: req.params.lang });
     await db.update(c).set({ updatedAt: new Date() }).where(eq(c.id, cur.id));
