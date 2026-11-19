@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import { compactNumber, type AnalyticsPosts } from '../../api/types'
-import { dateLocale } from '../../i18n'
+import { dateLocale, fmtDateTime } from '../../i18n'
 import { pagination } from '../common/ui'
 
 /**
@@ -52,7 +52,7 @@ const columns = computed(() => [
     </a-radio-group>
     <span v-if="data && data.total" class="muted">
       {{ t('analytics.posts.summary', { n: data.total, likes: compactNumber(data.likes), comments: compactNumber(data.comments) }) }}
-      <template v-if="data.lastFetchedAt"> · {{ t('analytics.posts.lastFetched', { time: new Date(data.lastFetchedAt).toLocaleString(dateLocale()) }) }}</template>
+      <template v-if="data.lastFetchedAt"> · {{ t('analytics.posts.lastFetched', { time: fmtDateTime(data.lastFetchedAt) }) }}</template>
     </span>
   </div>
   <a-table :data-source="data?.posts ?? []" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 640 }"
@@ -67,7 +67,7 @@ const columns = computed(() => [
         <a-tag v-if="typeText(record.productType)">{{ typeText(record.productType) }}</a-tag>
         <span v-if="record.mediaType" class="muted small">{{ typeText(record.mediaType) }}</span>
       </template>
-      <template v-else-if="column.key === 'time'">{{ record.publishedAt ? new Date(record.publishedAt).toLocaleString(dateLocale()) : '—' }}</template>
+      <template v-else-if="column.key === 'time'">{{ fmtDateTime(record.publishedAt) }}</template>
       <template v-else-if="column.key === 'likes'"><span class="num">{{ record.likes === null ? '—' : record.likes.toLocaleString(dateLocale()) }}</span></template>
       <template v-else-if="column.key === 'comments'"><span class="num">{{ record.comments === null ? '—' : record.comments.toLocaleString(dateLocale()) }}</span></template>
     </template>

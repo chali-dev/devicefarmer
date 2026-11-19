@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { dateLocale, fmtDateTime } from '../i18n'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { LockOutlined, PlusOutlined } from '@ant-design/icons-vue'
@@ -55,7 +55,6 @@ const filters = reactive({
   lang: undefined as string | undefined, ownerId: undefined as string | undefined,
 })
 const users = ref<ManagedUser[]>([])
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const statusText = (s: string) => t(`content.status.${s}`)
 
 /**
@@ -181,7 +180,7 @@ const shortFmt = (d: string) => {
 }
 /** AI 草稿 (system tag `ai-draft`) are marked 「AI 草稿」 (tooltip: persona, model, time). */
 const aiInfo = (c: Content) => (c.aiGenerated
-  ? t('content.aiDraftInfo', { persona: c.aiGenerated.personaName, model: c.aiGenerated.model, at: fmt(c.aiGenerated.generatedAt) })
+  ? t('content.aiDraftInfo', { persona: c.aiGenerated.personaName, model: c.aiGenerated.model, at: fmtDateTime(c.aiGenerated.generatedAt) })
   : '')
 
 // ---------------------------------------------------------------- editor
@@ -676,7 +675,7 @@ async function submitBatchForm() {
           </template>
           <template v-else-if="column.key === 'publishAt'">
             <template v-if="publishAt(record)">
-              <a-tooltip :title="fmt(publishAt(record)!.at)"><div class="nowrap">{{ shortFmt(publishAt(record)!.at) }}</div></a-tooltip>
+              <a-tooltip :title="fmtDateTime(publishAt(record)!.at)"><div class="nowrap">{{ shortFmt(publishAt(record)!.at) }}</div></a-tooltip>
               <div class="muted small">{{ publishAt(record)!.next ? t('content.publishAtNext') : t('content.publishAtLast') }}</div>
             </template>
             <span v-else class="muted">—</span>
@@ -690,7 +689,7 @@ async function submitBatchForm() {
             <span v-else class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'updated'">
-            <a-tooltip :title="fmt(record.updatedAt)"><span class="muted nowrap">{{ shortFmt(record.updatedAt) }}</span></a-tooltip>
+            <a-tooltip :title="fmtDateTime(record.updatedAt)"><span class="muted nowrap">{{ shortFmt(record.updatedAt) }}</span></a-tooltip>
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
@@ -817,7 +816,7 @@ async function submitBatchForm() {
               <PostTypeTag :type="item.postType" />
               <span>@{{ item.account?.handle ?? '—' }}</span>
               <StatusTag kind="publish" :status="item.status" />
-              <span class="muted small">{{ fmt(item.scheduledAt) }}</span>
+              <span class="muted small">{{ fmtDateTime(item.scheduledAt) }}</span>
               <a-typography-text v-if="item.errorCode" type="danger" class="small">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</a-typography-text>
               <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
               <a v-if="item.older.length" class="small" @click="toggleOlder(item.accountId)">{{ t('publish.previousCount', { n: item.older.length }) }}</a>
@@ -826,7 +825,7 @@ async function submitBatchForm() {
               <div v-for="o in item.older" :key="o.id">
                 <a-space wrap>
                   <StatusTag kind="publish" :status="o.status" />
-                  <span class="muted small">{{ fmt(o.publishedAt ?? o.updatedAt) }}</span>
+                  <span class="muted small">{{ fmtDateTime(o.publishedAt ?? o.updatedAt) }}</span>
                   <a-typography-text v-if="o.errorCode" type="danger" class="small">{{ codeText(o.errorCode, undefined, o.error ?? o.errorCode) }}</a-typography-text>
                   <a class="small" @click="router.push({ path: '/publish', query: { tab: 'queue', task: o.id } })">{{ t('common.view') }}</a>
                 </a-space>

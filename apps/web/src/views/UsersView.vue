@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { PlusOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -155,7 +155,7 @@ async function savePw() {
               <a-switch :checked="!record.disabled" size="small" :disabled="!!lockReason(record)" @change="(v: any) => patch(record, { disabled: !v })" />
             </a-tooltip>
           </template>
-          <template v-else-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
+          <template v-else-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-tooltip :title="lockReason(record)">

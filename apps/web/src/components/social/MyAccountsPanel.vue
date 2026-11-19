@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { countryName } from '../../api/lang'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { DeleteOutlined, EditOutlined, ExclamationCircleOutlined, HistoryOutlined, PictureOutlined, PlusOutlined, RobotOutlined, SyncOutlined, TeamOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
@@ -72,7 +72,6 @@ const filters = reactive({
 const platformName = (id: string) => platforms.value.find((p) => p.id === id)?.name ?? id
 const loginText = (s: SocialLoginStatus) => t(`social.login.${s}`)
 const accountText = (s: SocialAccountStatus) => t(`social.account.${s}`)
-const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 async function loadMeta() {
   try {
@@ -462,7 +461,7 @@ async function submitBatchForm() {
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'followers' || column.key === 'following'">
-            <a-tooltip v-if="record.stats?.[column.key] != null" :title="t('social.countsAt', { time: new Date(record.stats.at).toLocaleString(dateLocale()) })">
+            <a-tooltip v-if="record.stats?.[column.key] != null" :title="t('social.countsAt', { time: fmtDateTime(record.stats.at) })">
               <router-link :to="{ ...audienceLink(record as SocialAccount), query: { tab: column.key } }" class="count">
                 {{ (record.stats.approx.includes(column.key) ? '≈ ' : '') + compactNumber(record.stats[column.key]) }}
               </router-link>
@@ -500,10 +499,10 @@ async function submitBatchForm() {
             <!-- last automatic check / sync: time; the result (正常 / 已退出登录 …) is in the tooltip and in the drawer -->
             <div class="muted small">
               <a-tooltip v-if="record.lastCheckCode" :title="[checkText(record.lastCheckCode), record.lastCheckDetail].filter(Boolean).join(' · ')">
-                <span class="nowrap">{{ t('social.colChecked') }} {{ fmt(record.lastCheckedAt) }}</span>
+                <span class="nowrap">{{ t('social.colChecked') }} {{ fmtDateTime(record.lastCheckedAt) }}</span>
               </a-tooltip>
               <span v-else-if="record.autoCheckUnsupported">{{ t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) }}</span>
-              <span v-else>{{ record.lastCheckedAt ? `${t('social.colChecked')} ${fmt(record.lastCheckedAt)}` : t('social.notChecked') }}</span>
+              <span v-else>{{ record.lastCheckedAt ? `${t('social.colChecked')} ${fmtDateTime(record.lastCheckedAt)}` : t('social.notChecked') }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'ops'">
@@ -616,7 +615,7 @@ async function submitBatchForm() {
           <div v-else-if="l.action === 'unlink'">{{ l.fromValue }}</div>
           <div v-else-if="l.action === 'create' && l.toValue">{{ l.toValue }}</div>
           <div v-if="l.message" class="muted">{{ logMessage(l.message) }}</div>
-          <div class="muted small">{{ fmt(l.at) }} · {{ l.actorName ?? t('common.system') }}</div>
+          <div class="muted small">{{ fmtDateTime(l.at) }} · {{ l.actorName ?? t('common.system') }}</div>
         </a-timeline-item>
       </a-timeline>
     </a-spin>

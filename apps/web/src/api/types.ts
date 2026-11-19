@@ -1,7 +1,6 @@
 import { t, te } from '../i18n'
 
 export type Role = 'admin' | 'user'
-export const ROLES: Role[] = ['admin', 'user']
 export const roleText = (r: Role) => t(`roles.${r}`)
 export type InstanceStatus = 'creating' | 'starting' | 'running' | 'stopping' | 'stopped' | 'restarting' | 'deleting' | 'error'
 
@@ -121,7 +120,6 @@ export interface Profile { id: string; label: string; engine: string; android: n
 
 export type TaskStatus = 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled'
 export const TASK_STATUSES: TaskStatus[] = ['pending', 'scheduled', 'running', 'success', 'failed', 'cancelled']
-export const TASK_FINAL: TaskStatus[] = ['success', 'failed', 'cancelled']
 
 /** Task-centre row (lists and events carry no payload/result; GET /api/tasks/:id adds them). */
 export interface Task {
@@ -159,8 +157,6 @@ export interface TaskStats { byStatus: Record<TaskStatus, number>; byType: Recor
 /** Localized task type (unknown types are shown raw). */
 export const taskText = (type: string) => (te(`tasks.types.${type}`) ? t(`tasks.types.${type}`) : type)
 export const TASK_STATUS_COLOR: Record<TaskStatus, string> = { pending: 'default', scheduled: 'purple', running: 'processing', success: 'success', failed: 'error', cancelled: 'warning' }
-/** Badge status for a-badge (no colour names). */
-export const TASK_STATUS_BADGE: Record<TaskStatus, 'default' | 'processing' | 'success' | 'error' | 'warning'> = { pending: 'default', scheduled: 'default', running: 'processing', success: 'success', failed: 'error', cancelled: 'warning' }
 export const taskStatusText = (s: string) => (te(`tasks.status.${s}`) ? t(`tasks.status.${s}`) : s)
 
 export type PlatformEvent =
@@ -354,10 +350,6 @@ export interface TrackedSnapshot {
   id: string; capturedAt: string; source: TrackedSource; approx: string[] | null
   followers: number | null; following: number | null; posts: number | null; views: number | null
 }
-export interface TrackedPost {
-  id: string; externalId: string; url: string | null; title: string | null; publishedAt: string | null
-  views: number | null; likes: number | null; comments: number | null; source: 'api' | 'manual'; firstSeenAt: string; lastSeenAt: string
-}
 /** "@handle", or the bare YouTube channel id. */
 export const trackedHandle = (a: Pick<TrackedAccount, 'handle'>) => (/^UC[A-Za-z0-9_-]{22}$/.test(a.handle) ? a.handle : `@${a.handle}`)
 /** Compact count (1.2K / 3.4M), full number in a tooltip elsewhere. */
@@ -373,7 +365,6 @@ export const CONTENT_STATUS_COLOR: Record<ContentStatus, string> = {
   draft: 'default', ready: 'blue', scheduled: 'purple', partially_published: 'gold', published: 'success', failed: 'error', archived: 'default',
 }
 export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled' | 'dry_run'
-export const PUBLISH_STATUSES: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled', 'dry_run']
 export const PUBLISH_UNFINISHED: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
 export const PUBLISH_STATUS_COLOR: Record<PublishStatus, string> = {
   pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default', dry_run: 'cyan',
@@ -415,8 +406,6 @@ export interface ContentAiInfo {
   /** Languages of the target accounts other than Chinese: the draft needs a human translation. */
   needsTranslation?: string[]
 }
-/** Tag set on every AI draft (shown as 「AI 草稿」). */
-export const AI_DRAFT_TAG = 'ai-draft'
 export interface ContentPublishAccount {
   id: string; platform: string; handle: string; displayName: string | null
   status: PublishStatus; postType: PostType; scheduledAt: string; publishedAt: string | null

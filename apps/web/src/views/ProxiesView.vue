@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { message, Modal } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
@@ -364,7 +364,7 @@ async function openUsage(p: PoolProxy) {
               <span v-if="record.lastCheck?.egressIp" class="mono small">{{ record.lastCheck.egressIp }}</span>
               <span v-if="record.lastCheck?.latencyMs != null" class="muted small">{{ record.lastCheck.latencyMs }} ms</span>
             </a-space>
-            <div v-if="record.lastCheck" class="faint small">{{ t('proxies.checkedAt', { time: new Date(record.lastCheck.at).toLocaleString(dateLocale()) }) }}</div>
+            <div v-if="record.lastCheck" class="faint small">{{ t('proxies.checkedAt', { time: fmtDateTime(record.lastCheck.at) }) }}</div>
           </template>
           <template v-else-if="column.key === 'device'">
             <a v-if="record.boundInstance" @click="router.push(deviceListLink(record.boundInstance.id))">{{ record.boundInstance.name }}</a>
@@ -512,7 +512,7 @@ async function openUsage(p: PoolProxy) {
         </p>
         <a-timeline v-if="usage.history.length">
           <a-timeline-item v-for="(h, i) in usage.history" :key="i" :color="h.ok ? (h.event === 'unbind' ? 'gray' : 'green') : 'red'">
-            {{ new Date(h.at).toLocaleString(dateLocale()) }} · {{ t(`proxies.usageEvents.${h.event}`) }} · {{ h.device ?? '—' }}
+            {{ fmtDateTime(h.at) }} · {{ t(`proxies.usageEvents.${h.event}`) }} · {{ h.device ?? '—' }}
             <span class="muted">· {{ h.username ?? t('common.system') }}</span>
             <a-tag v-if="!h.ok" color="red">{{ t('common.failed') }}</a-tag>
           </a-timeline-item>

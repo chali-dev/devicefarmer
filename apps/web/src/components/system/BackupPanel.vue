@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import { fetchAuthBlob, fmtSize } from '../media/media'
 import StatusTag from '../common/StatusTag.vue'
@@ -185,7 +185,7 @@ const columns = computed(() => [
       :pagination="pagination({ hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.backup.empty') }" :scroll="{ x: 1290 }"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
+        <template v-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
         <template v-else-if="column.key === 'status'">
           <StatusTag kind="backup" :status="record.status" />
         </template>
@@ -215,7 +215,7 @@ const columns = computed(() => [
 
 
     <a-modal
-      :open="!!restoring" :title="restoring ? t('sysadmin.backup.restoreTitle', { time: new Date(restoring.createdAt).toLocaleString(dateLocale()) }) : ''"
+      :open="!!restoring" :title="restoring ? t('sysadmin.backup.restoreTitle', { time: fmtDateTime(restoring.createdAt) }) : ''"
       :ok-text="t('sysadmin.backup.restore')" :ok-button-props="{ danger: true, disabled: !typedOk }" :confirm-loading="restoreBusy"
       @ok="startRestore" @cancel="restoring = null"
     >

@@ -23,6 +23,8 @@ let visible = false
 let timer: ReturnType<typeof setTimeout> | null = null
 let busy = false
 let observer: IntersectionObserver | null = null
+/** Set on unmount: a screenshot still in flight must neither show (leaking its object URL) nor re-arm the timer. */
+let disposed = false
 
 function setSrc(url: string | null) {
   if (src.value) URL.revokeObjectURL(src.value)
@@ -35,6 +37,7 @@ async function load() {
   busy = true
   try {
     const res = await fetch(`/api/instances/${props.instanceId}/screenshot?thumb=1`, { headers: { authorization: `Bearer ${getToken()}` } })
+    if (disposed) return
     if (res.status === 403) denied.value = true // no `control` grant: keep the placeholder
     else if (res.status === 200) setSrc(URL.createObjectURL(await res.blob())) // 204: streaming now, keep the last one
   } catch { /* keep the last frame */ }
@@ -43,6 +46,7 @@ async function load() {
 }
 function schedule() {
   if (timer) clearTimeout(timer)
+  if (disposed) return
   timer = setTimeout(load, props.slow ? SLOW_REFRESH_MS : REFRESH_MS)
 }
 function now() { if (timer) clearTimeout(timer); void load() }
@@ -58,6 +62,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibility)
 })
 onBeforeUnmount(() => {
+  disposed = true
   if (timer) clearTimeout(timer)
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)

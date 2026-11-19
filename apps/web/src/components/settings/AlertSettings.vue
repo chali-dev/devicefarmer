@@ -4,7 +4,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import { kindKey } from '../../api/alerts'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 
 /**
  * Settings → Alerts (admin): which alert kinds go to the in-app bell, cooldown, recipients, "recovered"
@@ -90,7 +90,7 @@ const kindColumns = [
           </a-form-item>
           <a-space wrap>
             <a-button type="primary" :loading="saving" @click="saveRules">{{ t('common.save') }}</a-button>
-            <span v-if="rules.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(rules.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+            <span v-if="rules.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(rules.updatedAt) }) }}</span>
           </a-space>
         </a-form>
       </template>

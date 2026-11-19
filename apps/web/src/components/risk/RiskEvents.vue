@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import { deviceListLink } from '../../api/query'
 import type { RiskDevice, RiskEvent } from '../../api/types'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import SearchBar from '../common/SearchBar.vue'
 import { pagination, TABLE_SIZE } from '../common/ui'
 
@@ -18,7 +18,6 @@ const devices = ref<RiskDevice[]>([])
 const loading = ref(false)
 const filters = reactive({ instanceId: undefined as string | undefined, code: undefined as string | undefined })
 const page = reactive({ current: 1, pageSize: 20 })
-const fmt = (d: string) => new Date(d).toLocaleString(dateLocale())
 
 async function load() {
   loading.value = true
@@ -59,7 +58,7 @@ const columns = computed(() => [
   <a-table :data-source="events" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1100 }"
     :pagination="pagination({ current: page.current, pageSize: page.pageSize, total })" :locale="{ emptyText: t('risk.events.empty') }" @change="onChange">
     <template #bodyCell="{ column, record }">
-      <template v-if="column.key === 'at'">{{ fmt(record.at) }}</template>
+      <template v-if="column.key === 'at'">{{ fmtDateTime(record.at) }}</template>
       <template v-else-if="column.key === 'device'">
         <router-link v-if="record.instanceId" :to="deviceListLink(record.instanceId)">{{ record.instanceName ?? record.instanceId.slice(0, 8) }}</router-link>
         <span v-else class="muted">{{ record.instanceName ?? '—' }}</span>

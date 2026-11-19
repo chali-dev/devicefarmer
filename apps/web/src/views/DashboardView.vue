@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { dateLocale, fmtDateTime } from '../i18n'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { MobileOutlined, ReloadOutlined, ScheduleOutlined, SendOutlined, TeamOutlined } from '@ant-design/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -76,7 +76,6 @@ const WIDGET_MENU: Record<string, string> = {
 const w = computed(() => Object.fromEntries(Object.entries(data.value?.widgets ?? {})
   .filter(([k]) => !WIDGET_MENU[k] || auth.menuAllowed(WIDGET_MENU[k]!))) as NonNullable<typeof data.value>['widgets'])
 const has = (k: string) => !!data.value?.order.includes(k)
-const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 const trendPoints = computed(() => (w.value.publishing?.trend ?? []).map((r) => ({ t: dayTs(r.day), v: r.published })))
 const trendFailed = computed(() => (w.value.publishing?.trend ?? []).reduce((s, r) => s + r.failed, 0))
 const trendPublished = computed(() => (w.value.publishing?.trend ?? []).reduce((s, r) => s + r.published, 0))
@@ -253,7 +252,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
             <div v-if="!w.tasks.recentFailures.length" class="muted small">{{ t('dashboard.noFailures') }}</div>
             <router-link v-for="f in w.tasks.recentFailures" :key="f.id" :to="{ path: '/tasks', query: { task: f.id } }" class="row link-row">
               <span class="ellipsis">{{ taskText(f.type) }}<template v-if="f.label"> · {{ f.label }}</template></span>
-              <span class="muted small">{{ fmtTime(f.finishedAt ?? f.createdAt) }}</span>
+              <span class="muted small">{{ fmtDateTime(f.finishedAt ?? f.createdAt) }}</span>
             </router-link>
           </a-card>
         </a-col>
@@ -276,7 +275,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
         <a-col v-if="w.trending" :xs="24" :md="12" :xl="8">
           <a-card size="small" :bordered="false" :title="t('trending.title')" class="card">
             <template #extra><router-link to="/trending">{{ t('dashboard.viewAll') }}</router-link></template>
-            <div class="muted small">{{ t('trending.widgetTop', { region: w.trending.region }) }} · {{ fmtTime(w.trending.capturedAt) }}</div>
+            <div class="muted small">{{ t('trending.widgetTop', { region: w.trending.region }) }} · {{ fmtDateTime(w.trending.capturedAt) }}</div>
             <a v-for="x in w.trending.top" :key="x.videoId" :href="x.url" target="_blank" rel="noopener noreferrer" class="row link-row">
               <span class="muted small">{{ x.rank }}</span>
               <span class="ellipsis">{{ x.title || x.videoId }}</span>
@@ -329,7 +328,7 @@ const viewAs = (u: DashboardUserRow) => { asUser.value = u.id; window.scrollTo({
                 <div class="list-title">{{ t('dashboard.nextUp') }}</div>
                 <div v-if="!w.publishing.next.length" class="muted small">{{ t('dashboard.nothingScheduled') }}</div>
                 <router-link v-for="x in w.publishing.next" :key="x.id" :to="{ path: '/publish', query: { tab: 'queue', task: x.id } }" class="row link-row">
-                  <span class="muted small nowrap">{{ fmtTime(x.scheduledAt) }}</span>
+                  <span class="muted small nowrap">{{ fmtDateTime(x.scheduledAt) }}</span>
                   <PlatformTag :platform="x.platform" icon-only />
                   <span class="ellipsis">{{ x.title || '—' }}<template v-if="x.handle"> · @{{ x.handle }}</template></span>
                 </router-link>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { CheckOutlined, InboxOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -288,7 +288,7 @@ const appColumns = computed(() => [
                   </template>
                   <span v-else class="muted">{{ t('detail.google.gsfPending') }}</span>
                 </a-descriptions-item>
-                <a-descriptions-item :label="t('detail.google.checkedAt')">{{ new Date(google.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.google.checkedAt')">{{ fmtDateTime(google.checkedAt) }}</a-descriptions-item>
               </a-descriptions>
               <a-alert v-if="!google.googleAccounts" type="info" show-icon style="margin-top: 12px">
                 <template #message>{{ t('detail.google.beforeLogin') }}</template>
@@ -390,7 +390,7 @@ const appColumns = computed(() => [
                 <a-descriptions-item :label="t('detail.proxy.egressLocation')" :span="2">{{ egressGeo(inst.proxyStatus) || '—' }}</a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.latency')">{{ inst.proxyStatus.latencyMs != null ? `${inst.proxyStatus.latencyMs} ms` : '—' }}</a-descriptions-item>
                 <a-descriptions-item :label="t('detail.proxy.dns')">{{ inst.proxyStatus.dnsOk ? t('detail.proxy.ok') : t('detail.proxy.dnsFailed') }}</a-descriptions-item>
-                <a-descriptions-item :label="t('detail.proxy.checkedAt')" :span="inst.proxyStatus.error ? 1 : 2">{{ new Date(inst.proxyStatus.checkedAt).toLocaleString(dateLocale()) }}</a-descriptions-item>
+                <a-descriptions-item :label="t('detail.proxy.checkedAt')" :span="inst.proxyStatus.error ? 1 : 2">{{ fmtDateTime(inst.proxyStatus.checkedAt) }}</a-descriptions-item>
                 <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
               </template>
             </a-descriptions>
@@ -445,7 +445,7 @@ const appColumns = computed(() => [
                     <span>{{ taskText(item.type) }}</span>
                     <a-typography-text v-if="item.error" type="danger">{{ item.error }}</a-typography-text>
                   </a-space>
-                  <template #extra><span class="muted small nowrap">{{ new Date(item.createdAt).toLocaleString(dateLocale()) }}</span></template>
+                  <template #extra><span class="muted small nowrap">{{ fmtDateTime(item.createdAt) }}</span></template>
                 </a-list-item>
               </template>
             </a-list>

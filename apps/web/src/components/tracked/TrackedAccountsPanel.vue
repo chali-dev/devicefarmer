@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../../i18n'
+import { dateLocale, fmtDateTime } from '../../i18n'
 import { message } from 'ant-design-vue'
 import { EditOutlined, PlusOutlined, StarFilled, StarOutlined } from '@ant-design/icons-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
@@ -177,7 +177,7 @@ const refreshTip = (a: TrackedAccount) => (a.dataMode === 'api_unconfigured' ? t
   : a.dataMode === 'device_unconfigured' ? phoneProblem(a) || t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : a.platform === 'instagram' ? t('feed.syncHint') : t('tracked.syncHint'))
 /** 定时采集 cell tooltip: next slot and the last skip reason (no second line in the cell). */
 const schedTip = (a: TrackedAccount) => [
-  a.nextRefreshAt ? t('collect.next', { time: new Date(a.nextRefreshAt).toLocaleString(dateLocale()) }) : '',
+  a.nextRefreshAt ? t('collect.next', { time: fmtDateTime(a.nextRefreshAt) }) : '',
   a.scheduleSkipCode ? t('collect.skipped', { reason: codeText(a.scheduleSkipCode, undefined, a.scheduleSkipCode) }) : '',
 ].filter(Boolean).join(' · ') || t('collect.change')
 const statusTip = (a: TrackedAccount) => (a.status === 'error' ? codeText(a.lastErrorCode, undefined, a.lastError ?? '') : t(`tracked.dataModes.${a.dataMode}`))
@@ -459,7 +459,7 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
           </template>
           <template v-else-if="column.key === 'checked'">
             <a-tooltip v-if="record.lastCheckedAt" :title="record.lastSource ? t(`tracked.sources.${record.lastSource}`) : undefined">
-              <span>{{ new Date(record.lastCheckedAt).toLocaleString(dateLocale()) }}</span>
+              <span>{{ fmtDateTime(record.lastCheckedAt) }}</span>
             </a-tooltip>
             <span v-else class="muted">{{ t('tracked.never') }}</span>
           </template>

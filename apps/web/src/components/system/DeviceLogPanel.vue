@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import SearchBar from '../common/SearchBar.vue'
 import { pagination, TABLE_SIZE } from '../common/ui'
@@ -70,7 +70,7 @@ const columns = computed(() => [
       :pagination="pagination({ current: page, pageSize, total, onChange: onPage })"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'at'">{{ new Date(record.at).toLocaleString(dateLocale()) }}</template>
+        <template v-if="column.key === 'at'">{{ fmtDateTime(record.at) }}</template>
         <template v-else-if="column.key === 'device'">
           <router-link :to="{ path: '/instances', query: { id: record.instanceId } }">{{ record.instanceName }}</router-link>
         </template>

@@ -221,10 +221,6 @@ export function formatOf(file: File, limits: MediaLimits | null): MediaFormatLim
   return limits ? [...limits.image.formats, ...limits.video.formats].find((f) => f.exts.includes(ext)) : undefined
 }
 
-export function isProcessable(file: File, limits: MediaLimits | null): boolean {
-  return Boolean(formatOf(file, limits)?.processable)
-}
-
 export function isVideoFile(file: File, limits: MediaLimits | null): boolean {
   return limits ? limits.video.formats.some((f) => f.exts.includes(extOfFile(file))) : file.type.startsWith('video/')
 }

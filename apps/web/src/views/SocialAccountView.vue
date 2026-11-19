@@ -13,7 +13,7 @@ import AudienceList from '../components/social/AudienceList.vue'
 import InitialAvatar from '../components/social/InitialAvatar.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAccountSync } from '../components/social/useAccountSync'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 
 /**
  * A media account's 关注 / 粉丝 page (/social/accounts/:id, owner 2026-11-19, replaces the row expansion of 我的媒体号):
@@ -25,7 +25,6 @@ const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const id = computed(() => String(route.params.id))
-const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 const account = ref<SocialAccount | null>(null)
 const notFound = ref(false)
@@ -92,7 +91,7 @@ watch(id, loadAll)
             </div>
             <div v-if="account.displayName" class="name">{{ account.displayName }}</div>
             <div class="muted small">
-              {{ account.lastCheckedAt ? t('social.audience.page.lastSync', { time: fmt(account.lastCheckedAt) }) : t('social.audience.page.neverSync') }}
+              {{ account.lastCheckedAt ? t('social.audience.page.lastSync', { time: fmtDateTime(account.lastCheckedAt) }) : t('social.audience.page.neverSync') }}
             </div>
           </div>
           <a-space wrap class="actions">

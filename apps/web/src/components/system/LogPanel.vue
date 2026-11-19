@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { fmtSize } from '../media/media'
 import SearchBar from '../common/SearchBar.vue'
 import { pagination } from '../common/ui'
@@ -83,7 +83,7 @@ const columns = computed(() => [
       :pagination="pagination({ defaultPageSize: 50, hideOnSinglePage: true })" :locale="{ emptyText: t('sysadmin.logs.empty') }" :scroll="{ x: 1010 }"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'time'">{{ new Date(record.time).toLocaleString(dateLocale()) }}</template>
+        <template v-if="column.key === 'time'">{{ fmtDateTime(record.time) }}</template>
         <template v-else-if="column.key === 'level'">
           <a-tag :color="LEVEL_COLOR[levelName(record.level)]">{{ t(`sysadmin.logs.levels.${levelName(record.level)}`) }}</a-tag>
         </template>

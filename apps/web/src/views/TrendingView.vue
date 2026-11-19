@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { message } from 'ant-design-vue'
 import { ArrowDownOutlined, ArrowUpOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -34,7 +34,6 @@ watch(keyOpen, (o) => {
 const data = ref<TrendingData | null>(null)
 const loading = ref(false)
 const filters = reactive({ region: undefined as string | undefined, snapshotId: undefined as string | undefined, q: '', onlyNew: false, onlyRising: false })
-const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 async function load() {
   loading.value = true
@@ -124,16 +123,16 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
           <a-radio-button v-for="r in regionOptions" :key="r" :value="r">{{ r }}</a-radio-button>
         </a-radio-group>
         <a-select v-if="data?.history.length" v-model:value="filters.snapshotId" :placeholder="t('trending.latest')" allow-clear style="width: 200px" @change="load">
-          <a-select-option v-for="h in data.history" :key="h.id" :value="h.id">{{ fmt(h.capturedAt) }}</a-select-option>
+          <a-select-option v-for="h in data.history" :key="h.id" :value="h.id">{{ fmtDateTime(h.capturedAt) }}</a-select-option>
         </a-select>
         <a-input-search v-model:value="filters.q" :placeholder="t('trending.searchPlaceholder')" allow-clear style="width: 240px" @search="load" />
         <a-checkbox v-model:checked="filters.onlyNew">{{ t('trending.onlyNew') }}</a-checkbox>
         <a-checkbox v-model:checked="filters.onlyRising">{{ t('trending.onlyRising') }}</a-checkbox>
         <template v-if="data?.snapshot" #actions>
           <span class="muted small">
-            {{ t('trending.capturedAt', { time: fmt(data.snapshot.capturedAt) }) }}
-            · {{ data.previous ? t('trending.vsPrevious', { time: fmt(data.previous.capturedAt) }) : t('trending.noPrevious') }}
-            <template v-if="data.nextSlotAt"> · {{ t('trending.nextRun', { time: fmt(data.nextSlotAt) }) }}</template>
+            {{ t('trending.capturedAt', { time: fmtDateTime(data.snapshot.capturedAt) }) }}
+            · {{ data.previous ? t('trending.vsPrevious', { time: fmtDateTime(data.previous.capturedAt) }) : t('trending.noPrevious') }}
+            <template v-if="data.nextSlotAt"> · {{ t('trending.nextRun', { time: fmtDateTime(data.nextSlotAt) }) }}</template>
           </span>
         </template>
       </SearchBar>
@@ -158,7 +157,7 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
           </template>
           <template v-else-if="column.key === 'views'"><span class="num">{{ compactNumber(record.views) }}</span></template>
           <template v-else-if="column.key === 'likes'"><span class="num">{{ compactNumber(record.likes) }}</span></template>
-          <template v-else-if="column.key === 'published'">{{ fmt(record.publishedAt) }}</template>
+          <template v-else-if="column.key === 'published'">{{ fmtDateTime(record.publishedAt) }}</template>
         </template>
       </a-table>
     </a-card>
@@ -170,7 +169,7 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
           <a-tooltip :title="x.errorCode || x.error ? codeText(x.errorCode, undefined, x.error ?? '') : undefined">
             <StatusTag kind="task" :status="x.status" style="margin-inline: 4px" />
           </a-tooltip>
-          <span class="muted small">{{ fmt(x.finishedAt ?? x.createdAt) }}</span>
+          <span class="muted small">{{ fmtDateTime(x.finishedAt ?? x.createdAt) }}</span>
         </span>
       </a-space>
     </a-card>

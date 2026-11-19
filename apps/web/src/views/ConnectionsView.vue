@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { deviceListLink } from '../api/query'
 import type { Instance, InstanceStatus } from '../api/types'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
@@ -47,10 +47,9 @@ async function load(quiet = false) {
   finally { loading.value = false }
 }
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { void load(); timer = setInterval(() => void load(true), 10_000) })
+onMounted(() => { void load(); timer = setInterval(() => { if (!document.hidden) void load(true) }, 10_000) })
 onBeforeUnmount(() => clearInterval(timer))
 
-const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString(dateLocale()) : '—')
 const adbColor = (s: string | null) => (s === 'device' ? 'green' : s ? 'red' : 'default')
 const rttColor = (ms: number) => (ms < 100 ? 'green' : ms < 500 ? 'orange' : 'red')
 
@@ -107,19 +106,19 @@ const columns = computed(() => [
           </template>
           <template v-else-if="column.key === 'proxy'">
             <span v-if="!record.proxyId" class="muted">{{ t('sysadmin.conn.noProxy') }}</span>
-            <a-tooltip v-else-if="record.proxyStatus" :title="`${record.proxyStatus.error ?? ''} ${fmt(record.proxyStatus.checkedAt)}`">
+            <a-tooltip v-else-if="record.proxyStatus" :title="`${record.proxyStatus.error ?? ''} ${fmtDateTime(record.proxyStatus.checkedAt)}`">
               <a-tag :color="record.proxyStatus.ok ? 'green' : 'red'">{{ record.proxyStatus.ok ? t('sysadmin.conn.egressOk') : t('sysadmin.conn.egressFail') }}</a-tag>
               <span class="small">{{ record.proxyStatus.egressIp ?? '' }}</span>
             </a-tooltip>
             <span v-else class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'rtt'">
-            <a-tooltip v-if="record.adbRttMs !== null" :title="t('sysadmin.conn.measuredAt', { at: fmt(record.adbRttAt) })">
+            <a-tooltip v-if="record.adbRttMs !== null" :title="t('sysadmin.conn.measuredAt', { at: fmtDateTime(record.adbRttAt) })">
               <a-tag :color="rttColor(record.adbRttMs)">{{ record.adbRttMs }} ms</a-tag>
             </a-tooltip>
             <span v-else class="muted">—</span>
           </template>
-          <template v-else-if="column.key === 'lastOffline'">{{ fmt(record.lastOfflineAt) }}</template>
+          <template v-else-if="column.key === 'lastOffline'">{{ fmtDateTime(record.lastOfflineAt) }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-button size="small" type="link" @click="openLogs(record as Row)">{{ t('devices.log') }}</a-button>
           </template>

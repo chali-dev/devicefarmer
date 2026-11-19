@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../../i18n'
+import { dateLocale, fmtDateTime } from '../../i18n'
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -122,7 +122,6 @@ function removePost(p: { id: string }) {
     },
   })
 }
-const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 </script>
 
 <template>
@@ -149,7 +148,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <a-tag v-if="acc.verified" color="blue">{{ t('tracked.verified') }}</a-tag>
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
           </a-space>
-          <div class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>
+          <div class="muted small">{{ t('tracked.lastChecked') }}: {{ fmtDateTime(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>
           <div v-if="platform?.api?.kind === 'device'" class="small phone-line"><span class="muted">{{ t('tracked.phone.title') }}:</span> <TrackedPhoneTag :phone="acc.phone" /></div>
           <div v-if="acc.bio" class="bio">{{ acc.bio }}</div>
         </div>
@@ -187,7 +186,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
           <a-table :data-source="snapRows" :columns="snapColumns" row-key="id" size="small" style="margin-top: 12px"
             :pagination="pagination({ defaultPageSize: 10, hideOnSinglePage: true })">
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'capturedAt'">{{ when(record.capturedAt) }}</template>
+              <template v-if="column.key === 'capturedAt'">{{ fmtDateTime(record.capturedAt) }}</template>
               <template v-else-if="column.key === 'source'"><a-tag>{{ t(`tracked.sources.${record.source}`) }}</a-tag></template>
               <template v-else-if="column.key === 'ops'">
                 <a-button size="small" type="link" danger @click="removeSnap(record as TrackedSnapshot)">{{ t('common.delete') }}</a-button>

@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 
 /**
  * 系统配置 → 上传文件 (admin; tab formerly 素材上传): size limit per kind and the allowed formats of media uploads
@@ -64,7 +64,7 @@ async function save() {
       <a-alert v-if="form.allowedTypes.includes('heic')" type="warning" show-icon class="block" :message="t('settings.mediaLimits.heic')" />
       <a-space wrap>
         <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
-        <span v-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(state.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+        <span v-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(state.updatedAt) }) }}</span>
       </a-space>
     </a-spin>
   </div>

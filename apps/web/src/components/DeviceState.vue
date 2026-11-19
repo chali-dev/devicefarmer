@@ -4,7 +4,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../api/client'
 import type { DeviceAutomation, Instance } from '../api/types'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { confirmDanger } from './common/ui'
 import { INSTANCE_STATUS_COLOR } from './common/status'
 
@@ -19,7 +19,6 @@ import { INSTANCE_STATUS_COLOR } from './common/status'
 const props = defineProps<{ instance: Instance; automation?: DeviceAutomation | null; resumable?: boolean; admin?: boolean }>()
 const emit = defineEmits<{ resumed: [] }>()
 const { t } = useI18n()
-const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 
 const state = computed(() => {
   const i = props.instance
@@ -29,7 +28,7 @@ const state = computed(() => {
   ].join(' · ')
   if (a?.halted) {
     return { key: 'halted', badge: 'error' as const, label: t('devices.state.halted'),
-      tip: t('devices.state.haltedTip', { reason: codeText(a.halted.code, undefined, a.halted.code), source: t(`risk.sources.${a.halted.source}`), time: fmt(a.halted.at) }) }
+      tip: t('devices.state.haltedTip', { reason: codeText(a.halted.code, undefined, a.halted.code), source: t(`risk.sources.${a.halted.source}`), time: fmtDateTime(a.halted.at) }) }
   }
   if (i.status !== 'running') {
     if (i.sourceId && !props.admin && (i.status === 'stopped' || i.status === 'error')) {
@@ -41,7 +40,7 @@ const state = computed(() => {
   if (i.adbState !== 'device') return { key: 'offline', badge: 'default' as const, label: t('devices.state.offline'), tip: i.lastError ?? ready }
   if (a?.busy) {
     return { key: 'busy', badge: 'processing' as const, label: t('devices.state.busy'),
-      tip: t('devices.state.busyTip', { what: t(`devices.state.ops.${a.busy.what}`), time: fmt(a.busy.since) }) }
+      tip: t('devices.state.busyTip', { what: t(`devices.state.ops.${a.busy.what}`), time: fmtDateTime(a.busy.since) }) }
   }
   return { key: 'ok', badge: 'success' as const, label: t('devices.state.ok'), tip: ready }
 })

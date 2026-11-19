@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -94,7 +94,6 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 }
 
 // ---- display helpers
-const fmtTime = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`
   const s = Math.round(ms / 100) / 10
@@ -103,7 +102,7 @@ function fmtDuration(ms: number): string {
   return m < 60 ? `${m} m ${Math.round(s % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} m`
 }
 const now = ref(Date.now())
-const ticker = setInterval(() => { now.value = Date.now() }, 1000)
+const ticker = setInterval(() => { if (!document.hidden) now.value = Date.now() }, 1000)
 function duration(task: Task): string {
   if (!task.startedAt) return '—'
   const end = task.finishedAt ? Date.parse(task.finishedAt) : task.status === 'running' ? now.value : null
@@ -253,8 +252,8 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
             <a-tag v-if="record.cancelRequested && record.status === 'running'" color="warning">{{ t('taskCenter.cancelRequested') }}</a-tag>
           </template>
           <template v-else-if="column.key === 'attempts'">{{ record.attempts }}/{{ record.maxAttempts }}</template>
-          <template v-else-if="column.key === 'createdAt'">{{ fmtTime(record.createdAt) }}</template>
-          <template v-else-if="column.key === 'runAt'">{{ fmtTime(record.runAt) }}</template>
+          <template v-else-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
+          <template v-else-if="column.key === 'runAt'">{{ fmtDateTime(record.runAt) }}</template>
           <template v-else-if="column.key === 'duration'">{{ duration(record as Task) }}</template>
           <template v-else-if="column.key === 'owner'">{{ owner(record as Task) }}</template>
           <template v-else-if="column.key === 'ops'">
@@ -301,10 +300,10 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
             {{ detail.attempts }}/{{ detail.maxAttempts }}<span v-if="detail.timeoutMs" class="muted small"> · {{ t('taskCenter.timeout', { s: Math.round(detail.timeoutMs / 1000) }) }}</span>
           </a-descriptions-item>
           <a-descriptions-item :label="t('taskCenter.owner')">{{ owner(detail) }}</a-descriptions-item>
-          <a-descriptions-item :label="t('taskCenter.createdAt')">{{ fmtTime(detail.createdAt) }}</a-descriptions-item>
-          <a-descriptions-item v-if="detail.runAt" :label="t('taskCenter.runAt')">{{ fmtTime(detail.runAt) }}</a-descriptions-item>
-          <a-descriptions-item :label="t('taskCenter.startedAt')">{{ fmtTime(detail.startedAt) }}</a-descriptions-item>
-          <a-descriptions-item :label="t('taskCenter.finishedAt')">{{ fmtTime(detail.finishedAt) }} <span class="muted small">({{ duration(detail) }})</span></a-descriptions-item>
+          <a-descriptions-item :label="t('taskCenter.createdAt')">{{ fmtDateTime(detail.createdAt) }}</a-descriptions-item>
+          <a-descriptions-item v-if="detail.runAt" :label="t('taskCenter.runAt')">{{ fmtDateTime(detail.runAt) }}</a-descriptions-item>
+          <a-descriptions-item :label="t('taskCenter.startedAt')">{{ fmtDateTime(detail.startedAt) }}</a-descriptions-item>
+          <a-descriptions-item :label="t('taskCenter.finishedAt')">{{ fmtDateTime(detail.finishedAt) }} <span class="muted small">({{ duration(detail) }})</span></a-descriptions-item>
           <a-descriptions-item v-if="detail.retryOf" :label="t('taskCenter.retryOf')"><a class="mono" @click="openDetail(detail.retryOf)">{{ detail.retryOf }}</a></a-descriptions-item>
           <a-descriptions-item v-if="detail.error" :label="t('taskCenter.lastError')">
             <a-typography-text type="danger">{{ errText(detail) }}</a-typography-text>
@@ -323,7 +322,7 @@ onBeforeUnmount(() => { off(); clearInterval(ticker); if (reloadTimer) clearTime
         <a-empty v-if="!logs.length" :description="t('taskCenter.noLogs')" />
         <a-timeline v-else>
           <a-timeline-item v-for="l in logs" :key="l.id" :color="LOG_COLOR[l.level]">
-            <div class="log-head"><span class="muted small">{{ new Date(l.ts).toLocaleString(dateLocale()) }}</span> {{ logText(l.message, l.data) }}</div>
+            <div class="log-head"><span class="muted small">{{ fmtDateTime(l.ts) }}</span> {{ logText(l.message, l.data) }}</div>
             <pre v-if="l.data && Object.keys(l.data).length" class="json log-data mono small">{{ json(l.data) }}</pre>
           </a-timeline-item>
         </a-timeline>
