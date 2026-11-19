@@ -365,8 +365,16 @@ try {
     check('导入 ×6 at once → exactly one restore task, the rest 409 system.restore_running', restores.length === 1 && count(rs, 202) === 1
       && rs.every((x) => x.status === 202 || (x.status === 409 && x.body.code === 'system.restore_running')), `${restores.length} tasks, ${statuses(rs)} ${codes(rs)}`);
     await waitFor('restores finished', async () => (await db.select().from(TK).where(and(eq(TK.type, 'db-restore'), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 300_000).catch(() => undefined);
+    // 立即备份 ×6 at once → while a manual backup is unfinished, the others get that same task (backups never overlap)
+    const bs = await dbNow();
+    const br = await Promise.all(Array.from({ length: 6 }, () => http('POST', '/api/system/backups', admin)));
+    const backups = await db.select().from(TK).where(and(eq(TK.type, 'db-backup'), gte(TK.createdAt, bs)));
+    const bSpan = backups.map((t) => ({ start: t.createdAt.getTime(), end: t.finishedAt ? t.finishedAt.getTime() + drift - 20 : Infinity })).sort((a, b) => a.start - b.start);
+    check('立即备份 ×6 at once → backups never overlap, every answer 202 with one of them', bSpan.every((x, i) => i === 0 || x.start >= bSpan[i - 1]!.end)
+      && br.every((x) => x.status === 202 && backups.some((b) => b.id === x.body.task?.id)), `${backups.length} tasks ${statuses(br)}`);
+    await waitFor('backup finished', async () => (await db.select().from(TK).where(and(eq(TK.type, 'db-backup'), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 300_000).catch(() => undefined);
     cleanup.push(async () => {
-      const made = await db.select().from(schema.dbBackups).where(and(gte(schema.dbBackups.createdAt, since), eq(schema.dbBackups.trigger, 'pre-restore')));
+      const made = await db.select().from(schema.dbBackups).where(and(gte(schema.dbBackups.createdAt, since), inArray(schema.dbBackups.trigger, ['pre-restore', 'manual'])));
       for (const b of made) await http('DELETE', `/api/system/backups/${b.id}`, admin);
       await db.delete(schema.dbBackups).where(eq(schema.dbBackups.id, fake!.id));
     });
@@ -482,6 +490,7 @@ try {
 
     const [dev] = await placeholderDevices(1, 'misc');
     const { notify } = await import('../src/modules/notify/notify.js');
+    await http('PUT', '/api/settings/alerts', admin, { kinds: { 'device.down': { inApp: true } }, notifyAdmins: true, cooldownMinutes: 60 });
     const before = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, adminRow!.id));
     const sent = await Promise.all(Array.from({ length: 20 }, () => notify({ kind: 'device.down', refId: dev!.id, params: { device: dev!.name } } as any)));
     const after = await db.select().from(schema.notifications).where(eq(schema.notifications.userId, adminRow!.id));
@@ -500,6 +509,18 @@ try {
       `${retries.length} retries ${statuses(rr)} ${codes(rr)}`);
     await waitFor('retries done', async () => (await db.select().from(TK).where(and(eq(TK.retryOf, t.id), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 30_000).catch(() => undefined);
     cleanup.push(() => db.delete(TK).where(inArray(TK.id, [t.id, ...retries.map((x) => x.id)])));
+
+    // 取消 racing the task's own end: every task ends in exactly one final state, logged once
+    const quick = await Promise.all(Array.from({ length: 12 }, (_, i) => createTask({ type: 'test.echo', userId: adminRow!.id, label: `cc-${tag}-q${i}`, payload: { sleepMs: 20 * i }, maxAttempts: 1 })));
+    await Promise.all(quick.map(async ({ task: q }, i) => { await sleep(15 * i); await Promise.all([1, 2, 3].map(() => http('POST', `/api/tasks/${q.id}/cancel`, admin))); }));
+    await waitFor('quick tasks final', async () => (await db.select().from(TK).where(and(inArray(TK.id, quick.map((q) => q.task.id)), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 30_000).catch(() => undefined);
+    const qRows = await db.select().from(TK).where(inArray(TK.id, quick.map((q) => q.task.id)));
+    const qLogs = await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, quick.map((q) => q.task.id)));
+    const finals = (id: string) => qLogs.filter((l) => l.taskId === id && /^(succeeded|failed|cancelled)/.test(l.message)).length;
+    const oddQ = qRows.filter((r) => !['success', 'cancelled', 'failed'].includes(r.status) || finals(r.id) > 1);
+    check('cancel ×3 racing the end of 12 short tasks → each ends in one final state, logged once', !oddQ.length,
+      oddQ.map((r) => `${r.status}/${finals(r.id)} logs`).join(', ') + ` ${qRows.map((r) => r.status).join(',')}`);
+    cleanup.push(() => db.delete(TK).where(inArray(TK.id, quick.map((q) => q.task.id))));
 
     // two admins assigning one phone to different users at once: one user per phone
     const [u1, u2, u3] = [await newUser('g1'), await newUser('g2'), await newUser('g3')];
