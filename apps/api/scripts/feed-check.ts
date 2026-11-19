@@ -82,7 +82,7 @@ async function sch(created: Awaited<ReturnType<typeof http<any>>>, token: string
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const tag = randomBytes(3).toString('hex');
 const pw = randomBytes(12).toString('base64url');
-const settingKeys = ['risk.device', 'social.limits', 'comments.rules', 'risk.halts', 'tracked.collectors'];
+const settingKeys = ['risk.device', 'social.limits', 'comments.rules', 'risk.halts'];
 const savedSettings = await db.select().from(schema.settings).where(inArray(schema.settings.key, settingKeys));
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const userIds: string[] = [];
@@ -207,7 +207,11 @@ try {
   r = await http('POST', `/api/social/accounts/${accN.id}/collect`, A);
   check('collect: account without a phone → 400 feed.no_device', r.status === 400 && r.body.code === 'feed.no_device', r.text);
   r = await http('POST', `/api/tracked-accounts/${tacc!.id}/collect`, A);
-  check('tracked collect without a collector phone → 400 tracked.collector_unset', r.status === 400 && r.body.code === 'tracked.collector_unset', r.text);
+  check('tracked collect without a 采集手机 → 400 tracked.no_phone', r.status === 400 && r.body.code === 'tracked.no_phone', r.text);
+  await db.update(schema.trackedAccounts).set({ instanceId: d2.id }).where(eq(schema.trackedAccounts.id, tacc!.id));
+  r = await http('POST', `/api/tracked-accounts/${tacc!.id}/collect`, A);
+  check("tracked collect on a phone that is not the owner's (B's) → 400 tracked.phone_not_allowed", r.status === 400 && r.body.code === 'tracked.phone_not_allowed', r.text);
+  await db.update(schema.trackedAccounts).set({ instanceId: null }).where(eq(schema.trackedAccounts.id, tacc!.id));
   r = await http('POST', `/api/social/accounts/${accB.id}/collect`, B);
   const ct = r.body.task?.id;
   const r2 = await http('POST', `/api/social/accounts/${accB.id}/collect`, B);
@@ -469,6 +473,9 @@ try {
   await haltDevice(d2, { code: 'feed.challenge', source: 'feed', platform: 'instagram', socialAccountId: accB.id });
   // the monitor may have moved the placeholder (no container) away from running: set it as a running phone
   await db.update(schema.instances).set({ status: 'running', adbState: 'device' }).where(inArray(schema.instances.id, [d1.id, d2.id]));
+  // the tracked account on its owner's running phone (定时采集 on); a second one on a phone of another user
+  await db.update(schema.trackedAccounts).set({ instanceId: d1.id, refreshIntervalHours: 24 }).where(eq(schema.trackedAccounts.id, tacc!.id));
+  const [tOther] = await db.insert(schema.trackedAccounts).values({ userId: uA, platform: 'instagram', handle: `fd_t2_${tag}`, profileUrl: `https://www.instagram.com/fd_t2_${tag}/`, instanceId: d2.id, refreshIntervalHours: 24 }).returning();
   const s1 = await scheduleFeedCollects(new Date(), 25 * 3600_000);
   const s2 = await scheduleFeedCollects(new Date(), 25 * 3600_000);
   const sched = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'feed-collect'), inArray(schema.tasks.refId, [accA.id, accB.id, accS.id, accN.id]), like(schema.tasks.idempotencyKey, 'feed:%')));
@@ -476,7 +483,12 @@ try {
     sched.length >= 1 && sched.every((t) => t.refId === accA.id && /^feed:social:[0-9a-f-]{36}:\d+$/.test(t.idempotencyKey ?? '') && (t.payload as any).scheduled === true) && s1.skipped >= 2,
     JSON.stringify({ s1, keys: sched.map((t) => t.idempotencyKey) }));
   check('schedule run twice → nothing new (idempotent)', s2.created === 0, JSON.stringify(s2));
-  await db.update(schema.tasks).set({ status: 'cancelled', finishedAt: new Date() }).where(inArray(schema.tasks.id, sched.map((t) => t.id)));
+  const tsched = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'feed-collect'), inArray(schema.tasks.refId, [tacc!.id, tOther!.id]), like(schema.tasks.idempotencyKey, 'feed:%')));
+  check("schedule: the tracked account gets a slot on its own 采集手机 (key feed:tracked:<id>:<slot>); one on another user's phone none",
+    tsched.length >= 1 && tsched.every((t) => t.refId === tacc!.id && /^feed:tracked:[0-9a-f-]{36}:\d+$/.test(t.idempotencyKey ?? '')), JSON.stringify(tsched.map((t) => t.idempotencyKey)));
+  await db.update(schema.tasks).set({ status: 'cancelled', finishedAt: new Date() }).where(inArray(schema.tasks.id, [...sched, ...tsched].map((t) => t.id)));
+  await db.delete(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, tOther!.id));
+  await db.update(schema.trackedAccounts).set({ instanceId: null, refreshIntervalHours: null }).where(eq(schema.trackedAccounts.id, tacc!.id));
   await http('PUT', '/api/risk/settings', T, { feedCollectHours: null });
   const s3 = await scheduleFeedCollects(new Date(), 25 * 3600_000);
   check('schedule off → nothing', s3.hours === null && s3.created === 0);

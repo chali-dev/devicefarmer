@@ -1,7 +1,7 @@
 /**
  * 风控 page (owner decision 2026-11-18) against the real API + DB + Redis + task centre (no mocks, no phone):
  * - settings `risk.device` (pace + account-check interval): admin read/write, range validation, non-admins 403,
- *   a save takes effect at once (GET /api/tracked-accounts/capacity and the collector setting show the new pace);
+ *   a save takes effect at once (GET /api/tracked-accounts/capacity shows the new pace);
  * - device state (moved from the 风控 page to the 云机管理 cards on 2026-11-18): placeholder devices (no adb, ports
  *   5581–5582), a device halt (haltDevice, as on a challenge screen) shows in GET /api/instances/automation (code,
  *   source; only for devices the viewer may see) and raises collector.blocked; a held device lock shows as busy with
@@ -93,12 +93,10 @@ try {
   const cap0 = (await http('GET', '/api/tracked-accounts/capacity', U)).body;
   r = await http('PUT', '/api/risk/settings', T, { minIntervalSec: 120, maxPerHour: 20, busyRetrySec: 90, accountCheckHours: null });
   const cap1 = (await http('GET', '/api/tracked-accounts/capacity', U)).body;
-  const coll1 = (await http('GET', '/api/settings/tracked-collectors', T)).body;
   check('PUT → returned at once (capacity 20/h, check off)', r.status === 200 && r.body.device.minIntervalSec === 120 && r.body.device.accountCheckHours === null && r.body.capacityPerHour === 20, r.text);
   check('capacity endpoint follows the new pace immediately (min(20, 3600/120)=20)',
     cap0.pace.capacityPerHour === Math.min(env.max, Math.floor(3600 / env.min)) && cap1.pace.minIntervalSec === 120 && cap1.pace.maxPerHour === 20 && cap1.pace.capacityPerHour === 20
-    && cap1.platforms.every((p: any) => p.capacityPerHour === 20), JSON.stringify([cap0.pace, cap1.pace]));
-  check('collector setting shows the same pace', coll1.pace.minIntervalSec === 120 && coll1.pace.maxPerHour === 20 && coll1.pace.busyRetrySec === 90, JSON.stringify(coll1.pace));
+    && cap1.phones.every((p: any) => p.capacityPerHour === 20), JSON.stringify([cap0.pace, cap1.pace]));
   await http('PUT', '/api/risk/settings', T, { minIntervalSec: 600 });
   const cap2 = (await http('GET', '/api/tracked-accounts/capacity', U)).body;
   check('second change: 3600/600 = 6 per hour', cap2.pace.capacityPerHour === 6 && cap2.pace.maxPerHour === 20, JSON.stringify(cap2.pace));
@@ -174,12 +172,15 @@ try {
   r = await http('GET', '/api/instances/automation', T);
   check('lock released → D2 no longer listed', !r.body.devices[D2.id], JSON.stringify(r.body.devices));
   await redis.quit();
+  // a tracked account whose 采集手机 is D2 (seeded): the device list counts it
+  await db.insert(schema.trackedAccounts).values({ userId: userId!, platform: 'instagram', handle: `rk_t_${tag}`, profileUrl: `https://www.instagram.com/rk_t_${tag}/`, instanceId: D2.id });
   r = await http('GET', '/api/risk/devices', T);
   const d1 = r.body.devices?.find((d: any) => d.id === D1.id);
   const d2 = r.body.devices?.find((d: any) => d.id === D2.id);
   check('云手机状态: halted device listed first with code, source, account, offline', r.status === 200 && r.body.devices[0]?.halted && !!d1?.halted
     && d1.halted.code === 'account_check.challenge' && d1.halted.source === 'account_check' && d1.halted.account?.handle === `rk_${tag}_a` && d1.online === false, JSON.stringify(d1));
-  check('云手机状态: device of 2 IG accounts listed (checked accounts 2, not halted, visits 0)', !!d2 && d2.checkedAccounts === 2 && !d2.halted && d2.visitsLastHour === 0, JSON.stringify(d2));
+  check('云手机状态: device of 2 IG accounts listed (checked accounts 2, 1 tracked account on it as 采集手机, not halted, visits 0)',
+    !!d2 && d2.checkedAccounts === 2 && d2.trackedAccounts === 1 && !('collectorFor' in d2) && !d2.halted && d2.visitsLastHour === 0, JSON.stringify(d2));
   const alertKey = `${D1.id}:instagram`;
   const [st1] = await db.select().from(schema.alertStates).where(and(eq(schema.alertStates.kind, 'collector.blocked'), eq(schema.alertStates.key, alertKey)));
   check('halt raised collector.blocked (alert state active)', st1?.active === true, JSON.stringify(st1));

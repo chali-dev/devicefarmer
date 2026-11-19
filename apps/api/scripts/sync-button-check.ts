@@ -10,12 +10,12 @@
  *    202 + task account-device-sync with payload.feed; step 1 on the offline placeholder → result offline → NO step 2
  *    (no feed-collect task keyed after:<step 1>), audit social.account_sync.
  *  - tracked `POST /api/tracked-accounts/:id/sync`: RBAC (404), paused 409, 202 + tracked-refresh with payload.feed,
- *    step 1 fails on the offline collector placeholder (tracked.collector_offline) → NO step 2; audit tracked.sync;
+ *    step 1 fails on the account's offline 采集手机 placeholder (tracked.collector_offline) → NO step 2; audit tracked.sync;
  *    the list's lastRefresh carries `type`.
  *  - step 2 after a SUCCESSFUL step 1 (needs a phone to happen end to end): the step-1 code that queues it is run
  *    in-process with a successful outcome (sync.ts syncFeedStep / feed/collect.ts queueFeedAfter, same DB + Redis as
  *    the API): created/updated → a feed-collect task keyed after:<step 1> (idempotent), taken / not ok → none,
- *    linked elsewhere / halted / already queued / collector unset → coded "not queued" log, no task. The queued task
+ *    linked elsewhere / halted / already queued / no 采集手机 → coded "not queued" log, no task. The queued task
  *    is run by the API's worker on the offline placeholder → fails feed.offline, and step 1's result (account check
  *    ok via recordSyncCheck, login status) stays.
  * NOT covered: a real phone (step 1 success and step 2 reading posts end to end), the UI in a browser.
@@ -67,7 +67,7 @@ const log = async (_level: string, message: string) => { lines.push(message); };
 const admin = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const tag = randomBytes(3).toString('hex');
 const pw = randomBytes(12).toString('base64url');
-const settingKeys = ['risk.halts', 'tracked.collectors', 'risk.device', 'rbac.userMenus'];
+const settingKeys = ['risk.halts', 'risk.device', 'rbac.userMenus'];
 const saved = await db.select().from(schema.settings).where(inArray(schema.settings.key, settingKeys));
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const userIds: string[] = [];
@@ -174,18 +174,21 @@ try {
   check('feed drawer shows step 2 as the last collection (failed feed.offline)', r.status === 200 && r.body.collect?.last?.errorCode === 'feed.offline', JSON.stringify(r.body?.collect?.last));
 
   // ---------------------------------------------------------------- tracked: API, step 1 failure → no step 2
-  r = await http('POST', '/api/tracked-accounts', A, { input: `sbtr${tag}`, platform: 'instagram' });
+  r = await http('POST', '/api/tracked-accounts', A, { input: `sbtr${tag}`, platform: 'instagram', instanceId: null });
   const tr = r.body?.account?.id as string;
   check('tracked IG account created', r.status === 201 && !!tr, r.text);
   r = await http('POST', `/api/tracked-accounts/${tr}/sync`, B);
   check('tracked 同步 on another user\'s account → 404', r.status === 404, r.text);
   r = await http('POST', `/api/tracked-accounts/${tr}/sync`, A);
-  check('tracked 同步 without a collector phone → 400 tracked.collector_unset', r.status === 400 && r.body.code === 'tracked.collector_unset', r.text);
+  check('tracked 同步 without a 采集手机 → 400 tracked.no_phone', r.status === 400 && r.body.code === 'tracked.no_phone', r.text);
   lines.length = 0;
   const unset = await queueFeedAfter('tracked', tr, uA, randomBytes(8).toString('hex'), log);
-  check('tracked step 2 without a collector → not queued tracked.collector_unset', (unset as any).code === 'tracked.collector_unset' && lines[0] === 'feed collection not queued: tracked.collector_unset', JSON.stringify(unset));
-  r = await http('PUT', '/api/settings/tracked-collectors/instagram', admin, { instanceId: D2.id });
-  check('collector = placeholder D2', r.status === 200, r.text);
+  check('tracked step 2 without a 采集手机 → not queued tracked.no_phone', (unset as any).code === 'tracked.no_phone' && lines[0] === 'feed collection not queued: tracked.no_phone', JSON.stringify(unset));
+  r = await http('PATCH', `/api/tracked-accounts/${tr}`, A, { instanceId: D2.id });
+  check("采集手机 = D2 while D2 isn't A's → 400 tracked.phone_not_allowed", r.status === 400 && r.body.code === 'tracked.phone_not_allowed', r.text);
+  await http('PUT', `/api/instances/${D2.id}/grants`, admin, { userIds: [uA] });
+  r = await http('PATCH', `/api/tracked-accounts/${tr}`, A, { instanceId: D2.id });
+  check("采集手机 = A's placeholder D2", r.status === 200 && r.body.account.instanceId === D2.id, r.text);
   await http('PATCH', `/api/tracked-accounts/${tr}`, A, { status: 'paused' });
   r = await http('POST', `/api/tracked-accounts/${tr}/sync`, A);
   check('tracked 同步 paused → 409 tracked.paused', r.status === 409 && r.body.code === 'tracked.paused', r.text);

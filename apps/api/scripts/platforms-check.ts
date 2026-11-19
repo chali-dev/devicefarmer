@@ -83,7 +83,7 @@ try {
 
   const pf = await http('GET', '/api/platforms', U);
   check('GET /api/platforms: only enabled + features', pf.status === 200 && JSON.stringify(Object.keys(pf.body).sort()) === '["enabled","features"]'
-    && Array.isArray(pf.body.enabled) && JSON.stringify(Object.keys(pf.body.features).sort()) === '["trackedCollector","trending","youtubeKey"]', pf.body);
+    && Array.isArray(pf.body.enabled) && JSON.stringify(Object.keys(pf.body.features).sort()) === '["trending","youtubeKey"]', pf.body);
   const pp = await http('GET', '/api/publish/platforms', U);
   check('GET /api/publish/platforms: no methods field', pp.status === 200 && pp.body.platforms.length > 0 && pp.body.platforms.every((p: any) => !('methods' in p)), pp.body.platforms?.[0]);
 

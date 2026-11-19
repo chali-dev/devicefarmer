@@ -77,7 +77,7 @@ let screens = 0;
 const admin = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const tag = randomBytes(3).toString('hex');
 const pw = randomBytes(12).toString('base64url');
-const settingKeys = ['risk.device', 'social.limits', 'comments.rules', 'tracked.collectors', 'risk.halts'];
+const settingKeys = ['risk.device', 'social.limits', 'comments.rules', 'risk.halts'];
 const savedSettings = await db.select().from(schema.settings).where(inArray(schema.settings.key, settingKeys));
 const t0 = new Date();
 const userIds: string[] = [];
@@ -116,12 +116,12 @@ try {
   }).returning();
   extRows.push({ source: src!.id, instance: phone!.id });
   await db.insert(schema.instanceGrants).values({ userId: userIds[0]!, instanceId: phone!.id }).onConflictDoNothing();
-  check('pace 10 s, schedules off for the run, 3 posts / 30 comments, collector = the phone', (await Promise.all([
+  check('pace 10 s, schedules off for the run, 3 posts / 30 comments', (await Promise.all([
     http('PUT', '/api/risk/settings', admin, { minIntervalSec: 10, maxPerHour: 60, accountCheckHours: null, feedCollectHours: null, feedPosts: 3, feedCommentsPerPost: 30 }),
-    http('PUT', '/api/settings/tracked-collectors/instagram', admin, { instanceId: phone!.id }),
   ])).every((x) => x.status === 200));
-  const tr = await http('POST', '/api/tracked-accounts', U, { input: TRACKED, platform: 'instagram', refreshIntervalHours: null });
-  if (tr.status !== 201) throw new Error(`tracked create: ${tr.text}`);
+  // 采集手机 = the phone (granted to U, the account's owner)
+  const tr = await http('POST', '/api/tracked-accounts', U, { input: TRACKED, platform: 'instagram', refreshIntervalHours: null, instanceId: phone!.id });
+  if (tr.status !== 201 || tr.body.account.instanceId !== phone!.id) throw new Error(`tracked create: ${tr.text}`);
   const tracked = tr.body.account;
   const sa = await http('POST', '/api/social/accounts', admin, { platform: 'instagram', handle: OWN_HANDLE, externalId: OWN_ID, ownerId: userIds[0] });
   // device link: read only in the API since 2026-11-18 (set by 从云手机同步); written with the sync's rules (lib/social-link.ts)
