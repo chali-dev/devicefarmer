@@ -8,6 +8,7 @@ import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { DbBackup } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { activeStorage, storageFor } from '../settings/storage.js';
 import { createTask, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { redactText } from './logs.js';
@@ -135,8 +136,15 @@ registerTaskHandler<{ trigger?: 'manual' | 'scheduled' }>(BACKUP_TYPE, {
   run: (ctx) => takeBackup(ctx, ctx.payload.trigger === 'scheduled' ? 'scheduled' : 'manual'),
 });
 
+/** 立即备份. 防并发: while a manual backup is queued or running, a second click (or admin) gets that same task. */
 export async function startBackup(userId: string) {
-  return createTask({ type: BACKUP_TYPE, userId, payload: { trigger: 'manual' } });
+  return withMutex(`task:${BACKUP_TYPE}:manual`, async () => {
+    const [open] = await db.select().from(schema.tasks).where(and(
+      eq(schema.tasks.type, BACKUP_TYPE), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']), sql`${schema.tasks.payload}->>'trigger' = 'manual'`,
+    )).limit(1);
+    if (open) return { task: open, created: false };
+    return createTask({ type: BACKUP_TYPE, userId, payload: { trigger: 'manual' } });
+  });
 }
 
 const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 import { openSecret, sealSecret } from '../../lib/secret-box.js';
 
 /**
@@ -53,15 +54,15 @@ export async function getAiSettings(): Promise<AiSettings> {
 }
 
 export async function saveAiSettings(input: AiSettingsInput): Promise<AiSettings> {
-  const { value: cur } = await load();
-  const next: StoredAi = { ...cur };
-  if (input.apiKey === null) delete next.apiKeyEnc;
-  else if (input.apiKey !== undefined) next.apiKeyEnc = sealSecret(input.apiKey);
-  if (input.workspaceId === null || input.workspaceId === '') delete next.workspaceId;
-  else if (input.workspaceId !== undefined) next.workspaceId = input.workspaceId;
-  if (input.model !== undefined) next.model = input.model;
-  await db.insert(schema.settings).values({ key: KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
+  await updateSetting(KEY, (stored) => {
+    const next: StoredAi = { ...((stored as StoredAi | undefined) ?? {}) };
+    if (input.apiKey === null) delete next.apiKeyEnc;
+    else if (input.apiKey !== undefined) next.apiKeyEnc = sealSecret(input.apiKey);
+    if (input.workspaceId === null || input.workspaceId === '') delete next.workspaceId;
+    else if (input.workspaceId !== undefined) next.workspaceId = input.workspaceId;
+    if (input.model !== undefined) next.model = input.model;
+    return next;
+  });
   return getAiSettings();
 }
 

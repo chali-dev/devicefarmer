@@ -2582,6 +2582,7 @@ const zhCN = {
     },
     common: {
       nothing_to_update: '没有需要修改的内容',
+      busy: '操作正在进行中，请稍后再试',
     },
     rbac: {
       menu_disabled: '该菜单未对你的角色开放，请联系管理员',

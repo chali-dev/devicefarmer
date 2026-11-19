@@ -419,7 +419,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
    */
   const assertExampleRoom = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], personaId: string, kind: 'post' | 'comment', userId: string | null, exceptId?: string) => {
     const [p] = await tx.select().from(P).where(eq(P.id, personaId)).for('update');
-    if (!p || (p.ownerType === 'public' ? userId !== null : userId !== p.ownerId)) return; // not one of its 范例
+    // 防并发: deleted since assertPersonaFor (人设 delete at the same time) → the same refusal instead of an FK error
+    if (!p) throw badRequest('人设不存在或不能用于这条话术', 'persona.not_allowed');
+    if (p.ownerType === 'public' ? userId !== null : userId !== p.ownerId) return; // not one of its 范例
     const [n] = await tx.select({ n: count() }).from(TPL).where(and(exampleWhere(p, kind), exceptId ? ne(TPL.id, exceptId) : undefined));
     if ((n?.n ?? 0) >= MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条${kind === 'post' ? '发文' : '评论'}范例`, 'persona.examples_full', { max: MAX_EXAMPLES, kind });
   };

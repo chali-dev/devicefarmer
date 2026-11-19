@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 
 /**
  * 风控 → 云手机发帖 (settings key `publish.device`, owner decision 2026-11-18): limits of the `device` publish
@@ -25,7 +26,11 @@ export const DEFAULT_DEVICE_PUBLISH: DevicePublishRules = { postsPerDay: 3, minG
 /** Stored values over the defaults; an invalid stored field falls back to its default. */
 export async function getDevicePublishRules(): Promise<DevicePublishRules> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));
-  const v = (row?.value ?? {}) as Record<string, unknown>;
+  return parseRules(row?.value);
+}
+
+function parseRules(stored: unknown): DevicePublishRules {
+  const v = (stored ?? {}) as Record<string, unknown>;
   const pick = <K extends keyof DevicePublishRules>(k: K): DevicePublishRules[K] => {
     const r = DevicePublishInput.shape[k].safeParse(v[k]);
     return r.success ? (r.data as DevicePublishRules[K]) : DEFAULT_DEVICE_PUBLISH[k];
@@ -34,8 +39,6 @@ export async function getDevicePublishRules(): Promise<DevicePublishRules> {
 }
 
 export async function saveDevicePublishRules(input: Partial<DevicePublishRules>): Promise<DevicePublishRules> {
-  const next = { ...(await getDevicePublishRules()), ...Object.fromEntries(Object.entries(input).filter(([, x]) => x !== undefined)) };
-  await db.insert(schema.settings).values({ key: KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
+  await updateSetting(KEY, (stored) => ({ ...parseRules(stored), ...Object.fromEntries(Object.entries(input).filter(([, x]) => x !== undefined)) }));
   return getDevicePublishRules();
 }

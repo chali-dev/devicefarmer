@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 
 /**
  * System management settings (admin, settings key `system`): backup schedule and the retention of log files, connection
@@ -32,7 +33,11 @@ export const SYSTEM_DEFAULTS: SystemSettingsT = {
 
 export async function getSystemSettings(): Promise<SystemSettingsT & { updatedAt: string | null }> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));
-  const v = (row?.value ?? {}) as Partial<SystemSettingsT>;
+  return { ...parseSystem(row?.value), updatedAt: row?.updatedAt.toISOString() ?? null };
+}
+
+function parseSystem(stored: unknown): SystemSettingsT {
+  const v = (stored ?? {}) as Partial<SystemSettingsT>;
   // Each part falls back to its default on its own, so a stored older shape stays usable.
   const part = <T>(s: z.ZodType<T>, x: unknown, d: T): T => { const r = s.safeParse(x); return r.success ? r.data : d; };
   return {
@@ -41,15 +46,11 @@ export async function getSystemSettings(): Promise<SystemSettingsT & { updatedAt
     historyRetentionDays: part(SystemSettings.shape.historyRetentionDays, v.historyRetentionDays, SYSTEM_DEFAULTS.historyRetentionDays),
     auditRetentionDays: part(SystemSettings.shape.auditRetentionDays, v.auditRetentionDays, SYSTEM_DEFAULTS.auditRetentionDays),
     riskEventsRetentionDays: part(SystemSettings.shape.riskEventsRetentionDays, v.riskEventsRetentionDays, SYSTEM_DEFAULTS.riskEventsRetentionDays),
-    updatedAt: row?.updatedAt.toISOString() ?? null,
   };
 }
 
-/** Partial update: omitted parts keep their current value. */
+/** Partial update: omitted parts keep their current value (merged under the row's lock: parallel saves all survive). */
 export async function saveSystemSettings(input: Partial<SystemSettingsT>) {
-  const { updatedAt: _u, ...cur } = await getSystemSettings();
-  const value = { ...cur, ...input };
-  await db.insert(schema.settings).values({ key: KEY, value })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value, updatedAt: new Date() } });
+  await updateSetting(KEY, (stored) => ({ ...parseSystem(stored), ...input }));
   return getSystemSettings();
 }

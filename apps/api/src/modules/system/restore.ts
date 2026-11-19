@@ -10,6 +10,7 @@ import { config } from '../../config.js';
 import { db, schema, sqlClient } from '../../db/index.js';
 import { runMigrations } from '../../db/run-migrations.js';
 import { conflict } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { storageFor } from '../settings/storage.js';
 import { createTask, reconcileTasks, registerTaskHandler, TaskError, type TaskContext } from '../tasks/core.js';
 import { getBackup, MAGIC, pgConnection, scrub, takeBackup } from './backup.js';
@@ -171,9 +172,12 @@ registerTaskHandler<{ backupId: string }>(RESTORE_TYPE, {
 export async function startRestore(userId: string, backupId: string) {
   const b = await getBackup(backupId);
   if (b.status !== 'ok') throw conflict('backup is not complete', 'system.backup_not_ok');
-  const [busy] = await db.select({ id: schema.tasks.id }).from(schema.tasks)
-    .where(and(eq(schema.tasks.type, RESTORE_TYPE), inArray(schema.tasks.status, ['pending', 'scheduled', 'running'])));
-  if (busy) throw conflict('a restore is already running', 'system.restore_running');
-  const { task } = await createTask({ type: RESTORE_TYPE, userId, label: path.basename(b.key), refType: 'db_backup', refId: b.id, payload: { backupId: b.id } });
-  return { task, backup: b };
+  // 防并发: two clicks / two admins → one restore (checked and created alone, across API processes)
+  return withMutex(`task:${RESTORE_TYPE}`, async () => {
+    const [busy] = await db.select({ id: schema.tasks.id }).from(schema.tasks)
+      .where(and(eq(schema.tasks.type, RESTORE_TYPE), inArray(schema.tasks.status, ['pending', 'scheduled', 'running'])));
+    if (busy) throw conflict('a restore is already running', 'system.restore_running');
+    const { task } = await createTask({ type: RESTORE_TYPE, userId, label: path.basename(b.key), refType: 'db_backup', refId: b.id, payload: { backupId: b.id } });
+    return { task, backup: b };
+  });
 }

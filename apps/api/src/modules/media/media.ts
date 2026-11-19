@@ -115,12 +115,12 @@ export async function assertMetaFor(owner: Owner, m: Pick<MediaMeta, 'categoryId
  * Pending/scheduled/running push-asset tasks, and unfinished publish tasks (incl. awaiting_operator)
  * whose media snapshot contains the asset.
  */
-export async function assertMediaNotInUse(assetId: string): Promise<void> {
-  const [row] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.tasks).where(and(
+export async function assertMediaNotInUse(assetId: string, exec: Pick<typeof db, 'select'> = db): Promise<void> {
+  const [row] = await exec.select({ n: sql<number>`count(*)::int` }).from(schema.tasks).where(and(
     eq(schema.tasks.refType, 'media'), eq(schema.tasks.refId, assetId),
     eq(schema.tasks.type, 'push-asset'), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']),
   ));
-  const [pub] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.publishTasks).where(and(
+  const [pub] = await exec.select({ n: sql<number>`count(*)::int` }).from(schema.publishTasks).where(and(
     sql`${schema.publishTasks.mediaIds} @> array[${assetId}]::uuid[]`, inArray(schema.publishTasks.status, [...PUBLISH_UNFINISHED]),
   ));
   const n = (row?.n ?? 0) + (pub?.n ?? 0);
@@ -385,8 +385,18 @@ export async function purgeMedia(asset: MediaAsset): Promise<void> {
 /** Delete with permission + in-use checks (single and batch delete). */
 export async function deleteMedia(user: AuthUser, asset: MediaAsset): Promise<void> {
   assertCanManage(user, asset);
-  await assertMediaNotInUse(asset.id);
-  await purgeMedia(asset);
+  // 防并发: checked and marked deleted under the asset's row lock. A distribution locks the content's assets (FOR SHARE,
+  // publish.ts) before it inserts its publish task: either it waits for this and sees the asset gone, or this waits
+  // for it and sees the new unfinished publish task (media.in_use).
+  const marked = await db.transaction(async (tx) => {
+    const [cur] = await tx.select().from(schema.mediaAssets).where(eq(schema.mediaAssets.id, asset.id)).for('update');
+    if (!cur) return null;
+    await assertMediaNotInUse(asset.id, tx);
+    if (cur.deletedAt) return cur;
+    const [row] = await tx.update(schema.mediaAssets).set({ deletedAt: new Date() }).where(eq(schema.mediaAssets.id, asset.id)).returning();
+    return row!;
+  });
+  if (marked) await purgeMedia(marked);
 }
 
 /** Retries purges that failed earlier (startup + hourly). */

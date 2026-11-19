@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 
 /**
  * 风控 → 云手机节奏 (settings key `risk.device`): one pace for every automatic operation on a device
@@ -57,22 +58,24 @@ let cache: { at: number; value: RiskDeviceSettings } | null = null;
 export async function getRiskSettings(fresh = false): Promise<RiskDeviceSettings> {
   if (!fresh && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, KEY));
-  const stored = (row?.value ?? {}) as Record<string, unknown>;
+  const value = parseRisk(row?.value);
+  cache = { at: Date.now(), value };
+  return value;
+}
+
+function parseRisk(raw: unknown): RiskDeviceSettings {
+  const stored = (raw ?? {}) as Record<string, unknown>;
   const d = riskDefaults();
   const pick = <K extends keyof RiskDeviceSettings>(k: K): RiskDeviceSettings[K] => {
     if (!(k in stored)) return d[k];
     const r = RiskDeviceInput.shape[k].safeParse(stored[k]);
     return r.success ? (r.data as RiskDeviceSettings[K]) : d[k];
   };
-  const value = Object.fromEntries((Object.keys(d) as (keyof RiskDeviceSettings)[]).map((k) => [k, pick(k)])) as RiskDeviceSettings;
-  cache = { at: Date.now(), value };
-  return value;
+  return Object.fromEntries((Object.keys(d) as (keyof RiskDeviceSettings)[]).map((k) => [k, pick(k)])) as RiskDeviceSettings;
 }
 
 export async function saveRiskSettings(input: Partial<RiskDeviceSettings>): Promise<RiskDeviceSettings> {
-  const next = { ...(await getRiskSettings(true)), ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) };
-  await db.insert(schema.settings).values({ key: KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
+  await updateSetting(KEY, (stored) => ({ ...parseRisk(stored), ...Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)) }));
   cache = null;
   return getRiskSettings(true);
 }

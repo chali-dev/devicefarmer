@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 
 /**
  * Alert kinds (告警类型) and the admin rules (`settings` key `alerts.rules`). A kind declares its severity,
@@ -91,12 +92,11 @@ export async function getRules(): Promise<AlertRules & { updatedAt: string | nul
 
 /** Partial update: omitted fields keep their stored value. */
 export async function saveRules(patch: Partial<Omit<AlertRules, 'kinds'>> & { kinds?: Partial<Record<AlertKind, Partial<KindRule>>> }) {
-  const cur = await getRules();
-  const kinds = { ...cur.kinds };
-  for (const [k, r] of Object.entries(patch.kinds ?? {}) as [AlertKind, Partial<KindRule>][]) kinds[k] = { ...kinds[k], ...r };
-  const { updatedAt: _u, ...rest } = cur;
-  const value = normalizeRules({ ...rest, ...patch, kinds });
-  await db.insert(schema.settings).values({ key: KEY, value })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value, updatedAt: new Date() } });
+  await updateSetting(KEY, (stored) => {
+    const cur = normalizeRules(stored);
+    const kinds = { ...cur.kinds };
+    for (const [k, r] of Object.entries(patch.kinds ?? {}) as [AlertKind, Partial<KindRule>][]) kinds[k] = { ...kinds[k], ...r };
+    return normalizeRules({ ...cur, ...patch, kinds });
+  });
   return getRules();
 }

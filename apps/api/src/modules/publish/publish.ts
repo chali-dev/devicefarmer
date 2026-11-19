@@ -1,9 +1,9 @@
 import { UnrecoverableError } from 'bullmq';
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
-import { badRequest, conflict } from '../../lib/errors.js';
+import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -105,15 +105,26 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
   // 已发布的内容不能编辑: the remaining accounts get the content's own texts, no per-account text overrides.
   if (targets.some((t) => t.title?.trim() || t.caption != null || t.hashtags?.length)) await assertNotPublished(db, content.id);
-  const media = await contentMediaOf(db, content.id);
-  const notReady = media.find((m) => m.status !== 'ready');
-  if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
   const now = new Date();
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
   const result = await db.transaction(async (tx) => {
+    // 防并发: the content row is locked like 归档 / 删除 lock it, so an archive or delete racing this distribution either
+    // waits for it (then refuses: unfinished publish task) or wins (then this one refuses: archived / not found).
+    const [locked] = await tx.select({ stage: schema.contents.stage }).from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
+    if (!locked) throw notFound('内容不存在', 'content.not_found');
+    if (locked.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
+    // The content's assets are locked (FOR SHARE) before they are read, so a parallel 素材 delete (media.ts deleteMedia)
+    // either sees this publish task (media.in_use) or has removed the asset before it is read here.
+    await tx.execute(sql`select a.id from content_media cm join media_assets a on a.id = cm.asset_id where cm.content_id = ${content.id} for share of a`);
+    const media = await contentMediaOf(tx, content.id);
+    const notReady = media.find((m) => m.status !== 'ready');
+    if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
     const out: DistributeResult = { created: [], existing: [] };
     for (const t of targets) {
+      // FOR SHARE: a parallel 分配 (social/assign.ts moveDeviceAccounts, FOR UPDATE) either waits for this task (then
+      // refuses: instances.assign_account_busy) or has moved the account before it is read here.
+      await tx.select({ id: schema.socialAccounts.id }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, t.accountId)).for('share');
       const acc = await visibleAccount(user, t.accountId, tx);
       assertPlatformEnabled(acc.platform);
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
@@ -142,7 +153,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       }, user, tx);
       out.created.push(row!);
     }
-    if (out.created.length && content.stage === 'draft') await tx.update(schema.contents).set({ stage: 'ready' }).where(eq(schema.contents.id, content.id));
+    if (out.created.length && locked.stage === 'draft') await tx.update(schema.contents).set({ stage: 'ready' }).where(eq(schema.contents.id, content.id));
     return out;
   });
   const created: PublishTask[] = [];
@@ -165,6 +176,9 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
       runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: 1, timeoutMs, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
+    // 防并发: a newer round (改期 / 重试 at the same time) took over before this task was attached: it would never run
+    // this publish task (its runner no longer matches task_id), so it is cancelled instead of lingering as scheduled.
+    if (!updated && !isFinal(task.status)) await cancelTask(task, null).catch(() => undefined);
     return updated ?? row;
   } catch (err) {
     const [failed] = await db.update(pt).set({ status: 'failed', error: (err as Error).message.slice(0, 500), errorCode: 'publish.enqueue_failed' })
@@ -268,7 +282,14 @@ export async function editPublish(user: AuthUser, row: PublishTask, b: { title?:
   const media = await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, row.mediaIds.length ? row.mediaIds : ['00000000-0000-0000-0000-000000000000']));
   const bad = validateForPlatform(row.platform, row.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m): m is MediaAsset => !!m), next);
   if (bad) throw badRequest(bad.message, bad.code, bad.params);
-  const [done] = await db.update(pt).set({ title: next.title, caption: next.caption, hashtags: next.hashtags, options: next.options })
+  // 防并发: only the fields this request changes are written (options merged in SQL), so two edits of different fields
+  // at the same time (two tabs) both survive.
+  const set: Omit<Partial<typeof pt.$inferInsert>, 'options'> & { options?: SQL } = { updatedAt: new Date() };
+  if (b.title !== undefined) set.title = next.title;
+  if (b.caption !== undefined || noText) set.caption = next.caption;
+  if (b.hashtags !== undefined || noText) set.hashtags = next.hashtags;
+  if (b.options) set.options = sql`${pt.options} || ${JSON.stringify(b.options)}::jsonb`;
+  const [done] = await db.update(pt).set(set)
     .where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
   if (!done) throw conflict('任务状态已变化', 'publish.bad_status', { status: 'changed' });
   await publishLog(done, 'info', 'edited', { fields: Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined) }, user);
