@@ -1,7 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { counterDeltas } from '../../lib/counter-deltas.js';
-import { registerDashboardWidget } from '../dashboard/registry.js';
 
 /**
  * Account analytics (账号分析) of the operator's OWN social accounts: daily stats rows
@@ -112,13 +111,15 @@ export interface AccountRow {
   latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: string; approx: string[] } | null;
   /** Metrics the last stored day lacked (historical API rows). */
   missing: string[];
+  /** Last automatic check on the cloud phone (社交号自动检测 / 同步), shown on the dashboard. */
+  lastCheck: { at: string; code: string | null } | null;
 }
 
 /** Accounts in scope with their latest follower reading and the metrics missing on the last stored day. */
 export async function accountRows(scope: SQL): Promise<AccountRow[]> {
   const rows = await db.execute<Record<string, unknown>>(sql`
     select sa.id, sa.user_id, u.username as owner_name, sa.platform, sa.handle, sa.display_name,
-      l.latest, coalesce(m.missing, '{}') as missing
+      sa.last_checked_at, sa.last_check_code, l.latest, coalesce(m.missing, '{}') as missing
     from social_accounts sa
     left join users u on u.id = sa.user_id
     left join lateral (select json_build_object('day', to_char(x.day, 'YYYY-MM-DD'), 'followers', x.followers, 'following', x.following,
@@ -134,6 +135,7 @@ export async function accountRows(scope: SQL): Promise<AccountRow[]> {
       handle: String(r.handle), displayName: (r.display_name as string | null) ?? null,
       latest: latest ? { ...latest, followers: numOrNull(latest.followers), following: numOrNull(latest.following), posts: numOrNull(latest.posts) } : null,
       missing: (r.missing as string[]) ?? [],
+      lastCheck: r.last_checked_at ? { at: new Date(r.last_checked_at as string).toISOString(), code: (r.last_check_code as string | null) ?? null } : null,
     };
   });
 }
@@ -172,17 +174,3 @@ export async function summary(scope: SQL, days: number, now = new Date()) {
   };
 }
 
-// ---------------------------------------------------------------- dashboard
-registerDashboardWidget('analytics', async (ctx) => {
-  const s = await summary(accountScope({ admin: ctx.admin, userId: ctx.scope.id }), 7, ctx.now);
-  if (!s.totals.accounts) return null;
-  return {
-    accounts: s.totals.accounts, withData: s.totals.withData, followers: s.totals.followers,
-    followersGained7d: s.totals.followersGained, views7d: s.totals.views, shares7d: s.totals.shares,
-    likes7d: s.totals.likes, comments7d: s.totals.comments,
-    trend: s.days.map((d) => ({ day: d.day, followersGained: d.followersGained, views: d.views, shares: d.shares, likes: d.likes, comments: d.comments })),
-    top: s.accounts.filter((a) => (a.range.followersGained ?? 0) > 0)
-      .sort((a, b) => b.range.followersGained! - a.range.followersGained! || a.handle.localeCompare(b.handle)).slice(0, 5)
-      .map((a) => ({ id: a.id, platform: a.platform, handle: a.handle, displayName: a.displayName, followers: a.latest?.followers ?? null, gain: a.range.followersGained })),
-  };
-}, { order: 45 });

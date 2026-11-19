@@ -9,7 +9,7 @@
  *   concurrent ticks), skips paused / in-progress / manual-only / unconfigured accounts with codes, re-checks at run time.
  *   Scheduled refresh tasks created here run in the future and are cancelled, so no YouTube call is made for them.
  * - Trending: settings validation + RBAC, coded errors without regions/key, rank changes vs. the previous snapshot
- *   (two snapshots seeded in the DB for the fictional region ZZ), retention purge via the tick, dashboard widget.
+ *   (two snapshots seeded in the DB for the fictional region ZZ), retention purge via the tick, no dashboard widget (removed 2026-11-19).
  *   Without YOUTUBE_TEST_API_KEY: a syntactically valid dummy key is set briefly and the scheduled trending task is
  *   expected to fail against the real API with tracked.youtube_key_invalid (one rejected request, no quota).
  *   With YOUTUBE_TEST_API_KEY: a real chart fetch for US (10 videos, 1 quota unit per refresh) and a real scheduled
@@ -379,7 +379,7 @@ try {
   const r404 = await http('GET', '/api/trending?snapshotId=00000000-0000-0000-0000-000000000000', A.token);
   check('unknown snapshot → 404 trending.snapshot_not_found', r404.status === 404 && r404.body.code === 'trending.snapshot_not_found');
   const dash = await http('GET', '/api/dashboard?tz=UTC', A.token);
-  check('dashboard trending widget with the latest chart top entries', dash.status === 200 && Array.isArray(dash.body.widgets?.trending?.top) && dash.body.widgets.trending.regions.includes('ZZ'), JSON.stringify(dash.body.widgets?.trending)?.slice(0, 120));
+  check('dashboard: no trending widget any more (simplified 2026-11-19)', dash.status === 200 && !('trending' in (dash.body.widgets ?? {})), JSON.stringify(dash.body.order));
 
   // Retention via the tick (30 days): the 40-day-old snapshot goes, items cascade; recent ones stay.
   tk = await tick();

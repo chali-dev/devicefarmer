@@ -1,6 +1,6 @@
 /**
  * Post types (帖子 / Reels / 限动), 立即 vs 定时 publishing, the 定时发布 calendar range query, the 今日发布 view
- * and the dashboard card, through the real HTTP API and the real task centre. No mocks. Instagram only (works
+ * (no dashboard card since 2026-11-19), through the real HTTP API and the real task centre. No mocks. Instagram only (works
  * with the default ENABLED_PLATFORMS).
  * - Devices are placeholder `instances` rows (no Android container) kept "online" by a test-only trigger, as in
  *   publish-check.ts. Accounts without a device fail the manual precheck (publish.no_device).
@@ -221,21 +221,19 @@ try {
   r = await http('GET', '/api/publish/tasks?status=published,failed,cancelled&postType=reel,story', A);
   check('history: postType csv + status filter', r.body.total === 2 && r.body.byStatus.published === 1 && r.body.byStatus.failed === 1, JSON.stringify(r.body.byStatus));
 
-  // ---------------------------------------------------------------- today view + dashboard per time zone
+  // ---------------------------------------------------------------- today view per time zone (the dashboard card was removed on 2026-11-19)
   for (const tz of ['Asia/Shanghai', 'America/Los_Angeles']) {
     const [from, to] = dayIn(tz);
     const mine = created.filter((x) => whenOf(x) >= from.getTime() && whenOf(x) < to.getTime() && x.status !== 'cancelled');
     const want = { feed: 0, reel: 0, story: 0 } as Record<string, number>;
     for (const x of mine) want[x.postType]++;
     r = await http('GET', `/api/publish/tasks?from=${from.toISOString()}&to=${to.toISOString()}&status=pending,scheduled,running,awaiting_operator,published,failed`, A);
-    const dash = (await http('GET', `/api/dashboard?tz=${encodeURIComponent(tz)}`, A)).body.widgets.publishToday;
-    check(`today in ${tz} (${from.toISOString()} – ${to.toISOString()}): list byPostType = dashboard = expected ${JSON.stringify(want)}`,
-      ['feed', 'reel', 'story'].every((k) => r.body.byPostType[k] === want[k] && dash?.byType[k] === want[k]) && dash.total === mine.length && r.body.total === mine.length,
-      JSON.stringify({ list: r.body.byPostType, dash }));
+    check(`today in ${tz} (${from.toISOString()} – ${to.toISOString()}): list byPostType = expected ${JSON.stringify(want)}`,
+      ['feed', 'reel', 'story'].every((k) => r.body.byPostType[k] === want[k]) && r.body.total === mine.length,
+      JSON.stringify({ list: r.body.byPostType }));
   }
-  r = await http('GET', `/api/dashboard?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`, A);
-  const local = r.body.widgets.publishToday;
-  check('dashboard (local tz): the published story counts as published today', local?.published.story >= 1 && local.byStatus.published >= 1, JSON.stringify(local));
+  r = await http('GET', '/api/dashboard', A);
+  check('dashboard: no publishToday card any more', r.status === 200 && !('publishToday' in (r.body.widgets ?? {})), JSON.stringify(r.body.order));
 
   // ---------------------------------------------------------------- RBAC
   const cB = await content(B, 'b story', [imgB.id]);
@@ -250,10 +248,6 @@ try {
   check('B cannot filter by another owner (403)', r.status === 403);
   r = await http('GET', `/api/publish/tasks?ownerId=${uA}&postType=story`, T);
   check("admin sees A's stories with the owner filter", r.body.total === 2);
-  const dB = (await http('GET', '/api/dashboard', B)).body.widgets.publishToday;
-  const dA = (await http('GET', '/api/dashboard', A)).body.widgets.publishToday;
-  const dT = (await http('GET', `/api/dashboard?userId=${uB}`, T)).body.widgets.publishToday;
-  check("dashboard is scoped: B counts only B's story; admin's per-user view of B matches", dB?.byType.story === 1 && dB.total === 1 && JSON.stringify(dT) === JSON.stringify(dB) && dA.byType.story >= 1, JSON.stringify({ dA, dB, dT }));
   r = await dist(A, cImg1, [{ accountId: igB.id, postType: 'story' }]);
   check("A cannot target B's account", r.status === 404 || r.status === 400, r.text);
 

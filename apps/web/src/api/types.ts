@@ -466,34 +466,15 @@ export interface PublishPlatform { id: string; name: string; capability: Publish
 
 // ---------------------------------------------------------------- dashboard (仪表板) + settings (设置)
 export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
-export interface DashboardWidgets {
-  devices?: { total: number; running: number; stopped: number; error: number; busy: number; online: number; byStatus: Record<string, number>; capacity: DashboardCapacity | null }
-  proxies?: { total: number; bound: number; free: number; freeUsable: number; ok: number; failed: number; unchecked: number }
-  social?: {
-    total: number; exceptions: number; linked: number; byPlatform: Record<string, number>; byLogin: Record<string, number>
-  }
-  tracked?: { total: number; byStatus: Record<string, number>; topGainers: { id: string; platform: string; handle: string; displayName: string | null; followers: number; gain: number }[] }
-  publishing?: {
-    contents: { total: number; byStatus: Record<string, number> }
-    upcoming7d: number; published7d: number; failed7d: number; awaitingOperator: number; running: number
-    next: { id: string; scheduledAt: string; platform: string; status: string; title: string | null; handle: string | null }[]
-    trend: { day: string; published: number; failed: number }[]
-  }
-  publishToday?: { total: number; byType: Record<PostType, number>; published: Record<PostType, number>; byStatus: Record<string, number> }
-  tasks?: {
-    last24h: Record<'total' | 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled', number>
-    recentFailures: { id: string; type: string; label: string | null; error: string | null; errorCode: string | null; finishedAt: string | null; createdAt: string }[]
-  }
-  media?: { public: DashboardMediaPart; private: DashboardMediaPart; processing: number; failed: number }
-  comments?: { total: number; unread: number; drafts: number; awaitingOperator: number; queued: number; sent7d: number; failed7d: number }
-  analytics?: DashboardAnalytics
-  trending?: { regions: string[]; region: string; capturedAt: string; top: { rank: number; title: string | null; videoId: string; views: number | null; url: string }[] }
-  perUser?: { users: DashboardUserRow[] }
+/** 我的云机状态: the simplified 云机管理 state per device (DeviceState.vue), counted; 需要处理 = halted / error / offline / stopped external phones. */
+export interface DashboardDevices {
+  total: number
+  byState: Record<'ok' | 'busy' | 'offline' | 'notRunning' | 'halted', number>
+  attentionTotal: number
+  attention: { id: string; name: string; reason: 'halted' | 'error' | 'offline' | 'stopped'; status: InstanceStatus; external: boolean; code: string | null; at: string | null }[]
 }
-export interface DashboardMediaPart { count: number; bytes: number; images: number; videos: number }
-export interface DashboardUserRow {
-  id: string; username: string; role: Role; disabled: boolean; devices: number; socialAccounts: number; exceptions: number
-  trackedAccounts: number; contents: number; published7d: number; failed7d: number; awaitingOperator: number
+export interface DashboardWidgets {
+  devices?: DashboardDevices
 }
 export interface DashboardResponse {
   generatedAt: string
@@ -698,6 +679,8 @@ export interface AnalyticsAccount {
   latest: { day: string; followers: number | null; following: number | null; posts: number | null; capturedAt: string; source: 'api' | 'manual' | 'device'; approx: string[] } | null
   /** Metrics the official API could not provide when the row was collected (history). */
   missing: string[]
+  /** Last automatic check / sync on the cloud phone. */
+  lastCheck: { at: string; code: string | null } | null
 }
 export interface AnalyticsSummary {
   from: string; to: string
@@ -719,12 +702,6 @@ export interface AnalyticsPost {
 }
 export interface AnalyticsPosts {
   total: number; likes: number | null; comments: number | null; lastFetchedAt: string | null; posts: AnalyticsPost[]
-}
-export interface DashboardAnalytics {
-  accounts: number; withData: number; followers: number
-  followersGained7d: number | null; views7d: number | null; shares7d: number | null; likes7d: number | null; comments7d: number | null
-  trend: ({ day: string } & AnalyticsSums)[]
-  top: { id: string; platform: string; handle: string; displayName: string | null; followers: number | null; gain: number | null }[]
 }
 /** Local-midnight timestamp of a YYYY-MM-DD day (chart x values; the day itself is UTC on the server). */
 export const dayTs = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y!, m! - 1, dd!).getTime() }

@@ -45,10 +45,9 @@ import { personaRoutes } from './modules/comments/personas.js';
 import { aiRoutes } from './modules/ai/routes.js';
 import './modules/ai/drafts.js'; // AI 草稿: legacy account-drafts / persona-drafts handlers (old queued tasks finish skipped); no schedule since 2026-11-18
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-reply task handler
-import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
+import './modules/comments/dashboard.js'; // task-retention keep rule of comment replies
 import { analyticsRoutes } from './modules/analytics/routes.js';
-import './modules/analytics/analytics.js'; // analytics dashboard widget (historical data only)
-import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task + dashboard widget
+import { trendingRoutes } from './modules/trending/routes.js'; // 趋势热点 + trending-refresh task
 import { scheduleCollection } from './modules/trending/scheduler.js'; // hourly collection tick (tracked schedules, trending)
 import { alertsHourly, notifyRoutes } from './modules/notify/routes.js'; // alerts: notifications, rules, alert channels
 import { riskRoutes } from './modules/risk/routes.js'; // 风控: device pace, device halts, risk events

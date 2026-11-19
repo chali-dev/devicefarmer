@@ -277,12 +277,12 @@ try {
   // dashboard
   r = await clean('/api/dashboard', '/api/dashboard');
   const w = r.body.widgets ?? r.body;
-  check('A: dashboard social total = 1, linked = 0', w.social?.total === 1 && w.social?.linked === 0, JSON.stringify(w.social));
-  check('A: dashboard has no perUser breakdown', !w.perUser);
+  // Simplified 2026-11-19: only 我的云机状态 (devices widget); 媒体号分析 is /api/analytics/summary (checked above).
+  check('A: dashboard = only the devices widget, A\'s granted phone only', JSON.stringify(r.body.order) === '["devices"]' && w.devices?.total === 1 && !JSON.stringify(w).includes(D2.id), JSON.stringify(w));
   await clean('/api/dashboard?userId=<B>', `/api/dashboard?userId=${uB}`, 403);
   const asA = await http('GET', `/api/dashboard?userId=${uA}`, T);
   const wa = asA.body.widgets ?? asA.body;
-  check('admin: dashboard as A shows the same social numbers', JSON.stringify(wa.social) === JSON.stringify(w.social), `${JSON.stringify(wa.social)} vs ${JSON.stringify(w.social)}`);
+  check('admin: dashboard as A shows the same numbers', JSON.stringify(wa) === JSON.stringify(w), `${JSON.stringify(wa)} vs ${JSON.stringify(w)}`);
 
   // task centre
   r = await clean('/api/tasks', '/api/tasks');

@@ -130,7 +130,7 @@ try {
   r = await http('POST', '/api/trending/refresh', T);
   check('trending refresh → platform.disabled', disabled(r), r.text.slice(0, 200));
   r = await http('GET', '/api/dashboard', T);
-  check('dashboard: no trending widget', r.status === 200 && !('trending' in (r.body.widgets ?? {})) && 'social' in (r.body.widgets ?? {}), Object.keys(r.body.widgets ?? {}).join(','));
+  check('dashboard: no trending widget', r.status === 200 && !('trending' in (r.body.widgets ?? {})) && 'devices' in (r.body.widgets ?? {}), Object.keys(r.body.widgets ?? {}).join(','));
 
   // ---------------------------------------------------------------- distribution + publish runs
   const fd = new FormData();
