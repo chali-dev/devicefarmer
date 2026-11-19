@@ -1972,7 +1972,6 @@ const zhCN = {
     },
     publishRetry: {
       title: '发布任务',
-      hint: '每次发布只尝试一次，失败后不会自动重试：在内容管理里打开这条内容，修改后点「排程发布 / 立即发布」再发（会创建新的发布任务，失败的记录保留）。',
     },
     ai: {
       title: 'AI 草稿（Anthropic）',
@@ -1988,7 +1987,7 @@ const zhCN = {
       models: { 'claude-opus-5-5': 'Claude Opus 5.5（默认，质量最好）', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-haiku-5-5': 'Claude Haiku 5.5（最便宜，无拒绝回退）' },
     },
     publish: {
-      timeout: '单次尝试超时',
+      timeout: '超时',
       mediaTitle: '素材上传限制',
       imageMax: '图片大小上限',
       videoMax: '视频大小上限',

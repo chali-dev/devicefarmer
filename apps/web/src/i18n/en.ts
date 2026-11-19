@@ -1961,7 +1961,6 @@ const en: Messages = {
     },
     publishRetry: {
       title: 'Publish tasks',
-      hint: 'Each publish is tried once; a failure is not retried automatically. Open the content in Contents, change it and press Schedule / Publish now (this creates a new publish task; the failed one stays).',
     },
     ai: {
       title: 'AI drafts (Anthropic)',
@@ -1977,7 +1976,7 @@ const en: Messages = {
       models: { 'claude-opus-5-5': 'Claude Opus 5.5 (default, best quality)', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-haiku-5-5': 'Claude Haiku 5.5 (cheapest, no refusal fallback)' },
     },
     publish: {
-      timeout: 'Attempt timeout',
+      timeout: 'Timeout',
       mediaTitle: 'Media upload limits',
       imageMax: 'Max image size',
       videoMax: 'Max video size',

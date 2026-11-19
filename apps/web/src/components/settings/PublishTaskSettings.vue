@@ -36,11 +36,10 @@ async function save() {
   <div class="settings-pane">
     <a-spin :spinning="!state">
       <a-typography-title :level="5">{{ t('settings.publishRetry.title') }}</a-typography-title>
-      <a-typography-paragraph type="secondary">{{ t('settings.publishRetry.hint') }}</a-typography-paragraph>
       <a-form layout="vertical">
         <a-row :gutter="12">
           <a-col :xs="24" :sm="12">
-            <a-form-item :label="t('settings.publish.timeout')" :extra="state ? t('settings.envDefault', { v: `${state.defaults.timeoutSec} s`, env: 'PUBLISH_TIMEOUT_MS' }) : undefined">
+            <a-form-item :label="t('settings.publish.timeout')">
               <a-input-number v-model:value="form.timeoutSec" :min="60" :max="3600" :precision="0" addon-after="s" style="width: 100%" />
             </a-form-item>
           </a-col>
