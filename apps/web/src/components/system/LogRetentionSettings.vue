@@ -7,6 +7,8 @@ import { api, errorText } from '../../api/client'
 /** 系统配置 → 备份与保留: how long the API's log files and the device status history (设备日志 / 连线监控) are kept. */
 interface SystemSettings { logRetentionDays: number; historyRetentionDays: number }
 const { t } = useI18n()
+/** AUDIT_RETENTION_DAYS (env, read-only), shown under the log retention (系统配置 → 日志). */
+defineProps<{ auditRetentionDays?: number | null }>()
 const retention = reactive({ logRetentionDays: 14, historyRetentionDays: 7 })
 const loaded = ref(false)
 const saving = ref(false)
@@ -40,6 +42,16 @@ async function save() {
       </a-form-item>
       <a-form-item><a-button type="primary" :loading="saving" :disabled="!loaded" @click="save">{{ t('common.save') }}</a-button></a-form-item>
     </a-form>
+    <template v-if="auditRetentionDays !== undefined">
+      <a-divider />
+      <a-typography-title :level="5">{{ t('settings.retention.auditTitle') }}</a-typography-title>
+      <a-descriptions size="small" :column="1" bordered>
+        <a-descriptions-item :label="t('settings.retention.days')">
+          {{ auditRetentionDays ?? '—' }}
+          <a-tooltip :title="t('settings.readOnlyEnv', { name: 'AUDIT_RETENTION_DAYS' })"><a-tag class="env mono">AUDIT_RETENTION_DAYS</a-tag></a-tooltip>
+        </a-descriptions-item>
+      </a-descriptions>
+    </template>
   </div>
 </template>
 

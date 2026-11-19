@@ -1953,7 +1953,8 @@ const en: Messages = {
     readOnlyEnv: 'env {name}, read-only',
     envDefault: 'Default = env {env} ({v})',
     tabs: {
-      backup: 'Backup & retention',
+      data: 'Data',
+      logRetention: 'Logs',
       publishRetry: 'Publish tasks',
       media: 'Media uploads',
       storage: 'Storage',

@@ -10,9 +10,8 @@ import { useInstancesStore } from '../../stores/instances'
 
 /**
  * Settings → Data retention (admin): finished tasks of the task centre (editable; cleaned up hourly by a
- * `tasks-cleanup` task) and the audit log (env AUDIT_RETENTION_DAYS, read-only).
+ * `tasks-cleanup` task). The audit log's retention (read-only) is in LogRetentionSettings (系统配置 → 日志).
  */
-defineProps<{ auditRetentionDays: number | null }>()
 const { t } = useI18n()
 const store = useInstancesStore()
 const data = ref<TaskRetentionSettings | null>(null)
@@ -81,14 +80,6 @@ const last = computed(() => data.value?.lastCleanup ?? null)
         <template v-if="last.result">· {{ t('settings.retention.lastResult', { tasks: last.result.tasks, logs: last.result.logs }) }}</template>
       </p>
 
-      <a-divider />
-      <a-typography-title :level="5">{{ t('settings.retention.auditTitle') }}</a-typography-title>
-      <a-descriptions size="small" :column="1" bordered>
-        <a-descriptions-item :label="t('settings.retention.days')">
-          {{ auditRetentionDays ?? '—' }}
-          <a-tooltip :title="t('settings.readOnlyEnv', { name: 'AUDIT_RETENTION_DAYS' })"><a-tag class="env mono">AUDIT_RETENTION_DAYS</a-tag></a-tooltip>
-        </a-descriptions-item>
-      </a-descriptions>
     </a-spin>
   </div>
 </template>

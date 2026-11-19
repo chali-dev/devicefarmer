@@ -14,8 +14,8 @@ import LogRetentionSettings from '../components/system/LogRetentionSettings.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 
 /**
- * 系统配置 (admin, owner's menu list of 2026-11-18): 备份与保留 (database backups + log / history / task retention,
- * formerly /system and the 数据保留 tab), 发布任务, 素材上传, 存储 and AI. The former read-only 环境变量 tab is gone:
+ * 系统配置 (admin, owner's menu list of 2026-11-18): 数据 (database backups + task retention) and 日志 (log / history
+ * retention + the read-only audit retention) — the former 备份与保留 tab split on 2026-11-19 (old ?tab=backup → data), 发布任务, 素材上传, 存储 and AI. The former read-only 环境变量 tab is gone:
  * its values are the defaults of 发布任务 / 素材上传 (shown as a hint under each field), AUDIT_RETENTION_DAYS stays
  * read-only in 备份与保留. The active tab is
  * in the URL (?tab=), so other pages link straight to their settings (e.g. /settings?tab=storage). The alert rules
@@ -26,17 +26,17 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
-const TABS = ['backup', 'publishRetry', 'media', 'storage', 'ai'] as const
+const TABS = ['data', 'logRetention', 'publishRetry', 'media', 'storage', 'ai'] as const
 type Tab = (typeof TABS)[number]
 // Old tab names (links from before the regrouping).
-const ALIASES: Record<string, Tab> = { retention: 'backup', backups: 'backup', publish: 'publishRetry', publishTask: 'publishRetry', env: 'publishRetry' }
+const ALIASES: Record<string, Tab> = { backup: 'data', retention: 'data', backups: 'data', publish: 'publishRetry', publishTask: 'publishRetry', env: 'publishRetry' }
 if (route.query.tab === 'alerts') void router.replace({ path: '/alert-channels', query: { tab: 'rules' } })
 else if (route.query.tab === 'logs') void router.replace({ path: '/logs' })
 else if (route.query.tab === 'tracked') void router.replace({ path: '/trending', query: { youtubeKey: '1' } })
 const tab = computed<Tab>({
   get: () => {
     const q = ALIASES[String(route.query.tab)] ?? (route.query.tab as Tab)
-    return TABS.includes(q) ? q : 'backup'
+    return TABS.includes(q) ? q : 'data'
   },
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
@@ -49,12 +49,13 @@ onMounted(async () => { try { cfg.value = await api<SettingsConfig>('GET', '/api
   <PageContainer>
     <a-card :bordered="false">
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
-        <a-tab-pane key="backup" :tab="t('settings.tabs.backup')">
+        <a-tab-pane key="data" :tab="t('settings.tabs.data')">
           <BackupPanel />
           <a-divider />
-          <LogRetentionSettings />
-          <a-divider />
-          <RetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" />
+          <RetentionSettings />
+        </a-tab-pane>
+        <a-tab-pane key="logRetention" :tab="t('settings.tabs.logRetention')">
+          <LogRetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" />
         </a-tab-pane>
         <a-tab-pane key="publishRetry" :tab="t('settings.tabs.publishRetry')"><PublishTaskSettings /></a-tab-pane>
         <a-tab-pane key="media" :tab="t('settings.tabs.media')"><MediaLimitSettings /></a-tab-pane>
