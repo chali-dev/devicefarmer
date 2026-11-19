@@ -8,7 +8,7 @@ import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-en
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { assertNoBannedWords } from '../comments/persona-style.js';
-import { assertNotPublished, contentMediaOf, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
+import { assertNotPublished, contentMediaOf, publishedCounts, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
@@ -103,8 +103,6 @@ function postFor(content: Content, texts: AccountTexts, platform: string, t: Dis
 export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[]): Promise<DistributeResult> {
   if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
-  // 已发布的内容不能编辑: the remaining accounts get the content's own texts, no per-account text overrides.
-  if (targets.some((t) => t.title?.trim() || t.caption != null || t.hashtags?.length)) await assertNotPublished(db, content.id);
   const now = new Date();
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
@@ -114,6 +112,10 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
     const [locked] = await tx.select({ stage: schema.contents.stage }).from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
     if (!locked) throw notFound('内容不存在', 'content.not_found');
     if (locked.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
+    // 发布后不能再发 (owner 2026-11-19 「发布后不能选其他号重复再发」): once any account published it, the content is locked and
+    // is distributed to no further account (checked under the content row lock, so a parallel distribution can't slip by).
+    const published = (await publishedCounts(tx, [content.id])).get(content.id) ?? 0;
+    if (published) throw conflict('内容已发布，不能再发布到其他媒体号', 'publish.content_published', { count: published });
     // The content's assets are locked (FOR SHARE) before they are read, so a parallel 素材 delete (media.ts deleteMedia)
     // either sees this publish task (media.in_use) or has removed the asset before it is read here.
     await tx.execute(sql`select a.id from content_media cm join media_assets a on a.id = cm.asset_id where cm.content_id = ${content.id} for share of a`);

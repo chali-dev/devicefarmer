@@ -12,8 +12,8 @@
  * - List: csv status filter, legacy single status, byStatus counts exact per viewer (A never sees B's), unaffected by
  *   the status filter but following the other filters.
  * - 批量发布 (action publish): each content to its own default targets (content_targets) at one time; dryRun creates
- *   nothing; skips with codes (draft unless includeDrafts, archived, no targets, unfinished tasks, all published (DB
- *   fixture: a task set to published directly), banned word of the account persona); RBAC 404; audit without texts.
+ *   nothing; skips with codes (draft unless includeDrafts, archived, no targets, unfinished tasks, published on any
+ *   account = publish.content_published (DB fixture: a task set to published directly), banned word of the account persona); RBAC 404; audit without texts.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/content-batch-check.ts
  */
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -239,16 +239,18 @@ try {
     const pArch = await newContent(A.token, 'pArch', { mediaIds: [imgA], targetIds: [igA], stage: 'ready' });
     await http('PUT', `/api/contents/${pArch}`, A.token, { stage: 'archived' });
     const pNoT = await newContent(A.token, 'pNoT', { mediaIds: [imgA], stage: 'ready' });
-    const pDone = await newContent(A.token, 'pDone', { mediaIds: [imgA], targetIds: [igA], stage: 'ready' });
+    const pDone = await newContent(A.token, 'pDone', { mediaIds: [imgA], targetIds: [igA, igA2], stage: 'ready' });
     const pBan = await newContent(A.token, 'pBan', { mediaIds: [imgA], targetIds: [igA2], stage: 'ready', body: `BANWORD${tag} SECRET-BODY-${tag}` });
-    // pDone: published to igA before (DB fixture: its distributed task is cancelled, then marked published directly)
+    // pDone: published to igA before, igA2 not yet (DB fixture: its distributed task is cancelled, then marked published directly)
     const [ptDone] = await distribute(A.token, pDone, [igA]);
     await http('POST', `/api/publish/tasks/${ptDone}/cancel`, A.token);
     console.log('  (fixture: publish task of pDone set to published directly in the DB)');
     await sqlClient`update publish_tasks set status = 'published', published_at = now() where id = ${ptDone!}`;
-    // 1 个内容只发布一次: the single 分发 refuses the published pair too, also with an older page's `republish: true`
+    // 发布后不能再发: the single 分发 refuses a published content for every account, also with an older page's `republish: true`
     r = await http('POST', `/api/contents/${pDone}/distribute`, A.token, { targets: [{ accountId: igA }], republish: true });
-    check('single distribute to the published pair (even with republish: true) → 409 publish.already_published', r.status === 409 && r.body.code === 'publish.already_published', r.text);
+    check('single distribute to the published pair (even with republish: true) → 409 publish.content_published', r.status === 409 && r.body.code === 'publish.content_published' && r.body.params?.count === 1, r.text);
+    r = await http('POST', `/api/contents/${pDone}/distribute`, A.token, { targets: [{ accountId: igA2 }] });
+    check('single distribute of the published content to a not yet published account → 409 publish.content_published', r.status === 409 && r.body.code === 'publish.content_published', r.text);
     // banned word: A's personal persona with a banned word, set on igA2 AFTER the content was saved (saving would refuse it)
     const pers = await http('POST', '/api/personas', A.token, { scope: 'mine', name: `cbper ${tag}`, style: { bannedWords: [`BANWORD${tag}`] } });
     const persSet = await http('PUT', `/api/social/accounts/${igA2}`, A.token, { personaId: pers.body.persona?.id });
@@ -260,10 +262,10 @@ try {
 
     r = await pub(A.token, { dryRun: true });
     const item = (x: any, id: string) => (x.body.publish?.items as any[] | undefined)?.find((i) => i.id === id);
-    check('dryRun: pReady (2 accounts) and pBan (1) would publish; draft/archived/no targets/done skipped with codes; tasks=3, changed 0',
+    check('dryRun: pReady (2 accounts) and pBan (1) would publish; draft/archived/no targets/published skipped with codes; tasks=3, changed 0',
       r.status === 200 && sameSet(r.body.ok, [pReady, pBan]) && item(r, pReady)?.accounts === 2 && r.body.publish.tasks === 3 && r.body.changed === 0
       && skipOf(r, pDraft)?.code === 'content.batch_publish_draft' && skipOf(r, pArch)?.code === 'content.archived'
-      && skipOf(r, pNoT)?.code === 'content.batch_publish_no_targets' && skipOf(r, pDone)?.code === 'content.batch_publish_done', r.text);
+      && skipOf(r, pNoT)?.code === 'content.batch_publish_no_targets' && skipOf(r, pDone)?.code === 'publish.content_published' && skipOf(r, pDone)?.params?.count === 1, r.text);
     check('dryRun created no publish task', (await ptCount()) === before);
 
     r = await pub(B.token);

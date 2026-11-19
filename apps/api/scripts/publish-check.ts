@@ -13,9 +13,11 @@
  *   retry", no new round queued); 编辑后重新发布 = the content edited + distributed again to that account → a NEW
  *   publish task with the edited text (the failed one stays; a failed / cancelled pair is not published), the content status follows the
  *   newest task per account; a new round takes a changed timeout (5 min). The previous timeout rows are restored.
- * - 1 个内容只发布一次 (2026-11-19): a published pair is always 409 publish.already_published (an older page's
- *   `republish: true` is ignored, also for admins), a legacy row flagged republish fails its run as publish.duplicate,
- *   a cancelled / failed pair can be published again.
+ * - 发布后不能再发 (2026-11-19): a content may be distributed to several accounts in one request, but once any account
+ *   published it, distribute refuses it for every account (published or not, caption override, an older page's
+ *   `republish: true`, admins too) with 409 publish.content_published {count}, nothing created; a legacy row flagged
+ *   republish fails its run as publish.duplicate; a cancelled / failed pair of a content published nowhere can be
+ *   published again. (The per-pair publish.already_published is a backstop distribute no longer reaches.)
  * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
  *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
@@ -430,33 +432,44 @@ try {
     const after = (await http('GET', `/api/contents/${cImg.id}`, A)).body.content;
     check('locked: nothing of the refused changes was stored', after.title === det.content.title && after.body === det.content.body
       && after.media.map((m: any) => m.id).join() === curMedia.join() && after.targets.map((x: any) => x.id).join() === curTargets.join());
-    // distributing to an account it is not yet published on stays allowed, with the content's own text
-    const later3 = new Date(Date.now() + 2 * 86400_000).toISOString();
-    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3, caption: 'per-account text' }] });
-    check('locked: distribute with a per-account caption override → 409', locked409(r), r.text.slice(0, 160));
-    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
-    const rest = r.body.created?.[0];
-    if (rest) ptIds.add(rest.id);
-    check('locked: distribute to a not yet published account → 201 with the content\'s text', r.status === 201 && rest?.caption === 'IG caption' && rest?.status === 'scheduled', r.text.slice(0, 200));
-    if (rest) {
-      r = await http('PATCH', `/api/publish/tasks/${rest.id}`, A, { caption: 'edited later' });
-      check('locked: editing the text of its scheduled task → 409', locked409(r), r.text.slice(0, 160));
-      await http('POST', `/api/publish/tasks/${rest.id}/cancel`, A);
-    }
   }
 
-  // ---------------------------------------------------------------- 1 个内容只发布一次 (owner 2026-11-19): no re-publish
-  const pairCount = async () => (await db.select({ id: schema.publishTasks.id }).from(schema.publishTasks)
-    .where(and(eq(schema.publishTasks.contentId, cImg.id), eq(schema.publishTasks.accountId, igA)))).length;
-  const pairsBefore = await pairCount();
-  r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
-  check('publishing the same content to the same account again refused (409 publish.already_published, account param)',
-    r.status === 409 && r.body.code === 'publish.already_published' && !!r.body.params?.account, r.text.slice(0, 160));
-  r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }], republish: true });
-  check('an older page\'s `republish: true` is ignored: still 409 publish.already_published', r.status === 409 && r.body.code === 'publish.already_published', r.text.slice(0, 160));
-  r = await http('POST', `/api/contents/${cImg.id}/distribute`, T, { targets: [{ accountId: igA }], republish: true });
-  check('an admin is refused too (409)', r.status === 409 && r.body.code === 'publish.already_published', r.text.slice(0, 160));
-  check('no publish task was created for the published pair', await pairCount() === pairsBefore);
+  // ---------------------------------------------------------------- 发布后不能再发 (owner 2026-11-19): several accounts at once, never again
+  {
+    const pub409 = (x: any) => x.status === 409 && x.body.code === 'publish.content_published' && x.body.params?.count === 1;
+    const countOf = async (id: string) => (await db.select({ id: schema.publishTasks.id }).from(schema.publishTasks).where(eq(schema.publishTasks.contentId, id))).length;
+    const later3 = new Date(Date.now() + 2 * 86400_000).toISOString();
+    const nImg = await countOf(cImg.id);
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
+    check('published content: distribute to a not yet published account → 409 publish.content_published {count: 1}', pub409(r), r.text.slice(0, 160));
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3, caption: 'per-account text' }] });
+    check('published content: with a per-account caption override → 409 publish.content_published', pub409(r), r.text.slice(0, 160));
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
+    check('published content: to the account it is published on → 409 publish.content_published (before the per-pair check)', pub409(r), r.text.slice(0, 160));
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }], republish: true });
+    check('an older page\'s `republish: true` is ignored: still 409 publish.content_published', pub409(r), r.text.slice(0, 160));
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, T, { targets: [{ accountId: igSusp, scheduledAt: later3 }], republish: true });
+    check('an admin is refused too (409 publish.content_published)', pub409(r), r.text.slice(0, 160));
+    check('no publish task was created for the published content', await countOf(cImg.id) === nImg);
+    // 发布时可多选: one request to two accounts; once one of them published, the other's unfinished task keeps its text
+    r = await http('POST', '/api/contents', A, { title: `pc-${tag} multi`, mediaIds: [imgA1], platformHints: { instagram: { caption: 'multi' } } });
+    const cMulti = r.body.content;
+    r = await http('POST', `/api/contents/${cMulti.id}/distribute`, A, { targets: [{ accountId: igA }, { accountId: igSusp, scheduledAt: later3 }] });
+    const [mA, mS] = [r.body.created?.find((x: any) => x.accountId === igA), r.body.created?.find((x: any) => x.accountId === igSusp)];
+    for (const x of [mA, mS]) if (x) ptIds.add(x.id);
+    check('distribute one content to 2 accounts in one request → 201, 2 tasks', r.status === 201 && !!mA && !!mS && mS.status === 'scheduled', r.text.slice(0, 200));
+    await waitStatus(A, mA.id, ['awaiting_operator', 'failed']);
+    r = await http('POST', `/api/publish/tasks/${mA.id}/outcome`, A, { result: 'published', url: 'https://www.instagram.com/p/pc-multi/' });
+    check('one of the two published → content locked', r.body.task?.status === 'published' && (await http('GET', `/api/contents/${cMulti.id}`, A)).body.content.locked === true);
+    r = await http('PATCH', `/api/publish/tasks/${mS.id}`, A, { caption: 'edited later' });
+    check('locked: editing the text of the other (scheduled) task → 409 content.published_locked', r.status === 409 && r.body.code === 'content.published_locked', r.text.slice(0, 160));
+    const nMulti = await countOf(cMulti.id);
+    r = await http('POST', `/api/contents/${cMulti.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
+    check('distributing it again (even to the still scheduled account) → 409 publish.content_published, nothing created', pub409(r) && await countOf(cMulti.id) === nMulti, r.text.slice(0, 160));
+    await http('POST', `/api/publish/tasks/${mS.id}/cancel`, A);
+  }
+
+  // ---------------------------------------------------------------- 1 个内容只发布一次: a legacy republish row
   // a LEGACY row flagged republish (written by an older release) fails its run as a duplicate instead of publishing again
   {
     const [legacy] = await db.insert(schema.publishTasks).values({
@@ -563,7 +576,9 @@ try {
   d = await waitStatus(A, susp.id, ['failed', 'awaiting_operator']);
   check('suspended account → fails at once with publish.account_inactive (1 attempt)', d.task.status === 'failed' && d.task.errorCode === 'publish.account_inactive' && d.runs[0].attempts === 1 && d.runs[0].errorCode === 'publish.account_inactive',
     `${d.task.status} ${d.task.errorCode} attempts=${d.runs[0]?.attempts}`);
-  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytOut }] });
+  // cVid is published on YouTube (发布后不能再发): the account checks use a fresh video content
+  const cVid2 = (await http('POST', '/api/contents', A, { title: `pc-${tag} video2`, body: 'Video 2', mediaIds: [vidA] })).body.content;
+  r = await http('POST', `/api/contents/${cVid2.id}/distribute`, A, { targets: [{ accountId: ytOut }] });
   const out = r.body.created[0];
   ptIds.add(out.id);
   d = await waitStatus(A, out.id, ['failed', 'awaiting_operator']);
@@ -571,7 +586,7 @@ try {
   // Platform turned off on the account's device after linking → the run fails at once (before device/login checks).
   r = await http('PUT', `/api/instances/${DON2.id}/platforms`, T, { platforms: ['instagram'] });
   check('admin turns youtube off on the linked device', r.status === 200, r.text);
-  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytOut }] });
+  r = await http('POST', `/api/contents/${cVid2.id}/distribute`, A, { targets: [{ accountId: ytOut }] });
   const off = r.body.created?.[0];
   if (off) ptIds.add(off.id);
   d = await waitStatus(A, off.id, ['failed', 'awaiting_operator']);
@@ -609,31 +624,37 @@ try {
     check('4 s later: still failed, still one round, no task queued for it', later2.task.status === 'failed' && later2.runs.length === 1 && open.length === 0, `${later2.task.status} runs=${later2.runs.length} open=${open.length}`);
   }
   check('content with a failed round shows it (not published everywhere)', ['partially_published', 'failed', 'scheduled'].includes(await contentStatus(A, cVid.id)));
-  // Distribute again to the failed account → a NEW publish task. cVid is already published on YouTube, so it is LOCKED
-  // (已发布的内容不能编辑, 2026-11-19): editing its texts is refused and the new task takes the content's own text.
+  // cVid is already published on YouTube, so it is LOCKED: neither its texts can be edited nor its failed TikTok pair
+  // published again (发布后不能再发, 2026-11-19).
   await http('PUT', '/api/settings/task-timeouts/publish', T, { timeoutMin: 5 });
-  await db.update(schema.instances).set({ status: 'running', adbState: 'device', image: PINNED }).where(eq(schema.instances.id, DOFF.id));
   {
     const cur = (await http('GET', `/api/contents/${cVid.id}`, A)).body.content;
     const hints = { ...(cur.platformHints ?? {}), tiktok: { ...(cur.platformHints?.tiktok ?? {}), caption: `TT edited ${tag}` } };
     r = await http('PUT', `/api/contents/${cVid.id}`, A, { platformHints: hints });
     check('the platform texts of a content published elsewhere (YouTube) cannot be edited (409 content.published_locked)', r.status === 409 && r.body.code === 'content.published_locked', r.text.slice(0, 160));
     r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA }] });
+    check('its failed TikTok pair cannot be published again either (409 publish.content_published)', r.status === 409 && r.body.code === 'publish.content_published', r.text.slice(0, 160));
+  }
+  check('video content stays partially_published (YouTube published, TikTok failed)', await contentStatus(A, cVid.id) === 'partially_published');
+  // 编辑后重新发布 on a content published nowhere: cOp (only failed tasks, edited above) distributed again to the failed
+  // account → a NEW publish task with the edited text; the failed one stays as history.
+  {
+    r = await http('POST', `/api/contents/${cOp.id}/distribute`, A, { targets: [{ accountId: igA }] });
     const nt = r.body.created?.[0];
     if (nt) ptIds.add(nt.id);
-    check('distribute again to the failed pair: 201, a NEW publish task with the content\'s text, 1 attempt', r.status === 201 && !!nt && nt.id !== ttTask.id
-      && nt.caption === 'Video description' && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
-    const oldRow = (await ptask(A, ttTask.id)).task;
-    check('the failed task stays as history (failed, its old text)', oldRow.status === 'failed' && oldRow.caption === 'TT caption');
+    check('distribute again to the failed pair: 201, a NEW publish task with the edited text, 1 attempt', r.status === 201 && !!nt && nt.id !== op.id
+      && nt.caption === 'edited after a failure' && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
+    const oldRow = (await ptask(A, op.id)).task;
+    check('the failed task stays as history (failed, its old text)', oldRow.status === 'failed' && oldRow.caption !== 'edited after a failure', `${oldRow.status} ${oldRow.caption}`);
     d = await waitStatus(A, nt.id, ['awaiting_operator', 'failed']);
     const [newRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
-    check('the new round takes the changed timeout (300 s), 1 attempt; device back online → awaiting operator', d.task.status === 'awaiting_operator' && newRun?.timeoutMs === 300_000 && newRun?.maxAttempts === 1,
+    check('the new round takes the changed timeout (300 s), 1 attempt → awaiting operator', d.task.status === 'awaiting_operator' && newRun?.timeoutMs === 300_000 && newRun?.maxAttempts === 1,
       `${d.task.status} ${newRun?.timeoutMs} ${newRun?.maxAttempts}`);
-    await http('POST', `/api/publish/tasks/${nt.id}/outcome`, A, { result: 'published', url: 'https://www.tiktok.com/@x/video/1' });
-    const list = (await http('GET', `/api/contents?q=${encodeURIComponent(`pc-${tag}`)}&pageSize=100`, A)).body.items.find((x: any) => x.id === cVid.id);
-    check('publishCounts count the newest task per account (TikTok: published, its superseded failure not counted)', list?.publishCounts?.published === 2 && list?.publishCounts?.failed === 1, JSON.stringify(list?.publishCounts));
+    await http('POST', `/api/publish/tasks/${nt.id}/outcome`, A, { result: 'published', url: 'https://www.instagram.com/p/pc-op/' });
+    const list = (await http('GET', `/api/contents?q=${encodeURIComponent(`pc-${tag}`)}&pageSize=100`, A)).body.items.find((x: any) => x.id === cOp.id);
+    check('publishCounts count the newest task per account (igA: published, its superseded failure not counted; igSusp failed)', list?.publishCounts?.published === 1 && list?.publishCounts?.failed === 1, JSON.stringify(list?.publishCounts));
+    check('content status → partially_published (1 published, 1 failed; the superseded failure not counted)', await contentStatus(A, cOp.id) === 'partially_published');
   }
-  check('all video targets settled → content partially_published (1 failed account check, 2 published; the superseded TikTok failure not counted)', await contentStatus(A, cVid.id) === 'partially_published');
 
   // ---------------------------------------------------------------- admin distributes to a user's account
   r = await http('POST', '/api/contents', T, { title: `pc-${tag} admin`, mediaIds: [imgPub] });

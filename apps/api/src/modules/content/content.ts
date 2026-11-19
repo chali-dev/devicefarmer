@@ -184,8 +184,8 @@ export async function assertNoUnfinishedPublish(exec: Exec, contentId: string, a
 /**
  * A content is LOCKED as soon as one of its publish tasks is `published` (a post is online). Its texts, media, targets,
  * source language and translations can no longer be changed (409 content.published_locked), nor the texts of its
- * unfinished publish tasks; category, stage (归档 / 取消归档), tags, deletion (its own rules) and distributing to accounts
- * it is not yet published on (with the content's texts, no per-account text overrides) stay allowed.
+ * unfinished publish tasks, and it is distributed to no further account (publish.content_published, publish.ts);
+ * category, stage (归档 / 取消归档), tags and deletion (its own rules) stay allowed.
  */
 export async function publishedCounts(exec: Exec, contentIds: string[]): Promise<Map<string, number>> {
   if (!contentIds.length) return new Map();

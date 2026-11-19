@@ -137,13 +137,13 @@ async function cancelAll(user: AuthUser, contentId: string, res: BatchResult): P
 }
 
 /**
- * 批量发布: each content goes to its own 发布目标 (content_targets in order, enabled platforms only, minus accounts it was
- * already published to: no re-publishing in a batch) at one time (null = now) as one post type, through the same
+ * 批量发布: each content goes to its own 发布目标 (content_targets in order, enabled platforms only) at one time (null = now) as one post type, through the same
  * `distribute()` as the single 分发 (one transaction per content, all or nothing, banned words / media / platform
  * checks included). Refused contents are reported in `skipped`:
  * - `content.batch_publish_draft`: a draft (unless `includeDrafts`; distribute then moves it to ready),
  * - `content.archived`, `content.batch_publish_unfinished` (any unfinished publish task of the content),
- * - `content.batch_publish_no_targets` (no usable default target), `content.batch_publish_done` (all already published),
+ * - `publish.content_published` (published on any account: 发布后不能再发, the same refusal as distribute),
+ * - `content.batch_publish_no_targets` (no usable default target),
  * - any 4xx distribute throws (its code + params).
  * `dryRun` runs only these pre-checks and creates nothing (`changed` 0, `publish.tasks` = tasks that would be created).
  */
@@ -166,20 +166,19 @@ async function publishBatch(user: AuthUser, ids: string[], o: BatchPublishOpts, 
       if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
       if (content.stage === 'draft' && !o.includeDrafts) throw badRequest('草稿需先设为待发布', 'content.batch_publish_draft');
       const mine = tasks.filter((x) => x.contentId === id);
-      const unfinished = mine.filter((x) => x.status !== 'published').length;
+      const published = mine.filter((x) => x.status === 'published').length;
+      if (published) throw conflict('内容已发布，不能再发布到其他媒体号', 'publish.content_published', { count: published });
+      const unfinished = mine.length;
       if (unfinished) throw conflict('内容已有未完成的发布任务', 'content.batch_publish_unfinished', { n: unfinished });
       const usable = targets.filter((x) => x.contentId === id && isPlatformEnabled(x.platform));
       if (!usable.length) throw badRequest('内容没有可用的默认发布目标', 'content.batch_publish_no_targets');
-      const done = new Set(mine.map((x) => x.accountId));
-      const todo = usable.filter((x) => !done.has(x.accountId));
-      if (!todo.length) throw conflict('内容已发布到所有默认目标', 'content.batch_publish_done', { n: usable.length });
       if (!o.dryRun) {
-        const r = await distribute(user, content, todo.map((x) => ({ accountId: x.accountId, scheduledAt: o.scheduledAt ?? null, postType: o.postType ?? 'feed' })));
+        const r = await distribute(user, content, usable.map((x) => ({ accountId: x.accountId, scheduledAt: o.scheduledAt ?? null, postType: o.postType ?? 'feed' })));
         res.changed++;
         res.publish.tasks += r.created.length;
-      } else res.publish.tasks += todo.length;
+      } else res.publish.tasks += usable.length;
       res.ok.push(id);
-      res.publish.items.push({ id, accounts: todo.length });
+      res.publish.items.push({ id, accounts: usable.length });
     } catch (err) {
       res.skipped.push(skipOf(id, err));
     }

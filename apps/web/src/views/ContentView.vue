@@ -189,10 +189,8 @@ const editorOpen = ref(false)
 const saving = ref(false)
 const editing = ref<Content | null>(null)
 const editorTasks = ref<PublishTaskItem[]>([])
-/** 已发布的内容不能编辑: the editor opens read only (查看); only the not yet published targets can still be published. */
+/** 已发布的内容不能编辑: the editor opens read only (查看), without 立即发布 / 排程发布 (发布后不能再发到其他号). */
 const locked = computed(() => Boolean(editing.value?.locked))
-const publishedIds = computed(() => new Set(editorTasks.value.filter((x) => x.status === 'published').map((x) => x.accountId)))
-const remainingTargets = computed(() => form.targets.filter((id) => !publishedIds.value.has(id)))
 /** 发布任务 in the editor: one block per account = its newest task, its older attempts (编辑后重新发布) always listed under it. */
 const editorTaskGroups = computed(() => {
   const by = new Map<string, PublishTaskItem[]>()
@@ -505,15 +503,12 @@ function openSchedule(v: boolean) { if (v && !schedAt.value) schedAt.value = day
 async function saveAndPublish(at: Dayjs | null) {
   if (!form.targets.length) { message.warning(t('content.publishNoTargets')); return }
   if (at && !at.isAfter(dayjs())) { message.warning(t('distribute.pickTime')); return }
-  // A locked (published) content is not saved: the remaining targets get it as it is.
-  const c = locked.value ? editing.value : await save('ready')
+  const c = await save('ready')
   if (!c) return
-  const ids = remainingTargets.value
-  if (!ids.length) { message.info(t('content.publishAllDone')); return }
   saving.value = true
   try {
     const r = await api<{ created: PublishTaskItem[]; existing: PublishTaskItem[] }>('POST', `/api/contents/${c.id}/distribute`, {
-      targets: ids.map((accountId) => ({ accountId, scheduledAt: at ? at.toISOString() : null, ...(previewType.value !== 'feed' ? { postType: previewType.value } : {}) })),
+      targets: form.targets.map((accountId) => ({ accountId, scheduledAt: at ? at.toISOString() : null, ...(previewType.value !== 'feed' ? { postType: previewType.value } : {}) })),
     })
     schedOpen.value = false
     if (r.created.length) message.success(t('distribute.created', { n: r.created.length }))
@@ -837,9 +832,9 @@ async function submitBatchForm() {
     <template #footer>
       <a-button @click="editorOpen = false">{{ locked ? t('content.close') : t('common.cancel') }}</a-button>
       <a-button v-if="editing?.stage === 'archived' && !locked" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
-      <!-- locked (published): no save; 立即发布 / 排程发布 only while some target is not published yet (sent unsaved) -->
-      <template v-else-if="editing?.stage !== 'archived' && (!locked || remainingTargets.length)">
-        <a-button v-if="!locked" :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
+      <!-- locked (published): no save and no further publishing (发布后不能再发到其他号) -->
+      <template v-else-if="editing?.stage !== 'archived' && !locked">
+        <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
         <a-popover :open="schedOpen" trigger="click" placement="topRight" @open-change="openSchedule">
           <template #content>
             <a-space>

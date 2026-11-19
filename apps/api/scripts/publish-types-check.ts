@@ -180,8 +180,13 @@ try {
   check('operator records the story as published', r.status === 200 && r.body.task.status === 'published' && r.body.task.postType === 'story', r.text);
   remember(r.body.task);
 
+  // 发布后不能再发 (2026-11-19): the published story's content is distributed to no further account, in no type
+  r = await dist(A, cV5, [{ accountId: igApi.id, postType: 'reel' }]);
+  check('the published content (story) → reel on another account: 409 publish.content_published', r.status === 409 && r.body.code === 'publish.content_published', r.text);
+  const cV5b = await content(A, 'video 5s (2)', [v5.id]);
+
   // immediate reel on an account without a device → manual precheck fails
-  r = await dist(A, cV5, [{ accountId: igNoDev.id, postType: 'reel' }]);
+  r = await dist(A, cV5b, [{ accountId: igNoDev.id, postType: 'reel' }]);
   const reel = r.body.created?.[0];
   d = await waitStatus(A, reel.id, ['failed', 'awaiting_operator']);
   check('immediate reel without device → failed publish.no_device (no silent success)', d.task.status === 'failed' && d.task.errorCode === 'publish.no_device' && d.task.postType === 'reel', JSON.stringify(d.task));
@@ -252,7 +257,7 @@ try {
   check("A cannot target B's account", r.status === 404 || r.status === 400, r.text);
 
   // ---------------------------------------------------------------- manual only (no API method any more)
-  r = await dist(A, cV5, [{ accountId: igApi.id, postType: 'reel' }]);
+  r = await dist(A, cV5b, [{ accountId: igApi.id, postType: 'reel' }]);
   const manReel = r.body.created?.[0];
   d = await waitStatus(A, manReel.id, ['awaiting_operator', 'failed', 'published']);
   const noApi = (x: any) => !x.logs.some((l: any) => /^(method api|publishing via|check: method|publish request sent)/.test(l.message));
