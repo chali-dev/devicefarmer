@@ -323,6 +323,10 @@ try {
   check('scheduled YouTube fired at its time → awaiting_operator', d.task.status === 'awaiting_operator' && !!ytRow1?.startedAt && ytRow1.startedAt.getTime() >= runAt.getTime() - 50,
     `${d.task.status} started=${ytRow1?.startedAt?.toISOString()} runAt=${runAt.toISOString()}`);
 
+  // a translation while nothing is published yet (the lock below must keep it)
+  r = await http('PUT', `/api/contents/${cImg.id}/translations/en`, A, { title: 'EN carousel', body: 'EN caption' });
+  check('before anything is published: translation saved (201), content not locked', r.status === 201 && (await http('GET', `/api/contents/${cImg.id}`, A)).body.content.locked === false, r.text.slice(0, 160));
+
   // ---------------------------------------------------------------- operator outcome (manual)
   r = await http('POST', `/api/publish/tasks/${igTask.id}/outcome`, A, { result: 'published' });
   check('outcome published needs a link or ID', r.status === 400 && r.body.code === 'publish.outcome_needs_link');
@@ -336,6 +340,61 @@ try {
   r = await http('POST', `/api/publish/tasks/${ytTask.id}/outcome`, A, { result: 'published', externalId: 'yt-video-123' });
   check('operator records published with external ID', r.body.task?.status === 'published' && r.body.task.externalId === 'yt-video-123');
   check('content with 1 published + 1 unfinished → partially_published', await contentStatus(A, cVid.id) === 'partially_published');
+
+  // ---------------------------------------------------------------- 已发布的内容不能编辑 (owner 2026-11-19)
+  {
+    const locked409 = (x: any) => x.status === 409 && x.body.code === 'content.published_locked';
+    const det = (await http('GET', `/api/contents/${cImg.id}`, A)).body;
+    const curMedia = det.content.media.map((m: any) => m.id) as string[];
+    const curTargets = det.content.targets.map((x: any) => x.id) as string[];
+    const listItem = (await http('GET', `/api/contents?q=${encodeURIComponent(`pc-${tag} carousel`)}`, A)).body.items.find((x: any) => x.id === cImg.id);
+    check('published content: locked in the detail and the list; the publish task item says so too',
+      det.content.locked === true && listItem?.locked === true && (await ptask(A, igTask.id)).task.content?.locked === true);
+    const refused: [string, unknown][] = [
+      ['title', { title: `pc-${tag} carousel changed` }], ['body', { body: 'changed body' }],
+      ['platform texts', { platformHints: { instagram: { caption: 'IG changed' } } }], ['media', { mediaIds: [...curMedia].reverse() }],
+      ['targets', { targetIds: [...curTargets, igSusp] }], ['source language', { lang: 'en' }],
+    ];
+    for (const [what, body] of refused) {
+      r = await http('PUT', `/api/contents/${cImg.id}`, A, body);
+      check(`locked: PUT ${what} → 409 content.published_locked`, locked409(r), r.text.slice(0, 160));
+    }
+    r = await http('PUT', `/api/contents/${cImg.id}`, T, { title: `pc-${tag} admin edit` });
+    check('locked: an admin is refused too (409)', locked409(r), r.text.slice(0, 160));
+    r = await http('PUT', `/api/contents/${cImg.id}`, A, { title: det.content.title, body: det.content.body, platformHints: det.content.platformHints, mediaIds: curMedia, targetIds: curTargets });
+    check('locked: a PUT that resends the same texts / media / targets passes (200)', r.status === 200, r.text.slice(0, 160));
+    r = await http('PUT', `/api/contents/${cImg.id}`, A, { categoryId: catVideo.id, tags: ['locked-ok'] });
+    check('locked: category + tags can still be changed', r.status === 200 && r.body.content.category?.id === catVideo.id && r.body.content.tags.includes('locked-ok'), r.text.slice(0, 160));
+    r = await http('PUT', `/api/contents/${cImg.id}`, A, { stage: 'archived' });
+    const arch = r.status === 200 && r.body.content.stage === 'archived';
+    r = await http('PUT', `/api/contents/${cImg.id}`, A, { stage: 'ready' });
+    check('locked: 归档 / 取消归档 still allowed', arch && r.status === 200 && r.body.content.stage === 'ready' && r.body.content.status === 'published', r.text.slice(0, 160));
+    r = await http('POST', '/api/contents/batch', A, { ids: [cImg.id], action: 'set-category', categoryId: catLaunch.id });
+    check('locked: batch set-category still allowed', r.status === 200 && r.body.ok.length === 1 && r.body.changed === 1, r.text.slice(0, 160));
+    r = await http('PUT', `/api/contents/${cImg.id}/translations/en`, A, { title: 'EN changed', body: 'x' });
+    check('locked: translation PUT → 409', locked409(r), r.text.slice(0, 160));
+    r = await http('PUT', `/api/contents/${cImg.id}/translations/de`, A, { title: 'DE new' });
+    check('locked: a NEW translation → 409', locked409(r), r.text.slice(0, 160));
+    r = await http('DELETE', `/api/contents/${cImg.id}/translations/en`, A);
+    const trs = (await http('GET', `/api/contents/${cImg.id}/translations`, A)).body.translations;
+    check('locked: translation DELETE → 409, the translation is kept unchanged', locked409(r) && trs.length === 1 && trs[0].lang === 'en' && trs[0].title === 'EN carousel', r.text.slice(0, 160));
+    const after = (await http('GET', `/api/contents/${cImg.id}`, A)).body.content;
+    check('locked: nothing of the refused changes was stored', after.title === det.content.title && after.body === det.content.body
+      && after.media.map((m: any) => m.id).join() === curMedia.join() && after.targets.map((x: any) => x.id).join() === curTargets.join());
+    // distributing to an account it is not yet published on stays allowed, with the content's own text
+    const later3 = new Date(Date.now() + 2 * 86400_000).toISOString();
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3, caption: 'per-account text' }] });
+    check('locked: distribute with a per-account caption override → 409', locked409(r), r.text.slice(0, 160));
+    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
+    const rest = r.body.created?.[0];
+    if (rest) ptIds.add(rest.id);
+    check('locked: distribute to a not yet published account → 201 with the content\'s text', r.status === 201 && rest?.caption === 'IG caption' && rest?.status === 'scheduled', r.text.slice(0, 200));
+    if (rest) {
+      r = await http('PATCH', `/api/publish/tasks/${rest.id}`, A, { caption: 'edited later' });
+      check('locked: editing the text of its scheduled task → 409', locked409(r), r.text.slice(0, 160));
+      await http('POST', `/api/publish/tasks/${rest.id}/cancel`, A);
+    }
+  }
 
   // ---------------------------------------------------------------- duplicate protection + re-publish
   r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
@@ -404,6 +463,11 @@ try {
   r = await http('POST', `/api/publish/tasks/${op.id}/outcome`, A, { result: 'failed', reason: 'App crashed while uploading' });
   check('operator records failure with reason', r.body.task.status === 'failed' && r.body.task.errorCode === 'publish.operator_failed' && r.body.task.error === 'App crashed while uploading');
   check('content with only failed tasks → failed', await contentStatus(A, cOp.id) === 'failed');
+  r = await http('PUT', `/api/contents/${cOp.id}`, A, { title: `pc-${tag} opfail edited`, body: 'edited after a failure' });
+  const rTr = await http('PUT', `/api/contents/${cOp.id}/translations/en`, A, { title: 'EN opfail' });
+  check('only failed tasks: not locked, texts + translations editable', r.status === 200 && r.body.content.locked === false && rTr.status === 201, `${r.status} ${rTr.status}`);
+  r = await http('PUT', `/api/contents/${cLater.id}`, A, { title: `pc-${tag} later edited` });
+  check('only cancelled tasks: not locked, editable', r.status === 200 && r.body.content.locked === false, r.text.slice(0, 160));
   r = await http('GET', `/api/tasks/${op.taskId}`, A);
   check('task centre shows the publish task to its owner; generic retry is disabled (canRetry false)', r.status === 200 && r.body.task.type === 'publish' && r.body.task.canRetry === false);
   r = await http('POST', `/api/publish/tasks/${op.id}/retry`, A, {});
@@ -465,19 +529,20 @@ try {
     check('4 s later: still failed, still one round, no task queued for it', later2.task.status === 'failed' && later2.runs.length === 1 && open.length === 0, `${later2.task.status} runs=${later2.runs.length} open=${open.length}`);
   }
   check('content with a failed round shows it (not published everywhere)', ['partially_published', 'failed', 'scheduled'].includes(await contentStatus(A, cVid.id)));
-  // 编辑后重新发布: edit the content, distribute it again to the failed account → a NEW publish task with the edited text.
+  // Distribute again to the failed account → a NEW publish task. cVid is already published on YouTube, so it is LOCKED
+  // (已发布的内容不能编辑, 2026-11-19): editing its texts is refused and the new task takes the content's own text.
   await http('PUT', '/api/settings/publish-retry', T, { timeoutSec: 300 });
   await db.update(schema.instances).set({ status: 'running', adbState: 'device', image: PINNED }).where(eq(schema.instances.id, DOFF.id));
   {
     const cur = (await http('GET', `/api/contents/${cVid.id}`, A)).body.content;
     const hints = { ...(cur.platformHints ?? {}), tiktok: { ...(cur.platformHints?.tiktok ?? {}), caption: `TT edited ${tag}` } };
     r = await http('PUT', `/api/contents/${cVid.id}`, A, { platformHints: hints });
-    check('the content of a failed task can be edited', r.status === 200, r.text.slice(0, 160));
+    check('the platform texts of a content published elsewhere (YouTube) cannot be edited (409 content.published_locked)', r.status === 409 && r.body.code === 'content.published_locked', r.text.slice(0, 160));
     r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA }] });
     const nt = r.body.created?.[0];
     if (nt) ptIds.add(nt.id);
-    check('distribute again to the failed pair (no republish flag): 201, a NEW publish task with the edited text, 1 attempt', r.status === 201 && !!nt && nt.id !== ttTask.id
-      && nt.caption === `TT edited ${tag}` && nt.republish === false && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
+    check('distribute again to the failed pair (no republish flag): 201, a NEW publish task with the content\'s text, 1 attempt', r.status === 201 && !!nt && nt.id !== ttTask.id
+      && nt.caption === 'Video description' && nt.republish === false && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
     const oldRow = (await ptask(A, ttTask.id)).task;
     check('the failed task stays as history (failed, its old text)', oldRow.status === 'failed' && oldRow.caption === 'TT caption');
     d = await waitStatus(A, nt.id, ['awaiting_operator', 'failed']);

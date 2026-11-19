@@ -5,7 +5,7 @@ import { db, schema } from '../../db/index.js';
 import { POST_TYPES, PUBLISH_STATUSES, type PublishTask } from '../../db/schema.js';
 import { forbidden, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
-import { mediaItem } from '../content/content.js';
+import { mediaItem, publishedCounts } from '../content/content.js';
 import { enabledPlatforms } from '../social/platforms.js';
 import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
 import { storageFor } from '../settings/storage.js';
@@ -84,13 +84,14 @@ export async function visiblePublishTask(user: AuthUser, id: string): Promise<Pu
 /** Publish tasks with account, device, content and media summaries. */
 export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
   if (!rows.length) return [];
-  const [accs, contents, owners, media] = await Promise.all([
+  const [accs, contents, owners, media, published] = await Promise.all([
     db.select({ id: schema.socialAccounts.id, handle: schema.socialAccounts.handle, displayName: schema.socialAccounts.displayName, platform: schema.socialAccounts.platform,
       loginStatus: schema.socialAccounts.loginStatus, accountStatus: schema.socialAccounts.accountStatus, instanceId: schema.socialAccounts.instanceId })
       .from(schema.socialAccounts).where(inArray(schema.socialAccounts.id, idsOf(rows.map((r) => r.accountId)))),
     db.select({ id: schema.contents.id, title: schema.contents.title, userId: schema.contents.userId }).from(schema.contents).where(inArray(schema.contents.id, idsOf(rows.map((r) => r.contentId)))),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
     db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, idsOf(rows.flatMap((r) => r.mediaIds)))),
+    publishedCounts(db, [...new Set(rows.map((r) => r.contentId))]),
   ]);
   const insts = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState })
     .from(schema.instances).where(inArray(schema.instances.id, idsOf(accs.map((a) => a.instanceId))));
@@ -98,6 +99,7 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
   return rows.map((r) => {
     const acc = accs.find((a) => a.id === r.accountId);
     const inst = insts.find((i) => i.id === acc?.instanceId);
+    const content = contents.find((x) => x.id === r.contentId);
     return {
       ...r,
       // evidence: the storage key stays server-side; the screenshot is served by GET …/evidence
@@ -105,7 +107,8 @@ export async function toPublishItems(rows: PublishTask[], viewer?: AuthUser) {
       hasEvidence: !!r.evidence?.key,
       text: composeText(r.caption, r.hashtags),
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
-      content: contents.find((x) => x.id === r.contentId) ?? null,
+      // locked: 已发布的内容不能编辑 (a task of the content is published), so the drawer offers no text edit.
+      content: content ? { ...content, locked: (published.get(content.id) ?? 0) > 0 } : null,
       account: acc ? { id: acc.id, handle: acc.handle, displayName: acc.displayName, platform: acc.platform, loginStatus: acc.loginStatus, accountStatus: acc.accountStatus } : null,
       instance: inst ? { ...inst, online: inst.status === 'running' && inst.adbState === 'device', accessible: access === 'all' || access.has(inst.id) } : null,
       media: r.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m) => !!m && !m.deletedAt).map((m) => mediaItem(m!)),

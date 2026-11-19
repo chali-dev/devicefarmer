@@ -2,7 +2,7 @@
 import { dateLocale } from '../i18n'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message, Modal } from 'ant-design-vue'
-import { PlusOutlined } from '@ant-design/icons-vue'
+import { LockOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -189,6 +189,10 @@ const editorOpen = ref(false)
 const saving = ref(false)
 const editing = ref<Content | null>(null)
 const editorTasks = ref<PublishTaskItem[]>([])
+/** 已发布的内容不能编辑: the editor opens read only (查看); only the not yet published targets can still be published. */
+const locked = computed(() => Boolean(editing.value?.locked))
+const publishedIds = computed(() => new Set(editorTasks.value.filter((x) => x.status === 'published').map((x) => x.accountId)))
+const remainingTargets = computed(() => form.targets.filter((id) => !publishedIds.value.has(id)))
 /** 发布任务 in the editor: one entry per account = its newest task, older attempts (编辑后重新发布) folded under it. */
 const editorTaskGroups = computed(() => {
   const by = new Map<string, PublishTaskItem[]>()
@@ -341,7 +345,7 @@ watch(wantedLangs, syncLangs)
 /** Target accounts per language (tab tooltip). */
 const langAccounts = (lang: string) => targetAccounts.value.filter((a) => a.lang === lang).map((a) => `@${a.handle}`)
 /** A needed, never-saved block would come straight back, so only saved or no longer needed blocks can be closed. */
-const trClosable = (f: TrForm) => isSaved(f.lang) || !wantedLangs.value.includes(f.lang)
+const trClosable = (f: TrForm) => !locked.value && (isSaved(f.lang) || !wantedLangs.value.includes(f.lang))
 function onLangTabEdit(key: unknown, action: 'add' | 'remove') {
   if (action !== 'remove') return
   const lang = String(key)
@@ -502,10 +506,10 @@ function openSchedule(v: boolean) { if (v && !schedAt.value) schedAt.value = day
 async function saveAndPublish(at: Dayjs | null) {
   if (!form.targets.length) { message.warning(t('content.publishNoTargets')); return }
   if (at && !at.isAfter(dayjs())) { message.warning(t('distribute.pickTime')); return }
-  const c = await save('ready')
+  // A locked (published) content is not saved: the remaining targets get it as it is.
+  const c = locked.value ? editing.value : await save('ready')
   if (!c) return
-  const done = new Set(editorTasks.value.filter((x) => x.status === 'published').map((x) => x.accountId))
-  const ids = form.targets.filter((id) => !done.has(id))
+  const ids = remainingTargets.value
   if (!ids.length) { message.info(t('content.publishAllDone')); return }
   saving.value = true
   try {
@@ -667,6 +671,7 @@ async function submitBatchForm() {
           <template v-else-if="column.key === 'status'">
             <div class="status-cell">
               <StatusTag kind="content" :status="record.status" />
+              <a-tooltip v-if="record.locked" :title="t('content.lockedTag')"><LockOutlined class="lock-icon" /></a-tooltip>
             </div>
           </template>
           <template v-else-if="column.key === 'publishAt'">
@@ -689,7 +694,7 @@ async function submitBatchForm() {
           </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
-              <a-button type="link" size="small" @click="openEdit(record)">{{ t('common.edit') }}</a-button>
+              <a-button type="link" size="small" @click="openEdit(record)">{{ record.locked ? t('common.view') : t('common.edit') }}</a-button>
               <a-button v-if="record.stage === 'archived'" type="link" size="small" @click="setArchived(record, false)">{{ t('content.unarchive') }}</a-button>
               <a-tooltip v-else :title="hasUnfinished(record) ? t('content.archiveBlocked') : undefined">
                 <a-button type="link" size="small" :disabled="hasUnfinished(record)" @click="setArchived(record, true)">{{ t('content.archive') }}</a-button>
@@ -702,8 +707,9 @@ async function submitBatchForm() {
     </a-card>
   </PageContainer>
 
-  <a-drawer v-model:open="editorOpen" :title="editing ? t('content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg + 360" destroy-on-close>
-    <a-alert v-if="editing?.aiGenerated" type="warning" show-icon class="ai-notice" :message="t('content.aiDraftNotice')">
+  <a-drawer v-model:open="editorOpen" :title="editing ? t(locked ? 'content.viewContent' : 'content.edit') : t('content.add')" :width="DRAWER_WIDTH.lg + 360" destroy-on-close>
+    <a-alert v-if="locked" type="info" show-icon class="ai-notice" :message="t('content.lockedNotice')" :description="t('content.lockedHint')" />
+    <a-alert v-if="editing?.aiGenerated && !locked" type="warning" show-icon class="ai-notice" :message="t('content.aiDraftNotice')">
       <template #description>
         {{ aiInfo(editing) }}<template v-if="editing.aiGenerated.mediaTags.length"> · {{ t('content.aiDraftMediaTags', { tags: editing.aiGenerated.mediaTags.join(', ') }) }}</template>
         <div v-if="editing.aiGenerated.needsTranslation?.length">
@@ -729,7 +735,7 @@ async function submitBatchForm() {
     </a-tabs>
     <div v-if="trs.some((f) => !trFilled(f))" class="muted small lang-hint">{{ t('content.lang.missingHint') }}</div>
 
-    <a-form v-if="currentTr" :key="currentTr.lang" layout="vertical">
+    <a-form v-if="currentTr" :key="currentTr.lang" layout="vertical" :disabled="locked">
       <a-form-item :label="t('content.fieldTitle')" required>
         <a-input v-model:value="currentTr.title" :maxlength="200" show-count :placeholder="form.title" />
       </a-form-item>
@@ -745,7 +751,7 @@ async function submitBatchForm() {
       </a-form-item>
     </a-form>
 
-    <a-form v-show="!currentTr" layout="vertical">
+    <a-form v-show="!currentTr" layout="vertical" :disabled="locked">
       <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
         <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []; form.categoryId = undefined" />
       </a-form-item>
@@ -790,10 +796,10 @@ async function submitBatchForm() {
         </a-col>
       </a-row>
       <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
-        <MediaStrip :media="form.media" :size="88" editable @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
+        <MediaStrip :media="form.media" :size="88" :editable="!locked" @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
         <a-space style="margin-top: 8px" wrap>
-          <a-button :disabled="form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-          <ContentMediaUpload :disabled="form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
+          <a-button :disabled="locked || form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
+          <ContentMediaUpload :disabled="locked || form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
         </a-space>
         <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
         <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
@@ -842,10 +848,11 @@ async function submitBatchForm() {
     </a-row>
 
     <template #footer>
-      <a-button @click="editorOpen = false">{{ t('common.cancel') }}</a-button>
-      <a-button v-if="editing?.stage === 'archived'" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
-      <template v-else>
-        <a-button :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
+      <a-button @click="editorOpen = false">{{ locked ? t('content.close') : t('common.cancel') }}</a-button>
+      <a-button v-if="editing?.stage === 'archived' && !locked" type="primary" :loading="saving" @click="save('ready')">{{ t('common.save') }}</a-button>
+      <!-- locked (published): no save; 立即发布 / 排程发布 only while some target is not published yet (sent unsaved) -->
+      <template v-else-if="editing?.stage !== 'archived' && (!locked || remainingTargets.length)">
+        <a-button v-if="!locked" :loading="saving" @click="save('draft')">{{ t('content.saveDraft') }}</a-button>
         <a-popover :open="schedOpen" trigger="click" placement="topRight" @open-change="openSchedule">
           <template #content>
             <a-space>
@@ -869,6 +876,7 @@ async function submitBatchForm() {
 <style scoped>
 .older { margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--cp-border); }
 .ai-notice { margin-bottom: 16px; }
+.lock-icon { color: var(--cp-text-secondary); }
 .title-link { display: block; font-weight: 500; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .meta .chip { margin: 0; font-size: 11px; line-height: 18px; padding-inline: 5px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

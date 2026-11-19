@@ -144,7 +144,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-space wrap style="margin-bottom: 12px">
           <a-button v-if="canOutcome" type="primary" :disabled="busy" @click="openOutcome">{{ t('publish.outcome') }}</a-button>
           <a-button v-if="task.hasEvidence" @click="evidenceOpen = true">{{ t('publish.evidence') }}</a-button>
-          <a-button v-if="canReschedule && task.postType !== 'story'" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
+          <a-button v-if="canReschedule && task.postType !== 'story' && !task.content?.locked" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
           <a-button v-if="canReschedule" :disabled="busy" @click="openTime">{{ t('publish.reschedule') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
         </a-space>
