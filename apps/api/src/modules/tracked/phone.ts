@@ -129,7 +129,7 @@ type Log = (level: 'info' | 'warn' | 'error', message: string, data?: Record<str
  * Runs one profile visit on the account's 采集手机 under the shared device rules (collector.ts withDevice: lock,
  * pace, busy). Throws the coded refusals (no phone, not allowed, halted, offline) or CollectorDefer.
  */
-export async function withTrackedPhone<T>(acc: Pick<TrackedAccount, 'userId' | 'instanceId'>, log: Log, fn: (dev: CollectorDevice) => Promise<T>): Promise<T> {
+export async function withTrackedPhone<T>(acc: Pick<TrackedAccount, 'userId' | 'instanceId'>, log: Log, fn: (dev: CollectorDevice) => Promise<T>, lockMs?: number): Promise<T> {
   const inst = await requireTrackedPhone(acc);
-  return withDevice(inst, log, () => new HttpError(503, `采集手机 ${inst.name} 不在线`, 'tracked.collector_offline', { name: inst.name }), fn, { what: 'collect' });
+  return withDevice(inst, log, () => new HttpError(503, `采集手机 ${inst.name} 不在线`, 'tracked.collector_offline', { name: inst.name }), fn, { what: 'collect', lockMs });
 }

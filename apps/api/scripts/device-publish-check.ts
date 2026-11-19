@@ -204,17 +204,18 @@ try {
 
   // ---------------------------------------------------------------- a failure before 分享 does not count (min gap / daily cap); after 分享 it does
   {
-    const fakeDevice = (async (inst: any, _log: any, _off: any, fn: any) => fn({ inst, adbPort: inst.adbPort })) as unknown as DeviceRunDeps['withDevice'];
+    const locks: (number | undefined)[] = [];
+    const fakeDevice = (async (inst: any, _log: any, _off: any, fn: any, opts: any) => { locks.push(opts?.lockMs); return fn({ inst, adbPort: inst.adbPort }); }) as unknown as DeviceRunDeps['withDevice'];
     const failBefore = (async () => { throw new PublishDeviceError('publish.device_text_mismatch', 'mismatch (test)', { excerpt: 'read back: x' }); }) as unknown as DeviceRunDeps['flow'];
     const plainBefore = (async () => { throw new Error('boom before share (test)'); }) as unknown as DeviceRunDeps['flow'];
     const shotPng = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#0a0' } }).png().toBuffer();
     const uncertain = (async (_d: any, inp: any) => { inp.onShare(); throw new PublishDeviceError('publish.send_uncertain', 'uncertain (test)', { afterSend: true, shot: shotPng, excerpt: 'feed_caption · media 1' }); }) as unknown as DeviceRunDeps['flow'];
     const plainAfter = (async (_d: any, inp: any) => { inp.onShare(); throw new Error('boom after share (test)'); }) as unknown as DeviceRunDeps['flow'];
     const [accRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, a0.id));
-    const runWith = async (taskId: string, flow: DeviceRunDeps['flow']) => {
+    const runWith = async (taskId: string, flow: DeviceRunDeps['flow'], timeoutMs?: number) => {
       const [row] = await db.select().from(pt).where(eq(pt.id, taskId));
       const logs: string[] = [];
-      const ctx = { row: row!, log: async (_l: string, m: string) => { logs.push(m); }, task: { task: {} as any, payload: {}, attempt: 1, signal: new AbortController().signal, log: async () => undefined } };
+      const ctx = { row: row!, log: async (_l: string, m: string) => { logs.push(m); }, task: { task: { timeoutMs: timeoutMs ?? null } as any, payload: {}, attempt: 1, signal: new AbortController().signal, log: async () => undefined } };
       const input = { publishTaskId: row!.id, attemptNo: row!.attemptNo, platform: 'instagram', account: accRow!, caption: row!.caption, hashtags: [], text: row!.caption, options: {}, media: [], postType: 'feed' as const };
       let out: any; let err: any = null;
       try { out = await runDevicePublish(input as any, ctx as any, { withDevice: fakeDevice, flow }); } catch (e) { err = e; }
@@ -225,6 +226,9 @@ try {
     const x = await dist(await content('pre-share fail', [img]), a0.id, { scheduledAt: new Date(Date.now() + 3 * 86400_000).toISOString() });
     await http('POST', `/api/publish/tasks/${x.id}/cancel`, A);
     let rr = await runWith(x.id, failBefore);
+    rr = await runWith(x.id, failBefore, 30 * 60_000);
+    check('device lock follows the task timeout (系统配置 → 任务超时): at least 12 min, a 30 min task → 31 min lock',
+      locks[0] === 12 * 60_000 && locks[1] === 31 * 60_000, locks.join(','));
     check('failure before 分享 (text mismatch): run fails publish.device_text_mismatch, reservation undone (device_run_at back to empty), logged as not counted',
       rr.err?.code === 'publish.device_text_mismatch' && rr.runAt === null && rr.logs.includes('failed before 分享: not counted toward the daily cap / minimum gap'), `${rr.err?.code} ${String(rr.runAt)} ${rr.logs.join(' | ')}`);
     rr = await runWith(x.id, plainBefore);

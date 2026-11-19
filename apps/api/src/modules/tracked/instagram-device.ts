@@ -290,7 +290,7 @@ export const instagramDeviceSource: TrackedSource = {
   requireConfigured: async (account) => { await requireTrackedPhone(account ?? { userId: '', instanceId: null }); },
   async fetchProfile(account, ctx = {}) {
     if (!IG_HANDLE.test(account.handle)) throw coded(400, 'Instagram 账号格式不正确', 'tracked.bad_handle', { platform: 'Instagram' });
-    return withTrackedPhone(account, ctx.log ?? (async () => undefined), (dev) => readProfile(dev, account.handle, ctx));
+    return withTrackedPhone(account, ctx.log ?? (async () => undefined), (dev) => readProfile(dev, account.handle, ctx), ctx.lockMs);
   },
   fetchRecentPosts: async () => [],
 };

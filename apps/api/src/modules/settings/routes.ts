@@ -9,7 +9,8 @@ import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
 import { FIXED_MENUS, GRANTABLE_MENUS, DEFAULT_USER_MENUS, getUserMenus, saveUserMenus } from '../auth/role-menus.js';
-import { getPublishTimeout, PublishTimeoutInput, publicTimeout, publishTimeoutDefault, savePublishTimeout } from '../publish/timeout-settings.js';
+import { handlerTimeoutMs } from '../tasks/core.js';
+import { isTimeoutType, saveTaskTimeout, storedTimeouts, TIMEOUT_TYPES } from '../tasks/timeouts.js';
 import { getMediaLimitSettings, MAX_IMAGE_MB, MAX_VIDEO_MB, mediaLimitDefaults, MEDIA_TYPE_IDS, MediaLimitsInput, saveMediaLimitSettings } from '../media/limits.js';
 import { FORMATS } from '../media/formats.js';
 import { getStorageSettings, saveStorageSettings, StorageInput, testStorage } from './storage.js';
@@ -83,14 +84,31 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * 发布任务: the timeout of a publish round's single attempt (publish/timeout-settings.ts; env value = default). No
-   * retries since 2026-11-18 (the path and the `retry` key keep their former names).
+   * 任务超时 (tasks/timeouts.ts): one row per user-facing task type, minutes; `timeoutMin` null = none (no timeout) when
+   * the type has no default. PUT one type at a time; `null` goes back to the default.
    */
-  const timeoutView = async () => ({ retry: publicTimeout(await getPublishTimeout()), defaults: publicTimeout({ timeoutMs: publishTimeoutDefault(), updatedAt: null }) });
-  app.get('/api/settings/publish-retry', async () => timeoutView());
-  app.put('/api/settings/publish-retry', { schema: { body: PublishTimeoutInput } }, async (req) => {
-    await savePublishTimeout(req.body);
-    return timeoutView();
+  const timeoutsView = async () => {
+    const { value, updatedAt } = await storedTimeouts(true);
+    const min = (ms: number | null) => (ms === null ? null : Math.max(1, Math.round(ms / 60_000)));
+    return {
+      updatedAt,
+      items: Object.entries(TIMEOUT_TYPES).map(([type, b]) => {
+        const def = handlerTimeoutMs(type);
+        return { type, timeoutMin: min(value[type] ?? def), defaultMin: min(def), custom: value[type] !== undefined, min: b.min, max: b.max };
+      }),
+    };
+  };
+  app.get('/api/settings/task-timeouts', async () => timeoutsView());
+  app.put('/api/settings/task-timeouts/:type', {
+    schema: { params: z.object({ type: z.string() }), body: z.object({ timeoutMin: z.number().int().nullable() }).strict() },
+  }, async (req) => {
+    const { type } = req.params;
+    if (!isTimeoutType(type)) throw new HttpError(404, `unknown task type ${type}`, 'settings.task_timeout_unknown', { type });
+    const b = TIMEOUT_TYPES[type]!;
+    const v = req.body.timeoutMin;
+    if (v !== null && (v < b.min || v > b.max)) throw new HttpError(400, `timeout must be ${b.min}–${b.max} min`, 'settings.task_timeout_range', { min: b.min, max: b.max });
+    await saveTaskTimeout(type, v);
+    return timeoutsView();
   });
 
   /**
@@ -111,9 +129,8 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return mediaLimitsView();
   });
 
-  /** Env-configured defaults (publish timeout, media limits, adb ports); the audit retention is a setting (系统配置 → 日志). Cheap. */
+  /** Env-configured defaults (media limits, adb ports); the audit retention is a setting (系统配置 → 日志). Cheap. */
   app.get('/api/settings/config', async () => ({
-    publish: { timeoutMs: config.PUBLISH_TIMEOUT_MS },
     media: { imageMaxMb: config.MEDIA_IMAGE_MAX_MB, videoMaxMb: config.MEDIA_VIDEO_MAX_MB, allowedTypes: config.MEDIA_ALLOWED_TYPES.split(',').map((s) => s.trim()).filter(Boolean) },
     adbPorts: { min: config.ADB_PORT_MIN, max: config.ADB_PORT_MAX },
   }));

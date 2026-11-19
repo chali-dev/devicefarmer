@@ -8,7 +8,7 @@ import { recordRiskEvent } from '../risk/events.js';
 import { activeStorage } from '../settings/storage.js';
 import { platformById } from '../social/platforms.js';
 import { TaskError } from '../tasks/core.js';
-import { CollectorDefer, deviceHalt, haltDevice, withDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, haltDevice, lockFor, withDevice } from '../tracked/collector.js';
 import { getDevicePublishRules } from './device-rules.js';
 import { publishOnIg, PublishDeviceError } from './ig-publish.js';
 import { DEVICE_METHOD, PublishCheckError, registerPublishMethod, type PublishInput, type PublishMethodResult, type PublishRunContext } from './methods.js';
@@ -102,7 +102,7 @@ export async function runDevicePublish(input: PublishInput, ctx: PublishRunConte
         media: input.media, text: input.postType === 'story' ? '' : input.text, log: ctx.task.log, signal: ctx.task.signal,
         onShare: () => { shared = true; },
       });
-    }, { lockMs: 12 * 60_000, weight: 6, what: 'publish' });
+    }, { lockMs: lockFor(ctx.task.task.timeoutMs, 12 * 60_000), weight: 6, what: 'publish' });
     const evidence = await storeEvidence(row, res.screenshot, res.inputText, res.excerpt);
     return { state: 'published', externalId: res.externalId ?? null, url: res.url ?? null, publishedAt: res.publishedAt ?? null, evidence, data: { device: inst.name, screens: res.screens } };
   } catch (err) {

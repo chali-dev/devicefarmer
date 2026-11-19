@@ -13,7 +13,7 @@ import { autoCheckUnsupported } from '../social/check.js';
 import { visibleAccount } from '../social/social.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
-import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, lockFor, withDevice } from '../tracked/collector.js';
 import { phonesAllowed, trackedPhoneRefusal } from '../tracked/phone.js';
 import { collectIgFeed, FeedScreenError, type FeedResult } from './device.js';
 
@@ -217,7 +217,7 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   try {
     r = await withDevice(inst, ctx.log, offline, (dev) => collectIgFeed(dev, acc!.handle, {
       posts: settings.feedPosts, commentsPerPost: settings.feedCommentsPerPost, log: ctx.log, signal: ctx.signal,
-    }), { lockMs: 15 * 60_000, weight: settings.feedPosts + 2, what: 'feed' });
+    }), { lockMs: lockFor(ctx.task.timeoutMs, 15 * 60_000), weight: settings.feedPosts + 2, what: 'feed' });
   } catch (err) {
     if (err instanceof CollectorDefer) {
       const deferrals = (ctx.payload.deferrals ?? 0) + 1;

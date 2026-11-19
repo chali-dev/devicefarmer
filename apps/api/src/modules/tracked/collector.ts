@@ -31,6 +31,12 @@ const HOUR_MS = 3600_000;
 /** A visit takes ≤ ~30 s; the lock outlives a crashed worker by at most this (longer operations pass `lockMs`). */
 const LOCK_MS = 120_000;
 
+/**
+ * Lock lifetime of a device operation run by a task: its timeout (系统配置 → 任务超时, stored on the task) + 1 min, so
+ * the lock never expires while the attempt may still run; at least `min` (default LOCK_MS).
+ */
+export const lockFor = (taskTimeoutMs: number | null | undefined, min = LOCK_MS) => Math.max(min, (taskTimeoutMs ?? 0) + 60_000);
+
 /** Visits in the last hour (oldest first, ms) after dropping older ones. */
 async function recentVisits(instanceId: string, now = Date.now()): Promise<number[]> {
   await redis.zremrangebyscore(visitsKey(instanceId), 0, now - HOUR_MS);

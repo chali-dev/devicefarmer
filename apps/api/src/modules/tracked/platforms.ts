@@ -49,6 +49,8 @@ export interface SourceContext {
   /** For 风控记录 rows (risk_events): the tracked account and who started the refresh. */
   trackedAccountId?: string | null;
   userId?: string | null;
+  /** Device lock lifetime (collector.ts lockFor of the task's timeout). */
+  lockMs?: number;
 }
 
 export interface PostData {

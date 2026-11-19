@@ -17,7 +17,7 @@ import { platformById } from '../social/platforms.js';
 import { visibleAccount, type Tx } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { accountPersonaIds, assertNoBannedWords } from './persona-style.js';
-import { CollectorDefer, deviceHalt, haltDevice, onDeviceResumed, withDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, haltDevice, lockFor, onDeviceResumed, withDevice } from '../tracked/collector.js';
 
 /**
  * Comments & engagement (评论互动, P5).
@@ -639,7 +639,7 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
       res = await withDevice(inst, ctx.log, offline, (dev) => sendIgComment(dev, {
         shortcode: plan.shortcode, postPk: plan.postPk, handle: acc.handle, externalId: acc.externalId, replyTo: plan.replyTo, text: r.text,
         log: ctx.log, signal: ctx.signal,
-      }), { lockMs: 6 * 60_000, weight: acc.externalId ? 1 : 2, what: 'reply' });
+      }), { lockMs: lockFor(ctx.task.timeoutMs, 6 * 60_000), weight: acc.externalId ? 1 : 2, what: 'reply' });
     } catch (err) {
       if (err instanceof CollectorDefer) {
         await db.update(R).set({ status: 'scheduled' }).where(and(eq(R.id, r.id), eq(R.status, 'sending')));

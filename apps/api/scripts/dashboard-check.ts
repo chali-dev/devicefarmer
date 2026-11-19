@@ -181,7 +181,7 @@ try {
   const codes = await Promise.all(adminOnly.map(([m, p, body]) => http(m, p, TA, body).then((x) => x.status)));
   check('every settings route is admin-only (403 for a user)', codes.every((c) => c === 403), codes.join(','));
   r = await http('GET', '/api/settings/config', T);
-  check('config: env publish defaults, no audit retention (a setting now)', r.status === 200 && !('maxAttempts' in r.body.publish) && r.body.publish.timeoutMs > 0 && !('auditRetentionDays' in r.body), j(r.body));
+  check('config: env media defaults, no publish timeout (系统配置 → 任务超时) and no audit retention (settings now)', r.status === 200 && r.body.media?.imageMaxMb > 0 && !('publish' in r.body) && !('auditRetentionDays' in r.body), j(r.body));
   r = await http('GET', '/api/settings/system', T);
   check('system: real health checks for postgres/redis/docker/adb/stf + versions', r.status === 200 && ['postgres', 'redis', 'docker', 'adb', 'stf'].every((k) => k in r.body.health.checks)
     && r.body.health.checks.postgres === 'ok' && typeof r.body.versions.postgres === 'string' && !r.text.includes(process.env.DATABASE_URL!), j(r.body.health));

@@ -16,7 +16,6 @@ import { onDeviceResumed } from '../tracked/collector.js';
 import './device.js'; // registers the `device` method (云手机发帖)
 import { MANUAL_METHOD, PublishCheckError, publishMethods, type PublishInput, type PublishLogLevel, type PublishMethodResult } from './methods.js';
 import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
-import { getPublishTimeout } from './timeout-settings.js';
 
 export { PublishCheckError };
 
@@ -167,13 +166,12 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
   const [acc] = await db.select({ handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, row.accountId));
   const [content] = await db.select({ title: schema.contents.title }).from(schema.contents).where(eq(schema.contents.id, row.contentId));
   try {
-    // 系统配置 → 发布任务: the attempt's timeout is stored on the task (a round keeps it). One attempt per round,
-    // also for a row an older colour created with more.
-    const { timeoutMs } = await getPublishTimeout();
+    // The attempt's timeout (系统配置 → 任务超时 → 发帖) is stored on the task by createTask (a round keeps it). One
+    // attempt per round, also for a row an older colour created with more.
     const { task } = await createTask({
       type: TASK_TYPE, userId: row.userId, label: `${row.platform}${row.postType !== 'feed' ? ` ${row.postType}` : ''} @${acc?.handle ?? '?'} · ${content?.title ?? ''}`.slice(0, 200),
       refType: REF_TYPE, refId: row.id, payload: { publishTaskId: row.id, attemptNo: row.attemptNo },
-      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: 1, timeoutMs, retryOf,
+      runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: 1, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
     // 防并发: a newer round (改期 / 重试 at the same time) took over before this task was attached: it would never run
@@ -468,6 +466,7 @@ async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
 registerTaskHandler<Payload>(TASK_TYPE, {
   queue: 'publish',
   concurrency: 4,
+  // Default of 系统配置 → 任务超时 → 发帖 (tasks/timeouts.ts).
   timeoutMs: config.PUBLISH_TIMEOUT_MS,
   // One attempt per round, no automatic retries (owner decision 2026-11-18).
   maxAttempts: 1,

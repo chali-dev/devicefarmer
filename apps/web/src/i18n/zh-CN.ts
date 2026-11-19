@@ -1750,7 +1750,7 @@ const zhCN = {
       role_create: '新增角色',
       role_update: '修改角色',
       role_delete: '删除角色',
-      settings_publish_retry: '修改发布任务设置',
+      settings_task_timeout: '修改任务超时',
       settings_media_limits: '修改素材上传限制',
       settings_task_cleanup: '手动清理任务',
       system_settings: '修改系统维护设置',
@@ -1886,13 +1886,32 @@ const zhCN = {
     tabs: {
       data: '数据',
       logRetention: '日志',
-      publishRetry: '发布任务',
+      timeouts: '任务超时',
       media: '上传文件',
       storage: '存储',
       ai: 'AI',
     },
-    publishRetry: {
-      title: '发布任务',
+    timeouts: {
+      min: '分钟',
+      none: '不限',
+      default: '默认 {n} 分钟',
+      defaultNone: '默认不限',
+      types: {
+        publish: '发帖',
+        'comment-reply': '发评论',
+        'account-device-sync': '同步媒体号',
+        'account-device-check': '账号检测',
+        'feed-collect': '帖子与评论',
+        'account-following': '关注与粉丝',
+        'tracked-refresh': '追踪号采集',
+        'trending-refresh': '趋势热点',
+        'media-process': '素材处理',
+        'install-apk': '安装应用',
+        'import-app': '导入应用',
+        'push-asset': '推送素材',
+        'db-backup': '数据库备份',
+        'db-restore': '数据库导入',
+      },
     },
     ai: {
       title: 'AI 草稿（Anthropic）',
@@ -1906,9 +1925,6 @@ const zhCN = {
       workspaceHint: '密钥创建时若未限定工作区（所有工作区），每个请求都必须带工作区 ID，否则 Anthropic 返回 400。在 Claude Console → Settings → Workspaces 的 ID 列复制（wrkspc_…）；限定了工作区的密钥留空。',
       model: '模型',
       models: { 'claude-opus-5-5': 'Claude Opus 5.5（默认，质量最好）', 'claude-sonnet-5-5': 'Claude Sonnet 5.5', 'claude-haiku-5-5': 'Claude Haiku 5.5（最便宜，无拒绝回退）' },
-    },
-    publish: {
-      timeout: '超时',
     },
     mediaLimits: {
       images: '图片',
@@ -2694,6 +2710,8 @@ const zhCN = {
     },
     settings: {
       storage_test_failed: '存储连接测试失败，未保存：{error}',
+      task_timeout_unknown: '未知的任务类型',
+      task_timeout_range: '超时须在 {min}–{max} 分钟之间',
       secret_required: '修改了 Endpoint、Bucket 或 Access Key，需要重新填写 Secret Access Key',
     },
     social: {

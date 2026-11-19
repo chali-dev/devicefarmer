@@ -9,6 +9,7 @@ import { events } from '../../lib/events.js';
 import { withMutex } from '../../lib/locks.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { publicTask, updateTask } from '../instances/repo.js';
+import { configuredTimeout } from './timeouts.js';
 
 /**
  * Task centre core (任务中心): one scheduling system for every background job.
@@ -84,6 +85,8 @@ const running = new Map<string, AbortController>();
 export const isFinal = (s: TaskStatus) => TASK_FINAL.includes(s);
 export const taskHandler = (type: string) => handlers.get(type);
 export const registeredTaskTypes = () => [...handlers.keys()];
+/** The handler's built-in timeout (the default of 系统配置 → 任务超时), null = none. */
+export const handlerTimeoutMs = (type: string): number | null => handlers.get(type)?.timeoutMs ?? null;
 
 function queue(name: string): Queue<{ taskId: string }> {
   let q = queues.get(name);
@@ -159,7 +162,8 @@ export async function createTask(input: CreateTaskInput): Promise<{ task: Task; 
     status: runAt ? 'scheduled' : 'pending',
     payload: input.payload ?? {},
     maxAttempts: Math.max(1, input.maxAttempts ?? h.maxAttempts ?? 1),
-    timeoutMs: input.timeoutMs === undefined ? h.timeoutMs ?? null : input.timeoutMs,
+    // 系统配置 → 任务超时 (tasks/timeouts.ts) before the handler's default; an explicit value (manual retry) wins.
+    timeoutMs: input.timeoutMs === undefined ? (await configuredTimeout(input.type)) ?? h.timeoutMs ?? null : input.timeoutMs,
     priority: input.priority ?? 0,
     idempotencyKey: input.idempotencyKey ?? null,
     retryOf: input.retryOf ?? null,
