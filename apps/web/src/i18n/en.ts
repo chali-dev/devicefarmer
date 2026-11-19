@@ -1954,7 +1954,7 @@ const en: Messages = {
       data: 'Data',
       logRetention: 'Logs',
       publishRetry: 'Publish tasks',
-      media: 'Media uploads',
+      media: 'File uploads',
       storage: 'Storage',
       ai: 'AI',
     },
@@ -1976,13 +1976,8 @@ const en: Messages = {
     },
     publish: {
       timeout: 'Timeout',
-      mediaTitle: 'Media upload limits',
-      imageMax: 'Max image size',
-      videoMax: 'Max video size',
-      types: 'Allowed formats',
     },
     mediaLimits: {
-      hint: 'Size limits and allowed formats of uploads to the media library and the content editor. Saved values apply to the next upload; existing media are not affected.',
       images: 'Images',
       videos: 'Videos',
       typesRequired: 'Select at least one format',

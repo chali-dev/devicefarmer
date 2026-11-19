@@ -1965,7 +1965,7 @@ const zhCN = {
       data: '数据',
       logRetention: '日志',
       publishRetry: '发布任务',
-      media: '素材上传',
+      media: '上传文件',
       storage: '存储',
       ai: 'AI',
     },
@@ -1987,13 +1987,8 @@ const zhCN = {
     },
     publish: {
       timeout: '超时',
-      mediaTitle: '素材上传限制',
-      imageMax: '图片大小上限',
-      videoMax: '视频大小上限',
-      types: '允许的格式',
     },
     mediaLimits: {
-      hint: '素材库和内容编辑器上传文件的大小上限与允许的格式。保存后下一次上传即生效；已上传的素材不受影响。',
       images: '图片',
       videos: '视频',
       typesRequired: '至少选择一种格式',
