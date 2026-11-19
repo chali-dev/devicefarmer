@@ -252,6 +252,29 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     if (!b && !fallback) throw fail('publish.device_timeout', `找不到界面元素 ${id}`, { retry: true });
     await s.tap(b ? center(b) : fallback!);
   };
+  /** Reads the focused caption field back: empty the clipboard, select all + copy, read the clipboard ('' if nothing). */
+  const readCaption = async (): Promise<string> => {
+    let text = '';
+    let raw = '';
+    dirtyClip = true;
+    for (let i = 0; i < 3 && !text; i++) {
+      await clip.clear(s);
+      await sleep(300, undefined, { signal: input.signal });
+      // select all (ctrl+A; second try: end, then shift+home), then copy (ctrl+C)
+      await s.sh(i === 1 ? 'input keyevent 123; input keycombination 59 122' : 'input keycombination 113 29');
+      await sleep(600, undefined, { signal: input.signal });
+      await s.sh('input keycombination 113 31');
+      for (let k = 0; k < 5 && !text; k++) {
+        await sleep(500, undefined, { signal: input.signal });
+        raw = await s.sh('service call clipboard 4 s16 com.android.shell i32 -1 i32 0 i32 0').catch(() => '');
+        text = parseClipParcel(raw) ?? '';
+      }
+      if (!text) await log('warn', 'publish: caption copy for the read-back gave nothing, trying again', { attempt: i + 1, raw: raw.replace(/\s+/g, ' ').slice(0, 1800) });
+    }
+    await clip.clear(s);
+    dirtyClip = false;
+    return text;
+  };
 
   try {
     await requireApp(dev, 'publish.device_app_missing');
@@ -364,23 +387,7 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
       await sleep(1500, undefined, { signal: input.signal });
       shot = await s.screenshot().catch(() => null);
       // Read back: empty the clipboard, copy the whole field, read the clipboard.
-      let raw = '';
-      for (let i = 0; i < 3 && !inputText; i++) {
-        await clip.clear(s);
-        await sleep(300, undefined, { signal: input.signal });
-        // select all (ctrl+A; second try: end, then shift+home), then copy (ctrl+C)
-        await s.sh(i === 1 ? 'input keyevent 123; input keycombination 59 122' : 'input keycombination 113 29');
-        await sleep(600, undefined, { signal: input.signal });
-        await s.sh('input keycombination 113 31');
-        for (let k = 0; k < 5 && !inputText; k++) {
-          await sleep(500, undefined, { signal: input.signal });
-          raw = await s.sh('service call clipboard 4 s16 com.android.shell i32 -1 i32 0 i32 0').catch(() => '');
-          inputText = parseClipParcel(raw) ?? '';
-        }
-        if (!inputText) await log('warn', 'publish: caption copy for the read-back gave nothing, trying again', { attempt: i + 1, raw: raw.replace(/\s+/g, ' ').slice(0, 1800) });
-      }
-      await clip.clear(s);
-      dirtyClip = false;
+      inputText = await readCaption();
       if (normText(inputText) !== normText(input.text)) {
         const after = await s.screenshot().catch(() => null);
         await log('warn', 'publish: caption read-back differs', captionDiff(input.text, inputText));
@@ -397,7 +404,23 @@ export async function publishOnIg(dev: CollectorDevice, input: PublishFlowInput)
     }
     // ---- 5. 分享
     if (inputText) { await s.keys(4); await sleep(1000, undefined, { signal: input.signal }); } // hide the keyboard over the share button
-    const now = await s.dump();
+    let now = await s.dump();
+    // IG (seen 2026-11-19) may edit the caption on its own full-screen 「配文」 page (title 配文, 确定 top right) that stays
+    // after the keyboard is hidden: read the caption once more (an autocomplete may have replaced the last hashtag),
+    // then 确定 back to 新帖子 and its 分享.
+    const done = inputText ? captionPageDone(now) : null;
+    if (done) {
+      const again = await readCaption();
+      if (!again) await log('warn', 'publish: caption could not be read again on the caption page, the first read-back stands');
+      else if (normText(again) !== normText(input.text)) {
+        const after = await s.screenshot().catch(() => null);
+        await log('warn', 'publish: caption changed after the keyboard was hidden', captionDiff(input.text, again));
+        throw fail('publish.device_text_mismatch', '收起键盘后配文被改动（可能是自动补全），未发布', { excerpt: `read back: ${again}`.slice(0, 200), shot: after ?? shot });
+      }
+      await s.tap(done);
+      await log('info', 'publish: caption page closed with 确定 (caption read back again)');
+      now = (await s.waitFor((n) => !!shareButton(input.postType, n) || !!screenProblem(n), 10_000, 1200)).nodes;
+    }
     const shareAt = shareButton(input.postType, now);
     if (!shareAt) throw fail('publish.device_timeout', '找不到“分享”按钮', { retry: true, excerpt: dumpExcerpt(now) });
     // Evidence = the screen as it is shared (keyboard hidden), else the one after the paste.
@@ -448,6 +471,13 @@ async function discard(s: IgScreenSession, log: Log): Promise<void> {
 }
 
 const SHARE_TEXT = /^(分享|Share)$/i;
+/** IG's full-screen caption page (title 配文 / Caption, `next_button_textview` 确定 / OK / Done): its 确定, else null. */
+export function captionPageDone(nodes: UiNode[]): { x: number; y: number } | null {
+  const title = byRid(nodes, 'action_bar_textview_title')?.text.trim() ?? '';
+  if (!/^(配文|說明文字|Caption)$/i.test(title)) return null;
+  const b = byRid(nodes, 'next_button_textview');
+  return b && /^(确定|確定|完成|OK|Done)$/i.test((b.text || b.desc).trim()) && visible(b) ? center(b.bounds) : null;
+}
 function shareButton(postType: PostType, nodes: UiNode[]): { x: number; y: number } | null {
   if (postType === 'feed') { const b = byRid(nodes, 'share_footer_button'); return visible(b) ? center(b.bounds) : null; }
   if (postType === 'reel') { const b = byRid(nodes, 'share_button'); return visible(b) ? center(b.bounds) : null; }

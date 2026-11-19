@@ -28,7 +28,7 @@ import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { runDevicePublish, type DeviceRunDeps } from '../src/modules/publish/device.js';
-import { CONFIRM_WINDOW_MS, PublishDeviceError } from '../src/modules/publish/ig-publish.js';
+import { captionPageDone, CONFIRM_WINDOW_MS, PublishDeviceError } from '../src/modules/publish/ig-publish.js';
 import { firstGridItem, isGridEmpty, permalinkOf, pkTime } from '../src/modules/feed/ig-ui.js';
 import { classifyIgDump, parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
@@ -359,6 +359,17 @@ try {
     check('media pk → creation time 16:05:19.431Z (127 s after 分享) and permalink /p/Df45Nn3Jf1S/; inside the confirmation window',
       pkTime(pk).toISOString() === '2026-11-18T16:05:19.431Z' && permalinkOf(pk) === 'https://www.instagram.com/p/Df45Nn3Jf1S/'
       && pkTime(pk).getTime() - Date.parse('2026-11-18T16:03:12.838Z') < CONFIRM_WINDOW_MS, `${pkTime(pk).toISOString()} ${permalinkOf(pk)}`);
+  }
+
+  // ---------------------------------------------------------------- the full-screen 「配文」 page (2026-11-19 publish ended 「找不到分享按钮」 on it)
+  {
+    // Constructed from the failed run's screen excerpt (ids action_bar_textview_title / next_button_textview, texts 返回 | 配文 | 确定); no full dump was kept.
+    const n = (rid: string, text: string, bounds: string, clickable = false) => `<node index="0" text="${text}" resource-id="${rid ? `com.instagram.android:id/${rid}` : ''}" class="android.widget.TextView" package="com.instagram.android" content-desc="" checkable="false" checked="false" clickable="${clickable}" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="${bounds}" drawing-order="0" hint="" />`;
+    const page = (title: string, done: string) => parseUiDump(`<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">${n('button_back', '', '[0,120][132,252]', true)}${n('action_bar_textview_title', title, '[160,150][900,222]')}${n('next_button_textview', done, '[930,150][1060,222]', true)}</hierarchy>`);
+    const at = captionPageDone(page('配文', '确定'));
+    check('配文 page with 确定 → its 确定 is tapped (centre of next_button_textview)', at?.x === 995 && at?.y === 186, JSON.stringify(at));
+    check('English Caption / OK page recognised too', !!captionPageDone(page('Caption', 'OK')));
+    check('新帖子 page (title not 配文) / a 下一步 button → not the caption page', !captionPageDone(page('新帖子', '确定')) && !captionPageDone(page('配文', '下一步')));
   }
 
   // ---------------------------------------------------------------- audit
