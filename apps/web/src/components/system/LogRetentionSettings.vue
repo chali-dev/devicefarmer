@@ -22,8 +22,6 @@ const values = reactive<Record<Field, number | null>>({
   logRetentionDays: 14, historyRetentionDays: 7, auditRetentionDays: 180, taskRetentionDays: 90, riskEventsRetentionDays: 90, notificationRetentionDays: 30,
 })
 const max = ref<Partial<Record<Field, number>>>({})
-/** 任务日志 永久保留 (stored as null); the input keeps its last number. */
-const keepTasks = ref(false)
 const loaded = ref(false)
 const busy = reactive<Record<string, boolean>>({})
 
@@ -31,8 +29,7 @@ onMounted(async () => {
   try {
     const v = await api<View>('GET', '/api/system/settings')
     for (const f of FIELDS) values[f] = v.settings[f]
-    keepTasks.value = v.settings.taskRetentionDays === null
-    if (keepTasks.value) values.taskRetentionDays = 90
+    if (values.taskRetentionDays === null) values.taskRetentionDays = 90 // an older 永久保留 (null) shows the default
     max.value = v.max
     loaded.value = true
   } catch (e) { message.error(errorText(e)) }
@@ -41,7 +38,7 @@ onMounted(async () => {
 async function save(f: Field) {
   busy[`save:${f}`] = true
   try {
-    const value = f === 'taskRetentionDays' && keepTasks.value ? null : (values[f] ?? 1)
+    const value = values[f] ?? 1
     await api('PUT', '/api/system/settings', { [f]: value })
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
@@ -52,8 +49,10 @@ async function clean(f: Field) {
   busy[`clean:${f}`] = true
   try {
     const { result: r } = await api<{ result: { deleted: number; logs?: number } }>('POST', `/api/system/purge/${KIND[f]}`)
-    message.success(f === 'taskRetentionDays' ? t('sysadmin.logs.cleanedTasks', { n: r.deleted, logs: r.logs ?? 0 })
-      : f === 'logRetentionDays' ? t('sysadmin.logs.cleanedFiles', { n: r.deleted }) : t('sysadmin.logs.cleanedRows', { n: r.deleted }))
+    // Only entries older than the saved retention are deleted; say so, so 0 doesn't look like a failure.
+    const days = values[f] ?? 0
+    message.success(f === 'taskRetentionDays' ? t('sysadmin.logs.cleanedTasks', { n: r.deleted, logs: r.logs ?? 0, days })
+      : f === 'logRetentionDays' ? t('sysadmin.logs.cleanedFiles', { n: r.deleted, days }) : t('sysadmin.logs.cleanedRows', { n: r.deleted, days }))
   } catch (e) { message.error(errorText(e)) }
   finally { busy[`clean:${f}`] = false }
 }
@@ -64,10 +63,8 @@ async function clean(f: Field) {
     <div v-for="f in FIELDS" :key="f" class="row">
       <span class="label">{{ t(`sysadmin.logs.fields.${f}`) }}</span>
       <a-input-number
-        v-model:value="values[f]" :min="1" :max="max[f] ?? 3650" :precision="0" :addon-after="t('sysadmin.dayUnit')"
-        :disabled="f === 'taskRetentionDays' && keepTasks" style="width: 160px"
+        v-model:value="values[f]" :min="1" :max="max[f] ?? 3650" :precision="0" :addon-after="t('sysadmin.dayUnit')" style="width: 160px"
       />
-      <a-checkbox v-if="f === 'taskRetentionDays'" v-model:checked="keepTasks">{{ t('sysadmin.logs.keepForever') }}</a-checkbox>
       <span class="actions">
         <a-button type="primary" size="small" :loading="busy[`save:${f}`]" :disabled="!loaded" @click="save(f)">{{ t('common.save') }}</a-button>
         <a-button size="small" :loading="busy[`clean:${f}`]" :disabled="!loaded" @click="clean(f)">{{ t('sysadmin.logs.cleanNow') }}</a-button>

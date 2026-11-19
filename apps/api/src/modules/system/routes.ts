@@ -36,7 +36,7 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   };
   const SettingsBody = SystemSettings.partial().extend({
-    taskRetentionDays: z.number().int().min(1).max(MAX_RETENTION_DAYS).nullable().optional(),
+    taskRetentionDays: z.number().int().min(1).max(MAX_RETENTION_DAYS).optional(),
     notificationRetentionDays: z.number().int().min(1).max(ALERT_LIMITS.retentionMax).optional(),
   }).strict();
   app.get('/api/system/settings', admin, async () => settingsView());

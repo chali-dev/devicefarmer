@@ -54,7 +54,9 @@ async function save() {
       <!-- 上传文件 (owner 2026-11-19): one row per kind = size limit + its formats, then 保存. -->
       <div v-for="k in KINDS" :key="k.kind" class="kind-row">
         <span class="label">{{ t(k.label) }}</span>
+        <span class="muted">{{ t('settings.mediaLimits.sizeLimit') }}</span>
         <a-input-number v-model:value="form[k.field]" :min="1" :max="state?.max[k.field] ?? 4096" :precision="0" addon-before="≤" addon-after="MB" style="width: 170px" />
+        <span class="muted">{{ t('settings.mediaLimits.formats') }}</span>
         <a-checkbox-group v-model:value="form.allowedTypes">
           <a-tooltip v-for="o in typeOptions(k.kind)" :key="o.value" :title="o.exts">
             <a-checkbox :value="o.value">{{ o.label }}</a-checkbox>

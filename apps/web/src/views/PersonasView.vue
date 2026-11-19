@@ -39,7 +39,7 @@ const pageTab = computed<PageTab>({
 })
 
 const {
-  tx, tab, owner, ownerId, loading, busy, list, canEdit, load, move, remove,
+  tx, tab, owner, ownerId, loading, list, canEdit, load, remove,
 } = useScopedList({ path: '/api/personas', listKey: 'personas', texts: 'scripts.personas' })
 const isAllUsers = computed(() => pageTab.value === 'all-users')
 function applyTab() {
@@ -66,9 +66,6 @@ const rows = computed(() => {
   const s = q.value.trim().toLowerCase()
   return s ? list.value.filter((p) => p.name.toLowerCase().includes(s) || (p.description ?? '').toLowerCase().includes(s)) : list.value
 })
-/** Reordering works on the whole, unfiltered list of one owner. */
-const canMove = computed(() => !q.value.trim() && !isAllUsers.value)
-const indexOf = (p: ScopedItem) => list.value.findIndex((x) => x.id === p.id)
 function reset() { q.value = ''; ownerId.value = undefined }
 
 const columns = computed(() => [
@@ -191,10 +188,6 @@ async function doCopy() {
                 <a-button type="link" size="small">{{ t('common.more') }}</a-button>
                 <template #overlay>
                   <a-menu>
-                    <template v-if="canMove">
-                      <a-menu-item key="up" :disabled="indexOf(record as ScopedItem) === 0 || busy" @click="move(list, indexOf(record as ScopedItem), -1)">{{ t('scopedList.moveUp') }}</a-menu-item>
-                      <a-menu-item key="down" :disabled="indexOf(record as ScopedItem) === list.length - 1 || busy" @click="move(list, indexOf(record as ScopedItem), 1)">{{ t('scopedList.moveDown') }}</a-menu-item>
-                    </template>
                     <a-menu-item key="copy" @click="startCopy(record as ScopedItem)">{{ t('personas.copy') }}</a-menu-item>
                     <a-menu-item key="delete" danger @click="remove(record as ScopedItem)">{{ t('common.delete') }}</a-menu-item>
                   </a-menu>

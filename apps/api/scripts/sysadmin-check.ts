@@ -137,8 +137,9 @@ try {
   await http('PUT', '/api/settings/alerts', T, { retentionDays: 6 });
   check('retention: alerts API still writes the same value', (await http('GET', '/api/system/settings', T)).body.settings.notificationRetentionDays === 6);
   await http('PUT', '/api/system/settings', T, { notificationRetentionDays: 5 });
-  const keep = await http('PUT', '/api/system/settings', T, { taskRetentionDays: null });
-  check('retention: task logs 永久保留 (null) accepted', keep.status === 200 && keep.body.settings.taskRetentionDays === null && (await http('GET', '/api/settings/tasks', T)).body.retention.days === null);
+  const keepNull = await http('PUT', '/api/system/settings', T, { taskRetentionDays: null });
+  const keep = await http('PUT', '/api/system/settings', T, { taskRetentionDays: 3 });
+  check('retention: task logs have no 永久保留 any more (null → 400), 3 days saved', keepNull.status === 400 && keep.status === 200 && keep.body.settings.taskRetentionDays === 3 && (await http('GET', '/api/settings/tasks', T)).body.retention.days === 3, `${keepNull.status} ${keep.status}`);
 
   // seeded old rows: audit (30 d), risk events (5 d), tasks (kept while null, then 1 d), notifications (5 d)
   const ago = (d: number) => new Date(Date.now() - d * 86_400_000);
@@ -163,7 +164,7 @@ try {
     && !(await exists(schema.notifications, nOld!.id)) && await exists(schema.notifications, nNew!.id)
     && mKeep.body.result.auditDeleted >= 1 && mKeep.body.result.riskEventsDeleted >= 1 && mKeep.body.result.notificationsDeleted >= 1
     && ['logFilesDeleted', 'historyDeleted', 'tasksDeleted', 'taskLogsDeleted'].every((k) => k in mKeep.body.result), JSON.stringify(mKeep.body.result));
-  check('立即清理: task logs 永久保留 keeps the old finished task', await exists(schema.tasks, tOld!.id) && mKeep.body.result.tasksDeleted === 0);
+  check('立即清理: task logs at 3 days keep the 2-day-old finished task', await exists(schema.tasks, tOld!.id) && mKeep.body.result.tasksDeleted === 0);
   // one row's 立即清理: only that kind
   const [rOnly] = await db.insert(schema.riskEvents).values({ source: 'collector', code: `test.ret1_${tag}`, at: ago(7) }).returning();
   const one = await http('POST', '/api/system/purge/risk', T);
@@ -172,7 +173,7 @@ try {
   const [pBad, pUser] = await Promise.all([http('POST', '/api/system/purge/nope', T), http('POST', '/api/system/purge/audit', U)]);
   check('row 立即清理: unknown kind 400, user 403', pBad.status === 400 && pUser.status === 403, `${pBad.status} ${pUser.status}`);
   const pTasks = await http('POST', '/api/system/purge/tasks', T);
-  check('row 立即清理 (purge/tasks) under 永久保留: nothing deleted, deleted + logs counts', pTasks.status === 200 && pTasks.body.result.deleted === 0 && 'logs' in pTasks.body.result && await exists(schema.tasks, tOld!.id), JSON.stringify(pTasks.body));
+  check('row 立即清理 (purge/tasks) at 3 days: the 2-day-old task kept, deleted + logs counts', pTasks.status === 200 && pTasks.body.result.deleted === 0 && 'logs' in pTasks.body.result && await exists(schema.tasks, tOld!.id), JSON.stringify(pTasks.body));
   const pFiles = await http('POST', '/api/system/purge/logs', T);
   check('row 立即清理 (purge/logs): a number of files', pFiles.status === 200 && typeof pFiles.body.result.deleted === 'number', JSON.stringify(pFiles.body));
   await http('PUT', '/api/system/settings', T, { taskRetentionDays: 1, auditRetentionDays: 10 });
