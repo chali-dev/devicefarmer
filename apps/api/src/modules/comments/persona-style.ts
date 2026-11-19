@@ -21,18 +21,22 @@ export const PERSONA_LENGTHS: Record<'post' | 'comment', Record<PersonaLevel, [n
   comment: { low: [4, 30], medium: [15, 80], high: [60, 200] },
 };
 
-/** English tone descriptions for the prompt when the persona's note is empty (the UI pre-fills its own Chinese text). */
+/**
+ * Prompt texts (Chinese since 2026-11-19, owner 「中文为主」): the preset's name and its default note when the persona's
+ * own note is empty (the same note the form pre-fills).
+ */
+export const TONE_LABEL: Record<PersonaTone, string> = { casual: '亲切日常', pro: '专业干货', funny: '幽默俏皮', cool: '高冷简洁', warm: '温暖治愈' };
 export const TONE_PROMPT: Record<PersonaTone, string> = {
-  casual: 'friendly and everyday, like chatting with a friend',
-  pro: 'professional and practical, concrete tips and clear explanations',
-  funny: 'humorous and playful, light wordplay',
-  cool: 'aloof and concise, few words, no fuss',
-  warm: 'warm and comforting, gentle encouragement',
+  casual: '像朋友聊天一样自然、口语化',
+  pro: '给出具体方法和理由，条理清楚',
+  funny: '轻松有梗，适度自嘲，不冒犯人',
+  cool: '话少而精，不堆形容词',
+  warm: '温柔体贴，多鼓励和共情',
 };
 export const EMOJI_PROMPT: Record<PersonaLevel, string> = {
-  low: 'at most 1 emoji, often none',
-  medium: '2 to 4 emoji where they fit',
-  high: 'plenty of emoji (5 or more) where natural',
+  low: '最多 1 个，通常不用',
+  medium: '在合适的地方用 2 到 4 个',
+  high: '自然地多用（5 个或以上）',
 };
 
 const Words = (max: number, len: number) => z.array(z.string().trim().min(1).max(len)).max(max);

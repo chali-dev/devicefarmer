@@ -19,7 +19,7 @@
  *   with no content, rate limit PREVIEW_LIMIT per persona per 10 min (429 ai.rate_limited {seconds, limit}), the former
  *   save endpoint POST …/drafts/save is gone (404), audit persona.draft_preview with requested model / ok / error code /
  *   topic given (boolean) and no texts.
- * - The prompt with a topic names it ("Requested topic …"), without one it doesn't.
+ * - The prompt (Chinese since 2026-11-19) with a topic names it ("本次主题（…）：…"), without one it doesn't.
  * - 「AI生成草稿」 preview → edit → save (→ publish): POST …/ai-drafts/preview {topic?} (RBAC 404, ai.not_configured,
  *   ai.account_no_persona, platform.disabled, topic ≤ 200 + banned word, REAL invalid-key call → 502 ai.key_invalid and
  *   nothing written, PREVIEW_LIMIT per account → 429); POST …/ai-drafts/save (refusals: RBAC, persona, platform, banned
@@ -131,19 +131,19 @@ try {
     check('prompt: examples = the oldest 5 范例 of the persona\'s one list (the reply included, the 5th and 6th post text not)',
       ex.length === 5 && ex[0]!.text === `回复范例 ${tag}` && ex.slice(1).every((e, k) => e.text === `示例发文 ${k + 1} ${tag}`) && has(`回复范例 ${tag}`) && !has(`示例发文 5 ${tag}`), ex.map((e) => e.text).join(' | '));
     check('prompt: 定位 + the style (tone preset + note, emoji, post length range high = 500–1500), Language zh-CN',
-      has('Positioning: 下班后 20 分钟的家常菜') && has('Tone: warm — 像邻家厨师一样温柔') && has('Emoji: at most 1 emoji') && has('Length: 500 to 1500 characters') && has('Language: zh-CN'), msg.slice(0, 600));
+      has('定位：下班后 20 分钟的家常菜') && has('语气：温暖治愈（像邻家厨师一样温柔）') && has('表情：最多 1 个') && has('字数：500 到 1500 字') && has('语言：简体中文（zh-CN）') && ['【本次要求】', '【人设】', '【风格】', '【范例】', '【最近发过】'].every(has), msg.slice(0, 600));
     check('prompt: topics, banned words, hashtags (# stripped), audience, notes, recent posts; no fixed opening/closing lines',
-      has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('Audience: 上班族')
-        && has('Notes: 不要推荐品牌') && has('上周的汤') && !has('Fixed opening') && !has('Fixed closing') && !SYSTEM_PROMPT.includes('opening'));
+      has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('写给谁：上班族')
+        && has('备注：不要推荐品牌') && has('上周的汤') && !has('固定开头') && !has('固定结尾') && !SYSTEM_PROMPT.includes('固定开头'));
     // a row still holding the removed opening/closing (written before 2026-11-19, never migrated): nothing added to a draft
     const legacy = { ...row!, style: { ...row!.style, opening: '今晚吃什么？', closing: '你们最爱哪道？' } as any };
     const cd = composeDraft({ title: 't', body: '正文', hashtags: ['#a'], mediaTags: [] }, legacy);
     check('composeDraft adds no fixed lines (also for a row with a stored opening/closing)', cd.body === '正文' && cd.text === '正文\n\n#a' && !buildUserMessage({ persona: legacy, count: 1, day: '2026-11-18', examples: [], recent: [] }).includes('今晚吃什么'), JSON.stringify(cd));
-    check('prompt without a topic: no "Requested topic" line', !has('Requested topic'));
+    check('prompt without a topic: no 本次主题 line', !has('本次主题'));
     const withTopic = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: ex, recent: [], topic: '咖啡豆保存' });
-    check('prompt with a topic: "Requested topic (every draft is about it, each from a different angle): 咖啡豆保存"',
-      withTopic.includes('Requested topic (every draft is about it, each from a different angle): 咖啡豆保存') && SYSTEM_PROMPT.includes('requested topic'));
-    check('system prompt: Chinese only, draft-only role', SYSTEM_PROMPT.includes('Write in Simplified Chinese (zh-CN)') && SYSTEM_PROMPT.includes('DRAFT'));
+    check('prompt with a topic: 【本次主题】 本次主题：咖啡豆保存 + the different-angle line',
+      withTopic.includes('【本次主题】\n本次主题：咖啡豆保存\n（每篇都围绕这个主题写，每篇换个角度）') && SYSTEM_PROMPT.includes('如果给了本次主题'));
+    check('system prompt in Chinese: Chinese only, draft-only role, never published, banned words, no invented facts, JSON field names kept', ['【你的任务】', '【必须遵守】', '【输出格式】', '用简体中文写', '只是草稿', '不要说帖子已经发了', '禁用词一个都不能用', '不编造事实', '联系方式'].every((x) => SYSTEM_PROMPT.includes(x)) && ['title：', 'body：', 'hashtags：', 'mediaTags：'].every((x) => SYSTEM_PROMPT.includes(x)) && !/[A-Za-z]{4,} [a-z]{3,} [a-z]{3,}/.test(SYSTEM_PROMPT) && !has('(none)'));
     const [pubRow] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
     const exP = await loadExamples(pubRow!);
     check('prompt (public persona): only shared examples (not A\'s private one)', exP.length === 1 && exP[0]!.text === 'Shared brand example');
