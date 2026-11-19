@@ -113,19 +113,28 @@ export interface PromptInput {
   topic?: string | null;
 }
 
-/** The user message: persona settings, examples and recent posts as tagged reference data (always Chinese). */
-export function buildUserMessage(i: PromptInput): string {
-  const ps = styleOf(i.persona);
+/** The <examples> lines (the oldest PROMPT_EXAMPLES 范例). */
+const formatExamples = (examples: PromptInput['examples']) => (examples.length
+  ? examples.map((e) => `<example name="${e.name.replace(/"/g, "'")}">\n${clip(e.text, 1500)}\n</example>`).join('\n')
+  : '(none)');
+/** The <recent_posts> lines (title + snippet of the persona's contents of the last RECENT_DAYS days). */
+const formatRecent = (recent: PromptInput['recent']) => (recent.length
+  ? recent.map((r) => `- ${clip(r.title, 80)}: ${clip(r.body.replace(/\s+/g, ' '), 160)}`).join('\n')
+  : '(none)');
+
+/** The user message around the per-request parts (`topic` null = no topic line). */
+function userLines(persona: PromptInput['persona'], v: { date: string; count: string; topic: string | null; topicHint: string; examples: string; recent: string }): string {
+  const ps = styleOf(persona);
   const [min, max] = PERSONA_LENGTHS.post[ps.length];
   return [
-    `Date: ${i.day}`,
-    `Number of drafts: ${i.count}`,
+    `Date: ${v.date}`,
+    `Number of drafts: ${v.count}`,
     `Language: ${SOURCE_LANG}`,
-    ...(i.topic ? [`Requested topic (every draft is about it, each from a different angle): ${i.topic}`] : []),
+    ...(v.topic !== null ? [`Requested topic (${v.topicHint}): ${v.topic}`] : []),
     '',
     '<persona>',
-    `Name: ${i.persona.name}`,
-    `Positioning: ${i.persona.description || '(none)'}`,
+    `Name: ${persona.name}`,
+    `Positioning: ${persona.description || '(none)'}`,
     `Tone: ${ps.tone} — ${ps.toneNote || TONE_PROMPT[ps.tone]}`,
     `Emoji: ${EMOJI_PROMPT[ps.emoji]}`,
     `Length: ${min} to ${max} characters`,
@@ -137,13 +146,75 @@ export function buildUserMessage(i: PromptInput): string {
     '</persona>',
     '',
     '<examples>',
-    ...(i.examples.length ? i.examples.map((e) => `<example name="${e.name.replace(/"/g, "'")}">\n${clip(e.text, 1500)}\n</example>`) : ['(none)']),
+    v.examples,
     '</examples>',
     '',
     `<recent_posts days="${RECENT_DAYS}">`,
-    ...(i.recent.length ? i.recent.map((r) => `- ${clip(r.title, 80)}: ${clip(r.body.replace(/\s+/g, ' '), 160)}`) : ['(none)']),
+    v.recent,
     '</recent_posts>',
   ].join('\n');
+}
+
+/** The user message: persona settings, examples and recent posts as tagged reference data (always Chinese). */
+export function buildUserMessage(i: PromptInput): string {
+  return userLines(i.persona, {
+    date: i.day, count: String(i.count), topic: i.topic || null, topicHint: 'every draft is about it, each from a different angle',
+    examples: formatExamples(i.examples), recent: formatRecent(i.recent),
+  });
+}
+
+// ---------------------------------------------------------------- 自定义提示词 (owner 2026-11-19)
+
+/**
+ * Placeholders of a custom prompt (system and user text), filled per request; anything else is literal text. `{{主题}}`
+ * is an alias of `{{topic}}`; an unknown `{{name}}` stays as written.
+ */
+export const PROMPT_PLACEHOLDERS = ['topic', 'date', 'count', 'examples', 'recent_posts'] as const;
+type PromptVars = Record<(typeof PROMPT_PLACEHOLDERS)[number], string>;
+const PLACEHOLDER_ALIASES: Record<string, keyof PromptVars> = { 主题: 'topic' };
+
+export function renderPrompt(text: string, vars: PromptVars): string {
+  return text.replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, (all, name: string) => {
+    const key = (PLACEHOLDER_ALIASES[name] ?? name) as keyof PromptVars;
+    return Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : all;
+  });
+}
+
+/**
+ * The generated prompt as an editable starting point for 自定义: the persona's settings written out, the per-request
+ * parts as placeholders (the topic line always present, empty when none was given).
+ */
+export function buildPromptTemplate(persona: PromptInput['persona']): { system: string; user: string } {
+  return {
+    system: SYSTEM_PROMPT,
+    user: userLines(persona, {
+      date: '{{date}}', count: '{{count}}', topic: '{{topic}}', topicHint: 'every draft is about it, each from a different angle; empty = none, choose topics from the persona',
+      examples: '{{examples}}', recent: '{{recent_posts}}',
+    }),
+  };
+}
+
+/** Limits of a custom prompt (each part non-blank, ≤ 20 000 characters). */
+export const CUSTOM_PROMPT_MAX = 20_000;
+const PromptPart = z.string().max(CUSTOM_PROMPT_MAX).refine((x) => x.trim().length > 0, { message: 'empty' });
+export const CustomPromptInput = z.object({ system: PromptPart, user: PromptPart }).strict();
+
+export interface BuiltPrompt { system: string; user: string; custom: boolean; examples: number; recent: number }
+
+/**
+ * Exactly what generateDrafts sends for this persona: its custom prompt with the placeholders filled, else SYSTEM_PROMPT
+ * + buildUserMessage. Reads the 范例 and the owner's recent contents; no model call.
+ */
+export async function buildPrompt(p: Persona, ownerId: string, o: { count: number; day: string; topic?: string | null; now?: Date }): Promise<BuiltPrompt> {
+  const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, ownerId, o.now ?? new Date())]);
+  const base = { examples: examples.length, recent: recent.length };
+  if (p.customPrompt) {
+    const vars: PromptVars = {
+      topic: o.topic ?? '', date: o.day, count: String(o.count), examples: formatExamples(examples), recent_posts: formatRecent(recent),
+    };
+    return { system: renderPrompt(p.customPrompt.system, vars), user: renderPrompt(p.customPrompt.user, vars), custom: true, ...base };
+  }
+  return { system: SYSTEM_PROMPT, user: buildUserMessage({ persona: p, count: o.count, day: o.day, examples, recent, topic: o.topic }), custom: false, ...base };
 }
 
 // ---------------------------------------------------------------- writing drafts (no model involved)
@@ -292,11 +363,10 @@ export interface GenerateResult {
 export async function generateDrafts(i: GenerateInput): Promise<GenerateResult> {
   const log = i.log ?? noLog;
   const p = i.persona;
-  const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, i.ownerId, i.now ?? new Date())]);
-  const user = buildUserMessage({ persona: p, count: i.count, day: i.day, examples, recent, topic: i.topic });
+  const prompt = await buildPrompt(p, i.ownerId, { count: i.count, day: i.day, topic: i.topic, now: i.now });
   const { model, workspaceId } = i.creds;
   const fallback = FALLBACK_MODELS.includes(model);
-  await log('info', `drafts: requesting ${i.count} from ${model}`, { examples: examples.length, recent: recent.length, lang: SOURCE_LANG, fallback, workspace: workspaceId ?? null, topic: i.topic ?? null });
+  await log('info', `drafts: requesting ${i.count} from ${model}`, { examples: prompt.examples, recent: prompt.recent, custom: prompt.custom, lang: SOURCE_LANG, fallback, workspace: workspaceId ?? null, topic: i.topic ?? null });
 
   const client = new Anthropic({
     apiKey: i.creds.apiKey, maxRetries: 0, timeout: i.timeoutMs,
@@ -305,8 +375,8 @@ export async function generateDrafts(i: GenerateInput): Promise<GenerateResult> 
   const create = (withFallback: boolean) => client.beta.messages.create({
     model,
     max_tokens: MAX_TOKENS,
-    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content: user }],
+    system: [{ type: 'text', text: prompt.system, cache_control: { type: 'ephemeral' } }],
+    messages: [{ role: 'user', content: prompt.user }],
     output_config: { effort: EFFORT, format: { type: 'json_schema', schema: DRAFTS_SCHEMA as unknown as Record<string, unknown> } },
     ...(withFallback ? { betas: [FALLBACK_BETA], fallbacks: 'default' as const } : {}),
   }, { signal: i.signal });
@@ -341,7 +411,7 @@ export async function generateDrafts(i: GenerateInput): Promise<GenerateResult> 
   return { drafts: parsed.drafts.slice(0, i.count), received: parsed.drafts.length, requestedModel: model, servedModel: res.model, fallback: fellBack, usage };
 }
 
-const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 // ---------------------------------------------------------------- AI测试 preview (a style test: nothing is stored)
 

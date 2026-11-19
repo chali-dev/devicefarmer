@@ -56,6 +56,7 @@ export const MENU_API: MenuApiRule[] = [
   { methods: 'write', pattern: seg('/api/social'), menus: ['social'] },
   // 人设管理: the 范例 are edited in the persona form only; reading personas is shared (accounts, editor, comment drawer).
   { methods: 'all', pattern: seg('/api/comment-templates'), menus: ['personas'] },
+  { methods: 'all', pattern: /^\/api\/personas\/[^/]+\/prompt$/, menus: ['personas'] },
   { methods: 'write', pattern: seg('/api/personas'), menus: ['personas'] },
   // 内容管理: reading contents is shared (account AI drafts, 配置语系).
   { methods: 'write', pattern: seg('/api/contents'), menus: ['content'] },

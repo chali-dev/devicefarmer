@@ -999,6 +999,11 @@ export const personas = pgTable('personas', {
    * split shape of 2026-11-18 is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
    */
   style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
+  /**
+   * 自定义提示词 (owner 2026-11-19): the WHOLE prompt a person wrote for AI测试 / 「AI生成草稿」 instead of the generated
+   * one (placeholders `{{topic}}` … filled per request, modules/ai/prompt.ts); null = generated from the persona.
+   */
+  customPrompt: jsonb('custom_prompt').$type<{ system: string; user: string }>(),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),

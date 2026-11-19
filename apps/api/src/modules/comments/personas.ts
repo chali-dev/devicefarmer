@@ -43,9 +43,12 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 
 type Exec = Pick<typeof db, 'select'>;
 
-/** A persona row for lists/responses: style with defaults. */
-export const publicPersona = ({ style: _s, ...p }: Persona) => ({
-  ...p, style: styleOf({ style: _s }),
+/**
+ * A persona row for lists/responses: style with defaults; the custom prompt only as a flag (its text is read by the
+ * persona's managers through GET /api/personas/:id/prompt).
+ */
+export const publicPersona = ({ style: _s, customPrompt, ...p }: Persona) => ({
+  ...p, style: styleOf({ style: _s }), hasCustomPrompt: !!customPrompt,
 });
 
 /** Persona-only fields of the create/patch bodies (style replaces the whole stored style). */
@@ -197,7 +200,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   /**
    * 复制到我的人设: a new personal persona of the caller (admins: of `ownerId`, any existing user; users: only themselves,
    * another ownerId → 403 `persona.admin_only`) from any persona the caller may see (else 404): name 「原名 (副本)」 (taken
-   * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the style (single shape) and every 范例 copied as private templates of the new owner on the new persona (daily AI drafts are set per social account,
+   * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the style (single shape), the custom prompt and every 范例 copied as private templates of the new owner on the new persona (daily AI drafts are set per social account,
    * nothing to copy). One transaction: the limit of 20 范例 is
    * checked after the copy and a violation (`persona.examples_full`) leaves nothing behind.
    */
@@ -218,7 +221,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       const [last] = await tx.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(eq(P.ownerId, ownerId));
       const [row] = await tx.insert(P).values({
         ownerType: 'user', ownerId, name: copyName(src.name, taken), description: src.description, sort: (last?.max ?? -1) + 1,
-        style: flatStyle(src.style), createdBy: req.user.id,
+        style: flatStyle(src.style), customPrompt: src.customPrompt ?? null, createdBy: req.user.id,
       }).returning();
       const tpls = await tx.select().from(TPL).where(exampleWhere(src)).orderBy(asc(TPL.createdAt), asc(TPL.id));
       if (tpls.length) {
