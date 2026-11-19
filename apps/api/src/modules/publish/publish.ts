@@ -1,5 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
-import { and, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
@@ -8,14 +8,14 @@ import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-en
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { assertNoBannedWords } from '../comments/persona-style.js';
-import { assertNotPublished, contentMediaOf, publishedCounts, refreshContentStatus, uniqueTags, type Tx } from '../content/content.js';
+import { contentMediaOf, publishedCounts, refreshContentStatus, type Tx } from '../content/content.js';
 import { textsForAccount, type AccountTexts } from '../content/languages.js';
 import { platformAllowed, visibleAccount } from '../social/social.js';
 import { cancelTask, createTask, isFinal, registerTaskHandler, type TaskContext } from '../tasks/core.js';
 import { onDeviceResumed } from '../tracked/collector.js';
 import './device.js'; // registers the `device` method (云手机发帖)
 import { MANUAL_METHOD, PublishCheckError, publishMethods, type PublishInput, type PublishLogLevel, type PublishMethodResult } from './methods.js';
-import { capabilityOf, composeText, postTypeRule, validateForPlatform } from './platforms.js';
+import { capabilityOf, postTypeRule, validateForPlatform } from './platforms.js';
 
 export { PublishCheckError };
 
@@ -55,12 +55,12 @@ export async function publishLog(p: Pick<PublishTask, 'id' | 'attemptNo' | 'task
 
 // ---------------------------------------------------------------- distribution
 
+/**
+ * One target account (owner 2026-11-19 「按账号单独改文案…删干净」): no per-account texts or options. Every account gets
+ * the content's own text (in its 账号语言 via the translation, `textsForAccount`) and the content's privacy.
+ */
 export interface DistributeTarget {
   accountId: string;
-  title?: string | null;
-  caption?: string | null;
-  hashtags?: string[];
-  options?: Record<string, unknown>;
   /** null/absent = now */
   scheduledAt?: Date | null;
   /** Default feed. */
@@ -73,25 +73,24 @@ const lockPair = (tx: Tx, contentId: string, accountId: string) =>
   tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`publish:${contentId}:${accountId}`}, 0))`);
 
 /**
- * The snapshot of one target: texts of the account's language (`textsForAccount`: its translation, else the source),
- * per-target overrides on top; options (privacy) always from the content.
+ * The snapshot of one target: the content's texts in the account's language (`textsForAccount`: its translation, else
+ * the source; a platform text of the content wins over the body) and the content's options (privacy). Nothing per account.
  */
-function postFor(content: Content, texts: AccountTexts, platform: string, t: DistributeTarget) {
+function postFor(content: Content, texts: AccountTexts, platform: string, postType: PostType) {
   const h = texts.hints[platform] ?? {};
   const opts = ((content.platformHints ?? {}) as AccountTexts['hints'])[platform] ?? {};
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v : undefined);
   const cap = capabilityOf(platform);
-  const title = cap.title ? (t.title?.trim() || str(h.title) || texts.title) : (t.title?.trim() || null);
-  const caption = t.caption ?? str(h.description) ?? str(h.caption) ?? texts.body;
-  const postType = t.postType ?? 'feed';
-  const options: Record<string, unknown> = { ...(t.options ?? {}) };
-  if (cap.privacy && options.privacy === undefined) options.privacy = str(opts.privacy) ?? 'private';
-  if (options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(options.privacy)))) {
+  const title = cap.title ? (str(h.title) ?? texts.title) : null;
+  const caption = str(h.description) ?? str(h.caption) ?? texts.body;
+  const options: Record<string, unknown> = {};
+  if (cap.privacy) options.privacy = str(opts.privacy) ?? 'private';
+  if (options.privacy !== undefined && !cap.privacy!.includes(String(options.privacy))) {
     throw badRequest(`${platform} 不支持该可见性：${String(options.privacy)}`, 'publish.bad_privacy', { platform, privacy: String(options.privacy) });
   }
   // Types without a caption (Instagram stories) publish no text: don't keep one the operator might copy.
   const noText = postTypeRule(platform, postType)?.caption === false;
-  return { title: title ?? null, caption: noText ? '' : caption, hashtags: noText ? [] : uniqueTags(t.hashtags ?? []), options, postType };
+  return { title: title ?? null, caption: noText ? '' : caption, options, postType };
 }
 
 /**
@@ -104,13 +103,15 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
   const now = new Date();
-  const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
   const result = await db.transaction(async (tx) => {
-    // 防并发: the content row is locked like 归档 / 删除 lock it, so an archive or delete racing this distribution either
-    // waits for it (then refuses: unfinished publish task) or wins (then this one refuses: archived / not found).
-    const [locked] = await tx.select({ stage: schema.contents.stage }).from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
+    // 防并发: the content row is locked like 归档 / 删除 / 编辑 lock it, so an archive or delete racing this distribution
+    // either waits for it (then refuses: unfinished publish task) or wins (then this one refuses: archived / not found).
+    // The texts are read again under the lock: an edit that was saving meanwhile is what the accounts get (the task's
+    // texts are a snapshot and nothing per account can change them later).
+    const [locked] = await tx.select().from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
     if (!locked) throw notFound('内容不存在', 'content.not_found');
+    const translations = await tx.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
     if (locked.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
     // 发布后不能再发 (owner 2026-11-19 「发布后不能选其他号重复再发」): once any account published it, the content is locked and
     // is distributed to no further account (checked under the content row lock, so a parallel distribution can't slip by).
@@ -130,9 +131,9 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const acc = await visibleAccount(user, t.accountId, tx);
       assertPlatformEnabled(acc.platform);
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
-      const texts = textsForAccount(content, translations, acc);
-      const post = postFor(content, texts, acc.platform, t);
-      await assertNoBannedWords([acc.personaId], [post.title, post.caption, ...post.hashtags], tx);
+      const texts = textsForAccount(locked, translations, acc);
+      const post = postFor(locked, texts, acc.platform, t.postType ?? 'feed');
+      await assertNoBannedWords([acc.personaId], [post.title, post.caption], tx);
       const bad = validateForPlatform(acc.platform, media, post);
       if (bad) throw badRequest(`@${acc.handle}: ${bad.message}`, bad.code, { ...bad.params, account: acc.handle });
       if (t.scheduledAt && t.scheduledAt.getTime() > now.getTime() + 366 * 86400_000) throw badRequest('发布时间不能超过一年', 'publish.too_far');
@@ -144,7 +145,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const scheduledAt = t.scheduledAt && t.scheduledAt > now ? t.scheduledAt : now;
       const [row] = await tx.insert(pt).values({
         userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
-        title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType, lang: texts.lang,
+        title: post.title, caption: post.caption, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType, lang: texts.lang,
         scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts: 1, createdBy: user.id,
       }).returning();
       await publishLog(row!, 'info', 'distributed', {
@@ -258,40 +259,6 @@ export async function recordOutcome(user: AuthUser, row: PublishTask, o: { resul
   await publishLog(done, o.result === 'published' ? 'info' : 'error', o.result === 'published' ? 'operator recorded: published' : 'operator recorded: failed',
     o.result === 'published' ? { url: o.url ?? null, externalId: o.externalId ?? null } : { reason: set.error }, user);
   await refreshContentStatus(done.contentId);
-  return done;
-}
-
-/** Edit texts/options while the task waits. */
-export async function editPublish(user: AuthUser, row: PublishTask, b: { title?: string | null; caption?: string; hashtags?: string[]; options?: Record<string, unknown> }): Promise<PublishTask> {
-  if (row.status !== 'pending' && row.status !== 'scheduled') throw conflict(`当前状态（${row.status}）不能修改`, 'publish.bad_status', { status: row.status });
-  // 已发布的内容不能编辑: once a post of the content is online, the other accounts' texts stay the content's.
-  if (b.title !== undefined || b.caption !== undefined || b.hashtags !== undefined) await assertNotPublished(db, row.contentId);
-  const noText = postTypeRule(row.platform, row.postType)?.caption === false;
-  const next = {
-    title: b.title !== undefined ? (b.title?.trim() || null) : row.title,
-    caption: noText ? '' : b.caption ?? row.caption,
-    hashtags: noText ? [] : b.hashtags ? uniqueTags(b.hashtags) : row.hashtags,
-    options: b.options ? { ...row.options, ...b.options } : row.options,
-    postType: row.postType,
-  };
-  const cap = capabilityOf(row.platform);
-  if (next.options.privacy !== undefined && (!cap.privacy || !cap.privacy.includes(String(next.options.privacy)))) {
-    throw badRequest(`${row.platform} 不支持该可见性`, 'publish.bad_privacy', { platform: row.platform, privacy: String(next.options.privacy) });
-  }
-  const media = await db.select().from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, row.mediaIds.length ? row.mediaIds : ['00000000-0000-0000-0000-000000000000']));
-  const bad = validateForPlatform(row.platform, row.mediaIds.map((id) => media.find((m) => m.id === id)).filter((m): m is MediaAsset => !!m), next);
-  if (bad) throw badRequest(bad.message, bad.code, bad.params);
-  // 防并发: only the fields this request changes are written (options merged in SQL), so two edits of different fields
-  // at the same time (two tabs) both survive.
-  const set: Omit<Partial<typeof pt.$inferInsert>, 'options'> & { options?: SQL } = { updatedAt: new Date() };
-  if (b.title !== undefined) set.title = next.title;
-  if (b.caption !== undefined || noText) set.caption = next.caption;
-  if (b.hashtags !== undefined || noText) set.hashtags = next.hashtags;
-  if (b.options) set.options = sql`${pt.options} || ${JSON.stringify(b.options)}::jsonb`;
-  const [done] = await db.update(pt).set(set)
-    .where(and(eq(pt.id, row.id), inArray(pt.status, ['pending', 'scheduled']))).returning();
-  if (!done) throw conflict('任务状态已变化', 'publish.bad_status', { status: 'changed' });
-  await publishLog(done, 'info', 'edited', { fields: Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined) }, user);
   return done;
 }
 
@@ -458,8 +425,7 @@ async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
   await log('info', acc.loginStatus === 'logged_in' ? 'check: account logged in on the device' : 'check: account login not checked yet');
   return {
     publishTaskId: row.id, attemptNo: row.attemptNo, platform: row.platform, account: acc,
-    title: row.title ?? undefined, caption: row.caption, hashtags: row.hashtags,
-    text: composeText(row.caption, row.hashtags), options: row.options, media: ready, postType: row.postType,
+    title: row.title ?? undefined, caption: row.caption, options: row.options, media: ready, postType: row.postType,
   };
 }
 

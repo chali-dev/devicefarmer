@@ -11,19 +11,18 @@ import type { PublishAttempt, PublishLog, PublishRun, PublishTaskItem } from '..
 import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, DRAWER_WIDTH, MODAL_WIDTH } from '../common/ui'
 import MediaStrip from '../content/MediaStrip.vue'
-import PlatformTextTabs from '../content/PlatformTextTabs.vue'
-import { textMax } from '../social/platformMeta'
 import PlatformTag from '../social/PlatformTag.vue'
 import PostTypeTag from './PostTypeTag.vue'
 import EvidenceModal from '../feed/EvidenceModal.vue'
 
 /**
- * Publish task detail + actions: cancel, reschedule, edit texts, record the manual outcome, and
+ * Publish task detail + actions: cancel, reschedule, record the manual outcome, and
  * 编辑后重新发布 (no automatic or snapshot retries since 2026-11-18: the content opens in the editor with this account,
  * the person edits it and publishes again, which creates a new publish task; this one stays as history).
  * 发布记录 = every task of this content on this account (编辑后重新发布 leaves several), the shown one marked; a click
  * shows another one in the same drawer.
- * No 打开设备 / 推送素材到设备 buttons (owner 2026-11-18, too many entry points): the device is the 设备 row's link.
+ * No text edit (owner 2026-11-19: no per-account texts; the content is edited before it is published) and no 打开设备 /
+ * 推送素材到设备 buttons (owner 2026-11-18, too many entry points): the device is the 设备 row's link.
  */
 const props = defineProps<{ open: boolean; taskId: string | null }>()
 const emit = defineEmits<{ 'update:open': [boolean]; changed: [] }>()
@@ -87,31 +86,6 @@ async function submitTime() {
   await act(() => api('POST', `/api/publish/tasks/${task.value!.id}/reschedule`, { scheduledAt }), t('publish.rescheduled'))
 }
 
-// edit texts
-const editOpen = ref(false)
-const editForm = reactive({ title: '' })
-/**
- * One text tab: the task's platform (same layout as the content editor). No separate hashtags field (owner 2026-11-18):
- * the caption is edited as it will be posted, so an older task's stored hashtags are folded into it (`text`) and the
- * list is cleared on save; a task without them sends no `hashtags` at all.
- */
-const editText = reactive<Record<string, string>>({})
-const editTab = ref('')
-const editTabs = computed(() => (task.value ? [{ key: task.value.platform, platform: task.value.platform, max: textMax(task.value.platform) }] : []))
-function openEdit() {
-  Object.assign(editForm, { title: task.value?.title ?? '' })
-  editTab.value = task.value?.platform ?? ''
-  editText[editTab.value] = (task.value?.hashtags.length ? task.value.text : task.value?.caption) ?? ''
-  editOpen.value = true
-}
-async function submitEdit() {
-  editOpen.value = false
-  await act(() => api('PATCH', `/api/publish/tasks/${task.value!.id}`, {
-    ...(task.value?.platform === 'youtube' ? { title: editForm.title } : {}), caption: editText[editTab.value] ?? '',
-    ...(task.value?.hashtags.length ? { hashtags: [] } : {}),
-  }), t('common.saved'))
-}
-
 // operator outcome
 const outcomeOpen = ref(false)
 const outForm = reactive({ result: 'published' as 'published' | 'failed', url: '', externalId: '', reason: '' })
@@ -144,7 +118,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-space wrap style="margin-bottom: 12px">
           <a-button v-if="canOutcome" type="primary" :disabled="busy" @click="openOutcome">{{ t('publish.outcome') }}</a-button>
           <a-button v-if="task.hasEvidence" @click="evidenceOpen = true">{{ t('publish.evidence') }}</a-button>
-          <a-button v-if="canReschedule && task.postType !== 'story' && !task.content?.locked" :disabled="busy" @click="openEdit">{{ t('publish.edit') }}</a-button>
           <a-button v-if="canReschedule" :disabled="busy" @click="openTime">{{ t('publish.reschedule') }}</a-button>
           <a-button v-if="canCancel" danger :disabled="busy" @click="cancel">{{ t('publish.cancel') }}</a-button>
         </a-space>
@@ -190,8 +163,8 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
             {{ task.title }} <a @click="copy(task.title!)">{{ t('common.copy') }}</a>
           </a-descriptions-item>
           <a-descriptions-item v-if="task.postType !== 'story'" :label="t('publish.text')">
-            <div class="text">{{ task.text || '—' }}</div>
-            <a v-if="task.text" @click="copy(task.text)">{{ t('common.copy') }}</a>
+            <div class="text">{{ task.caption || '—' }}</div>
+            <a v-if="task.caption" @click="copy(task.caption)">{{ t('common.copy') }}</a>
           </a-descriptions-item>
           <a-descriptions-item v-if="task.options.privacy" :label="t('distribute.privacy')">{{ t(`distribute.privacyOpt.${task.options.privacy}`) }}</a-descriptions-item>
           <a-descriptions-item v-if="task.evidence?.inputText" :label="t('publish.readBack')"><div class="text">{{ task.evidence.inputText }}</div></a-descriptions-item>
@@ -241,13 +214,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <a-radio :value="false">{{ t('distribute.at') }}</a-radio>
       </a-radio-group>
       <a-date-picker v-if="!timeForm.now" v-model:value="timeForm.at" show-time style="margin-top: 8px; display: flex" />
-    </a-modal>
-
-    <a-modal v-model:open="editOpen" :title="t('publish.edit')" :width="MODAL_WIDTH.md" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="submitEdit">
-      <a-form layout="vertical">
-        <a-form-item v-if="task?.platform === 'youtube'" :label="t('distribute.titleOverride')"><a-input v-model:value="editForm.title" :maxlength="100" /></a-form-item>
-        <a-form-item :label="t('content.caption')"><PlatformTextTabs v-model:active="editTab" :tabs="editTabs" :values="editText" :rows="5" /></a-form-item>
-      </a-form>
     </a-modal>
 
     <a-modal v-model:open="outcomeOpen" :title="t('publish.outcome')" :width="MODAL_WIDTH.sm" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="busy" @ok="submitOutcome">

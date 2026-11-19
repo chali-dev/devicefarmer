@@ -100,7 +100,7 @@ export async function runDevicePublish(input: PublishInput, ctx: PublishRunConte
       started = true;
       return deps.flow(dev, {
         publishTaskId: row.id, round: row.attemptNo, postType: input.postType, handle: acc.handle, externalId: acc.externalId,
-        media: input.media, text: input.postType === 'story' ? '' : input.text, log: ctx.task.log, signal: ctx.task.signal,
+        media: input.media, text: input.postType === 'story' ? '' : input.caption, log: ctx.task.log, signal: ctx.task.signal,
         onShare: () => { shared = true; },
       });
     }, { lockMs: lockFor(ctx.task.task.timeoutMs, 12 * 60_000), weight: 6, what: 'publish' });

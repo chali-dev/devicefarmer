@@ -4,8 +4,8 @@
  * - Each target account gets the content's translation in its 账号语言 (title/body/platform caption), else the Chinese
  *   source: account without language, account in the source language, language without a translation (fallback).
  * - publish_tasks.lang records the language of the snapshot; the "distributed" log carries lang/accountLang/langFallback.
- * - Per-account overrides still win over the inherited text (language unchanged); snapshots don't follow later edits
- *   of the translation or the account language.
+ * - No per-account texts (2026-11-19): a target with a caption is a 400, every account gets the content's text in its
+ *   language; snapshots don't follow later edits of the translation or the account language.
  * - Older content whose source is not Chinese: an account in that language gets the source, a zh-CN account the
  *   Chinese translation, another language falls back to the source.
  * Usage (from apps/api, API running; default ENABLED_PLATFORMS is enough):
@@ -99,14 +99,17 @@ try {
   const [s2] = await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.id, byAcc(zh.id).id));
   check('snapshot unchanged after editing the translation / the account language', s1?.caption === 'EN IG caption' && s1?.lang === 'en' && s2?.caption === '中文IG' && s2?.lang === 'zh-CN');
 
-  // ---------------------------------------------------------------- per-account override wins, language kept
+  // ---------------------------------------------------------------- no per-account texts (owner 2026-11-19)
   const c2 = await mk(`plc-${tag} two`);
-  r = await http('POST', `/api/contents/${c2}/distribute`, A, { targets: [{ accountId: en.id, caption: 'hand-written for en', scheduledAt: tomorrow }, { accountId: hi.id, hashtags: ['tag1'], scheduledAt: tomorrow }] });
+  r = await http('POST', `/api/contents/${c2}/distribute`, A, { targets: [{ accountId: en.id, caption: 'hand-written for en', scheduledAt: tomorrow }, { accountId: hi.id, scheduledAt: tomorrow }] });
+  check('a per-account caption in a target → 400 (strict), nothing created', r.status === 400
+    && (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c2))).length === 0, r.text.slice(0, 160));
+  r = await http('POST', `/api/contents/${c2}/distribute`, A, { targets: [{ accountId: en.id, scheduledAt: tomorrow }, { accountId: hi.id, scheduledAt: tomorrow }] });
   const c2t = (r.body.created ?? []) as any[];
   c2t.forEach((x) => ptIds.push(x.id));
   const o1 = c2t.find((x) => x.accountId === en.id); const o2 = c2t.find((x) => x.accountId === hi.id);
-  check('override: caption override wins (lang en kept); hashtags added to the Hindi text', o1?.caption === 'hand-written for en' && o1?.lang === 'en' && o2?.caption === 'HI body' && o2?.hashtags.join() === 'tag1' && o2?.lang === 'hi',
-    JSON.stringify([o1, o2].map((x) => x && { c: x.caption, l: x.lang, h: x.hashtags })));
+  check("every account gets the content's text in its language (en translation, Hindi translation)", o1?.caption === 'EN IG caption' && o1?.lang === 'en' && o2?.caption === 'HI body' && o2?.lang === 'hi',
+    JSON.stringify([o1, o2].map((x) => x && { c: x.caption, l: x.lang })));
 
   // ---------------------------------------------------------------- older content with an English source
   const [old] = await db.insert(schema.contents).values({ userId: uid, title: `plc-${tag} old`, body: 'English source body', lang: 'en', stage: 'ready', status: 'ready', platformHints: {} }).returning();

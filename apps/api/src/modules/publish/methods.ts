@@ -20,11 +20,8 @@ export interface PublishInput {
   account: SocialAccount;
   /** Platforms with titles (YouTube); undefined otherwise. */
   title?: string;
+  /** The text as it is posted (the content's, in the account's language; hashtags are written in it). */
   caption: string;
-  /** Without '#'. */
-  hashtags: string[];
-  /** Caption + hashtags, as it should appear on the platform. */
-  text: string;
   /** e.g. { privacy: 'private' } */
   options: Record<string, unknown>;
   /** Ordered, all `ready`. */

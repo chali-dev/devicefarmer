@@ -114,15 +114,16 @@ const ListQuery = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+/**
+ * One target account: when and as what (帖子 / Reels / 限动). No per-account texts or options (owner 2026-11-19
+ * 「按账号单独改文案…删干净」): every account gets the content's text in its language and the content's privacy;
+ * an older body with title / caption / hashtags / options is a 400 (strict).
+ */
 const Target = z.object({
   accountId: z.string().uuid(),
-  title: z.string().trim().max(100).nullable().optional(),
-  caption: z.string().max(5000).nullable().optional(),
-  hashtags: z.array(z.string().trim().min(1).max(100)).max(30).optional(),
-  options: z.object({ privacy: z.string().max(20).optional() }).strict().optional(),
   scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
   postType: z.enum(POST_TYPES).optional(),
-});
+}).strict();
 const DistributeBody = z.object({
   targets: z.array(Target).min(1).max(50),
   // 1 个内容只发布一次: an older page's `republish` is stripped (ignored); a published pair is always 409.

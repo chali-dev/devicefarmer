@@ -14,10 +14,13 @@
  *   publish task with the edited text (the failed one stays; a failed / cancelled pair is not published), the content status follows the
  *   newest task per account; a new round takes a changed timeout (5 min). The previous timeout rows are restored.
  * - 发布后不能再发 (2026-11-19): a content may be distributed to several accounts in one request, but once any account
- *   published it, distribute refuses it for every account (published or not, caption override, an older page's
+ *   published it, distribute refuses it for every account (published or not, an older page's
  *   `republish: true`, admins too) with 409 publish.content_published {count}, nothing created; a legacy row flagged
  *   republish fails its run as publish.duplicate; a cancelled / failed pair of a content published nowhere can be
  *   published again. (The per-pair publish.already_published is a backstop distribute no longer reaches.)
+ * - No per-account texts or options (2026-11-19): a target with title / caption / hashtags / options → 400 (strict); every
+ *   account gets the content's text (a content text over a platform's limit is refused at distribution); PATCH
+ *   /api/publish/tasks/:id is gone (404, snapshot unchanged): only 改期 / 取消 stay.
  * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
  *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
@@ -303,10 +306,18 @@ try {
   check('YouTube needs exactly one video (images refused: publish.media_count/kind)', r.status === 400 && ['publish.media_count', 'publish.media_kind'].includes(r.body.code), r.body.code);
   r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: ttA }] });
   check('TikTok refuses a 2-image post', r.status === 400 && r.body.code === 'publish.media_count', r.body.code);
-  r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA, caption: 'x'.repeat(2300) }] });
-  check('Instagram caption > 2200 refused (publish.caption_too_long)', r.status === 400 && r.body.code === 'publish.caption_too_long', r.body.code);
-  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytA, options: { privacy: 'friends' } }] });
-  check('YouTube privacy must be public/unlisted/private', r.status === 400 && r.body.code === 'publish.bad_privacy', r.body.code);
+  {
+    // the content's own text is what goes out: a body over Instagram's 2200 characters is refused at distribution
+    const long = (await http('POST', '/api/contents', A, { title: `pc-${tag} long`, body: 'x'.repeat(2300), mediaIds: [imgA1] })).body.content;
+    r = await http('POST', `/api/contents/${long.id}/distribute`, A, { targets: [{ accountId: igA }] });
+    check('Instagram: a content text > 2200 refused (publish.caption_too_long)', r.status === 400 && r.body.code === 'publish.caption_too_long', r.body.code);
+    await http('DELETE', `/api/contents/${long.id}`, A);
+  }
+  // no per-account texts or options (owner 2026-11-19): an older body with any of them is a 400 (strict), nothing created
+  for (const [what, extra] of [['title', { title: 'T' }], ['caption', { caption: 'per-account text' }], ['hashtags', { hashtags: ['x'] }], ['options', { options: { privacy: 'public' } }]] as const) {
+    r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytA, ...extra }] });
+    check(`per-account ${what} in a target → 400 (strict body)`, r.status === 400 && /unrecognized|Unrecognized/i.test(JSON.stringify(r.body)), r.text.slice(0, 160));
+  }
   r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: igB }] });
   check("A cannot target B's account (404 social.not_found)", r.status === 404 && r.body.code === 'social.not_found', r.body.code);
   r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ytA }, { accountId: ytA }] });
@@ -315,14 +326,14 @@ try {
   check('failed validations created no publish tasks (all or nothing)', before.length === 0);
 
   // ---------------------------------------------------------------- distribution: TikTok on an offline device (retry path, started early)
-  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA, caption: 'TT caption', hashtags: ['#fyp', 'fyp', 'demo'] }], maxAttempts: 2 });
+  r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA }], maxAttempts: 2 });
   const ttTask = r.body.created?.[0];
   if (ttTask) ptIds.add(ttTask.id);
-  check('distribute to TikTok (a maxAttempts 2 in the body is stripped → 1): hashtags normalised', r.status === 201 && ttTask.hashtags.join() === 'fyp,demo' && ttTask.maxAttempts === 1 && ttTask.text === 'TT caption\n\n#fyp #demo', r.text.slice(0, 200));
+  check("distribute to TikTok (a maxAttempts 2 in the body is stripped → 1): the content's text, no hashtags field", r.status === 201 && ttTask.caption === 'Video description' && !('hashtags' in ttTask) && !('text' in ttTask) && ttTask.maxAttempts === 1, r.text.slice(0, 200));
 
   // ---------------------------------------------------------------- distribution: YouTube scheduled + Instagram now
   const runAt = new Date(Date.now() + 6000);
-  r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA, hashtags: ['spring'] }] });
+  r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
   const igTask = r.body.created?.[0];
   ptIds.add(igTask.id);
   check('distribute to Instagram now: 201, caption from platform hint', r.status === 201 && igTask.caption === 'IG caption' && igTask.mediaIds.join() === [imgA2, imgA1].join(), r.text.slice(0, 200));
@@ -399,8 +410,8 @@ try {
     const curMedia = det.content.media.map((m: any) => m.id) as string[];
     const curTargets = det.content.targets.map((x: any) => x.id) as string[];
     const listItem = (await http('GET', `/api/contents?q=${encodeURIComponent(`pc-${tag} carousel`)}`, A)).body.items.find((x: any) => x.id === cImg.id);
-    check('published content: locked in the detail and the list; the publish task item says so too',
-      det.content.locked === true && listItem?.locked === true && (await ptask(A, igTask.id)).task.content?.locked === true);
+    check('published content: locked in the detail and the list (the publish task item carries no lock: nothing on it is editable)',
+      det.content.locked === true && listItem?.locked === true && !('locked' in ((await ptask(A, igTask.id)).task.content ?? {})));
     const refused: [string, unknown][] = [
       ['title', { title: `pc-${tag} carousel changed` }], ['body', { body: 'changed body' }],
       ['platform texts', { platformHints: { instagram: { caption: 'IG changed' } } }], ['media', { mediaIds: [...curMedia].reverse() }],
@@ -442,8 +453,6 @@ try {
     const nImg = await countOf(cImg.id);
     r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
     check('published content: distribute to a not yet published account → 409 publish.content_published {count: 1}', pub409(r), r.text.slice(0, 160));
-    r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3, caption: 'per-account text' }] });
-    check('published content: with a per-account caption override → 409 publish.content_published', pub409(r), r.text.slice(0, 160));
     r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
     check('published content: to the account it is published on → 409 publish.content_published (before the per-pair check)', pub409(r), r.text.slice(0, 160));
     r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }], republish: true });
@@ -462,7 +471,7 @@ try {
     r = await http('POST', `/api/publish/tasks/${mA.id}/outcome`, A, { result: 'published', url: 'https://www.instagram.com/p/pc-multi/' });
     check('one of the two published → content locked', r.body.task?.status === 'published' && (await http('GET', `/api/contents/${cMulti.id}`, A)).body.content.locked === true);
     r = await http('PATCH', `/api/publish/tasks/${mS.id}`, A, { caption: 'edited later' });
-    check('locked: editing the text of the other (scheduled) task → 409 content.published_locked', r.status === 409 && r.body.code === 'content.published_locked', r.text.slice(0, 160));
+    check('no task text edit: PATCH of the other (scheduled) task → 404 (route removed), its caption unchanged', r.status === 404 && (await ptask(A, mS.id)).task.caption === 'multi', r.text.slice(0, 160));
     const nMulti = await countOf(cMulti.id);
     r = await http('POST', `/api/contents/${cMulti.id}/distribute`, A, { targets: [{ accountId: igSusp, scheduledAt: later3 }] });
     check('distributing it again (even to the still scheduled account) → 409 publish.content_published, nothing created', pub409(r) && await countOf(cMulti.id) === nMulti, r.text.slice(0, 160));
@@ -473,7 +482,7 @@ try {
   // a LEGACY row flagged republish (written by an older release) fails its run as a duplicate instead of publishing again
   {
     const [legacy] = await db.insert(schema.publishTasks).values({
-      userId: uA, contentId: cImg.id, accountId: igA, platform: 'instagram', title: null, caption: 'IG caption', hashtags: [], options: {},
+      userId: uA, contentId: cImg.id, accountId: igA, platform: 'instagram', title: null, caption: 'IG caption', options: {},
       mediaIds: [imgA2, imgA1], postType: 'feed', scheduledAt: new Date(), status: 'pending', maxAttempts: 1, republish: true, createdBy: uA,
     }).returning();
     ptIds.add(legacy!.id);
@@ -597,9 +606,9 @@ try {
   // ---------------------------------------------------------------- manual only (official-API publishing removed 2026-11-18)
   // The former test-only Facebook API method is gone too: a caption that used to select it now goes to an operator.
   {
-    const cFb = (await http('POST', '/api/contents', A, { title: `pc-${tag} fb`, body: 'fb text' })).body.content;
+    const cFb = (await http('POST', '/api/contents', A, { title: `pc-${tag} fb`, body: '[test:ok] x' })).body.content;
     const accountId = await acc(A, { platform: 'facebook', instanceId: DON.id, loginStatus: 'logged_in' });
-    const res = await http('POST', `/api/contents/${cFb.id}/distribute`, A, { targets: [{ accountId, caption: '[test:ok] x' }], maxAttempts: 2 });
+    const res = await http('POST', `/api/contents/${cFb.id}/distribute`, A, { targets: [{ accountId }], maxAttempts: 2 });
     ptIds.add(res.body.created?.[0]?.id);
     d = await waitStatus(A, res.body.created[0].id, ['failed', 'awaiting_operator', 'published']);
     const fm = d.logs.map((l: any) => l.message as string);
@@ -665,8 +674,8 @@ try {
   check("admin may target any account; the task belongs to the account's owner", r.status === 201 && adm.userId === uA && adm.createdBy !== uA);
   r = await http('GET', `/api/publish/tasks?contentId=${cAdm.id}`, A);
   check('the account owner sees it in their scheduler', r.body.total === 1);
-  r = await http('PATCH', `/api/publish/tasks/${adm.id}`, A, { caption: 'Edited caption', hashtags: ['edit'] });
-  check('edit caption/hashtags while scheduled', r.status === 200 && r.body.task.text === 'Edited caption\n\n#edit');
+  r = await http('PATCH', `/api/publish/tasks/${adm.id}`, A, { caption: 'Edited caption' });
+  check('no per-account text edit: PATCH /api/publish/tasks/:id → 404, the snapshot unchanged (only 改期 / 取消 stay)', r.status === 404 && (await ptask(A, adm.id)).task.caption === '', r.text.slice(0, 160));
   await http('POST', `/api/publish/tasks/${adm.id}/cancel`, A);
   await http('DELETE', `/api/contents/${cAdm.id}`, T);
 
@@ -736,7 +745,7 @@ try {
   // ---------------------------------------------------------------- audit
   const audit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.username, `pca${tag}`)));
   const acts = new Set(audit.map((a) => a.action));
-  const want = ['content.create', 'content.update', 'content.distribute', 'content.delete', 'publish.outcome_published', 'publish.outcome_failed', 'publish.reschedule', 'publish.cancel', 'publish.update'];
+  const want = ['content.create', 'content.update', 'content.distribute', 'content.delete', 'publish.outcome_published', 'publish.outcome_failed', 'publish.reschedule', 'publish.cancel'];
   check('audit entries for content + publish actions', want.every((a) => acts.has(a)), want.filter((a) => !acts.has(a)).join(',') || 'all present');
   const dist = audit.find((a) => a.action === 'content.distribute' && a.status === 201);
   check('audit detail allowlisted (no captions)', !!dist && Array.isArray((dist.detail as any).accountIds) && !JSON.stringify(audit.map((a) => a.detail)).includes('Edited caption'));

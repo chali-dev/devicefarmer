@@ -329,7 +329,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'POST /api/publish/tasks/:id/cancel': { action: 'publish.cancel' },
   'POST /api/publish/tasks/:id/reschedule': { action: 'publish.reschedule', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
-  'PATCH /api/publish/tasks/:id': { action: 'publish.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'POST /api/publish/tasks/:id/outcome': {
     action: ({ body }) => (body.result === 'published' ? 'publish.outcome_published' : 'publish.outcome_failed'),
     detail: ({ body }) => ({ result: body.result, url: body.url, externalId: body.externalId }),

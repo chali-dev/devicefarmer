@@ -16,31 +16,30 @@ export interface PublishCapability {
   postTypes?: Partial<Record<Exclude<PostType, 'feed'>, PostTypeRule>>;
   title: { required: boolean; max: number } | null;
   captionMax: number;
-  hashtagsMax: number;
   /** Platform options accepted in publish_tasks.options (validated by the route). */
   privacy?: readonly string[];
 }
 
 export const PUBLISH_CAPABILITIES: Record<string, PublishCapability> = {
   // YouTube: one video per upload; title ≤ 100, description ≤ 5000.
-  youtube: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: { required: true, max: 100 }, captionMax: 5000, hashtagsMax: 15, privacy: ['public', 'unlisted', 'private'] },
-  // Instagram: a single image/video, or a carousel of up to 10 items; caption ≤ 2200, ≤ 30 hashtags.
+  youtube: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: { required: true, max: 100 }, captionMax: 5000, privacy: ['public', 'unlisted', 'private'] },
+  // Instagram: a single image/video, or a carousel of up to 10 items; caption ≤ 2200 (hashtags included).
   // Reels: exactly one video. Stories (限动): one image or one video ≤ 60 s, no caption (in the app, text on a
   // story is a sticker the operator adds by hand).
   instagram: {
-    media: { min: 1, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 2200, hashtagsMax: 30,
+    media: { min: 1, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 2200,
     postTypes: {
       reel: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, caption: true },
       story: { media: { min: 1, max: 1, kinds: ['image', 'video'], mixed: false, maxVideoSec: 60 }, caption: false },
     },
   },
   // TikTok: one video; caption ≤ 2200.
-  tiktok: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: null, captionMax: 2200, hashtagsMax: 30, privacy: ['public', 'friends', 'private'] },
+  tiktok: { media: { min: 1, max: 1, kinds: ['video'], mixed: false }, title: null, captionMax: 2200, privacy: ['public', 'friends', 'private'] },
   // Facebook (manual publishing for now): text-only posts allowed, up to 10 photos/videos; text ≤ 63206.
-  facebook: { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 63206, hashtagsMax: 30 },
+  facebook: { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 63206 },
 };
 
-const DEFAULT: PublishCapability = { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 5000, hashtagsMax: 30 };
+const DEFAULT: PublishCapability = { media: { min: 0, max: 10, kinds: ['image', 'video'], mixed: true }, title: null, captionMax: 5000 };
 
 export const capabilityOf = (platform: string): PublishCapability => PUBLISH_CAPABILITIES[platform] ?? DEFAULT;
 
@@ -56,14 +55,8 @@ export function postTypeRule(platform: string, postType: PostType): PostTypeRule
 
 export interface Violation { code: string; message: string; params: Record<string, string | number> }
 
-/** Full post text as it is published: caption, then the hashtags. */
-export function composeText(caption: string, hashtags: string[]): string {
-  const tags = hashtags.map((h) => `#${h}`).join(' ');
-  return [caption.trim(), tags].filter(Boolean).join('\n\n');
-}
-
 /** First violation of the platform's limits, or null. */
-export function validateForPlatform(platform: string, media: Pick<MediaAsset, 'fileType' | 'name' | 'duration'>[], post: { title: string | null; caption: string; hashtags: string[]; postType?: PostType }): Violation | null {
+export function validateForPlatform(platform: string, media: Pick<MediaAsset, 'fileType' | 'name' | 'duration'>[], post: { title: string | null; caption: string; postType?: PostType }): Violation | null {
   const cap = capabilityOf(platform);
   const postType = post.postType ?? 'feed';
   const n = media.length;
@@ -84,8 +77,7 @@ export function validateForPlatform(platform: string, media: Pick<MediaAsset, 'f
   if (!rule.caption) return null; // no caption: the texts are not published
   if (cap.title?.required && !post.title?.trim()) return v('publish.title_required', `${platform} 需要标题`);
   if (cap.title && post.title && post.title.length > cap.title.max) return v('publish.title_too_long', `${platform} 标题最多 ${cap.title.max} 个字符`, { max: cap.title.max });
-  const text = composeText(post.caption, post.hashtags);
+  const text = post.caption.trim();
   if (text.length > cap.captionMax) return v('publish.caption_too_long', `${platform} 文案（含话题标签）最多 ${cap.captionMax} 个字符`, { max: cap.captionMax, length: text.length });
-  if (post.hashtags.length > cap.hashtagsMax) return v('publish.too_many_hashtags', `${platform} 最多 ${cap.hashtagsMax} 个话题标签`, { max: cap.hashtagsMax });
   return null;
 }

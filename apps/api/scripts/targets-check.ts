@@ -11,8 +11,8 @@
  * - RBAC/isolation: another user's content 404, another user's accounts never appear.
  * - 人设禁用词 on contents (400 persona.banned_word with the words): create/update texts (title, body, platform captions,
  *   case-insensitive) with a target account whose persona bans them, adding such a target to existing text, a
- *   translation, an AI draft's own persona without targets, and distribution (also a per-target caption override and a
- *   word added to the persona after saving); stage-only updates are not blocked; clean texts pass.
+ *   translation, an AI draft's own persona without targets, and distribution (a word added to the persona after saving;
+ *   a per-target caption is a 400 since there are no per-account texts); stage-only updates are not blocked; clean texts pass.
  * Usage (from apps/api, API running with the default ENABLED_PLATFORMS=instagram):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/targets-check.ts
  */
@@ -218,14 +218,15 @@ try {
       aiGenerated: { model: 'm', requestedModel: 'm', personaId: ban.id, personaName: ban.name, taskId: null, generatedAt: new Date().toISOString(), mediaTags: [] } }).returning();
     r = await http('PUT', `/api/contents/${draft!.id}`, A.token, { body: 'AI 写的：最便宜' });
     check('AI draft without targets: its persona\'s banned words apply', r.status === 400 && r.body.code === 'persona.banned_word', `${r.status}`);
-    // distribution: per-target caption override, and a word added to the persona after saving
+    // distribution: a word added to the persona after saving (no per-account texts any more: an older body's caption
+    // override is a 400 before any word check)
     const pt0 = (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c3.id))).length;
     r = await http('POST', `/api/contents/${c3.id}/distribute`, A.token, { targets: [{ accountId: a5.id, caption: 'free stuff' }] });
     await http('PATCH', `/api/personas/${ban.id}`, A.token, { style: { bannedWords: ['最便宜', 'Free', '练腿'] } });
     const r7b = await http('POST', `/api/contents/${c3.id}/distribute`, A.token, { targets: [{ accountId: a5.id }] });
     const pt1 = (await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.contentId, c3.id))).length;
-    check('distribute: a banned per-target caption → 400; a word added to the persona after saving → 400 (words 练腿); no publish task',
-      r.status === 400 && r.body.code === 'persona.banned_word' && r7b.status === 400 && r7b.body.params?.words === '练腿' && pt0 === 0 && pt1 === 0, `${r.status} ${r7b.status} ${r7b.text.slice(0, 200)}`);
+    check('distribute: a per-target caption → 400 (strict, not a word check); a word added to the persona after saving → 400 (words 练腿); no publish task',
+      r.status === 400 && r.body.code !== 'persona.banned_word' && r7b.status === 400 && r7b.body.params?.words === '练腿' && pt0 === 0 && pt1 === 0, `${r.status} ${r7b.status} ${r7b.text.slice(0, 200)}`);
   }
 
   // ================================================================ audit

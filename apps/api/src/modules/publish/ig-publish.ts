@@ -191,7 +191,7 @@ export interface PublishFlowInput {
   externalId: string | null;
   /** Ordered, ready. */
   media: MediaAsset[];
-  /** Caption + hashtags ('' = none; stories have none). */
+  /** The caption ('' = none; stories have none). */
   text: string;
   log: Log;
   signal?: AbortSignal;
