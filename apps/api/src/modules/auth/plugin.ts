@@ -31,12 +31,24 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     sign: { expiresIn: '12h' },
   });
 
-  // Always re-load the user so role changes / disabling take effect immediately.
-  async function loadUser(sub: string): Promise<AuthUser> {
-    const [u] = await db.select().from(schema.users).where(eq(schema.users.id, sub));
+  // Always re-load the user so role changes / disabling take effect immediately (once per request: the menu hook
+  // below and authenticate share the row; only the columns AuthUser needs, never the password hash).
+  const userRow = (sub: string) => db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role, roleId: schema.users.roleId, disabled: schema.users.disabled })
+    .from(schema.users).where(eq(schema.users.id, sub)).then((r) => r[0]);
+  type UserRow = Awaited<ReturnType<typeof userRow>>;
+  const perRequest = new WeakMap<FastifyRequest, { sub: string; row: Promise<UserRow> }>();
+  function requestUserRow(req: FastifyRequest, sub: string): Promise<UserRow> {
+    const hit = perRequest.get(req);
+    if (hit && hit.sub === sub) return hit.row;
+    const row = userRow(sub);
+    perRequest.set(req, { sub, row });
+    return row;
+  }
+  function toAuthUser(u: UserRow): AuthUser {
     if (!u || u.disabled) throw unauthorized('account disabled or removed', 'auth.account_disabled');
     return { id: u.id, username: u.username, role: u.role, roleId: u.roleId };
   }
+  const loadUser = async (sub: string): Promise<AuthUser> => toAuthUser(await userRow(sub));
 
   app.decorate('reloadUser', loadUser);
 
@@ -49,7 +61,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   app.decorate('authenticate', async (req: FastifyRequest) => {
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { throw unauthorized(); }
-    req.user = await loadUser(payload.sub);
+    req.user = toAuthUser(await requestUserRow(req, payload.sub));
   });
 
   // 角色菜单权限 (role-menus.ts): a menu switched off for users closes its own endpoints. onRequest, i.e. before body
@@ -62,8 +74,7 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     if (!rule) return;
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { return; }
-    const [u] = await db.select({ id: schema.users.id, username: schema.users.username, role: schema.users.role, roleId: schema.users.roleId, disabled: schema.users.disabled })
-      .from(schema.users).where(eq(schema.users.id, payload.sub));
+    const u = await requestUserRow(req, payload.sub);
     if (!u || u.disabled) return;
     await assertMenuAllowed({ id: u.id, username: u.username, role: u.role, roleId: u.roleId }, rule);
   });

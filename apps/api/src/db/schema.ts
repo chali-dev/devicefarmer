@@ -737,7 +737,11 @@ export const publishTasks = pgTable('publish_tasks', {
   index('publish_tasks_user_scheduled_idx').on(t.userId, t.scheduledAt),
   index('publish_tasks_status_scheduled_idx').on(t.status, t.scheduledAt),
   index('publish_tasks_scheduled_idx').on(t.scheduledAt),
-  index('publish_tasks_content_idx').on(t.contentId),
+  // content + account (+ owner) newest first: the "newest task per pair" anti-join (group=content, dashboard, content
+  // status) and every per-content lookup (prefix; replaced publish_tasks_content_idx)
+  index('publish_tasks_pair_idx').on(t.contentId, t.accountId, t.userId, t.createdAt, t.id),
+  // 发文日志 (sort=updated_desc) and the dashboard's published/failed per day
+  index('publish_tasks_updated_idx').on(t.updatedAt, t.id),
   index('publish_tasks_account_idx').on(t.accountId, t.scheduledAt),
   index('publish_tasks_media_idx').using('gin', t.mediaIds),
   index('publish_tasks_account_device_idx').on(t.accountId, t.deviceRunAt),
@@ -872,6 +876,8 @@ export const comments = pgTable('comments', {
 }, (t) => [
   uniqueIndex('comments_account_external_idx').on(t.accountId, t.externalId),
   index('comments_user_published_idx').on(t.userId, t.publishedAt),
+  // 评论互动 list order (newest thread first)
+  index('comments_when_idx').on(sql`coalesce(${t.publishedAt}, ${t.createdAt})`, t.id),
   index('comments_account_status_idx').on(t.accountId, t.status, t.publishedAt),
   index('comments_account_post_idx').on(t.accountId, t.externalPostId),
   index('comments_account_parent_idx').on(t.accountId, t.parentExternalId),
@@ -948,6 +954,8 @@ export const commentTasks = pgTable('comment_tasks', {
   index('comment_tasks_account_hash_idx').on(t.accountId, t.textHash, t.submittedAt),
   index('comment_tasks_account_sent_idx').on(t.accountId, t.sentAt),
   index('comment_tasks_status_idx').on(t.status, t.updatedAt),
+  // 回复记录 list order (last change first)
+  index('comment_tasks_updated_idx').on(t.updatedAt, t.id),
   index('comment_tasks_comment_idx').on(t.commentId, t.createdAt),
 ]);
 

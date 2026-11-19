@@ -1,8 +1,8 @@
-import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import type { Comment, CommentTask, Task } from '../../db/schema.js';
+import type { Comment, CommentTask, Task, TrackedPostComment } from '../../db/schema.js';
 import { notFound } from '../../lib/errors.js';
 import { createPostComment, createTrackedComment, replyAccountFor, visibleReply } from '../comments/comments.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -93,13 +93,13 @@ const replySummary = (r: CommentTask | undefined) => (r ? {
   errorCode: r.errorCode, error: r.error, authorName: r.authorName, hasEvidence: !!r.evidence?.key, updatedAt: r.updatedAt,
 } : null);
 
-/** Top-level comments of one post (newest first) with their replies (threads) and the latest reply task of each. */
-async function socialPostComments(accountId: string, externalPostId: string, limit: number, offset: number) {
-  const cond = and(eq(C.accountId, accountId), eq(C.externalPostId, externalPostId), isNull(C.parentExternalId), sql`${C.status} <> 'hidden'`);
-  const [rows, [total]] = await Promise.all([
-    db.select().from(C).where(cond).orderBy(desc(sql`coalesce(${C.publishedAt}, ${C.createdAt})`), asc(C.id)).limit(limit).offset(offset),
-    db.select({ n: count() }).from(C).where(cond),
-  ]);
+/** Top-level, not hidden comments of the account's posts (by external post id). */
+const socialTopCond = (accountId: string, externalPostIds: string[]) =>
+  and(eq(C.accountId, accountId), inArray(C.externalPostId, externalPostIds), isNull(C.parentExternalId), sql`${C.status} <> 'hidden'`);
+const SOCIAL_ORDER = sql`coalesce(${C.publishedAt}, ${C.createdAt}) desc, ${C.id} asc`;
+
+/** Threads of the given top-level comments: their replies (children) and the latest reply task of each comment (2 queries for any number). */
+async function socialThreads(accountId: string, rows: Comment[]) {
   const children = rows.length ? await db.select().from(C).where(and(eq(C.accountId, accountId), inArray(C.parentExternalId, rows.map((r) => r.externalId))))
     .orderBy(asc(sql`coalesce(${C.publishedAt}, ${C.createdAt})`)) : [];
   const all = [...rows, ...children];
@@ -110,10 +110,47 @@ async function socialPostComments(accountId: string, externalPostId: string, lim
     id: c.id, source: c.source, authorName: c.authorName, authorHandle: c.authorHandle, text: c.text, likeCount: c.likeCount, replyCount: c.replyCount,
     publishedAt: c.publishedAt, status: c.status, fetchedAt: c.fetchedAt, reply: replySummary(latest.get(c.id)),
   });
-  return {
-    items: rows.map((r) => ({ ...view(r), children: children.filter((k) => k.parentExternalId === r.externalId).map(view) })),
-    total: total?.n ?? 0,
-  };
+  return (r: Comment) => ({ ...view(r), children: children.filter((k) => k.parentExternalId === r.externalId).map(view) });
+}
+
+/** Top-level comments of one post (newest first) with their replies (threads) and the latest reply task of each. */
+async function socialPostComments(accountId: string, externalPostId: string, limit: number, offset: number) {
+  const cond = socialTopCond(accountId, [externalPostId]);
+  const [rows, [total]] = await Promise.all([
+    db.select().from(C).where(cond).orderBy(SOCIAL_ORDER).limit(limit).offset(offset),
+    db.select({ n: count() }).from(C).where(cond),
+  ]);
+  const thread = await socialThreads(accountId, rows);
+  return { items: rows.map(thread), total: total?.n ?? 0 };
+}
+
+/**
+ * socialPostComments(…, limit, 0) for a whole page of posts in a fixed number of queries (the feed used to run it
+ * once per post): the first `limit` top-level comments per post (same order), the totals, then the threads.
+ */
+async function socialPostsComments(accountId: string, externalPostIds: string[], limit: number) {
+  const out = new Map<string, { items: Awaited<ReturnType<typeof socialPostComments>>['items']; total: number }>();
+  if (!externalPostIds.length) return out;
+  const cond = socialTopCond(accountId, externalPostIds);
+  const ranked = db.select({ id: C.id, rn: sql<number>`row_number() over (partition by ${C.externalPostId} order by ${SOCIAL_ORDER})`.as('rn') })
+    .from(C).where(cond).as('ranked');
+  const [rows, totals] = await Promise.all([
+    limit > 0 ? db.select({ c: C }).from(C).innerJoin(ranked, eq(ranked.id, C.id)).where(sql`${ranked.rn} <= ${limit}`).orderBy(ranked.rn) : Promise.resolve([] as { c: Comment }[]),
+    db.select({ post: C.externalPostId, n: count() }).from(C).where(cond).groupBy(C.externalPostId),
+  ]);
+  const top = rows.map((r) => r.c);
+  const thread = await socialThreads(accountId, top);
+  for (const id of externalPostIds) {
+    out.set(id, { items: top.filter((c) => c.externalPostId === id).map(thread), total: totals.find((t) => t.post === id)?.n ?? 0 });
+  }
+  return out;
+}
+
+/** Up to `limit` newest rows of `R` per group (`partition`), for a page of posts in one query. */
+async function newestRepliesPer(partition: SQL | typeof R.postId | typeof R.trackedPostId, where: SQL | undefined, limit: number) {
+  const ranked = db.select({ id: R.id, rn: sql<number>`row_number() over (partition by ${partition} order by ${R.createdAt} desc)`.as('rn') })
+    .from(R).where(where).as('ranked');
+  return (await db.select({ r: R }).from(R).innerJoin(ranked, eq(ranked.id, R.id)).where(sql`${ranked.rn} <= ${limit}`).orderBy(ranked.rn)).map((x) => x.r);
 }
 
 // ---------------------------------------------------------------- tracked: comments of posts
@@ -125,19 +162,40 @@ const K = schema.trackedPostComments;
  */
 const ownReplies = (viewer: AuthUser) => (isAdmin(viewer) ? undefined : eq(R.userId, viewer.id));
 
-async function trackedPostComments(viewer: AuthUser, postId: string, limit: number, offset: number) {
-  const [rows, [total]] = await Promise.all([
-    db.select().from(K).where(eq(K.trackedPostId, postId)).orderBy(asc(sql`coalesce(${K.position}, 1000000)`), asc(K.firstSeenAt), asc(K.id)).limit(limit).offset(offset),
-    db.select({ n: count() }).from(K).where(eq(K.trackedPostId, postId)),
-  ]);
+const TRACKED_ORDER = sql`coalesce(${K.position}, 1000000) asc, ${K.firstSeenAt} asc, ${K.id} asc`;
+
+/** The viewer's latest reply task per comment (one query for any number of comments). */
+async function trackedCommentViews(viewer: AuthUser, rows: TrackedPostComment[]) {
   const replies = rows.length ? await db.select().from(R).where(and(inArray(R.trackedCommentId, rows.map((c) => c.id)), ownReplies(viewer))).orderBy(desc(R.createdAt)) : [];
   const latest = new Map<string, CommentTask>();
   for (const r of replies) if (r.trackedCommentId && !latest.has(r.trackedCommentId)) latest.set(r.trackedCommentId, r);
-  return {
-    items: rows.map((c) => ({ id: c.id, authorHandle: c.authorHandle, text: c.text, likeCount: c.likes, replyCount: c.replyCount, publishedAt: c.publishedAt, firstSeenAt: c.firstSeenAt,
-      lastSeenAt: c.lastSeenAt, reply: replySummary(latest.get(c.id)) })),
-    total: total?.n ?? 0,
-  };
+  return (c: TrackedPostComment) => ({ id: c.id, authorHandle: c.authorHandle, text: c.text, likeCount: c.likes, replyCount: c.replyCount, publishedAt: c.publishedAt,
+    firstSeenAt: c.firstSeenAt, lastSeenAt: c.lastSeenAt, reply: replySummary(latest.get(c.id)) });
+}
+
+async function trackedPostComments(viewer: AuthUser, postId: string, limit: number, offset: number) {
+  const [rows, [total]] = await Promise.all([
+    db.select().from(K).where(eq(K.trackedPostId, postId)).orderBy(TRACKED_ORDER).limit(limit).offset(offset),
+    db.select({ n: count() }).from(K).where(eq(K.trackedPostId, postId)),
+  ]);
+  const view = await trackedCommentViews(viewer, rows);
+  return { items: rows.map(view), total: total?.n ?? 0 };
+}
+
+/** trackedPostComments(…, limit, 0) for a whole page of posts in a fixed number of queries (see socialPostsComments). */
+async function trackedPostsComments(viewer: AuthUser, postIds: string[], limit: number) {
+  const out = new Map<string, Awaited<ReturnType<typeof trackedPostComments>>>();
+  if (!postIds.length) return out;
+  const ranked = db.select({ id: K.id, rn: sql<number>`row_number() over (partition by ${K.trackedPostId} order by ${TRACKED_ORDER})`.as('rn') })
+    .from(K).where(inArray(K.trackedPostId, postIds)).as('ranked');
+  const [rows, totals] = await Promise.all([
+    limit > 0 ? db.select({ k: K }).from(K).innerJoin(ranked, eq(ranked.id, K.id)).where(sql`${ranked.rn} <= ${limit}`).orderBy(ranked.rn) : Promise.resolve([] as { k: TrackedPostComment }[]),
+    db.select({ post: K.trackedPostId, n: count() }).from(K).where(inArray(K.trackedPostId, postIds)).groupBy(K.trackedPostId),
+  ]);
+  const top = rows.map((r) => r.k);
+  const view = await trackedCommentViews(viewer, top);
+  for (const id of postIds) out.set(id, { items: top.filter((c) => c.trackedPostId === id).map(view), total: totals.find((t) => t.post === id)?.n ?? 0 });
+  return out;
 }
 
 /** Body of a comment / reply on a tracked post: which own account sends it, the text, when (null = now). */
@@ -168,17 +226,20 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
         .where(eq(P.socialAccountId, acc.id)).orderBy(desc(P.firstSeenAt)).limit(20),
       db.select().from(R).where(and(eq(R.accountId, acc.id), inArray(R.status, ['sent', 'failed']))).orderBy(desc(R.updatedAt)).limit(20),
     ]);
-    const items = await Promise.all(posts.map(async (p) => {
-      const [comments, postReplies] = await Promise.all([
-        q.comments > 0 ? socialPostComments(acc.id, p.externalId, q.comments, 0) : socialPostComments(acc.id, p.externalId, 1, 0).then((x) => ({ items: [], total: x.total })),
-        db.select().from(R).where(eq(R.postId, p.id)).orderBy(desc(R.createdAt)).limit(10),
-      ]);
+    // Comments + own post comments of the whole page at once (a fixed number of queries, not a few per post).
+    const [commentsOf, postRepliesOf] = await Promise.all([
+      socialPostsComments(acc.id, posts.map((p) => p.externalId), q.comments),
+      posts.length ? newestRepliesPer(R.postId, inArray(R.postId, posts.map((p) => p.id)), 10) : Promise.resolve([]),
+    ]);
+    const items = posts.map((p) => {
+      const comments = commentsOf.get(p.externalId) ?? { items: [], total: 0 };
+      const postReplies = postRepliesOf.filter((r) => r.postId === p.id);
       return {
         id: p.id, externalId: p.externalId, source: p.source, permalink: p.permalink, caption: p.caption, mediaType: p.mediaType, productType: p.productType,
         publishedAt: p.publishedAt, likes: p.likes, comments: p.comments, approx: p.approx ?? [], firstSeenAt: p.firstSeenAt, fetchedAt: p.fetchedAt,
         commentsFetchedAt: p.commentsFetchedAt, commentRows: comments.items, commentsTotal: comments.total, postComments: postReplies.map(replySummary),
       };
-    }));
+    });
     const activity = byTimeDesc([
       ...counterActivity(stats.reverse().map((s) => ({ at: s.capturedAt, followers: s.followers, following: s.following, posts: s.posts, approx: s.approx, source: s.source }))),
       ...newPosts.map((p) => ({ type: 'post' as const, at: p.firstSeenAt.toISOString(), postId: p.id, caption: p.caption, publishedAt: p.publishedAt, permalink: p.permalink })),
@@ -235,17 +296,19 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
       db.select({ r: R }).from(R).innerJoin(P, eq(P.id, R.trackedPostId))
         .where(and(eq(P.trackedAccountId, acc.id), inArray(R.status, ['sent', 'failed']), ownReplies(req.user))).orderBy(desc(R.updatedAt)).limit(20),
     ]);
-    const items = await Promise.all(posts.map(async (p) => {
-      const [comments, postReplies] = await Promise.all([
-        trackedPostComments(req.user, p.id, q.comments, 0),
-        db.select().from(R).where(and(eq(R.trackedPostId, p.id), isNull(R.trackedCommentId), ownReplies(req.user))).orderBy(desc(R.createdAt)).limit(10),
-      ]);
+    const [commentsOf, postRepliesOf] = await Promise.all([
+      trackedPostsComments(req.user, posts.map((p) => p.id), q.comments),
+      posts.length ? newestRepliesPer(R.trackedPostId, and(inArray(R.trackedPostId, posts.map((p) => p.id)), isNull(R.trackedCommentId), ownReplies(req.user)), 10) : Promise.resolve([]),
+    ]);
+    const items = posts.map((p) => {
+      const comments = commentsOf.get(p.id) ?? { items: [], total: 0 };
+      const postReplies = postRepliesOf.filter((r) => r.trackedPostId === p.id);
       return {
         id: p.id, externalId: p.externalId, source: p.source, permalink: p.url, caption: p.title, mediaType: p.mediaType, publishedAt: p.publishedAt,
         likes: p.likes, comments: p.comments, views: p.views, approx: p.approx ?? [], firstSeenAt: p.firstSeenAt, fetchedAt: p.lastSeenAt,
         commentsFetchedAt: p.commentsFetchedAt, commentRows: comments.items, commentsTotal: comments.total, postComments: postReplies.map(replySummary),
       };
-    }));
+    });
     const activity = byTimeDesc([
       ...counterActivity(snaps.reverse().map((s) => ({ at: s.capturedAt, followers: s.followers, following: s.following, posts: s.posts, approx: s.approx, source: s.source }))),
       ...newPosts.map((p) => ({ type: 'post' as const, at: p.firstSeenAt.toISOString(), postId: p.id, caption: p.title, publishedAt: p.publishedAt, permalink: p.url })),

@@ -198,8 +198,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     if (q.platform) base.push(eq(C.platform, q.platform));
     if (q.source) base.push(eq(C.source, q.source));
     if (q.postId) base.push(eq(C.externalPostId, q.postId));
-    // Top level, or a reply whose parent was never fetched (shown as its own thread).
-    base.push(sql`(${C.parentExternalId} is null or not exists (select 1 from comments p where p.account_id = ${C.accountId} and p.external_id = ${C.parentExternalId}))`);
+    // Top level, or a reply whose parent was never fetched (shown as its own thread). A top-level row (parent null)
+    // matches no parent either, so one anti-join covers both (no OR: it kept the planner from an index anti-join).
+    base.push(sql`not exists (select 1 from comments p where p.account_id = ${C.accountId} and p.external_id = ${C.parentExternalId})`);
     const filters: SQL[] = [];
     if (q.status?.length) {
       const list = sql.join(q.status.map((s) => sql`${s}`), sql`, `);
@@ -300,13 +301,14 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
         sql`exists (select 1 from social_accounts s where s.id = ${R.accountId} and s.handle ilike ${l})`)!);
     }
     const cond = and(...base, q.status?.length ? inArray(R.status, q.status) : undefined);
-    const [rows, [total], byStatus] = await Promise.all([
+    const [rows, byStatus] = await Promise.all([
       db.select().from(R).where(cond).orderBy(...(q.sort === 'time_asc' ? [asc(replyTime), asc(R.id)] : [desc(R.updatedAt), desc(R.id)])).limit(q.limit).offset(q.offset),
-      db.select({ n: count() }).from(R).where(cond),
       db.select({ k: R.status, n: count() }).from(R).where(and(...base)).groupBy(R.status),
     ]);
+    // total = the per-status counts the status filter keeps (status is NOT NULL): no second count over the same rows
+    const total = byStatus.filter((x) => !q.status?.length || (q.status as string[]).includes(x.k)).reduce((a, x) => a + x.n, 0);
     return {
-      items: await toReplyItems(rows, req.user), total: total?.n ?? 0,
+      items: await toReplyItems(rows, req.user), total,
       byStatus: Object.fromEntries(COMMENT_REPLY_STATUSES.map((s) => [s, byStatus.find((x) => x.k === s)?.n ?? 0])),
     };
   });
