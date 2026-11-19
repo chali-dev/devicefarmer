@@ -122,14 +122,14 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 }
 
 const columns = computed(() => [
-  { title: t('social.colHandle'), key: 'handle', ellipsis: true },
+  { title: t('social.colHandle'), key: 'handle', width: 240, ellipsis: true },
   ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 100, ellipsis: true }] : []),
-  { title: t('social.colFollowers'), key: 'followers', width: 80, align: 'right' as const },
-  { title: t('social.colFollowing'), key: 'following', width: 80, align: 'right' as const },
+  { title: t('social.colFollowers'), key: 'followers', width: 70, align: 'center' as const },
+  { title: t('social.colFollowing'), key: 'following', width: 70, align: 'center' as const },
   { title: t('social.colPersona'), key: 'persona', width: 110, ellipsis: true },
   { title: t('social.colLang'), key: 'lang', width: 90 },
   { title: t('social.colDevice'), key: 'device', width: 150, ellipsis: true },
-  { title: t('social.colStatus'), key: 'status', width: 190 },
+  { title: t('social.colStatus'), key: 'status', width: 200 },
   actionColumn(206),
 ])
 
