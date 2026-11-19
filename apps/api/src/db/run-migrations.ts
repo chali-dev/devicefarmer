@@ -4,15 +4,7 @@ import { db, sqlClient } from './index.js';
 import { finishInlineProxies, stashInlineProxies } from './proxy-data-migration.js';
 import { migrateTaskStatuses } from './task-data-migration.js';
 import { migrateTelegramSettings } from './alert-channel-migration.js';
-import { migratePersonaTexts } from './persona-data-migration.js';
-import { migrateContentCategoryTexts } from './content-category-data-migration.js';
-import { migrateSocialGroups } from './social-group-data-migration.js';
-import { migrateTrackedCategories } from './tracked-category-data-migration.js';
 import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
-import { migrateOfficialApiRemoval } from './official-api-removal-migration.js';
-import { migrateCommentApproval } from './comment-approval-migration.js';
-import { migrateTestModeRemoval } from './test-mode-removal-migration.js';
-import { migrateMediaVisibility } from './media-visibility-migration.js';
 import { migrateTrackedPhones } from './tracked-phone-migration.js';
 
 /**
@@ -28,14 +20,6 @@ export async function runMigrations(log: (msg: string) => void = console.log): P
   const renamed = await migrateTaskStatuses(sqlClient);
   if (renamed) log(`task centre: renamed the status of ${renamed} tasks (queued→pending, succeeded→success)`);
   await migrateTelegramSettings(sqlClient);
-  await migratePersonaTexts(sqlClient);
-  await migrateContentCategoryTexts(sqlClient);
-  await migrateSocialGroups(sqlClient);
-  await migrateTrackedCategories(sqlClient);
   await migrateTrackedIgSchedule(sqlClient);
-  await migrateOfficialApiRemoval(sqlClient);
-  await migrateCommentApproval(sqlClient);
-  await migrateTestModeRemoval(sqlClient);
-  await migrateMediaVisibility(sqlClient);
   await migrateTrackedPhones(sqlClient);
 }

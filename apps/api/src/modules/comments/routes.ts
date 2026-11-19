@@ -157,14 +157,11 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
         sendsPerHour: z.number().int().min(1).max(500).optional(),
         sendsPerDay: z.number().int().min(1).max(2000).optional(),
         minGapSec: z.number().int().min(0).max(86_400).optional(),
-        /** Removed (test mode, 2026-11-18): an older page may still send it; accepted and ignored. */
-        testMode: z.boolean().optional(),
       }).strict(),
     },
   }, async (req) => {
     if (!isAdmin(req.user)) throw forbidden('仅管理员可以修改评论规则', 'comment.admin_only');
-    const { testMode: _removed, ...rules } = req.body;
-    return { rules: await saveRules(rules) };
+    return { rules: await saveRules(req.body) };
   });
 
   // ------------------------------------------------------------ accounts (filters, new-comment counts)
@@ -271,11 +268,11 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * Write a reply to ONE comment (there is no bulk reply). Always saved as a draft (draft first, 2026-11-18): `submit`
-   * of an older page is accepted and ignored; 排程 is POST /api/comment-replies/:id/submit.
+   * Write a reply to ONE comment (there is no bulk reply). Always saved as a draft (draft first, 2026-11-18); 排程 is
+   * POST /api/comment-replies/:id/submit.
    */
   app.post('/api/comments/:id/replies', {
-    schema: { params: Id, body: z.object({ text: ReplyText, templateId: z.string().uuid().nullable().optional(), submit: z.boolean().optional(), scheduledAt: When }) },
+    schema: { params: Id, body: z.object({ text: ReplyText, templateId: z.string().uuid().nullable().optional(), scheduledAt: When }) },
   }, async (req, reply) => {
     const c = await visibleComment(req.user, req.params.id);
     const r = await createReply(req.user, c, { text: req.body.text, templateId: req.body.templateId, scheduledAt: at(req.body.scheduledAt) });
@@ -299,7 +296,7 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     if (q.q) {
       const l = like(q.q);
-      base.push(or(ilike(R.text, l), ilike(R.authorName, l), ilike(R.reviewerName, l), ilike(R.error, l),
+      base.push(or(ilike(R.text, l), ilike(R.authorName, l), ilike(R.error, l),
         sql`exists (select 1 from social_accounts s where s.id = ${R.accountId} and s.handle ilike ${l})`)!);
     }
     const cond = and(...base, q.status?.length ? inArray(R.status, q.status) : undefined);
@@ -388,10 +385,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     q.q ? or(ilike(TPL.name, like(q.q)), ilike(TPL.text, like(q.q))) : undefined,
   );
   const P = schema.personas;
-  /** Template row for the client: the persona as {id, name, description, ownerType, ownerId}; the legacy text is never returned. */
+  /** Template row for the client: the persona as {id, name, description, ownerType, ownerId}. */
   const templateItem = (t: typeof TPL.$inferSelect, p: typeof P.$inferSelect | null, extra: Record<string, unknown> = {}) => {
-    const { persona: _legacy, ...rest } = t;
-    return { ...rest, shared: t.userId === null, persona: p ? { id: p.id, name: p.name, description: p.description, ownerType: p.ownerType, ownerId: p.ownerId } : null, ...extra };
+    return { ...t, shared: t.userId === null, persona: p ? { id: p.id, name: p.name, description: p.description, ownerType: p.ownerType, ownerId: p.ownerId } : null, ...extra };
   };
   app.get('/api/comment-templates', { schema: { querystring: TemplateQuery } }, async (req) => {
     const rows = await db.select({ t: TPL, p: P, owner: schema.users.username }).from(TPL).leftJoin(schema.users, eq(schema.users.id, TPL.userId))
@@ -450,7 +446,6 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!Object.keys(set).length) throw new HttpError(400, 'nothing to update', 'common.nothing_to_update');
     if (req.body.personaId === null) throw personaRequired();
     if (req.body.personaId) await assertPersonaFor(t.userId, req.body.personaId);
-    if (req.body.personaId !== undefined) set.persona = null; // legacy text, see persona-data-migration.ts
     const personaId = req.body.personaId ?? t.personaId;
     const kind = req.body.kind ?? t.kind;
     const moves = personaId !== t.personaId || kind !== t.kind;

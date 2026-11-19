@@ -267,24 +267,14 @@ try {
   check('user sees ready public assets', ids(await list(A.token, 'scope=public&pageSize=100')).includes(pubImg.id));
 
   // ---------- 对用户可见 removed (2026-11-18): public media is always visible to every user
-  const vidName = (await row(pubVid.id))!.name;
-  const dis = await http('PUT', `/api/media/${pubVid.id}`, admin, { name: `hide-${tag}`, status: 'disabled' });
-  check('admin PUT status=disabled (older page) → 400 media.visibility_removed, nothing changed', dis.status === 400 && dis.body.code === 'media.visibility_removed'
-    && (await row(pubVid.id))?.status === 'ready' && (await row(pubVid.id))?.name === vidName, `${dis.status} ${dis.body?.code}`);
-  const keep = await http('PUT', `/api/media/${pubVid.id}`, admin, { name: vidName, status: 'ready' });
-  check('admin PUT with status=ready (older page, switch on) → 200, status ignored', keep.status === 200 && keep.body.item.status === 'ready', `${keep.status} ${keep.body?.code}`);
-  const privDis = await http('PUT', `/api/media/${aId}`, A.token, { status: 'disabled' });
-  const privReady = await http('PUT', `/api/media/${aId}`, A.token, { name: (await row(aId))!.name, status: 'ready' });
-  check('private asset: status=disabled → 400 media.visibility_removed, status=ready ignored (200)', privDis.status === 400 && privDis.body.code === 'media.visibility_removed' && privReady.status === 200,
-    `${privDis.status} ${privDis.body?.code} ${privReady.status} ${privReady.body?.code}`);
   const pubForA = await list(A.token, 'scope=public&pageSize=100');
   check('users see every processed public asset', ids(pubForA).includes(pubVid.id) && ids(pubForA).includes(pubImg.id) && pubForA.body.items.every((i) => i.status === 'ready'));
-  // a legacy 'disabled' row (older colour, before the data migration) stays hidden from users
-  const legacyHide = (id: string, on: boolean) => db.update(schema.mediaAssets).set({ status: on ? 'disabled' : 'ready' }).where(eq(schema.mediaAssets.id, id));
-  await legacyHide(pubVid.id, true);
-  check('legacy disabled row: users 404 / not listed, admin still sees it', (await http('GET', `/api/media/${pubVid.id}`, A.token)).status === 404
+  // a failed public asset stays hidden from users (only ready public media is visible)
+  const failPub = (id: string, on: boolean) => db.update(schema.mediaAssets).set({ status: on ? 'failed' : 'ready' }).where(eq(schema.mediaAssets.id, id));
+  await failPub(pubVid.id, true);
+  check('failed public row: users 404 / not listed, admin still sees it', (await http('GET', `/api/media/${pubVid.id}`, A.token)).status === 404
     && !ids(await list(A.token, 'scope=public&pageSize=100')).includes(pubVid.id) && (await http('GET', `/api/media/${pubVid.id}`, admin)).status === 200);
-  await legacyHide(pubVid.id, false);
+  await failPub(pubVid.id, false);
 
   // ---------- favorites
   const f1 = await http('POST', `/api/media/${pubImg.id}/favorite`, A.token);
@@ -298,9 +288,9 @@ try {
   check('favorites tab lists favorited public assets', ids(favList).includes(pubImg.id) && ids(favList).includes(pubVid.id) && favList.body.items.every((i) => i.isFavorite), `${favList.body?.total}`);
   check('isFavorite only for the user who favorited', (await list(B.token, 'scope=public&pageSize=100')).body.items.find((i) => i.id === pubImg.id)?.isFavorite === false
     && (await list(A.token, 'scope=public&pageSize=100')).body.items.find((i) => i.id === pubImg.id)?.isFavorite === true);
-  await legacyHide(pubVid.id, true);
-  check('legacy disabled favorite hidden from user\'s favorites', !ids(await list(A.token, 'scope=favorites')).includes(pubVid.id));
-  await legacyHide(pubVid.id, false);
+  await failPub(pubVid.id, true);
+  check('failed public favorite hidden from user\'s favorites', !ids(await list(A.token, 'scope=favorites')).includes(pubVid.id));
+  await failPub(pubVid.id, false);
   const unf = await http('DELETE', `/api/media/${pubImg.id}/favorite`, A.token);
   check('unfavorite: removed from favorites, asset intact', unf.status === 200 && !ids(await list(A.token, 'scope=favorites')).includes(pubImg.id) && (await http('GET', `/api/media/${pubImg.id}`, A.token)).status === 200);
 
@@ -347,16 +337,16 @@ try {
   check('upload with categoryId field', upCat.status === 201 && upCat.body.item.categoryId === pubCatId, `${upCat.status}`);
   const upWrongCat = await upload(A.token, 'mine', `wrong-cat-${tag}.png`, png, 'image/png', bCatId);
   check('upload into someone else\'s category → 400', upWrongCat.status === 400, `${upWrongCat.status}`);
-  // counts = assets the viewer can see (users: ready public ones; a legacy disabled row counts for admins only)
+  // counts = assets the viewer can see (users: ready public ones; a failed public row counts for admins only)
   await waitDone(upCat.body.item.id, admin);
   await http('PUT', `/api/media/${pubImg.id}`, admin, { categoryId: pubCatId });
   const cnt = async (token: string, q: string, id: string) => ((await http('GET', `/api/media/categories?${q}`, token)).body.categories as any[]).find((c) => c.id === id)?.count;
   const counts0 = [await cnt(admin, 'scope=public', pubCatId), await cnt(A.token, 'scope=public', pubCatId), await cnt(A.token, 'scope=mine', aCatId)];
   check('counts per viewer (public category: admin 2, user 2; A\'s own 1)', counts0.join() === '2,2,1', JSON.stringify(counts0));
-  await legacyHide(pubImg.id, true);
+  await failPub(pubImg.id, true);
   const counts = [await cnt(admin, 'scope=public', pubCatId), await cnt(A.token, 'scope=public', pubCatId)];
-  check('counts with a legacy disabled row: admin 2, user 1', counts.join() === '2,1', JSON.stringify(counts));
-  await legacyHide(pubImg.id, false);
+  check('counts with a failed public row: admin 2, user 1', counts.join() === '2,1', JSON.stringify(counts));
+  await failPub(pubImg.id, false);
 
   // ---------- metadata at upload (name / category / tags): same schema + rules as PUT /api/media/:id
   {
@@ -370,11 +360,11 @@ try {
     const hidRow = hid.status === 201 ? await row(hid.body.item.id) : undefined;
     check('admin public upload with name/category/tags (no status field) → 201, stored while processing (name trimmed, tags case-insensitively deduped)',
       hid.status === 201 && hid.body.item.status === 'processing' && hid.body.item.name === `命名素材 ${tag}` && hid.body.item.categoryId === metaCat
-        && hid.body.item.tags.join() === `Promo${tag},Summer${tag}` && hidRow?.disableOnReady === false && hidRow?.categoryId === metaCat,
-      `${hid.status} ${JSON.stringify([hid.body?.item?.status, hid.body?.item?.name, hid.body?.item?.tags, hidRow?.disableOnReady])} ${hid.status !== 201 ? hid.text.slice(0, 200) : ''}`);
-    const vis = await upload(admin, 'public', `upmeta-${tag}-visible.png`, png, 'image/png', metaCat, { name: `可见素材 ${tag}`, status: 'ready' });
+        && hid.body.item.tags.join() === `Promo${tag},Summer${tag}` && hidRow?.categoryId === metaCat,
+      `${hid.status} ${JSON.stringify([hid.body?.item?.status, hid.body?.item?.name, hid.body?.item?.tags])} ${hid.status !== 201 ? hid.text.slice(0, 200) : ''}`);
+    const vis = await upload(admin, 'public', `upmeta-${tag}-visible.png`, png, 'image/png', metaCat, { name: `可见素材 ${tag}` });
     if (vis.status === 201) mine.push(vis.body.item.id);
-    check('public upload with status=ready (older page, switch on) → 201, disable_on_ready not written', vis.status === 201 && (await row(vis.body.item.id))?.disableOnReady === false, `${vis.status} ${vis.body?.code}`);
+    check('second public upload → 201', vis.status === 201, `${vis.status} ${vis.body?.code}`);
     const hidDone = await waitDone(hid.body.item.id, admin);
     const visDone = await waitDone(vis.body.item.id, admin);
     check('after processing: both ready; metadata kept', hidDone.status === 'ready' && visDone.status === 'ready'
@@ -394,19 +384,13 @@ try {
     const aWithPub = await upload(A.token, 'mine', `upmeta-${tag}-x4.png`, png, 'image/png', metaCat);
     check('user upload with another user\'s / a public category → 400 media.category_mismatch', aWithB.body?.code === 'media.category_mismatch' && aWithPub.body?.code === 'media.category_mismatch'
       && aWithB.status === 400 && aWithPub.status === 400, `${aWithB.status} ${aWithPub.status}`);
-    const aStatus = await upload(A.token, 'mine', `upmeta-${tag}-x5.png`, png, 'image/png', undefined, { status: 'disabled' });
-    const pubHidden = await upload(admin, 'public', `upmeta-${tag}-x11.png`, png, 'image/png', metaCat, { status: 'disabled' });
-    check('upload with status=disabled (public or private, older page) → 400 media.visibility_removed (same rule as edit)',
-      aStatus.status === 400 && aStatus.body.code === 'media.visibility_removed' && pubHidden.status === 400 && pubHidden.body.code === 'media.visibility_removed',
-      `${aStatus.status} ${aStatus.body?.code} ${pubHidden.status} ${pubHidden.body?.code}`);
     const manyTags = await upload(A.token, 'mine', `upmeta-${tag}-x6.png`, png, 'image/png', undefined, { tags: JSON.stringify(Array.from({ length: 21 }, (_, i) => `t${i}`)) });
     const longTag = await upload(A.token, 'mine', `upmeta-${tag}-x7.png`, png, 'image/png', undefined, { tags: JSON.stringify(['x'.repeat(33)]) });
     const notArray = await upload(A.token, 'mine', `upmeta-${tag}-x8.png`, png, 'image/png', undefined, { tags: 'just text' });
     const longName = await upload(A.token, 'mine', `upmeta-${tag}-x9.png`, png, 'image/png', undefined, { name: 'n'.repeat(201) });
-    const badStatus = await upload(admin, 'public', `upmeta-${tag}-x10.png`, png, 'image/png', undefined, { status: 'hidden' });
-    check('21 tags / 33-char tag / tags not a JSON array / 201-char name / unknown status → 400 media.bad_fields',
-      [manyTags, longTag, notArray, longName, badStatus].every((r) => r.status === 400 && r.body.code === 'media.bad_fields'),
-      JSON.stringify([manyTags, longTag, notArray, longName, badStatus].map((r) => [r.status, r.body?.code])));
+    check('21 tags / 33-char tag / tags not a JSON array / 201-char name → 400 media.bad_fields',
+      [manyTags, longTag, notArray, longName].every((r) => r.status === 400 && r.body.code === 'media.bad_fields'),
+      JSON.stringify([manyTags, longTag, notArray, longName].map((r) => [r.status, r.body?.code])));
     const edit21 = await http('PUT', `/api/media/${vis.body.item.id}`, admin, { tags: Array.from({ length: 21 }, (_, i) => `t${i}`) });
     const edit20 = await http('PUT', `/api/media/${vis.body.item.id}`, admin, { tags: Array.from({ length: 20 }, (_, i) => `t${i}${tag}`) });
     check('edit has the same tag limits (21 → 400, 20 → 200)', edit21.status === 400 && edit20.status === 200 && edit20.body.item.tags.length === 20, `${edit21.status} ${edit20.status}`);
@@ -416,7 +400,7 @@ try {
     check('user upload into own category with name + tags', aOwn.status === 201 && aOwn.body.item.categoryId === aCatId && aOwn.body.item.name === `我的上传 ${tag}` && aOwn.body.item.tags.join() === `Mine${tag}`,
       `${aOwn.status} ${aOwn.text.slice(0, 160)}`);
     const aOwnDone = await waitDone(aOwn.body.item.id, A.token);
-    check('private upload ends ready (disable_on_ready stays off)', aOwnDone.status === 'ready' && (await row(aOwn.body.item.id))?.disableOnReady === false);
+    check('private upload ends ready', aOwnDone.status === 'ready');
     await new Promise((r) => setTimeout(r, 500));
     const [metaAudit] = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), eq(schema.auditLogs.action, 'media.upload'), eq(schema.auditLogs.target, `upmeta-${tag}-named.png`)));
     check('upload audit records categoryId (no tag/name texts needed)', (metaAudit?.detail as any)?.categoryId === metaCat, JSON.stringify(metaAudit?.detail));
@@ -521,38 +505,6 @@ try {
   check('pagination: total + page size', page.body.total === 4 && page.body.items.length === 2, `${page.body?.total} ${page.body?.items?.length}`);
   check('GET /api/media/tags lists used tags', (await http('GET', '/api/media/tags?scope=public', A.token)).body.tags.includes(`Sunset${tag}`));
 
-  // ---------- data migration: legacy disabled public assets → ready (media-visibility-migration.ts, run by db:migrate)
-  {
-    const seed = (status: 'processing' | 'ready' | 'failed' | 'disabled', disableOnReady: boolean, ownerType: 'public' | 'user' = 'public') => ({
-      ownerType, ownerId: ownerType === 'user' ? A.id : null, name: `mvis-${tag}-${status}-${disableOnReady}`, fileName: `mvis-${tag}.png`, storage: 'local' as const,
-      fileKey: `public/images/mvis-${tag}-${randomBytes(4).toString('hex')}.png`, fileType: 'image' as const, mimeType: 'image/png', fileSize: 1, checksum: '0'.repeat(64), status, disableOnReady,
-    });
-    const seeded = await db.insert(schema.mediaAssets).values([
-      seed('disabled', false), seed('disabled', true), seed('processing', true), seed('failed', true), seed('ready', false), seed('ready', false, 'user'),
-    ]).returning({ id: schema.mediaAssets.id });
-    const sIds = seeded.map((r) => r.id);
-    const state = async () => (await db.select({ id: schema.mediaAssets.id, status: schema.mediaAssets.status, f: schema.mediaAssets.disableOnReady, u: schema.mediaAssets.updatedAt })
-      .from(schema.mediaAssets).where(inArray(schema.mediaAssets.id, sIds))).sort((x, y) => sIds.indexOf(x.id) - sIds.indexOf(y.id));
-    const { migrateMediaVisibility } = await import('../src/db/media-visibility-migration.js');
-    const logs: string[] = [];
-    try {
-      const r1 = await migrateMediaVisibility(sqlClient, (m) => logs.push(m));
-      const s1 = await state();
-      check('data migration: disabled → ready, processing/failed keep their status, every hide flag cleared, ready rows untouched',
-        s1.map((x) => `${x.status}:${x.f}`).join() === 'ready:false,ready:false,processing:false,failed:false,ready:false,ready:false',
-        s1.map((x) => `${x.status}:${x.f}`).join());
-      check('data migration counts + log line', r1.enabled === 2 && r1.flagsCleared === 2 && logs.length === 1 && /2 disabled public assets set ready, 2 pending hide flags cleared/.test(logs[0]!), `${JSON.stringify(r1)} ${logs.join(' | ')}`);
-      const r2 = await migrateMediaVisibility(sqlClient, (m) => logs.push(m));
-      const s2 = await state();
-      check('data migration run twice = no-op (nothing counted, no log, rows unchanged incl. updated_at)', r2.enabled === 0 && r2.flagsCleared === 0 && logs.length === 1
-        && JSON.stringify(s2) === JSON.stringify(s1), `${JSON.stringify(r2)} logs=${logs.length}`);
-      const forA = ids(await list(A.token, 'scope=public&pageSize=100'));
-      check('migrated (formerly disabled) public assets are visible to users', forA.includes(sIds[0]!) && forA.includes(sIds[1]!) && !forA.includes(sIds[2]!) && !forA.includes(sIds[3]!));
-    } finally {
-      await db.delete(schema.mediaAssets).where(inArray(schema.mediaAssets.id, sIds));
-    }
-  }
-
   // ---------- push validation (no devices are created)
   const p1 = await http('POST', '/api/media/push', admin, { assetIds: [pubImg.id], instanceIds: [NIL] });
   check('push to unknown device → 202, skipped "not found"', p1.status === 202 && p1.body.accepted.length === 0 && p1.body.skipped[0]?.reason === 'not found', JSON.stringify(p1.body));
@@ -627,7 +579,7 @@ try {
   const actions = new Set(audit.map((a) => a.action));
   const want = ['media.upload', 'media.update', 'media.delete', 'media.batch_delete', 'media.favorite', 'media.unfavorite', 'media.category_create', 'media.category_update', 'media.category_delete', 'media.category_merge', 'media.push'];
   check('audit rows for media actions', want.every((w) => actions.has(w)), `missing: ${want.filter((w) => !actions.has(w)).join(', ') || 'none'}`);
-  check('no media.disable / media.enable audit actions any more (status=ready/disabled PUTs are media.update)', !actions.has('media.disable') && !actions.has('media.enable'), [...actions].join(','));
+  check('no media.disable / media.enable audit actions', !actions.has('media.disable') && !actions.has('media.enable'), [...actions].join(','));
   const catAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, startedAt), dlike(schema.auditLogs.action, 'media.category_%')));
   check('category audit: names only (merge source + into), no description text', catAudit.some((a) => a.action === 'media.category_merge' && a.target === `合并源-${tag}` && (a.detail as any)?.into === `改名-${tag}`)
     && catAudit.some((a) => a.action === 'media.category_delete' && a.target === `改名-${tag}`) && !JSON.stringify(catAudit).includes(`desc ${tag}`), JSON.stringify(catAudit.map((a) => [a.action, a.target])));

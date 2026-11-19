@@ -90,7 +90,7 @@ const columns = computed(() => [
       <template v-else-if="column.key === 'status'">
         <StatusTag kind="commentReply" :status="record.status" />
         <div v-if="record.method" class="muted small">{{ t(`comments.method.${record.method}`) }}</div>
-        <div v-if="record.errorCode && !['sent', 'dry_run'].includes(record.status)" class="err">{{ codeText(record.errorCode, undefined, record.error ?? record.errorCode) }}</div>
+        <div v-if="record.errorCode && record.status !== 'sent'" class="err">{{ codeText(record.errorCode, undefined, record.error ?? record.errorCode) }}</div>
         <a v-if="record.hasEvidence" class="small" @click="emit('evidence', record.id)">{{ t('feed.evidence') }}</a>
       </template>
       <template v-else-if="column.key === 'time'">

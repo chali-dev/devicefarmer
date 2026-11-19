@@ -19,8 +19,7 @@ import { assertStyleOk, bannedHits, exampleWhere, MAX_EXAMPLES, normaliseStyle, 
  * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`:
  * shared topics/banned words + 发文风格 + 评论风格, see persona-style.ts), 范例 (≤ 20 post + ≤ 20 comment = templates of
  * the persona in its own scope, edited through the template API; POST may create the first ones in the same transaction).
- * POST/PATCH take all of it. AI 草稿 per day live on the social accounts since 2026-11-18 (the persona's draft_* columns
- * are LEGACY, not read or written); the persona form only has AI测试 (modules/ai, preview).
+ * POST/PATCH take all of it. The persona form only has AI测试 (modules/ai, preview); drafts are made on the social accounts.
  */
 const P = schema.personas;
 const TPL = schema.commentTemplates;
@@ -44,8 +43,8 @@ const visibleTemplates = (user: AuthUser): SQL | undefined => (isAdmin(user) ? u
 
 type Exec = Pick<typeof db, 'select'>;
 
-/** A persona row for lists/responses: style with defaults, without the LEGACY draft_* columns. */
-export const publicPersona = ({ draftOwnerId: _o, draftEnabled: _e, draftsPerDay: _d, style: _s, ...p }: Persona) => ({
+/** A persona row for lists/responses: style with defaults. */
+export const publicPersona = ({ style: _s, ...p }: Persona) => ({
   ...p, style: styleOf({ style: _s }),
 });
 

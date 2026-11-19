@@ -12,8 +12,7 @@
  * - 账号上限 from its new entry (PUT /api/social/settings) is enforced when linking;
  * - comment replies without approval, draft first: a user's reply is a draft (no task) until 排程 (POST …/submit),
  *   which goes straight to `scheduled` (send task created) and on to awaiting_operator; the approve/reject endpoints are gone (404); the rules have no requireApproval
- *   (refused by the strict schema); the data migration moves seeded pending_review / approved rows on (live
- *   task kept, others get a task row), logs `approval removed`, and a second run changes nothing;
+ *   (refused by the strict schema);
  * - power of external phones is admin only (owner decision 2026-11-18): an inert external placeholder (invalid source
  *   config, nothing listens; never a real BitBrowser phone) granted to the user: start / stop / restart → 403
  *   instances.external_power_admin_only and no task; in a batch the external one is skipped with that code while the
@@ -26,7 +25,6 @@ import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, like } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { migrateCommentApproval } from '../src/db/comment-approval-migration.js';
 import { recordRiskEvent } from '../src/modules/risk/events.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { scheduleAccountDeviceChecks } from '../src/modules/social/check.js';
@@ -280,7 +278,7 @@ try {
   const rep1 = r.body.reply;
   check('排程 → scheduled at once (no pending_review), send task created', r.status === 200 && rep1.status === 'scheduled' && !!rep1.taskId && !('canReview' in rep1), r.text.slice(0, 300));
   const done1 = await waitFor('handed over', async () => { const [x] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, rep1.id)); return x?.status === 'awaiting_operator' ? x : null; });
-  check('…then handed to an operator (awaiting_operator, method manual)', done1.method === 'manual' && done1.reviewerId === null);
+  check('…then handed to an operator (awaiting_operator, method manual)', done1.method === 'manual' && !('reviewerId' in done1));
   const logs1 = (await db.select({ a: schema.commentLogs.action }).from(schema.commentLogs).where(eq(schema.commentLogs.commentTaskId, rep1.id))).map((x) => x.a);
   check('reply log: created → submitted → queued → run → handed_over, no approval', ['created', 'submitted', 'queued', 'run', 'handed_over'].every((a) => logs1.includes(a)) && !logs1.includes('approved'), logs1.join(','));
   const c2 = await mkComment('v2');
@@ -296,43 +294,6 @@ try {
   check('approve / batch approve / reject endpoints are gone (404)', gone.every((x) => x.status === 404), gone.map((x) => x.status).join(','));
   r = await http('POST', `/api/comment-replies/${rep2}/cancel`, U);
   check('scheduled reply can still be cancelled', r.status === 200 && r.body.reply.status === 'cancelled', r.text.slice(0, 200));
-
-  // ---------------------------------------------------------------- data migration of old approval states
-  const [cRow] = await db.select().from(schema.comments).where(eq(schema.comments.id, c1));
-  const seedReply = async (status: 'pending_review' | 'approved', extra: Partial<typeof schema.commentTasks.$inferInsert> = {}) => {
-    const cid = await mkComment(`m-${status}-${randomBytes(2).toString('hex')}`);
-    const [row] = await db.insert(schema.commentTasks).values({
-      userId: cRow!.userId, accountId: accId, commentId: cid, platform: 'instagram', text: `old ${status} ${tag}`, textHash: randomBytes(16).toString('hex'),
-      status, authorId: userId, authorName: `rk${tag}`, submittedAt: new Date(), ...extra,
-    }).returning();
-    return row!;
-  };
-  const pr = await seedReply('pending_review', { scheduledAt: new Date(Date.now() + 86_400_000) });
-  const [finalTask] = await db.insert(schema.tasks).values({ type: 'comment-reply', status: 'failed', refType: 'comment_reply', payload: {}, idempotencyKey: `rk-${tag}-final`, finishedAt: new Date() }).returning();
-  const apOld = await seedReply('approved', { taskId: finalTask!.id, round: 1 });
-  const [liveTask] = await db.insert(schema.tasks).values({ type: 'comment-reply', status: 'scheduled', refType: 'comment_reply', payload: {}, runAt: new Date(Date.now() + 7 * 86_400_000), idempotencyKey: `rk-${tag}-live` }).returning();
-  const apLive = await seedReply('approved', { taskId: liveTask!.id });
-  extraTaskIds.push(finalTask!.id, liveTask!.id);
-  const ids = [pr.id, apOld.id, apLive.id];
-  const m1 = await migrateCommentApproval(sqlClient, () => undefined, { ids });
-  const rows = await db.select().from(schema.commentTasks).where(inArray(schema.commentTasks.id, ids));
-  const by = (id: string) => rows.find((x) => x.id === id)!;
-  const newTasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'comment-reply'), inArray(schema.tasks.refId, [pr.id, apOld.id])));
-  extraTaskIds.push(...newTasks.map((x) => x.id));
-  const prTask = newTasks.find((x) => x.refId === pr.id);
-  const apTask = newTasks.find((x) => x.refId === apOld.id);
-  check('migration: 2 queued, 1 kept', m1.scheduled === 2 && m1.kept === 1, JSON.stringify(m1));
-  check('migration: pending_review → scheduled with a scheduled task at its send time (key …:1)',
-    by(pr.id).status === 'scheduled' && by(pr.id).taskId === prTask?.id && prTask?.status === 'scheduled' && prTask.idempotencyKey === `comment-reply:${pr.id}:1`
-    && prTask.runAt?.getTime() === pr.scheduledAt!.getTime() && (prTask.payload as any)?.commentTaskId === pr.id, JSON.stringify(prTask));
-  check('migration: approved with a finished task → new round 2, new pending task', by(apOld.id).status === 'scheduled' && by(apOld.id).round === 2 && apTask?.idempotencyKey === `comment-reply:${apOld.id}:2` && apTask.status === 'pending' && by(apOld.id).taskId === apTask.id);
-  check('migration: approved with a live task → scheduled, same task', by(apLive.id).status === 'scheduled' && by(apLive.id).taskId === liveTask!.id);
-  const mlogs = await db.select().from(schema.commentLogs).where(and(inArray(schema.commentLogs.commentTaskId, ids), eq(schema.commentLogs.action, 'approval_removed')));
-  check('migration: one comment log "approval removed" per row', mlogs.length === 3 && mlogs.every((l) => l.message === 'approval removed'));
-  const m2 = await migrateCommentApproval(sqlClient, () => undefined, { ids });
-  const mlogs2 = await db.select().from(schema.commentLogs).where(and(inArray(schema.commentLogs.commentTaskId, ids), eq(schema.commentLogs.action, 'approval_removed')));
-  const newTasks2 = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'comment-reply'), inArray(schema.tasks.refId, [pr.id, apOld.id])));
-  check('migration run twice: no-op (0/0, no new logs or tasks)', m2.scheduled === 0 && m2.kept === 0 && mlogs2.length === 3 && newTasks2.length === newTasks.length, JSON.stringify(m2));
 
   // ---------------------------------------------------------------- audit
   await new Promise((res) => setTimeout(res, 500));

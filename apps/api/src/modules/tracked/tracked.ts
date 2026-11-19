@@ -92,11 +92,10 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
     const s = latest.get(r.id);
     const f = fol.get(r.id);
     const { refId: _r, ...task } = tasks.get(r.id) ?? { refId: null };
-    const { category: _legacy, ...row } = r; // LEGACY column, no longer exposed (folded into tags)
     const phone: PhoneView | null = phones.get(r.id) ?? null;
     const mode = modes.get(r.platform) ?? 'manual_only';
     return {
-      ...row,
+      ...r,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
       // a device source needs the account's own phone (set, still the owner's, not halted by 风控)
       dataMode: mode === 'device' && (!phone || !phone.allowed || phone.halted) ? 'device_unconfigured' as const : mode,

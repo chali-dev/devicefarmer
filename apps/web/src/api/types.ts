@@ -364,10 +364,10 @@ export const CONTENT_STATUSES: ContentStatus[] = ['draft', 'ready', 'scheduled',
 export const CONTENT_STATUS_COLOR: Record<ContentStatus, string> = {
   draft: 'default', ready: 'blue', scheduled: 'purple', partially_published: 'gold', published: 'success', failed: 'error', archived: 'default',
 }
-export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled' | 'dry_run'
+export type PublishStatus = 'pending' | 'scheduled' | 'running' | 'awaiting_operator' | 'published' | 'failed' | 'cancelled'
 export const PUBLISH_UNFINISHED: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
 export const PUBLISH_STATUS_COLOR: Record<PublishStatus, string> = {
-  pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default', dry_run: 'cyan',
+  pending: 'default', scheduled: 'purple', running: 'processing', awaiting_operator: 'orange', published: 'success', failed: 'error', cancelled: 'default',
 }
 export interface ContentMedia {
   id: string; name: string; fileType: 'image' | 'video'; status: MediaStatus; ownerType: 'public' | 'user'
@@ -513,12 +513,11 @@ export interface SystemInfo {
 }
 // ---------------------------------------------------------------- comments & engagement (评论互动)
 export type CommentStatus = 'new' | 'read' | 'replied' | 'hidden' | 'ignored'
-/** dry_run = LEGACY test mode (removed 2026-11-18, old rows became drafts); never produced any more. */
-export type CommentReplyStatus = 'draft' | 'pending_review' | 'approved' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'rejected' | 'cancelled' | 'dry_run'
+export type CommentReplyStatus = 'draft' | 'scheduled' | 'sending' | 'awaiting_operator' | 'sent' | 'failed' | 'cancelled'
 export const COMMENT_STATUS_COLOR: Record<CommentStatus, string> = { new: 'blue', read: 'default', replied: 'success', hidden: 'default', ignored: 'default' }
 export const COMMENT_REPLY_STATUS_COLOR: Record<CommentReplyStatus, string> = {
-  draft: 'default', pending_review: 'gold', approved: 'processing', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
-  sent: 'success', failed: 'error', rejected: 'error', cancelled: 'default', dry_run: 'cyan',
+  draft: 'default', scheduled: 'purple', sending: 'processing', awaiting_operator: 'orange',
+  sent: 'success', failed: 'error', cancelled: 'default',
 }
 /** 风控 → 云手机发帖 (GET/PUT /api/publish/device-settings). */
 export interface DevicePublishRules { postsPerDay: number; minGapMin: number }
@@ -546,7 +545,6 @@ export interface CommentReplyItem {
   id: string; userId: string; accountId: string; commentId: string | null; postId: string | null; platform: string; text: string; templateId: string | null; status: CommentReplyStatus
   method: 'api' | 'manual' | 'device' | null; scheduledAt: string | null; round: number; maxAttempts: number; taskId: string | null; externalReplyId: string | null
   error: string | null; errorCode: string | null; authorId: string | null; authorName: string | null; submittedAt: string | null
-  reviewerId: string | null; reviewerName: string | null; reviewedAt: string | null; reviewNote: string | null
   senderId: string | null; senderName: string | null; handedAt: string | null; sentAt: string | null; createdAt: string; updatedAt: string
   ownerName: string | null
   comment: { id: string; text: string; authorName: string | null; authorHandle: string | null; source: 'api' | 'manual' | 'device'; status: CommentStatus; externalPostId: string | null; postUrl: string | null; publishedAt: string | null } | null

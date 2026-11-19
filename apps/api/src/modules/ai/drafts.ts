@@ -14,7 +14,6 @@ import { assertUsableMedia, mediaItem, ownerOf, setContentMedia, setContentTags,
 import { SOURCE_LANG } from '../content/languages.js';
 import { assertNoBannedWords, bannedHits, EMOJI_PROMPT, exampleWhere, PERSONA_LENGTHS, PROMPT_EXAMPLES, styleOf, TONE_PROMPT } from '../comments/persona-style.js';
 import { registerTaskHandler, TaskError } from '../tasks/core.js';
-import { ACCOUNT_DRAFT_TASK, DRAFT_TASK } from './runs.js';
 import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
 
 /**
@@ -26,10 +25,7 @@ import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
  *   per account per 10 min), origin kept in Redis under a token; `saveAccountDraft` writes the person's edited version
  *   as one content (+ optional translation in the account's 账号语言); the route then distributes it when asked (a
  *   person reviewed it and clicked 立即发布 / 排程发布).
- * - Removed 2026-11-18: the daily drafts per account (hourly scheduler, settings `ai.hour`, the account switch
- *   `social_accounts.ai_drafts_enabled` / `ai_drafts_per_day`, now LEGACY: never read or written) and the task-based
- *   立即生成 (`POST …/ai-drafts/generate`, gone → 404). The task types stay registered only so tasks queued by an older
- *   release finish as a skipped no-op: `account-drafts` → `ai.daily_removed`, `persona-drafts` → `ai.moved_to_accounts`.
+ * - There are no daily / task-based drafts (removed 2026-11-18): nothing is generated unless a person asks.
  * - AI测试 = preview (`previewDraft`): the same prompt/output/error handling (`generateDrafts`) for ONE draft, run
  *   synchronously in the request, a pure style test: nothing is written and it cannot be saved (owner decision
  *   2026-11-18). At most PREVIEW_LIMIT previews per persona per 10 minutes.
@@ -41,7 +37,6 @@ import { aiCredentials, getAiSettings, type AiModel } from './settings.js';
  * - Each draft becomes one `contents` row: stage draft, lang zh-CN, tag `ai-draft`, `ai_generated` = origin, the fixed
  *   opening/closing added verbatim, up to 3 suggested ready images matching the model's media tags.
  */
-export { ACCOUNT_DRAFT_TASK, DRAFT_TASK };
 export const DRAFT_TAG = 'ai-draft';
 /** AI测试 previews per persona per window (fixed window from the first preview). */
 export const PREVIEW_LIMIT = 5;
@@ -358,34 +353,6 @@ export async function generateDrafts(i: GenerateInput): Promise<GenerateResult> 
   return { drafts: parsed.drafts.slice(0, i.count), received: parsed.drafts.length, requestedModel: model, servedModel: res.model, fallback: fellBack, usage };
 }
 
-// ---------------------------------------------------------------- LEGACY task types (finish old queued tasks)
-
-/**
- * LEGACY: `account-drafts` tasks (the removed daily drafts and the removed task-based 立即生成) created by an older
- * release, e.g. by the old colour's hourly schedule during a drain, finish as a skipped no-op without a model call.
- * Kept on its own queue as before.
- */
-registerTaskHandler(ACCOUNT_DRAFT_TASK, {
-  queue: 'ai-account-ops',
-  concurrency: 2,
-  maxAttempts: 1,
-  run: async (ctx) => {
-    await ctx.log('info', 'drafts: skipped (switched off)', { code: 'ai.daily_removed' });
-    return { skipped: 'ai.daily_removed' };
-  },
-});
-
-/** LEGACY: `persona-drafts` tasks created by an older release finish as a skipped no-op. */
-registerTaskHandler(DRAFT_TASK, {
-  queue: 'ai-ops',
-  concurrency: 1,
-  maxAttempts: 1,
-  run: async (ctx) => {
-    await ctx.log('info', 'drafts: skipped (switched off)', { code: 'ai.moved_to_accounts' });
-    return { skipped: 'ai.moved_to_accounts' };
-  },
-});
-
 const localDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 // ---------------------------------------------------------------- AI测试 preview (a style test: nothing is stored)
@@ -548,9 +515,3 @@ export async function saveAccountDraft(user: AuthUser, acc: SocialAccount, b: Ac
 }
 
 export const PreviewInput = z.object({ topic: TopicInput }).nullish();
-
-/**
- * LEGACY body of PUT /api/social/accounts/:id/ai-drafts (the removed daily switch of an older page): accepted and
- * ignored, nothing is written.
- */
-export const AccountDraftsInput = z.object({ enabled: z.boolean().optional(), perDay: z.number().int().optional() }).nullish();

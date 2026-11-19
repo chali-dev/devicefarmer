@@ -1,19 +1,16 @@
 /**
  * 云手机发帖 without a phone (owner decision 2026-11-18): method selection and the fallback to an operator, the
  * 风控 → 云手机发帖 settings (validation, RBAC, audit), the daily cap / minimum gap deferral, the halted phone
- * (parked, 恢复 re-queues), legacy test-mode rows (dry_run, only left by an older colour: not counted as failed, retry
- * allowed, reschedule refused, evidence RBAC), an uncertain share (awaiting the operator, never re-sent: retry refused,
+ * (parked, 恢复 re-queues), an uncertain share (awaiting the operator, never re-sent: there is no retry endpoint,
  * distributing the content again returns the waiting task; 编辑后重新发布 = cancel it, then a new task), through the
- * real HTTP API and the real task centre. Test mode was removed on 2026-11-18 (draft first): the settings have no
- * testMode (an older page's value is accepted and ignored), and a content is only a draft until it is distributed.
- * The on/off switch was removed the same day (cloud-phone posting is always on): a stored `enabled: false` is ignored
- * (the device method is still tried), GET has no `enabled`, a PUT with it is accepted, ignored and dropped.
+ * real HTTP API and the real task centre. No test mode and no on/off switch (removed 2026-11-18): the strict settings
+ * refuse `testMode` / `enabled` (400), and a content is only a draft until it is distributed.
  *
  * Devices are placeholder `instances` rows (no Android container, adb ports 5571–5573 that nothing listens on) kept
  * "online" by a test-only trigger like publish-check.ts: the `device` method takes their runs, finds that adb doesn't
  * see the phone and hands them to an operator (`publish.device_offline`) — so the phone is never touched. The real
  * phone flow (push, share target, caption read back, discard) is covered by device-publish-device-check.ts.
- * The dry_run (legacy) / send_uncertain end states are written as DB fixtures.
+ * The send_uncertain end state is written as a DB fixture.
  * 未点分享不计数 (owner 2026-11-18): the phone side of a run (withDevice + the Instagram flow) is replaced in THIS
  * process by stand-ins (`runDevicePublish` deps) that fail before 分享 or after it (calling `onShare` first); the
  * reservation (device_run_at) in the real DB is checked, then a real run through the API shows whether the next round
@@ -135,19 +132,11 @@ try {
   const bad = await Promise.all([
     http('PUT', '/api/publish/device-settings', T, { postsPerDay: 0 }), http('PUT', '/api/publish/device-settings', T, { minGapMin: 2000 }),
     http('PUT', '/api/publish/device-settings', T, { testMode: 'no' }), http('PUT', '/api/publish/device-settings', T, { other: 1 }),
-    http('PUT', '/api/publish/device-settings', T, { enabled: 'no' }),
+    http('PUT', '/api/publish/device-settings', T, { enabled: true }), http('PUT', '/api/publish/device-settings', T, { testMode: false }),
   ]);
-  check('settings: out-of-range / wrong type / unknown field → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
+  check('settings: out-of-range / wrong type / unknown field (incl. the removed testMode / enabled) → 400', bad.every((x) => x.status === 400), bad.map((x) => x.status).join(','));
   r = await http('PUT', '/api/publish/device-settings', T, { postsPerDay: 5, minGapMin: 0 });
   check('settings: partial PUT keeps the other fields', r.status === 200 && r.body.rules.postsPerDay === 5 && r.body.rules.minGapMin === 0 && !('enabled' in r.body.rules) && !('testMode' in r.body.rules), r.text);
-  // an old stored testMode (written by an older version) is ignored and dropped on the next save; an older page's PUT with it is accepted
-  await db.update(schema.settings).set({ value: { enabled: true, postsPerDay: 5, minGapMin: 0, testMode: true } }).where(eq(schema.settings.key, 'publish.device'));
-  r = await http('GET', '/api/publish/device-settings', T);
-  const ok1 = r.status === 200 && !('testMode' in r.body.rules);
-  r = await http('PUT', '/api/publish/device-settings', T, { testMode: false, postsPerDay: 5 });
-  const [storedPd] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.device'));
-  check('settings: a stored testMode is not returned; PUT with testMode from an older page → 200, ignored, dropped from the stored value',
-    ok1 && r.status === 200 && !('testMode' in r.body.rules) && !('testMode' in (storedPd?.value as object)) && (storedPd?.value as any).postsPerDay === 5, `${r.text} ${JSON.stringify(storedPd?.value)}`);
 
   // ---------------------------------------------------------------- draft first: a content creates no publish task until it is distributed
   const offC = await content('offline', [img]);
@@ -177,20 +166,6 @@ try {
   d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
   check('帖子 with a video → device not available (publish.device_feed_video) → operator, phone not tried',
     d.task.status === 'awaiting_operator' && d.task.method === 'manual' && msgs(d).includes('method device not available: publish.device_feed_video') && !msgs(d).includes('method device'), msgs(d).join(' | '));
-
-  // the on/off switch is gone: a stored enabled:false (left by an older version) is ignored, the device method is still tried
-  await db.update(schema.settings).set({ value: { enabled: false, postsPerDay: 5, minGapMin: 0 } }).where(eq(schema.settings.key, 'publish.device'));
-  r = await http('GET', '/api/publish/device-settings', T);
-  check('settings: a stored enabled:false is not returned', r.status === 200 && !('enabled' in r.body.rules) && r.body.rules.postsPerDay === 5, r.text);
-  p = await dist(await content('stored off', [img]), a0.id);
-  d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
-  check('a stored enabled:false is ignored: method device still tried (→ publish.device_offline), never publish.device_disabled',
-    d.task.status === 'awaiting_operator' && msgs(d).includes('method device not available: publish.device_offline')
-    && !msgs(d).some((m) => m.includes('publish.device_disabled')), msgs(d).join(' | '));
-  r = await http('PUT', '/api/publish/device-settings', T, { enabled: false, postsPerDay: 5 });
-  const [storedEn] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.device'));
-  check('settings: PUT with enabled from an older page → 200, ignored, dropped from the stored value',
-    r.status === 200 && !('enabled' in r.body.rules) && !('enabled' in (storedEn?.value as object)) && (storedEn?.value as any).postsPerDay === 5, `${r.text} ${JSON.stringify(storedEn?.value)}`);
 
   // no phone at all: the precheck still fails (an operator needs the phone too)
   const aNo = await acc(null);
@@ -290,39 +265,12 @@ try {
   check('after 恢复 the parked run is queued again (new round) and runs (here: adb offline → operator)',
     d.task.attemptNo === 2 && msgs(d).includes('device resumed: queued again') && d.task.status === 'awaiting_operator', `${d.task.status} ${d.task.attemptNo} ${msgs(d).join(' | ')}`);
 
-  // ---------------------------------------------------------------- legacy dry_run rows (fixture: only an older colour's test mode wrote them)
-  const dryC = await content('dry run', [img]);
-  p = await dist(dryC, a1.id, { scheduledAt: new Date(Date.now() + 2 * 86400_000).toISOString() });
-  const [tk] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, p.taskId));
-  await http('POST', `/api/publish/tasks/${p.id}/cancel`, A); // the fixture replaces the waiting round
-  await db.update(pt).set({ status: 'dry_run', method: 'device', errorCode: 'publish.test_mode', error: null, deviceRunAt: new Date(), evidence: { at: new Date().toISOString(), inputText: '正文 ✅', excerpt: 'feed_caption · media 1' } }).where(eq(pt.id, p.id));
-  await sqlClient`select 1`;
-  d = await ptask(A, p.id);
-  check('legacy dry_run row: listed with its read-back caption, no screenshot (hasEvidence false), evidence key never returned',
-    d.task.status === 'dry_run' && d.task.evidence?.inputText === '正文 ✅' && d.task.hasEvidence === false && !JSON.stringify(d.task).includes('"key"'), JSON.stringify(d.task.evidence));
-  const [contentRow] = await db.select().from(schema.contents).where(eq(schema.contents.id, dryC));
-  await http('PUT', `/api/contents/${dryC}`, A, { title: `dpc-${tag} dry run` }); // triggers no status change by itself
-  const listC = await http('GET', `/api/contents?q=${encodeURIComponent(`dpc-${tag} dry run`)}`, A);
-  check('content status does not turn "failed" because of a test run', !['failed', 'partially_published', 'published'].includes(listC.body.items?.[0]?.status ?? contentRow?.status), listC.body.items?.[0]?.status);
-  r = await http('GET', `/api/publish/tasks?status=dry_run&contentId=${dryC}`, A);
-  check('list filter status=dry_run + byStatus.dry_run', r.status === 200 && r.body.items.length === 1 && r.body.byStatus.dry_run >= 1, r.text);
-  const [e404, eB] = await Promise.all([http('GET', `/api/publish/tasks/${p.id}/evidence`, A), http('GET', `/api/publish/tasks/${p.id}/evidence`, B)]);
-  check('evidence endpoint: no screenshot → 404 publish.no_evidence; another user → 404 publish.not_found', e404.status === 404 && e404.body.code === 'publish.no_evidence' && eB.status === 404 && eB.body.code === 'publish.not_found', `${e404.text} ${eB.text}`);
-  r = await http('POST', `/api/publish/tasks/${p.id}/retry`, B, { scheduledAt: null });
-  check('another user cannot schedule it again (404)', r.status === 404);
-  r = await http('POST', `/api/publish/tasks/${p.id}/reschedule`, A, { scheduledAt: new Date(Date.now() + 86400_000).toISOString() });
-  check('legacy dry_run → 改期 refused now (409 publish.bad_status; it is finished, scheduled again with 重试)', r.status === 409 && r.body.code === 'publish.bad_status', r.text);
-  r = await http('POST', `/api/publish/tasks/${p.id}/retry`, A, { scheduledAt: new Date(Date.now() + 86400_000).toISOString() });
-  check('legacy dry_run → 重试 allowed: new round, scheduled, test-mode code cleared', r.status === 202 && r.body.task.status === 'scheduled' && r.body.task.attemptNo === 2 && r.body.task.errorCode === null, r.text);
-  await http('POST', `/api/publish/tasks/${p.id}/cancel`, A);
-  void tk;
-
   // ---------------------------------------------------------------- send_uncertain (fixture): waits for the operator, nothing re-sent
   p = await dist(await content('uncertain', [img]), a1.id, { scheduledAt: new Date(Date.now() + 2 * 86400_000).toISOString() });
   await http('POST', `/api/publish/tasks/${p.id}/cancel`, A);
   await db.update(pt).set({ status: 'awaiting_operator', method: 'device', errorCode: 'publish.send_uncertain', error: '已点“分享”，但没能在主页确认新帖子', taskId: null }).where(eq(pt.id, p.id));
   r = await http('POST', `/api/publish/tasks/${p.id}/retry`, A, {});
-  check('uncertain share: retry refused (409, it may have been posted)', r.status === 409 && r.body.code === 'publish.bad_status', r.text);
+  check('uncertain share: no retry endpoint any more (404; it may have been posted)', r.status === 404, r.text);
   r = await http('POST', `/api/contents/${p.contentId}/distribute`, A, { targets: [{ accountId: a1.id }] });
   check('uncertain share: distributing the content again creates nothing (returns the waiting task)', r.status === 200 && r.body.created.length === 0 && r.body.existing[0]?.id === p.id, r.text.slice(0, 200));
   r = await http('POST', `/api/publish/tasks/${p.id}/outcome`, A, { result: 'published', url: 'https://www.instagram.com/p/TESTONLY/' });

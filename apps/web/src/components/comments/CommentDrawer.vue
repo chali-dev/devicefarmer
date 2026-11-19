@@ -29,7 +29,7 @@ const logs = ref<CommentLog[]>([])
 const loading = ref(false)
 const busy = ref(false)
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
-const DONE = ['failed', 'rejected', 'cancelled']
+const DONE = ['failed', 'cancelled']
 
 const form = reactive({ text: '', templateId: undefined as string | undefined })
 const outcome = reactive({ result: 'sent' as 'sent' | 'failed', reason: '', externalReplyId: '' })
@@ -102,7 +102,6 @@ async function copy(text: string) {
 }
 const people = (r: CommentReplyItem) => [
   r.authorName ? t('comments.writtenBy', { name: r.authorName }) : null,
-  r.reviewerName ? t('comments.reviewedBy', { name: r.reviewerName }) : null,
   r.status === 'sent' ? (r.senderName ? t('comments.sentBy', { name: r.senderName }) : t('comments.sentByApi')) : null,
 ].filter(Boolean).join(' · ')
 const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: 'orange', error: 'red' }
@@ -195,7 +194,7 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
             </a-form>
           </div>
 
-          <a-space v-if="!editing && ['approved', 'scheduled', 'awaiting_operator', 'pending_review'].includes(active.status)" style="margin-top: 8px">
+          <a-space v-if="!editing && ['scheduled', 'awaiting_operator'].includes(active.status)" style="margin-top: 8px">
             <a-button danger :disabled="busy" @click="cancel">{{ t('comments.cancel') }}</a-button>
           </a-space>
         </template>
@@ -206,8 +205,7 @@ const LOG_COLOR: Record<string, string> = { debug: 'gray', info: 'blue', warn: '
             <StatusTag kind="commentReply" :status="r.status" />
             <span class="muted small">{{ fmt(r.updatedAt) }} · {{ people(r) }}</span>
             <div class="text">{{ r.text }}</div>
-            <div v-if="r.reviewNote && r.status === 'rejected'" class="err">{{ t('comments.rejectReason') }}: {{ r.reviewNote }}</div>
-            <div v-else-if="r.errorCode && r.status === 'failed'" class="err">{{ errText(r.errorCode, r.error) }}<template v-if="r.errorCode === 'comment.operator_failed' && r.error">: {{ r.error }}</template></div>
+            <div v-if="r.errorCode && r.status === 'failed'" class="err">{{ errText(r.errorCode, r.error) }}<template v-if="r.errorCode === 'comment.operator_failed' && r.error">: {{ r.error }}</template></div>
           </div>
         </template>
 

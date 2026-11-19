@@ -156,8 +156,6 @@ try {
   const run = await finished(task.id);
   const [ytPtAfter] = await db.select().from(schema.publishTasks).where(eq(schema.publishTasks.id, ytPt!.id));
   check('scheduled youtube publish run → failed platform.disabled (no retry)', run.status === 'failed' && run.attempts === 1 && ytPtAfter!.status === 'failed' && ytPtAfter!.errorCode === 'platform.disabled', `${run.status} ${run.attempts} ${ytPtAfter!.status} ${ytPtAfter!.errorCode}`);
-  r = await http('POST', `/api/publish/tasks/${ytPt!.id}/retry`, T, {});
-  check('retry of the youtube publish task → platform.disabled', disabled(r), r.text.slice(0, 200));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {

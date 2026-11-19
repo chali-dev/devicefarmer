@@ -19,21 +19,15 @@
  * - Creating a persona WITH 范例 (POST /api/personas `examples` {post, comment}): one transaction, form order kept, public →
  *   shared templates, admin for a user (ownerId) → that user's; more than 20 per kind → 400 and nothing created; a banned
  *   word of the new persona in an example → 400 persona.banned_word and nothing created; audit counts only.
- * - Migration 0037 (persona reset) executed inside a transaction on seeded rows and rolled back: personas, their
- *   templates, 账号人设 and legacy texts/groups cleared; contents.ai_generated untouched.
  * - 复制到我的人设 (POST /api/personas/:id/copy): name 「(副本)」 + numbering (case-insensitive, parallel, 50 chars), 定位 + style +
  *   范例 equal and private to the new owner, no AI fields; 404 for invisible personas, 403 for a user's other ownerId, admin
  *   ownerId; one transaction (a seeded 21-example source fails with nothing left behind); audit persona.copy.
  * - Audit entries (names only).
- * - The data migration (src/db/persona-data-migration.ts): old-style free-text personas seeded directly in the DB
- *   (shared + personal, case/space variants), migrated twice → personas created once, templates linked, no re-link
- *   after a persona is deleted.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/personas-check.ts
  */
 import { randomBytes } from 'node:crypto';
 import { and, eq, ilike, inArray } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { migratePersonaTexts } from '../src/db/persona-data-migration.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
@@ -523,71 +517,6 @@ try {
   check('audit persona.copy also records refused copies (404/403/400)', failedCopy.length >= 5, String(failedCopy.length));
   const tplActs = await sqlClient`select detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'comment.template_create' and target = ${`a1 ${tag}`}`;
   check('audit: template create records the persona name', tplActs[0]?.detail?.persona === `Coach ${tag} Pro`, JSON.stringify(tplActs[0]?.detail));
-
-  // ================================================================ data migration (legacy free-text persona)
-  const legacy = async (userId: string | null, persona: string) => {
-    const [row] = await db.insert(TPL).values({ userId, kind: 'post', name: `mig ${tag} ${templateIds.length}`, text: 'x', persona }).returning();
-    templateIds.push(row!.id);
-    return row!.id;
-  };
-  const L = {
-    s1: await legacy(null, ` Mig Chef ${tag} `), s2: await legacy(null, `mig chef ${tag}`), s3: await legacy(null, `Mig Chef ${tag}`),
-    aChef: await legacy(A.id, `MIG CHEF ${tag}`), aCoach1: await legacy(A.id, `Mig Coach ${tag}`), aCoach2: await legacy(A.id, `mig coach ${tag}`),
-    bCoach: await legacy(B.id, `Mig Coach ${tag}`), bPre: await legacy(B.id, `pre ${tag}`), bBlank: await legacy(B.id, '   '),
-  };
-  const run1 = await migratePersonaTexts(sqlClient, () => {});
-  const run2 = await migratePersonaTexts(sqlClient, () => {});
-  const ps = await db.select().from(P).where(ilike(P.name, `%mig%${tag}%`));
-  const rows = await db.select().from(TPL).where(inArray(TPL.id, Object.values(L)));
-  const pid = (id: string) => rows.find((x) => x.id === id)?.personaId;
-  const pubChef = ps.find((p) => p.ownerType === 'public');
-  const aMig = ps.find((p) => p.ownerId === A.id);
-  const bMig = ps.find((p) => p.ownerId === B.id);
-  check('migration run 1: 3 personas created, 8 templates linked; run 2: nothing', run1.created === 3 && run1.linked === 8 && run2.created === 0 && run2.linked === 0, JSON.stringify([run1, run2]));
-  check('migration: shared text → one public persona (trimmed, most used spelling), also covering A\'s personal use',
-    ps.length === 3 && pubChef?.name === `Mig Chef ${tag}` && [L.s1, L.s2, L.s3, L.aChef].every((id) => pid(id) === pubChef.id), ps.map((p) => `${p.ownerType}:${p.name}`).join());
-  check('migration: personal-only texts → one personal persona per user (case-insensitive)',
-    aMig?.ownerType === 'user' && pid(L.aCoach1) === aMig.id && pid(L.aCoach2) === aMig.id && bMig?.ownerType === 'user' && pid(L.bCoach) === bMig.id);
-  check('migration: an existing public persona with the same name covers a personal text; blank text skipped',
-    pid(L.bPre) === pre.id && pid(L.bBlank) === null);
-  r = await http('DELETE', `/api/personas/${aMig!.id}`, A.token);
-  await db.update(TPL).set({ personaId: null, persona: null }).where(eq(TPL.id, L.s1)); // cleared as the old API did (no longer possible through it)
-  const run3 = await migratePersonaTexts(sqlClient, () => {});
-  const after = await db.select().from(TPL).where(inArray(TPL.id, [L.aCoach1, L.aCoach2, L.s1]));
-  check('migration does not re-link templates whose persona was deleted or cleared', run3.created === 0 && run3.linked === 0 && after.every((x) => x.personaId === null && x.persona === null), JSON.stringify(run3));
-  r = await http('GET', `/api/comment-templates?kind=all&personaId=${pubChef!.id}`, A.token);
-  check('migrated templates are listed by persona (A: s2, s3, own aChef)', r.body.templates.length === 3, String(r.body.templates?.length));
-
-  // ================================================================ migration 0037 (persona reset), rolled back
-  {
-    const { readFileSync } = await import('node:fs');
-    const sqlText = readFileSync(new URL('../drizzle/0037_persona_reset.sql', import.meta.url), 'utf8');
-    const stmts = sqlText.split('--> statement-breakpoint').map((x) => x.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean);
-    const acc = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `mig36_${tag}`, personaId: brand.id });
-    const [content] = await db.insert(schema.contents).values({ userId: A.id, title: `ai ${tag}`, body: 'x', stage: 'draft', status: 'draft', platformHints: {},
-      aiGenerated: { model: 'm', requestedModel: 'm', personaId: brand.id, personaName: 'Brand', taskId: null, generatedAt: new Date().toISOString(), mediaTags: [] } }).returning();
-    const legacyT = (await db.insert(TPL).values({ userId: A.id, kind: 'post', name: `legacy36 ${tag}`, text: 'x', persona: 'Some legacy' }).returning())[0]!;
-    templateIds.push(legacyT.id);
-    const ROLLBACK = new Error('rollback');
-    let seen: Record<string, number> = {};
-    try {
-      await sqlClient.begin(async (tx) => {
-        const before = (await tx`select (select count(*) from personas)::int p, (select count(*) from comment_templates where persona_id is not null)::int t`)[0]!;
-        for (const st of stmts) await tx.unsafe(st);
-        const after = (await tx`select (select count(*) from personas)::int p, (select count(*) from comment_templates where persona_id is not null)::int t,
-          (select count(*) from social_accounts where persona_id is not null or group_id is not null)::int a, (select count(*) from comment_templates where persona is not null)::int legacy,
-          (select count(*) from contents where id = ${content!.id} and ai_generated->>'personaId' = ${brand.id})::int ai,
-          (select count(*) from comment_templates where id = ${legacyT.id})::int kept`)[0]!;
-        seen = { beforeP: before.p, beforeT: before.t, ...after };
-        throw ROLLBACK;
-      });
-    } catch (e) { if (e !== ROLLBACK) throw e; }
-    const still = await db.select().from(P).where(eq(P.id, brand.id));
-    check('migration 0037: personas, their templates, 账号人设/groups and legacy texts cleared; templates without persona and contents.ai_generated kept (then rolled back)',
-      acc.status === 201 && seen.beforeP! > 0 && seen.beforeT! > 0 && seen.p === 0 && seen.t === 0 && seen.a === 0 && seen.legacy === 0 && seen.ai === 1 && seen.kept === 1 && still.length === 1,
-      JSON.stringify(seen));
-    await db.delete(schema.contents).where(eq(schema.contents.id, content!.id));
-  }
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack ?? (err as Error).message}`, false);
 } finally {

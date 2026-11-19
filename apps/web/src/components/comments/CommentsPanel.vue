@@ -44,10 +44,8 @@ const tab = computed<View>({
   get: () => (VIEWS.includes(route.query.view as View) ? (route.query.view as View) : 'comments'),
   set: (v) => { void router.replace({ query: { ...route.query, view: v, status: undefined, replyStatus: undefined } }) },
 })
-/** `approved` / `pending_review` only on rows older than the removal of the approval step. */
-const QUEUE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
-/** `dry_run` (former test mode) only on old rows of an old colour; db:migrate turned the rest into drafts. */
-const HISTORY: CommentReplyStatus[] = ['sent', 'dry_run', 'failed', 'rejected', 'cancelled']
+const QUEUE: CommentReplyStatus[] = ['draft', 'scheduled', 'sending', 'awaiting_operator']
+const HISTORY: CommentReplyStatus[] = ['sent', 'failed', 'cancelled']
 const STATUSES: CommentStatus[] = ['new', 'read', 'replied', 'hidden', 'ignored']
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const errText = (code: string | null, raw: string | null, platform?: string) => (code ? codeText(code, { platform: platform ?? '' }, raw ?? code) : raw ?? '')
@@ -63,8 +61,8 @@ const filters = reactive({
   /** admins: one user's accounts */
   ownerId: undefined as string | undefined,
 })
-/** Reply statuses offered in the filter (legacy statuses only when rows have them). */
-const replyStatuses = computed(() => (tab.value === 'queue' ? QUEUE : HISTORY).filter((s) => !['pending_review', 'approved', 'dry_run', 'rejected'].includes(s) || (rByStatus.value[s] ?? 0) > 0))
+/** Reply statuses offered in the filter. */
+const replyStatuses = computed(() => (tab.value === 'queue' ? QUEUE : HISTORY))
 const account = computed(() => accounts.value.find((a) => a.id === filters.accountId) ?? null)
 
 async function loadAccounts() {
@@ -114,7 +112,7 @@ watch(items, (list) => {
  *  total, so once the cap is reached a thread's count may be short: it is then shown as "N+". */
 const CHILDREN_CAP = 2000
 const childrenCapped = computed(() => items.value.reduce((n, c) => n + (c.children?.length ?? 0), 0) >= CHILDREN_CAP)
-const ACTIVE_REPLY: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator']
+const ACTIVE_REPLY: CommentReplyStatus[] = ['draft', 'scheduled', 'sending', 'awaiting_operator']
 /** Replies that need attention, flagged on the collapsed toggle so they aren't hidden: new ones and ones with a reply in progress. */
 function threadInfo(c: CommentItem) {
   const kids = c.children ?? []
@@ -377,7 +375,6 @@ function onOwner() {
             <StatusTag kind="commentReply" :status="record.status" />
             <div v-if="record.method" class="muted small">{{ t(`comments.method.${record.method}`) }}</div>
             <div v-if="record.status === 'failed' && record.errorCode" class="err">{{ errText(record.errorCode, record.error, record.platform) }}<template v-if="record.errorCode === 'comment.operator_failed' && record.error">: {{ record.error }}</template></div>
-            <div v-if="record.status === 'rejected' && record.reviewNote" class="err">{{ record.reviewNote }}</div>
           </template>
           <template v-else-if="column.key === 'people'">
             <div>{{ record.authorName ?? '—' }}</div>

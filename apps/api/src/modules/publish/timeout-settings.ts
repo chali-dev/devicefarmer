@@ -9,23 +9,14 @@ import { db, schema } from '../../db/index.js';
  * deferred / resumed rounds); the task centre stores it per task (tasks.timeout_ms).
  *
  * There are no automatic publish retries (owner decision 2026-11-18): every round is ONE attempt; after a failure the
- * person edits the content and publishes it again (a new publish task). LEGACY (expand/contract): the settings row
- * `publish.retry` {maxAttempts, backoffSec} is no longer read or written (an older colour still reads it during the
- * drain / after a rollback; delete it in a later release), and neither is `tasks.backoff_ms` for publish rounds.
+ * person edits the content and publishes it again (a new publish task).
  */
 export const PUBLISH_TIMEOUT_KEY = 'publish.timeout';
 
 /** One attempt's timeout (the device flow holds its phone lock for up to 12 min, so values below that can cut it). */
 const TimeoutSec = z.number().int().min(60).max(3600);
-/**
- * PUT body. `maxAttempts` / `backoffSec` of an older page are accepted and ignored (never stored); `timeoutSec` is
- * optional, so a body without it changes nothing.
- */
-export const PublishTimeoutInput = z.object({
-  timeoutSec: TimeoutSec.optional(),
-  maxAttempts: z.number().optional(),
-  backoffSec: z.number().optional(),
-}).strict();
+/** PUT body; `timeoutSec` is optional, so a body without it changes nothing. */
+export const PublishTimeoutInput = z.object({ timeoutSec: TimeoutSec.optional() }).strict();
 const StoredTimeout = z.object({ timeoutSec: TimeoutSec }).strict();
 
 export const publishTimeoutDefault = () => config.PUBLISH_TIMEOUT_MS;
