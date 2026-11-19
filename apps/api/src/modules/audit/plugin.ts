@@ -359,6 +359,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/comments/:id/replies': { action: 'comment.reply_create', detail: ({ body }) => ({ templateId: body.templateId, scheduledAt: body.scheduledAt }) },
   'PATCH /api/comment-replies/:id': { action: 'comment.reply_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'POST /api/comment-replies/:id/submit': { action: 'comment.reply_submit', detail: ({ body }) => ({ scheduledAt: body?.scheduledAt ?? null }) },
+  'POST /api/comment-replies/:id/reschedule': { action: 'comment.reply_reschedule', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
   'DELETE /api/comment-replies/:id': { action: 'comment.reply_draft_delete' },
   'POST /api/comment-replies/:id/cancel': { action: 'comment.reply_cancel' },
   'POST /api/comment-replies/:id/outcome': {

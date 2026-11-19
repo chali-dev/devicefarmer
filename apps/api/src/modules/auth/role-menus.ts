@@ -47,6 +47,9 @@ export const MENU_API: MenuApiRule[] = [
   { methods: 'write', pattern: seg('/api/media'), menus: ['media'] },
   { methods: 'all', pattern: seg('/api/analytics'), menus: ['analytics'] },
   { methods: 'all', pattern: seg('/api/trending'), menus: ['trending'] },
+  // 排程发布 also lists scheduled comment sends (the list) and moves them in its calendar (改期).
+  { methods: 'read', pattern: /^\/api\/comment-replies$/, menus: ['social', 'publish'] },
+  { methods: 'write', pattern: /^\/api\/comment-replies\/[^/]+\/reschedule$/, menus: ['social', 'publish'] },
   // 媒体管理 (/social): its tabs 追踪号 / 回文日志 and the account feed drawer.
   { methods: 'all', pattern: /^\/api\/(tracked-accounts|comments|comment-replies)(?:\/|$)/, menus: ['social'] },
   { methods: 'all', pattern: /^\/api\/social\/accounts\/[^/]+\/(feed|logs|ai-drafts|posts|collect|check|following|followers)(?:\/|$)/, menus: ['social'] },

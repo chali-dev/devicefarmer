@@ -1450,6 +1450,11 @@ const zhCN = {
       today: '今日发布',
     },
     type: { feed: '帖子', reel: 'Reels', story: '限动' },
+    typeComments: '评论',
+    sendType: { comment: '评论', reply: '回复' },
+    commentSends: '评论发送',
+    sendTarget: '对象',
+    replyNeedsSocial: '评论发送在「我的媒体」里查看',
     postType: '类型',
     allTypes: '全部类型',
     asType: '发布为{type}',
@@ -1842,6 +1847,7 @@ const zhCN = {
       comment_reply_create: '撰写评论回复',
       comment_reply_update: '修改评论回复',
       comment_reply_submit: '提交评论回复',
+      comment_reply_reschedule: '评论发送改期',
       comment_reply_approve: '审核通过评论回复',
       comment_reply_approve_batch: '批量审核评论回复',
       comment_reply_reject: '驳回评论回复',
@@ -2305,7 +2311,7 @@ const zhCN = {
   },
   logMsg: {
     commentAction: {
-      created: '写草稿', edited: '编辑', submitted: '提交', approved: '审核通过', rejected: '驳回', cancelled: '取消', approval_removed: '审核步骤已移除', test_mode_removed: '测试模式已移除', draft_deleted: '删除草稿',
+      created: '写草稿', edited: '编辑', submitted: '提交', approved: '审核通过', rejected: '驳回', cancelled: '取消', approval_removed: '审核步骤已移除', test_mode_removed: '测试模式已移除', draft_deleted: '删除草稿', rescheduled: '改期',
       blocked: '已拦截', sent: '已发送', failed: '失败', entered: '人工录入', status: '状态变更',
       run: '开始发送', handed_over: '转交操作员', dry_run: '测试运行', resumed: '恢复后重新排队',
     },

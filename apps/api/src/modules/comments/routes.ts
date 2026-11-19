@@ -9,7 +9,7 @@ import { visibleAccount } from '../social/social.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
 import {
   assertTemplateWritable, cancelReply, createManualComment, createReply, deleteDraft, deleteManualComment, editReply, getRules, recordReplyOutcome,
-  REPLY_REF, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
+  REPLY_REF, rescheduleReply, saveRules, setCommentStatus, submitReply, visibleComment, visibleReply, visibleTemplate,
 } from './comments.js';
 import { exampleWhere, MAX_EXAMPLES } from './persona-style.js';
 import { assertPersonaFor } from './personas.js';
@@ -129,10 +129,16 @@ const ReplyQuery = z.object({
   /** Replies on this tracked account's posts (追踪账号详情 · 回复记录); the tracked account must be visible (404). */
   trackedAccountId: z.string().uuid().optional(),
   ownerId: z.string().uuid().optional(),
+  platform: z.string().max(32).optional(),
   q: z.string().trim().max(100).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(20),
+  /** 排程发布: a send's day = coalesce(sent_at, scheduled_at, submitted_at) (scheduled "now" has no scheduled_at), [from, to). */
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  sort: z.enum(['updated_desc', 'time_asc']).default('updated_desc'),
+  limit: z.coerce.number().int().min(1).max(500).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
+const replyTime = sql`coalesce(${R.sentAt}, ${R.scheduledAt}, ${R.submittedAt})`;
 
 /**
  * Comments & engagement (评论互动): received comments (manual entry), reply tasks (no approval step since 2026-11-18),
@@ -284,6 +290,9 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const base: (SQL | undefined)[] = [ownerWhere(R.userId, req.user, q.ownerId)];
     if (q.accountId) base.push(eq(R.accountId, q.accountId));
     if (q.commentId) base.push(eq(R.commentId, q.commentId));
+    if (q.platform) base.push(eq(R.platform, q.platform));
+    if (q.from) base.push(sql`${replyTime} >= ${q.from}::timestamptz`);
+    if (q.to) base.push(sql`${replyTime} < ${q.to}::timestamptz`);
     if (q.trackedAccountId) {
       const ta = await getVisibleAccount(req.user, q.trackedAccountId);
       base.push(sql`${R.trackedPostId} in (select id from tracked_posts where tracked_account_id = ${ta.id})`);
@@ -295,7 +304,7 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     }
     const cond = and(...base, q.status?.length ? inArray(R.status, q.status) : undefined);
     const [rows, [total], byStatus] = await Promise.all([
-      db.select().from(R).where(cond).orderBy(desc(R.updatedAt), desc(R.id)).limit(q.limit).offset(q.offset),
+      db.select().from(R).where(cond).orderBy(...(q.sort === 'time_asc' ? [asc(replyTime), asc(R.id)] : [desc(R.updatedAt), desc(R.id)])).limit(q.limit).offset(q.offset),
       db.select({ n: count() }).from(R).where(cond),
       db.select({ k: R.status, n: count() }).from(R).where(and(...base)).groupBy(R.status),
     ]);
@@ -329,6 +338,14 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const r = await visibleReply(req.user, req.params.id);
     const next = await submitReply(req.user, r, at(req.body?.scheduledAt));
     if (req.audit) req.audit.extra = { status: next.status, taskId: next.taskId };
+    return { reply: (await toReplyItems([next], req.user))[0] };
+  });
+
+  /** 改期 (排程发布 calendar): a scheduled send moves to `scheduledAt` (null / past = now) as a new round; scheduled only (409). */
+  app.post('/api/comment-replies/:id/reschedule', { schema: { params: Id, body: z.object({ scheduledAt: z.string().datetime({ offset: true }).nullable() }) } }, async (req) => {
+    const r = await visibleReply(req.user, req.params.id);
+    const next = await rescheduleReply(req.user, r, at(req.body.scheduledAt) ?? null);
+    if (req.audit) req.audit.extra = { taskId: next.taskId, round: next.round };
     return { reply: (await toReplyItems([next], req.user))[0] };
   });
 

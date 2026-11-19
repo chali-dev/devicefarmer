@@ -1449,6 +1449,11 @@ const en: Messages = {
       today: 'Today',
     },
     type: { feed: 'Post', reel: 'Reels', story: 'Story' },
+    typeComments: 'Comments',
+    sendType: { comment: 'Comment', reply: 'Reply' },
+    commentSends: 'Comment sends',
+    sendTarget: 'On',
+    replyNeedsSocial: 'Comment sends are opened in My media',
     postType: 'Type',
     allTypes: 'All types',
     asType: 'Publish as {type}',
@@ -1841,6 +1846,7 @@ const en: Messages = {
       comment_reply_create: 'Write comment reply',
       comment_reply_update: 'Edit comment reply',
       comment_reply_submit: 'Submit comment reply',
+      comment_reply_reschedule: 'Reschedule comment send',
       comment_reply_approve: 'Approve comment reply',
       comment_reply_approve_batch: 'Batch approve comment replies',
       comment_reply_reject: 'Reject comment reply',
@@ -2294,7 +2300,7 @@ const en: Messages = {
   },
   logMsg: {
     commentAction: {
-      created: 'Draft', edited: 'Edited', submitted: 'Submitted', approved: 'Approved', rejected: 'Rejected', cancelled: 'Cancelled', approval_removed: 'Approval removed', test_mode_removed: 'Test mode removed', draft_deleted: 'Draft deleted',
+      created: 'Draft', edited: 'Edited', submitted: 'Submitted', approved: 'Approved', rejected: 'Rejected', cancelled: 'Cancelled', approval_removed: 'Approval removed', test_mode_removed: 'Test mode removed', draft_deleted: 'Draft deleted', rescheduled: 'Rescheduled',
       blocked: 'Blocked', sent: 'Sent', failed: 'Failed', entered: 'Entered', status: 'Status',
       run: 'Send started', handed_over: 'Handed over', dry_run: 'Test run', resumed: 'Queued again after resume',
     },

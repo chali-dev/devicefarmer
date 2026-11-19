@@ -337,6 +337,32 @@ async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<Com
   }
 }
 
+/**
+ * 改期 (排程发布 calendar drag): a scheduled reply / comment gets a new round at `scheduledAt` (null / past = now).
+ * Only while it waits for its send task (status scheduled, task not running); a reply parked on a halted phone
+ * (no task) is refused with comment.device_halted (恢复 on the 风控 page queues it). The text was checked when it
+ * was scheduled and is unchanged, so no rule is re-checked here.
+ */
+export async function rescheduleReply(user: AuthUser, r: CommentTask, scheduledAt: Date | null): Promise<CommentTask> {
+  const now = new Date();
+  const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
+  const { prev, next } = await db.transaction(async (tx) => {
+    const [cur] = await tx.select().from(R).where(eq(R.id, r.id)).for('update');
+    if (!cur || cur.status !== 'scheduled') throw conflict(`当前状态（${cur?.status ?? 'unknown'}）不能改期`, 'comment.bad_status', { status: cur?.status ?? 'unknown' });
+    if (!cur.taskId) throw conflict('云手机已被风控暂停，恢复后会自动发送', 'comment.device_halted');
+    const [t] = await tx.select({ status: schema.tasks.status }).from(schema.tasks).where(eq(schema.tasks.id, cur.taskId));
+    if (t?.status === 'running') throw conflict('回复正在发送，无法改期', 'comment.bad_status', { status: 'sending' });
+    const [n] = await tx.update(R).set({ scheduledAt: when, round: cur.round + 1, taskId: null, errorCode: null, error: null })
+      .where(and(eq(R.id, cur.id), eq(R.taskId, cur.taskId))).returning();
+    if (!n) throw conflict('回复状态已变化', 'comment.bad_status', { status: 'changed' });
+    await replyLog(n, { action: 'rescheduled', data: { scheduledAt: when.toISOString(), previousTaskId: cur.taskId, round: n.round }, actor: user }, tx);
+    return { prev: cur, next: n };
+  });
+  const old = await currentTask(prev);
+  if (old && !isFinal(old.status)) await cancelTask(old, user.username).catch(() => undefined);
+  return scheduleSend(next, user);
+}
+
 async function currentTask(r: CommentTask): Promise<Task | undefined> {
   if (!r.taskId) return undefined;
   const [t] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, r.taskId));
