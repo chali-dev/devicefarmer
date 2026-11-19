@@ -321,8 +321,8 @@ export type TrackedStatus = 'active' | 'paused' | 'error'
 export const TRACKED_STATUS_COLOR: Record<TrackedStatus, string> = { active: 'success', paused: 'default', error: 'error' }
 export type TrackedMetric = 'followers' | 'following' | 'posts' | 'views'
 /**
- * api / device = official API / collector phone ready; *_unconfigured = source exists but is not ready (no key,
- * no collector device or collection paused); manual_only = no data source (manual entry was removed).
+ * api / device = official API / 采集手机 ready; *_unconfigured = source exists but is not ready (no key; no 采集手机,
+ * one that is no longer the owner's, or one paused by 风控); manual_only = no data source (manual entry was removed).
  */
 export type TrackedDataMode = 'api' | 'api_unconfigured' | 'device' | 'device_unconfigured' | 'manual_only'
 export type TrackedSource = 'api' | 'manual' | 'device'
@@ -341,7 +341,13 @@ export interface TrackedAccount {
   lastRefresh: { id: string; type: string; status: TaskStatus; error: string | null; createdAt: string; finishedAt: string | null } | null
   /** 定时采集: hours between scheduled refreshes (null = off), next slot, why the last due slot was skipped. */
   refreshIntervalHours: number | null; nextRefreshAt: string | null; scheduleSkipCode: string | null
+  /** 采集手机 (the owner's cloud phone the account is read on); `allowed` = still one of the owner's phones. */
+  instanceId: string | null
+  phone: TrackedPhone | null
 }
+export interface TrackedPhone { id: string; name: string; status: string; online: boolean; halted: boolean; allowed: boolean }
+/** GET /api/tracked-accounts/phones: phones the owner may pick as 采集手机. */
+export interface TrackedPhoneOption { id: string; name: string; status: string; external: boolean; online: boolean; halted: boolean; instagramLinked: boolean }
 export interface TrackedSnapshot {
   id: string; capturedAt: string; source: TrackedSource; approx: string[] | null
   followers: number | null; following: number | null; posts: number | null; views: number | null
@@ -680,10 +686,10 @@ export interface CommentTemplate {
 
 /** Intervals offered for 定时采集 (hours; the API accepts exactly these). */
 export const TRACKED_SCHEDULE_HOURS = [1, 2, 3, 6, 12, 24, 48, 72, 168] as const
-/** GET /api/tracked-accounts/capacity: scheduled collector-device load of all users (aggregates only). */
+/** GET /api/tracked-accounts/capacity: scheduled load per 采集手机 of the owner (all users' accounts on it, aggregates only). */
 export interface TrackedCapacity {
   pace: { minIntervalSec: number; maxPerHour: number; capacityPerHour: number }
-  platforms: { platform: string; scheduledAccounts: number; visitsPerHour: number; capacityPerHour: number; overloaded: boolean }[]
+  phones: { instanceId: string; name: string; scheduledAccounts: number; visitsPerHour: number; capacityPerHour: number; overloaded: boolean }[]
 }
 
 /** 趋势热点 */
@@ -770,7 +776,7 @@ export interface DeviceAutomation {
 export interface RiskDevice {
   id: string; name: string; status: string; adbState: string | null; external: boolean; online: boolean
   /** Platforms this phone collects tracked accounts for. */
-  collectorFor: string[]
+  trackedAccounts: number
   /** Social accounts on this phone that the automatic check covers. */
   checkedAccounts: number
   halted: { at: string; code: string; source: RiskSource; platform: string; account: { platform: string; handle: string; kind: 'social' | 'tracked' } | null } | null

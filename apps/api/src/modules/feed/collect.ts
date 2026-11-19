@@ -10,18 +10,19 @@ import { recordRiskEvent } from '../risk/events.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { autoCheckUnsupported } from '../social/check.js';
 import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core.js';
-import { collectorEntry, CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
+import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice } from '../tracked/collector.js';
+import { phonesAllowed, trackedPhoneRefusal } from '../tracked/phone.js';
 import { collectIgFeed, FeedScreenError, type FeedResult } from './device.js';
 
 /**
  * 帖子与评论采集 (owner decision 2026-11-18): task `feed-collect` (own queue `feed-collect`, device-less in the
- * task centre; the device part runs under tracked/collector.ts `withDevice`: same lock + pace as the collector
+ * task centre; the device part runs under tracked/collector.ts `withDevice`: same lock + pace as the profile
  * visits and the account checks on that phone; the operation counts as 2 + N screens in the hourly cap).
  *
  * - Social account (社交号): Instagram account linked to a cloud phone → read on THAT phone. Posts go into
  *   social_account_posts (source device, externalId = media pk), comments into `comments` (source device,
  *   stable id = ig-ui.ts commentKey), so the 评论互动 page lists them too.
- * - Tracked account (追踪账号, Instagram, schedule on): read on the platform's collector phone. Posts go into
+ * - Tracked account (追踪账号, Instagram, schedule on): read on the account's own 采集手机. Posts go into
  *   tracked_posts (source device), comments into tracked_post_comments (read only).
  *
  * The newest `feedPosts` posts (by media pk, so pinned posts don't count as new), the first
@@ -48,15 +49,18 @@ const unfinished = async (kind: FeedKind, accountId: string) => {
 
 /** Why a social account's feed can't be collected (null = it can): same rule as the automatic check. */
 export const socialFeedUnsupported = (acc: Pick<SocialAccount, 'platform' | 'instanceId'>) => autoCheckUnsupported(acc)?.replace('account_check.', 'feed.') ?? null;
-/** Tracked accounts: Instagram (the collector phone) only. */
+/** Tracked accounts: Instagram (on the account's 采集手机) only. */
 export const trackedFeedUnsupported = (acc: Pick<TrackedAccount, 'platform'>) => (acc.platform === 'instagram' && isPlatformEnabled('instagram') ? null : 'feed.unsupported_platform');
 
 /** Why a collection of this account can't be queued now (an HttpError), else null. */
 async function feedRefusal(kind: FeedKind, acc: SocialAccount | TrackedAccount): Promise<HttpError | null> {
   const why = kind === 'social' ? socialFeedUnsupported(acc as SocialAccount) : trackedFeedUnsupported(acc);
   if (why) return new HttpError(400, why === 'feed.no_device' ? '账号未绑定云手机，不能采集' : '该平台不支持云手机采集', why, { platform: acc.platform });
-  const instanceId = kind === 'social' ? (acc as SocialAccount).instanceId! : (await collectorEntry('instagram'))?.instanceId;
-  if (!instanceId) return new HttpError(400, '未设置采集设备（管理员可在设置 → 追踪账号中选择）', 'tracked.collector_unset');
+  if (kind === 'tracked') {
+    const no = await trackedPhoneRefusal(acc as TrackedAccount);
+    if (no && no.code !== 'tracked.collector_halted') return no; // halted: the shared feed.device_halted below
+  }
+  const instanceId = kind === 'social' ? (acc as SocialAccount).instanceId! : (acc as TrackedAccount).instanceId!;
   if (await deviceHalt(instanceId)) return conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'feed.device_halted');
   if (await unfinished(kind, acc.id)) return conflict('该账号已有采集在排队或进行中', 'feed.in_progress');
   return null;
@@ -77,7 +81,7 @@ export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: So
 /**
  * 同步 = step 1 (social: 从云手机同步 sync.ts, tracked: the profile refresh) then step 2 (this collection). Called by
  * the step-1 task once it succeeded: queues the collection now (key `after:<step-1 task>`, so a redelivery never
- * queues it twice) or, when it can't run (no phone, collector unset, halted, already queued…), logs why. Step 2
+ * queues it twice) or, when it can't run (no phone, 采集手机 unset / not the owner's, halted, already queued…), logs why. Step 2
  * runs as its own task: its failure never undoes step 1.
  */
 export async function queueFeedAfter(kind: FeedKind, accountId: string, userId: string | null, parentTaskId: string, log: TaskContext['log']): Promise<{ taskId: string } | { code: string }> {
@@ -189,9 +193,9 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
     const why = trackedFeedUnsupported(acc);
     if (why) return skip(why);
     if ((acc as TrackedAccount).status === 'paused' && ctx.payload.scheduled) return skip('tracked.paused');
-    const e = await collectorEntry('instagram');
-    if (!e) return skip('tracked.collector_unset');
-    inst = await getInstance(e.instanceId);
+    const no = await trackedPhoneRefusal(acc as TrackedAccount);
+    if (no && no.code !== 'tracked.collector_halted') return skip(no.code!);
+    inst = await getInstance((acc as TrackedAccount).instanceId!);
   }
   if (!inst) return skip('feed.no_device');
   if (await deviceHalt(inst.id)) return skip('feed.device_halted');
@@ -237,7 +241,7 @@ registerTaskHandler<Payload>(FEED_TYPE, { queue: QUEUE, concurrency: 2, timeoutM
 
 /**
  * Hourly: every Instagram social account on a running, not halted phone and every scheduled (refresh on, not
- * paused) Instagram tracked account while the collector is set and not halted, once per feedCollectHours at a
+ * paused) Instagram tracked account whose 采集手机 (set, the owner's) is running and not halted, once per feedCollectHours at a
  * fixed per-account offset; creates the slots falling into the next ~hour, key `feed:<kind>:<id>:<slot>`.
  */
 export async function scheduleFeedCollects(now = new Date(), windowMs = 65 * 60_000): Promise<{ hours: number | null; created: number; skipped: number }> {
@@ -245,19 +249,23 @@ export async function scheduleFeedCollects(now = new Date(), windowMs = 65 * 60_
   if (!hours || !isPlatformEnabled('instagram')) return { hours, created: 0, skipped: 0 };
   const period = hours * 3600_000;
   const halts = await deviceHalts();
+  let skipped = 0;
   const sa = schema.socialAccounts;
   const social = await db.select({ id: sa.id, platform: sa.platform, handle: sa.handle, instanceId: sa.instanceId, status: schema.instances.status })
     .from(sa).innerJoin(schema.instances, eq(schema.instances.id, sa.instanceId))
     .where(and(eq(sa.platform, 'instagram'), isNotNull(sa.instanceId)));
   const ta = schema.trackedAccounts;
-  const collector = await collectorEntry('instagram');
-  const collectorInst = collector ? await getInstance(collector.instanceId) : undefined;
-  const tracked = collectorInst && collectorInst.status === 'running' && !halts[collectorInst.id]
-    ? await db.select({ id: ta.id, platform: ta.platform, handle: ta.handle }).from(ta)
-      .where(and(eq(ta.platform, 'instagram'), isNotNull(ta.refreshIntervalHours), sql`${ta.status} <> 'paused'`))
-    : [];
+  const trackedRows = await db.select({ id: ta.id, platform: ta.platform, handle: ta.handle, userId: ta.userId, instanceId: ta.instanceId, status: schema.instances.status })
+    .from(ta).innerJoin(schema.instances, eq(schema.instances.id, ta.instanceId))
+    .where(and(eq(ta.platform, 'instagram'), isNotNull(ta.refreshIntervalHours), sql`${ta.status} <> 'paused'`));
+  const allowed = await phonesAllowed(trackedRows);
+  const tracked = trackedRows.filter((a) => {
+    const ok = a.status === 'running' && !halts[a.instanceId!] && allowed.has(`${a.userId}:${a.instanceId}`);
+    if (!ok) skipped++;
+    return ok;
+  });
   const from = now.getTime() - 5 * 60_000;
-  let created = 0; let skipped = 0;
+  let created = 0;
   const items: { kind: FeedKind; id: string; label: string }[] = [
     ...social.filter((a) => { const ok = a.status === 'running' && !halts[a.instanceId!]; if (!ok) skipped++; return ok; }).map((a) => ({ kind: 'social' as const, id: a.id, label: `${a.platform} @${a.handle}` })),
     ...tracked.map((a) => ({ kind: 'tracked' as const, id: a.id, label: `${a.platform} @${a.handle}` })),

@@ -2,9 +2,9 @@
 import { dateLocale } from '../i18n'
 import { message } from 'ant-design-vue'
 import { ArrowDownOutlined, ArrowUpOutlined } from '@ant-design/icons-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, codeText, errorText } from '../api/client'
 import { compactNumber, type TrendingData, type TrendingItem } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
@@ -12,11 +12,24 @@ import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { MODAL_WIDTH, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
+import { usePlatformsStore } from '../stores/platforms'
+import YoutubeKeySettings from '../components/settings/YoutubeKeySettings.vue'
 
-/** 趋势热点: YouTube mostPopular chart per region (official Data API), rank changes vs. the previous snapshot. */
+/**
+ * 趋势热点: YouTube mostPopular chart per region (official Data API), rank changes vs. the previous snapshot. Admins
+ * also set the YouTube API key here (used by trending and by YouTube tracked accounts; formerly 系统配置 → 追踪采集,
+ * old links /settings?tab=tracked land here with ?youtubeKey=1, which opens it).
+ */
 const { t } = useI18n()
 const auth = useAuthStore()
+const platformScope = usePlatformsStore()
+const route = useRoute()
 const router = useRouter()
+const keyOpen = ref(auth.isAdmin && route.query.youtubeKey === '1')
+watch(keyOpen, (o) => {
+  if (!o && route.query.youtubeKey) void router.replace({ query: { ...route.query, youtubeKey: undefined } })
+  if (!o) void load()
+})
 
 const data = ref<TrendingData | null>(null)
 const loading = ref(false)
@@ -89,14 +102,17 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
 
 <template>
   <PageContainer :title="t('trending.title')">
-    <template v-if="auth.isAdmin && data?.notice !== 'trending.unavailable'" #extra>
-      <a-button @click="openSettings">{{ t('trending.settings') }}</a-button>
-      <a-button type="primary" :loading="refreshing" :disabled="!data?.configured || !data?.settings.regions.length" @click="refreshNow">{{ t('trending.refreshNow') }}</a-button>
+    <template v-if="auth.isAdmin" #extra>
+      <a-button v-if="platformScope.scope.features.youtubeKey" @click="keyOpen = true">{{ t('tracked.youtubeKey') }}</a-button>
+      <template v-if="data?.notice !== 'trending.unavailable'">
+        <a-button @click="openSettings">{{ t('trending.settings') }}</a-button>
+        <a-button type="primary" :loading="refreshing" :disabled="!data?.configured || !data?.settings.regions.length" @click="refreshNow">{{ t('trending.refreshNow') }}</a-button>
+      </template>
     </template>
 
     <a-alert v-if="data?.notice === 'tracked.youtube_no_api_key'" type="warning" show-icon :message="codeText(data.notice, undefined, data.notice)">
       <template v-if="auth.isAdmin" #action>
-        <a-button size="small" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('trending.setKey') }}</a-button>
+        <a-button size="small" @click="keyOpen = true">{{ t('trending.setKey') }}</a-button>
       </template>
     </a-alert>
     <a-alert v-else-if="data?.notice === 'trending.no_regions'" type="info" show-icon :message="auth.isAdmin ? t('trending.emptyAdmin') : t('trending.noRegions')" />
@@ -181,6 +197,10 @@ const changeOf = (x: TrendingItem) => x.rankChange ?? 0
           </a-col>
         </a-row>
       </a-form>
+    </a-modal>
+
+    <a-modal v-model:open="keyOpen" :title="t('tracked.youtubeKey')" :footer="null" :width="MODAL_WIDTH.md" destroy-on-close>
+      <YoutubeKeySettings />
     </a-modal>
   </PageContainer>
 </template>

@@ -17,12 +17,13 @@ import FeedReplyModal, { type ReplyTarget } from '../feed/FeedReplyModal.vue'
 import FeedReplyTable from '../feed/FeedReplyTable.vue'
 import { useAccountFeed } from '../feed/useAccountFeed'
 import StatusTag from '../common/StatusTag.vue'
+import TrackedPhoneTag from './TrackedPhoneTag.vue'
 import PlatformTag from '../social/PlatformTag.vue'
 import { confirmDanger, DRAWER_WIDTH, pagination } from '../common/ui'
 
 /**
  * Detail of one tracked account: 动态 (counter changes, new posts, collection runs), follower history chart + table,
- * 帖子 (posts read on the collector phone with their comments folded under each; 「评论」 / 「回复」 with one of the
+ * 帖子 (posts read on the account's 采集手机 with their comments folded under each; 「评论」 / 「回复」 with one of the
  * viewer's own accounts → sent by that account's cloud phone), 回复记录 (own comments / replies on these posts), refresh.
  */
 const open = defineModel<boolean>('open', { required: true })
@@ -149,6 +150,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
             <a-tag v-if="acc.dataMode === 'manual_only'">{{ t(`tracked.dataModes.${acc.dataMode}`) }}</a-tag>
           </a-space>
           <div class="muted small">{{ t('tracked.lastChecked') }}: {{ when(acc.lastCheckedAt) }}{{ acc.lastSource ? ` · ${t(`tracked.sources.${acc.lastSource}`)}` : '' }}</div>
+          <div v-if="platform?.api?.kind === 'device'" class="small phone-line"><span class="muted">{{ t('tracked.phone.title') }}:</span> <TrackedPhoneTag :phone="acc.phone" /></div>
           <div v-if="acc.bio" class="bio">{{ acc.bio }}</div>
         </div>
       </div>
@@ -216,6 +218,7 @@ const when = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale())
 <style scoped>
 .head { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 12px; }
 .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.phone-line { display: flex; align-items: center; gap: 6px; }
 .bio { color: var(--cp-text-secondary); font-size: 13px; white-space: pre-line; max-height: 4.5em; overflow: hidden; }
 .note { margin-bottom: 12px; }
 .stats { margin-bottom: 8px; }

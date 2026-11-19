@@ -9,12 +9,13 @@ import { queryParam } from '../../api/query'
 import { api, codeText, errorText } from '../../api/client'
 import {
   compactNumber, TRACKED_SCHEDULE_HOURS, trackedHandle,
-  type ManagedUser, type TrackedAccount, type TrackedCapacity, type TrackedPlatform, type TrackedStatus,
+  type ManagedUser, type TrackedAccount, type TrackedCapacity, type TrackedPhoneOption, type TrackedPlatform, type TrackedStatus,
 } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { usePlatformsStore } from '../../stores/platforms'
 import TrackedAccountDrawer from './TrackedAccountDrawer.vue'
 import ScheduleCapacityHint from './ScheduleCapacityHint.vue'
+import TrackedPhoneTag from './TrackedPhoneTag.vue'
 import SearchBar from '../common/SearchBar.vue'
 import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
 import StatusTag from '../common/StatusTag.vue'
@@ -22,8 +23,9 @@ import PlatformTag from '../social/PlatformTag.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../common/ui'
 
 /**
- * 媒体管理 → 追踪号: external public accounts the user observes (official API, or the collector phone for Instagram),
- * with 定时采集 (采集频率) per account and in bulk. Header actions are teleported into `extraTo` (the page header).
+ * 我的媒体 → 追踪号: external public accounts the user observes (official API, or for Instagram the account's own
+ * 采集手机 = one of the owner's cloud phones, picked per account / in bulk), with 定时采集 (采集频率) per account and in
+ * bulk. Header actions are teleported into `extraTo` (the page header).
  */
 defineProps<{ extraTo?: string }>()
 const { t } = useI18n()
@@ -97,6 +99,7 @@ const columns = computed(() => [
   { title: '', key: 'favorite', width: 44 },
   { title: t('tracked.colAccount'), key: 'account', width: 250 },
   { title: t('tracked.colPlatform'), key: 'platform', width: 110 },
+  ...(items.value.some(usesPhone) ? [{ title: t('tracked.phone.title'), key: 'phone', width: 190 }] : []),
   { title: t('tracked.metrics.followers'), key: 'followers', width: 130, align: 'right' as const },
   { title: t('tracked.lastChecked'), key: 'checked', width: 170 },
   ...(collectable.value.length ? [{ title: t('collect.schedule'), key: 'schedule', width: 170 }] : []),
@@ -112,20 +115,38 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 const intervalText = (h: number | null) => (h === null ? t('collect.off') : h < 24 ? t('collect.everyHours', { n: h }) : t('collect.everyDays', { n: h / 24 }))
 const scheduleOptions = computed(() => [{ value: 0, label: t('collect.off') }, ...TRACKED_SCHEDULE_HOURS.map((h) => ({ value: h, label: intervalText(h) }))])
 
-// ---- 采集频率: capacity hint (collector-device load of all users' scheduled accounts, aggregates only)
+// ---- 采集手机 (platforms read in the app): one of the OWNER's cloud phones per account
+const devicePlatformIds = computed(() => new Set(platforms.value.filter((p) => p.api?.kind === 'device').map((p) => p.id)))
+const usesPhone = (a: { platform: string }) => devicePlatformIds.value.has(a.platform)
+/** Picker options: the phones of one owner (admins: any user's; omitted = the caller's own). */
+const phoneOptions = ref<TrackedPhoneOption[]>([])
+const phonesLoading = ref(false)
+async function loadPhones(ownerId?: string) {
+  phonesLoading.value = true
+  try {
+    phoneOptions.value = (await api<{ items: TrackedPhoneOption[] }>('GET', `/api/tracked-accounts/phones${ownerId && ownerId !== auth.user?.id ? `?ownerId=${ownerId}` : ''}`)).items
+  } catch (e) { phoneOptions.value = []; message.error(errorText(e)) } finally { phonesLoading.value = false }
+}
+const phoneState = (p: TrackedPhoneOption) => (p.halted ? t('tracked.phone.halted') : p.online ? t('tracked.phone.online') : t('tracked.phone.offline'))
+const phoneSelectOptions = computed(() => phoneOptions.value.map((p) => ({
+  value: p.id, label: `${p.name} · ${phoneState(p)}${p.instagramLinked ? ` · ${t('tracked.phone.igLinked')}` : ''}`,
+})))
+
+// ---- 采集频率: capacity hint (scheduled load per 采集手机, aggregates only)
 const capacity = ref<TrackedCapacity | null>(null)
 async function loadCapacity() {
   try { capacity.value = await api<TrackedCapacity>('GET', '/api/tracked-accounts/capacity') } catch { /* hint only */ }
 }
-const devicePlatforms = computed(() => new Set((capacity.value?.platforms ?? []).map((p) => p.platform)))
-/** Scheduled visits/hour one account adds to its collector device (0 when off, paused or not device-collected). */
-const load1 = (platform: string, status: string, hours: number | null) => (hours && status !== 'paused' && devicePlatforms.value.has(platform) ? 1 / hours : 0)
-/** Capacity deltas for setting `hours` on these accounts (keys = device platforms involved). */
-function deltasFor(accts: TrackedAccount[], hours: number | null, status?: string): Record<string, number> {
+/** Scheduled visits/hour one account adds to its 采集手机 (0 when off, paused, no phone or not read on a phone). */
+const load1 = (a: { platform: string }, phone: string | null, status: string, hours: number | null) => (hours && phone && status !== 'paused' && usesPhone(a) ? 1 / hours : 0)
+/** Capacity deltas for setting `hours` (and/or another `phone`) on these accounts (keys = phone ids involved). */
+function deltasFor(accts: TrackedAccount[], hours: number | null, status?: string, phone?: string | null): Record<string, number> {
   const out: Record<string, number> = {}
   for (const a of accts) {
-    if (!devicePlatforms.value.has(a.platform)) continue
-    out[a.platform] = (out[a.platform] ?? 0) + load1(a.platform, status ?? a.status, hours) - load1(a.platform, a.status, a.refreshIntervalHours)
+    if (!usesPhone(a)) continue
+    const to = phone !== undefined ? phone : a.instanceId
+    if (a.instanceId) out[a.instanceId] = (out[a.instanceId] ?? 0) - load1(a, a.instanceId, a.status, a.refreshIntervalHours)
+    if (to) out[to] = (out[to] ?? 0) + load1(a, to, status ?? a.status, hours)
   }
   return out
 }
@@ -142,13 +163,18 @@ async function toggleFavorite(a: TrackedAccount) {
   try { replace((await api<{ account: TrackedAccount }>('PATCH', `/api/tracked-accounts/${a.id}`, { favorite: !a.favorite })).account) } catch (e) { message.error(errorText(e)) }
 }
 /**
- * Refresh / 定时采集 exist for platforms with a data source: YouTube (official API) and Instagram (collector
- * phone). Platforms without one (TikTok) get no refresh action and no schedule controls (manual entry was removed).
+ * Refresh / 定时采集 exist for platforms with a data source: YouTube (official API) and Instagram (the account's
+ * 采集手机). Platforms without one (TikTok) get no refresh action and no schedule controls (manual entry was removed).
+ * Without a usable 采集手机 同步 / 刷新 are disabled; without any phone the 定时采集 control too.
  */
 const canCollect = (a: TrackedAccount) => a.dataMode !== 'manual_only'
 const unconfigured = (a: TrackedAccount) => a.dataMode.endsWith('_unconfigured')
+const noPhone = (a: TrackedAccount) => usesPhone(a) && !a.phone
+/** Why the 采集手机 can't be used (tooltip), '' when it can. */
+const phoneProblem = (a: TrackedAccount) => (!usesPhone(a) ? '' : !a.phone ? t('tracked.phone.noneHint')
+  : a.phone.halted ? t('tracked.phone.haltedHint') : !a.phone.allowed ? t('tracked.phone.notAllowedHint') : '')
 const refreshTip = (a: TrackedAccount) => (a.dataMode === 'api_unconfigured' ? t('tracked.apiUnconfiguredHint')
-  : a.dataMode === 'device_unconfigured' ? t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : a.platform === 'instagram' ? t('feed.syncHint') : t('tracked.syncHint'))
+  : a.dataMode === 'device_unconfigured' ? phoneProblem(a) || t('tracked.deviceUnconfiguredHint') : a.status === 'paused' ? t('errors.tracked.paused') : a.platform === 'instagram' ? t('feed.syncHint') : t('tracked.syncHint'))
 /** 定时采集 cell tooltip: next slot and the last skip reason (no second line in the cell). */
 const schedTip = (a: TrackedAccount) => [
   a.nextRefreshAt ? t('collect.next', { time: new Date(a.nextRefreshAt).toLocaleString(dateLocale()) }) : '',
@@ -156,7 +182,6 @@ const schedTip = (a: TrackedAccount) => [
 ].filter(Boolean).join(' · ') || t('collect.change')
 const statusTip = (a: TrackedAccount) => (a.status === 'error' ? codeText(a.lastErrorCode, undefined, a.lastError ?? '') : t(`tracked.dataModes.${a.dataMode}`))
 const approxPrefix = (a: TrackedAccount) => (a.latest?.approx?.includes('followers') ? `${t('tracked.approx')} ` : '')
-const hasDeviceSource = computed(() => platforms.value.some((p) => p.api?.kind === 'device'))
 const collectable = computed(() => items.value.filter(canCollect))
 const selectedCollectable = computed(() => collectable.value.filter((a) => selectedKeys.value.includes(a.id)).length)
 async function refreshOne(a: TrackedAccount) {
@@ -218,13 +243,50 @@ async function refreshBatch() {
     await load(true)
   } catch (e) { message.error(errorText(e)) }
 }
+// ---- batch 设置采集手机 (rows of other platforms / other owners' phones are skipped by the API with a reason)
+const phoneBatchOpen = ref(false)
+const phoneBatchSaving = ref(false)
+const phoneBatchValue = ref<string | undefined>(undefined)
+const selectedPhoneRows = computed(() => selectedRows.value.filter(usesPhone))
+function openBatchPhone() {
+  phoneBatchValue.value = undefined
+  // one owner selected → that owner's phones; several → the caller's (admins: every phone; the API checks per row)
+  const owners = [...new Set(selectedPhoneRows.value.map((a) => a.userId))]
+  void loadPhones(owners.length === 1 ? owners[0] : undefined)
+  phoneBatchOpen.value = true
+  void loadCapacity()
+}
+/** Each selected row moves its own scheduled load from its phone to the picked one. */
+const phoneBatchDeltas = computed(() => {
+  const out: Record<string, number> = {}
+  for (const a of selectedPhoneRows.value) {
+    for (const [k, v] of Object.entries(deltasFor([a], a.refreshIntervalHours, undefined, phoneBatchValue.value ?? null))) out[k] = (out[k] ?? 0) + v
+  }
+  return out
+})
+async function saveBatchPhone() {
+  phoneBatchSaving.value = true
+  try {
+    const r = await api<{ updated: string[]; unchanged: string[]; skipped: { id: string; code: string }[] }>('POST', '/api/tracked-accounts/phone', {
+      ids: selectedKeys.value, instanceId: phoneBatchValue.value ?? null,
+    })
+    const reasons = [...new Set(r.skipped.map((s) => codeText(s.code, undefined, s.code)))].join(t('common.reasonSep'))
+    message.info(t('tracked.phone.batchDone', { n: r.updated.length + r.unchanged.length }) + (r.skipped.length ? ` ${t('common.skipped', { n: r.skipped.length, reasons })}` : ''))
+    phoneBatchOpen.value = false
+    await load(true); void loadCapacity()
+  } catch (e) { message.error(errorText(e)) }
+  finally { phoneBatchSaving.value = false }
+}
+
 const batchItems = computed<BatchItem[]>(() => [
   { key: 'refresh', label: t('tracked.refreshBatch'), disabled: !selectedCollectable.value },
   { key: 'schedule', label: t('collect.batchSet'), disabled: !selectedCollectable.value },
+  ...(devicePlatformIds.value.size ? [{ key: 'phone', label: t('tracked.phone.batchSet'), disabled: !selectedPhoneRows.value.length }] : []),
 ])
 function onBatch(key: string) {
   if (key === 'refresh') void refreshBatch()
   else if (key === 'schedule') openBatchSchedule()
+  else if (key === 'phone') openBatchPhone()
 }
 function remove(a: TrackedAccount) {
   confirmDanger({
@@ -243,22 +305,25 @@ function remove(a: TrackedAccount) {
 // ---- add
 const addOpen = ref(false)
 const adding = ref(false)
-const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0 })
+const addForm = reactive({ platform: undefined as string | undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0, instanceId: undefined as string | undefined })
 const preview = ref<{ platform: string; handle: string; profileUrl: string } | null>(null)
 const previewError = ref('')
 function openAdd() {
-  Object.assign(addForm, { platform: undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0 })
+  Object.assign(addForm, { platform: undefined, input: '', displayName: '', favorite: false, notes: '', interval: 0, instanceId: undefined })
   preview.value = null; previewError.value = ''
   addOpen.value = true
   void loadCapacity()
+  // new accounts are the caller's own: their phones; the only one is preselected (the API's default too)
+  void loadPhones().then(() => { if (phoneOptions.value.length === 1 && addOpen.value) addForm.instanceId = phoneOptions.value[0]!.id })
 }
 /** Platform of the account being added (parsed preview, else the picked platform) and whether it can be collected. */
 const addPlatform = computed(() => preview.value?.platform ?? addForm.platform)
 const addCollectable = computed(() => !!platforms.value.find((p) => p.id === addPlatform.value)?.api)
 /** Default 采集频率 per platform: Instagram 24 h (the API's default), others off. */
 watch(addPlatform, (p) => { addForm.interval = p === 'instagram' ? 24 : 0 })
-const addDeltas = computed(() => (addPlatform.value && devicePlatforms.value.has(addPlatform.value)
-  ? { [addPlatform.value]: load1(addPlatform.value, 'active', addForm.interval || null) } : {}))
+const addUsesPhone = computed(() => !!addPlatform.value && usesPhone({ platform: addPlatform.value }))
+const addDeltas = computed(() => (addUsesPhone.value && addForm.instanceId
+  ? { [addForm.instanceId]: load1({ platform: addPlatform.value! }, addForm.instanceId, 'active', addForm.interval || null) } : {}))
 async function parseInput() {
   preview.value = null; previewError.value = ''
   if (!addForm.input.trim()) return
@@ -274,6 +339,7 @@ async function saveAdd() {
       input: addForm.input, platform: addForm.platform, displayName: addForm.displayName || undefined,
       favorite: addForm.favorite, notes: addForm.notes || undefined,
       ...(addCollectable.value ? { refreshIntervalHours: addForm.interval || null } : {}),
+      ...(addUsesPhone.value ? { instanceId: addForm.instanceId ?? null } : {}),
     })
     message.success(t('common.created'))
     addOpen.value = false
@@ -286,16 +352,25 @@ async function saveAdd() {
 const editOpen = ref(false)
 const editSaving = ref(false)
 const editing = ref<TrackedAccount | null>(null)
-const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', status: 'active' as 'active' | 'paused', notes: '', interval: 0 })
+const editForm = reactive({ displayName: '', avatarUrl: '', bio: '', status: 'active' as 'active' | 'paused', notes: '', interval: 0, instanceId: undefined as string | undefined })
 function openEdit(a: TrackedAccount) {
   editing.value = a
   Object.assign(editForm, {
     displayName: a.displayName ?? '', avatarUrl: a.avatarUrl ?? '', bio: a.bio ?? '',
     status: a.status === 'paused' ? 'paused' : 'active', notes: a.notes ?? '', interval: a.refreshIntervalHours ?? 0,
+    instanceId: a.instanceId ?? undefined,
   })
   editOpen.value = true
   void loadCapacity()
+  if (usesPhone(a)) void loadPhones(a.userId) // the OWNER's phones (an admin editing a user's account)
 }
+/** Picker options of the edit form; a current phone that is no longer the owner's stays visible (marked). */
+const editPhoneOptions = computed(() => {
+  const cur = editing.value?.phone
+  return cur && !phoneOptions.value.some((p) => p.id === cur.id)
+    ? [{ value: cur.id, label: `${cur.name} · ${t('tracked.phone.notAllowed')}` }, ...phoneSelectOptions.value]
+    : phoneSelectOptions.value
+})
 async function saveEdit() {
   if (!editing.value) return
   editSaving.value = true
@@ -305,6 +380,7 @@ async function saveEdit() {
       notes: editForm.notes,
       ...(editing.value.status === 'error' || editing.value.status !== editForm.status ? { status: editForm.status } : {}),
       ...((editing.value.refreshIntervalHours ?? 0) !== editForm.interval ? { refreshIntervalHours: editForm.interval || null } : {}),
+      ...(usesPhone(editing.value) && (editing.value.instanceId ?? undefined) !== editForm.instanceId ? { instanceId: editForm.instanceId ?? null } : {}),
     })
     replace(r.account)
     message.success(t('common.saved'))
@@ -324,8 +400,7 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
 <template>
   <div>
     <Teleport defer :to="extraTo || 'body'" :disabled="!extraTo">
-      <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.youtubeKey') }}</a-button>
-      <a-button v-if="auth.isAdmin && hasDeviceSource" @click="router.push({ path: '/settings', query: { tab: 'tracked' } })">{{ t('tracked.collector.title') }}</a-button>
+      <a-button v-if="auth.isAdmin && platformScope.scope.features.youtubeKey" @click="router.push({ path: '/trending', query: { youtubeKey: '1' } })">{{ t('tracked.youtubeKey') }}</a-button>
       <a-button v-if="auth.isAdmin" @click="runScheduler">{{ t('collect.runNow') }}</a-button>
       <a-button type="primary" @click="openAdd"><template #icon><PlusOutlined /></template>{{ t('tracked.add') }}</a-button>
     </Teleport>
@@ -370,6 +445,10 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
             </div>
           </template>
           <template v-else-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformLabel(record.platform)" /></template>
+          <template v-else-if="column.key === 'phone'">
+            <TrackedPhoneTag v-if="usesPhone(record as TrackedAccount)" :phone="record.phone" />
+            <span v-else class="muted">—</span>
+          </template>
           <template v-else-if="column.key === 'followers'">
             <a-tooltip :title="record.followers !== null ? approxPrefix(record as TrackedAccount) + record.followers.toLocaleString(dateLocale()) + (approxPrefix(record as TrackedAccount) ? ` · ${t('tracked.approxHint')}` : '') : undefined">
               <span class="num">{{ approxPrefix(record as TrackedAccount) }}{{ compactNumber(record.followers) }}</span>
@@ -386,6 +465,9 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
           </template>
           <template v-else-if="column.key === 'schedule'">
             <span v-if="record.dataMode === 'manual_only'" class="muted small">{{ t('collect.manualOnly') }}</span>
+            <a-tooltip v-else-if="noPhone(record as TrackedAccount)" :title="t('tracked.phone.noneHint')">
+              <span :class="['sched-link', 'muted']">{{ intervalText(record.refreshIntervalHours) }}</span>
+            </a-tooltip>
             <template v-else>
               <a-popover trigger="click" placement="bottomLeft" :open="schedOpen === record.id" @open-change="(v: boolean) => openSched(record as TrackedAccount, v)">
                 <template #content>
@@ -453,6 +535,10 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
         {{ t('tracked.willTrack') }} <PlatformTag :platform="preview.platform" :name="platformLabel(preview.platform)" />
         <a :href="preview.profileUrl" target="_blank" rel="noopener noreferrer">{{ trackedHandle(preview) }}</a>
       </div>
+      <a-form-item v-if="addUsesPhone" :label="t('tracked.phone.title')" :extra="t('tracked.phone.hint')">
+        <a-select v-model:value="addForm.instanceId" :options="phoneSelectOptions" :placeholder="t('tracked.phone.pick')" :loading="phonesLoading" allow-clear
+          show-search option-filter-prop="label" :not-found-content="t('tracked.phone.noPhones')" />
+      </a-form-item>
       <a-form-item v-if="addCollectable" :label="t('collect.interval')" :extra="t('collect.intervalHint')">
         <a-select v-model:value="addForm.interval" :options="scheduleOptions" style="width: 200px" />
         <ScheduleCapacityHint :capacity="capacity" :deltas="addDeltas" />
@@ -480,10 +566,14 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
         <a-col v-if="editing && canCollect(editing)" :xs="24" :sm="12">
           <a-form-item :label="t('collect.interval')">
             <a-select v-model:value="editForm.interval" :options="scheduleOptions" />
-            <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor([editing], editForm.interval || null, editForm.status)" />
+            <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor([editing], editForm.interval || null, editForm.status, editForm.instanceId ?? null)" />
           </a-form-item>
         </a-col>
       </a-row>
+      <a-form-item v-if="editing && usesPhone(editing)" :label="t('tracked.phone.title')" :extra="t('tracked.phone.hint')">
+        <a-select v-model:value="editForm.instanceId" :options="editPhoneOptions" :placeholder="t('tracked.phone.pick')" :loading="phonesLoading" allow-clear
+          show-search option-filter-prop="label" :not-found-content="t('tracked.phone.noPhones')" />
+      </a-form-item>
       <a-form-item :label="t('tracked.notes')"><a-textarea v-model:value="editForm.notes" :maxlength="1000" :auto-size="{ minRows: 2, maxRows: 4 }" /></a-form-item>
     </a-form>
   </a-modal>
@@ -494,6 +584,17 @@ function openDetail(a: TrackedAccount) { detail.value = a; detailOpen.value = tr
       <a-form-item :label="t('collect.interval')" :extra="selectedKeys.length > selectedCollectable ? t('collect.batchSkipHint', { n: selectedKeys.length - selectedCollectable }) : undefined">
         <a-select v-model:value="batchInterval" :options="scheduleOptions" style="width: 200px" />
         <ScheduleCapacityHint :capacity="capacity" :deltas="deltasFor(selectedRows, batchInterval || null)" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
+
+  <a-modal v-model:open="phoneBatchOpen" :title="t('tracked.phone.batchSet')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="phoneBatchSaving" :width="MODAL_WIDTH.sm" @ok="saveBatchPhone">
+    <p>{{ t('tracked.phone.batchIntro', { n: selectedKeys.length }) }}</p>
+    <a-form layout="vertical">
+      <a-form-item :label="t('tracked.phone.title')" :extra="t('tracked.phone.batchHint')">
+        <a-select v-model:value="phoneBatchValue" :options="phoneSelectOptions" :placeholder="t('tracked.phone.pick')" :loading="phonesLoading" allow-clear
+          show-search option-filter-prop="label" :not-found-content="t('tracked.phone.noPhones')" />
+        <ScheduleCapacityHint :capacity="capacity" :deltas="phoneBatchDeltas" />
       </a-form-item>
     </a-form>
   </a-modal>

@@ -274,6 +274,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'tracked.update',
     detail: ({ body }) => ({
       fields: Object.keys(body).filter((k) => body[k] !== undefined), favorite: body.favorite, status: body.status, tags: body.tags, refreshIntervalHours: body.refreshIntervalHours,
+      instanceId: body.instanceId,
     }),
   },
   'DELETE /api/tracked-accounts/:id': { action: 'tracked.delete' },
@@ -284,6 +285,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/tracked-accounts/refresh': { action: 'tracked.refresh_batch', detail: ({ body }) => ({ ids: ids(body.ids), count: ids(body.ids).length }) },
   'POST /api/tracked-accounts/schedule': {
     action: 'tracked.schedule_batch', detail: ({ body }) => ({ count: ids(body.ids).length, refreshIntervalHours: body.refreshIntervalHours }),
+  },
+  // 设置采集手机 (batch); counts come from the route (updated / unchanged / skipped)
+  'POST /api/tracked-accounts/phone': {
+    action: 'tracked.phone_batch', detail: ({ body }) => ({ count: ids(body.ids).length, instanceId: body.instanceId }),
   },
   // 趋势热点 / 定时采集
   'PUT /api/trending/settings': {
@@ -403,9 +408,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'PUT /api/settings/tasks': { action: 'settings.task_retention', detail: ({ body }) => ({ retentionDays: body.retentionDays }) },
   'POST /api/settings/tasks/cleanup': { action: 'settings.task_cleanup' },
-  'PUT /api/settings/tracked-collectors/:platform': {
-    action: 'settings.tracked_collector', detail: ({ params, body }) => ({ platform: params.platform, instanceId: body.instanceId, resume: body.resume }),
-  },
   // Never the key itself: only whether one was set or cleared.
   'PUT /api/settings/ai': {
     action: 'settings.ai',

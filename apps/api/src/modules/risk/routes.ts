@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { notFound } from '../../lib/errors.js';
 import { PLATFORMS } from '../social/platforms.js';
-import { collectorDevices, deviceHalts, deviceUsage, resumeDevice } from '../tracked/collector.js';
+import { deviceHalts, deviceUsage, resumeDevice } from '../tracked/collector.js';
 import { listRiskEvents, RISK_RETENTION_DAYS } from './events.js';
 import { capacityPerHour, getRiskSettings, RiskDeviceInput, riskDefaults, saveRiskSettings } from './settings.js';
 
@@ -30,20 +30,22 @@ export const riskRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * 云手机状态: every device used for automatic work (a platform's collector, the device of an account the
+   * 云手机状态: every device used for automatic work (采集手机 of tracked accounts, the device of an account the
    * automatic check covers) plus any halted device: online, halt (code, time, source, account), visits.
    */
   app.get('/api/risk/devices', async () => {
     const checkPlatforms = PLATFORMS.filter((p) => p.deviceCheck).map((p) => p.id);
-    const [collectors, halts, accountRows] = await Promise.all([
-      collectorDevices(),
+    const [trackedRows, halts, accountRows] = await Promise.all([
+      db.select({ instanceId: schema.trackedAccounts.instanceId, n: sql<number>`count(*)::int` }).from(schema.trackedAccounts)
+        .where(isNotNull(schema.trackedAccounts.instanceId)).groupBy(schema.trackedAccounts.instanceId),
       deviceHalts(),
       checkPlatforms.length ? db.select({ instanceId: schema.socialAccounts.instanceId, n: sql<number>`count(*)::int` }).from(schema.socialAccounts)
         .where(and(isNotNull(schema.socialAccounts.instanceId), inArray(schema.socialAccounts.platform, checkPlatforms)))
         .groupBy(schema.socialAccounts.instanceId) : Promise.resolve([]),
     ]);
     const accounts = new Map(accountRows.map((r) => [r.instanceId!, r.n]));
-    const ids = [...new Set([...collectors.keys(), ...Object.keys(halts), ...accounts.keys()])];
+    const trackedOn = new Map(trackedRows.map((r) => [r.instanceId!, r.n]));
+    const ids = [...new Set([...trackedOn.keys(), ...Object.keys(halts), ...accounts.keys()])];
     if (!ids.length) return { devices: [] };
     const insts = await db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, adbState: schema.instances.adbState, sourceId: schema.instances.sourceId })
       .from(schema.instances).where(inArray(schema.instances.id, ids));
@@ -58,7 +60,7 @@ export const riskRoutes: FastifyPluginAsyncZod = async (app) => {
       return {
         id: i.id, name: i.name, status: i.status, adbState: i.adbState, external: !!i.sourceId,
         online: i.status === 'running' && i.adbState === 'device',
-        collectorFor: collectors.get(i.id) ?? [],
+        trackedAccounts: trackedOn.get(i.id) ?? 0,
         checkedAccounts: accounts.get(i.id) ?? 0,
         halted: h ? { at: h.at, code: h.code, source: h.source, platform: h.platform, account: acc ? { platform: acc.platform, handle: acc.handle, kind: h.socialAccountId ? 'social' : 'tracked' } : null } : null,
         ...(await deviceUsage(i.id).catch(() => ({ visitsLastHour: 0, lastVisitAt: null }))),

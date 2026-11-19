@@ -419,7 +419,7 @@ async function planReply(r: CommentTask): Promise<ReplyPlan> {
     if (!p) return { kind: 'manual', reason: 'comment.post_gone' };
     shortcode = shortcodeOfUrl(p.permalink) ?? (p.source === 'device' ? shortcodeOf(p.externalId) : null);
   } else if (r.trackedCommentId || r.trackedPostId) {
-    // 评论追踪账号的帖子: the tracked post (link) and, for a reply, the tracked comment as read on the collector phone.
+    // 评论追踪账号的帖子: the tracked post (link) and, for a reply, the tracked comment as read on the 采集手机.
     const [k] = r.trackedCommentId ? await db.select().from(schema.trackedPostComments).where(eq(schema.trackedPostComments.id, r.trackedCommentId)) : [null];
     if (r.trackedCommentId && !k) return { kind: 'manual', reason: 'comment.comment_gone' };
     const postId = k?.trackedPostId ?? r.trackedPostId;
