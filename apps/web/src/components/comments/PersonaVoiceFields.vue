@@ -5,7 +5,8 @@ import type { VoiceForm } from './persona'
 
 /**
  * 语气 (preset + editable note), 表情 and 长度 of one kind of the persona form (发文风格 or 评论风格). Picking a preset
- * fills its note unless the person changed the note; the length options show this kind's character range.
+ * always fills its note with the preset text (owner 2026-11-19: switching 语气 must visibly change it; the note stays
+ * editable afterwards); the length options show this kind's character range.
  */
 const voice = defineModel<VoiceForm>({ required: true })
 const props = defineProps<{ kind: 'post' | 'comment'; lengths: PersonaLengths | null }>()
@@ -14,7 +15,7 @@ const { t } = useI18n()
 const noteOf = (tone: PersonaTone) => t(`personas.toneNotes.${tone}`)
 function pickTone(tone: PersonaTone) {
   const v = voice.value
-  if (!v.toneNote.trim() || PERSONA_TONES.some((x) => v.toneNote === noteOf(x))) v.toneNote = noteOf(tone)
+  v.toneNote = noteOf(tone)
   v.tone = tone
 }
 const lengthLabel = (l: PersonaLevel) => {
