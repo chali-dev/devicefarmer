@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import { PUBLISH_UNFINISHED, type Content, type MediaAsset, type PostType, type PublishStatus, type PublishTask, type Task } from '../../db/schema.js';
-import { badRequest, conflict } from '../../lib/errors.js';
+import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { publishFailed } from '../notify/triggers.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -112,6 +112,11 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
   const result = await db.transaction(async (tx) => {
+    // 防并发: the content row is locked like 归档 / 删除 lock it, so an archive or delete racing this distribution either
+    // waits for it (then refuses: unfinished publish task) or wins (then this one refuses: archived / not found).
+    const [locked] = await tx.select({ stage: schema.contents.stage }).from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
+    if (!locked) throw notFound('内容不存在', 'content.not_found');
+    if (locked.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
     const out: DistributeResult = { created: [], existing: [] };
     for (const t of targets) {
       const acc = await visibleAccount(user, t.accountId, tx);
@@ -142,7 +147,7 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       }, user, tx);
       out.created.push(row!);
     }
-    if (out.created.length && content.stage === 'draft') await tx.update(schema.contents).set({ stage: 'ready' }).where(eq(schema.contents.id, content.id));
+    if (out.created.length && locked.stage === 'draft') await tx.update(schema.contents).set({ stage: 'ready' }).where(eq(schema.contents.id, content.id));
     return out;
   });
   const created: PublishTask[] = [];
@@ -165,6 +170,9 @@ async function scheduleRun(row: PublishTask, retryOf: string | null): Promise<Pu
       runAt: row.scheduledAt, idempotencyKey: `publish:${row.id}:${row.attemptNo}`, maxAttempts: 1, timeoutMs, retryOf,
     });
     const [updated] = await db.update(pt).set({ taskId: task.id }).where(and(eq(pt.id, row.id), eq(pt.attemptNo, row.attemptNo))).returning();
+    // 防并发: a newer round (改期 / 重试 at the same time) took over before this task was attached: it would never run
+    // this publish task (its runner no longer matches task_id), so it is cancelled instead of lingering as scheduled.
+    if (!updated && !isFinal(task.status)) await cancelTask(task, null).catch(() => undefined);
     return updated ?? row;
   } catch (err) {
     const [failed] = await db.update(pt).set({ status: 'failed', error: (err as Error).message.slice(0, 500), errorCode: 'publish.enqueue_failed' })

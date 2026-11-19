@@ -80,6 +80,37 @@ async function placeholderDevices(n: number, name: string) {
 }
 const dropDevices = (rows: { id: string }[]) => db.delete(schema.instances).where(inArray(schema.instances.id, rows.map((r) => r.id)));
 
+async function waitFor<T>(label: string, fn: () => Promise<T | null | false | undefined>, ms = 60_000): Promise<T> {
+  const t0 = Date.now();
+  for (;;) { const v = await fn().catch(() => null); if (v) return v; if (Date.now() - t0 > ms) throw new Error(`timeout: ${label}`); await sleep(400); }
+}
+async function uploadPng(token: string, extra: Record<string, string> = {}) {
+  const sharp = (await import('sharp')).default;
+  const png = await sharp({ create: { width: 64, height: 64, channels: 3, background: { r: Math.floor(Math.random() * 255), g: 90, b: 40 } } }).png().toBuffer();
+  const fd = new FormData();
+  fd.append('scope', 'mine');
+  for (const [k, v] of Object.entries(extra)) fd.append(k, v);
+  fd.append('file', new Blob([new Uint8Array(png)], { type: 'image/png' }), `cc-${tag}.png`);
+  const r = await fetch(`${API}/api/media/upload`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: fd });
+  const j = await r.json() as any;
+  if (r.status !== 201) throw new Error(`upload ${r.status} ${JSON.stringify(j)}`);
+  const id: string = j.item.id;
+  await waitFor('media ready', async () => (await http('GET', `/api/media/${id}`, token)).body.item.status === 'ready', 60_000);
+  return id;
+}
+/** A user (role user) + token; deleted at the end (cascades their rows). */
+async function newUser(name: string) {
+  const r = await http('POST', '/api/users', admin, { username: `cc${name}${tag}`, password: pw, role: 'user' });
+  const id: string = r.body.user?.id ?? r.body.id;
+  if (!id) throw new Error(`user create ${r.status} ${r.text}`);
+  cleanup.push(() => db.delete(schema.users).where(eq(schema.users.id, id)));
+  return { id, token: await login(`cc${name}${tag}`, pw) };
+}
+const future = (days: number) => new Date(Date.now() + days * 86400_000).toISOString();
+const PT = schema.publishTasks;
+const TK = schema.tasks;
+const UNFINISHED = ['pending', 'scheduled', 'running', 'awaiting_operator'] as const;
+
 try {
   // ================================================================ A. jsonb settings rows (read-modify-write)
   if (want('settings')) {
@@ -173,6 +204,87 @@ try {
       `${JSON.stringify(Object.keys(halts).filter((k) => devs.some((d) => d.id === k)).length)} left, true × ${resumed.filter(Boolean).length}`);
     await Promise.all(devs.slice(4).map((d) => resumeDevice(d.id)));
     await dropDevices(devs);
+  }
+
+  // ================================================================ B. content distribute / 排程发布
+  if (want('publish')) {
+    const A = await newUser('pa');
+    const acc = (await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `cc_${tag}_ig1` })).body.account.id as string;
+    const acc2 = (await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `cc_${tag}_ig2` })).body.account.id as string;
+    const img = await uploadPng(A.token);
+    const newContent = async (stage: 'draft' | 'ready' = 'ready', targetIds: string[] = []) => {
+      const r = await http('POST', '/api/contents', A.token, { title: `cc-${tag}`, body: 'concurrency', mediaIds: [img], stage, targetIds });
+      if (r.status !== 201) throw new Error(`content ${r.status} ${r.text}`);
+      return r.body.content.id as string;
+    };
+    const liveTasks = (rowId: string) => db.select().from(TK).where(and(eq(TK.refType, 'publish'), eq(TK.refId, rowId), inArray(TK.status, ['pending', 'scheduled', 'running'])));
+
+    // B1: 立即发布 / 排程发布 double click ×20: one publish task per content + account, one task-centre task
+    const c1 = await newContent();
+    const rs = await Promise.all(Array.from({ length: 20 }, () => http('POST', `/api/contents/${c1}/distribute`, A.token, { targets: [{ accountId: acc, scheduledAt: future(3) }] })));
+    const rows = await db.select().from(PT).where(eq(PT.contentId, c1));
+    const tks = rows.length ? await db.select().from(TK).where(and(eq(TK.refType, 'publish'), inArray(TK.refId, rows.map((x) => x.id)))) : [];
+    check('distribute ×20 at once → exactly 1 publish task + 1 task-centre task, 1×201 and 19×200 (existing)',
+      rows.length === 1 && tks.length === 1 && count(rs, 201) === 1 && count(rs, 200) === 19, `rows ${rows.length}, tasks ${tks.length}, ${statuses(rs)} ${codes(rs)}`);
+    const row = rows[0]!;
+
+    // B2: 改期 ×10 at once: attempt numbers serialised, exactly one live task-centre task and it is the row's
+    const rr = await Promise.all(Array.from({ length: 10 }, (_, i) => http('POST', `/api/publish/tasks/${row.id}/reschedule`, A.token, { scheduledAt: future(4 + i / 10) })));
+    await sleep(500);
+    const [after] = await db.select().from(PT).where(eq(PT.id, row.id));
+    const live = await liveTasks(row.id);
+    check('reschedule ×10 at once → all 200, attempt_no + 10, exactly one live task and the row points at it',
+      count(rr, 200) === 10 && after!.attemptNo === row.attemptNo + 10 && live.length === 1 && live[0]!.id === after!.taskId,
+      `${statuses(rr)} ${codes(rr)} attempt ${after!.attemptNo}, live ${live.map((t) => (t.id === after!.taskId ? 'row' : 'orphan')).join(',')}`);
+
+    // B3: 取消 ×10 at once: cancelled once, no live task left
+    const cr = await Promise.all(Array.from({ length: 10 }, () => http('POST', `/api/publish/tasks/${row.id}/cancel`, A.token)));
+    const [cancelled] = await db.select().from(PT).where(eq(PT.id, row.id));
+    const live2 = await liveTasks(row.id);
+    const cancelLogs = (await db.select().from(schema.publishLogs).where(eq(schema.publishLogs.publishTaskId, row.id))).filter((l) => l.message.startsWith('cancelled'));
+    check('cancel ×10 at once → cancelled, no live task, logged once, one 200 and the rest coded 409s',
+      cancelled!.status === 'cancelled' && !live2.length && cancelLogs.length === 1 && count(cr, 200) >= 1
+        && cr.every((x) => x.status === 200 || (x.status === 409 && ['publish.bad_status', 'tasks.already_finished'].includes(x.body.code))),
+      `${cancelled!.status}, live ${live2.length}, logs ${cancelLogs.length}, ${statuses(cr)} ${codes(cr)}`);
+
+    // B4: 编辑后重新发布 of the cancelled pair ×10 at once → one new task
+    const rp = await Promise.all(Array.from({ length: 10 }, () => http('POST', `/api/contents/${c1}/distribute`, A.token, { targets: [{ accountId: acc, scheduledAt: future(3) }] })));
+    const unfinished = await db.select().from(PT).where(and(eq(PT.contentId, c1), inArray(PT.status, [...UNFINISHED])));
+    check('re-distribute ×10 after cancel → exactly 1 new unfinished task', unfinished.length === 1 && count(rp, 201) === 1, `${unfinished.length} ${statuses(rp)}`);
+
+    // B5: 批量发布 ×10 at once over 3 contents with 2 targets each → one task per content + account
+    const bc = [await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2]), await newContent('ready', [acc, acc2])];
+    const br = await Promise.all(Array.from({ length: 10 }, () => http('POST', '/api/contents/batch', A.token, { ids: bc, action: 'publish', scheduledAt: future(5) })));
+    const bRows = await db.select().from(PT).where(inArray(PT.contentId, bc));
+    check('batch publish ×10 at once → 6 publish tasks (one per content + account), no 5xx',
+      bRows.length === 6 && new Set(bRows.map((x) => `${x.contentId}:${x.accountId}`)).size === 6 && br.every((x) => x.status < 500), `${bRows.length} rows, ${statuses(br)}`);
+
+    // B6: 归档 racing 发布: never an archived content with an unfinished publish task
+    const archivedWithOpen = async (id: string) => {
+      const [ct] = await db.select().from(schema.contents).where(eq(schema.contents.id, id));
+      const open = await db.select().from(PT).where(and(eq(PT.contentId, id), inArray(PT.status, [...UNFINISHED])));
+      return ct?.stage === 'archived' && open.length > 0;
+    };
+    let bad = 0;
+    let badB = 0;
+    const dr: { status: number; text: string }[] = [];
+    for (let i = 0; i < 10; i++) {
+      const id = await newContent();
+      const id2 = await newContent();
+      const id3 = await newContent();
+      const dist = (x: string) => http('POST', `/api/contents/${x}/distribute`, A.token, { targets: [{ accountId: acc2, scheduledAt: future(3) }] });
+      const out = await Promise.all([
+        http('PUT', `/api/contents/${id}`, A.token, { stage: 'archived' }), dist(id),
+        http('POST', '/api/contents/batch', A.token, { ids: [id2], action: 'archive' }), dist(id2),
+        http('DELETE', `/api/contents/${id3}`, A.token), dist(id3),
+      ]);
+      dr.push(...out);
+      if (await archivedWithOpen(id)) bad++;
+      if (await archivedWithOpen(id2)) badB++;
+    }
+    check('archive racing distribute ×10 → never archived with an unfinished publish task', bad === 0, `${bad} archived with open tasks`);
+    check('batch archive racing distribute ×10 → never archived with an unfinished publish task', badB === 0, `${badB} archived with open tasks`);
+    check('archive / delete racing distribute → no 5xx', dr.every((x) => x.status < 500), dr.filter((x) => x.status >= 500).map((x) => x.text.slice(0, 120)).join(' | '));
   }
 } finally {
   for (const fn of cleanup.reverse()) await fn().catch((e) => console.log('cleanup:', (e as Error).message));
