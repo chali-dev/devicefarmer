@@ -7,6 +7,7 @@ import { api, errorText } from '../../api/client'
 import type { PersonaDetail, PersonaLengths, PersonaVoice } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { confirmDanger, DRAWER_WIDTH } from '../common/ui'
+import PersonaPromptPanel from './PersonaPromptPanel.vue'
 import PersonaVoiceFields from './PersonaVoiceFields.vue'
 import { forgetPersona, type VoiceForm } from './persona'
 
@@ -20,6 +21,9 @@ import { forgetPersona, type VoiceForm } from './persona'
  * `personaId` null = new persona in `scope` (admin: `ownerId` for another user's personal one): 范例 can be written right
  * away and are created with the persona in one request (POST /api/personas `examples`, one transaction); after creating,
  * the drawer stays open on the new persona. 复制到我的人设 is a row action of the page only.
+ * Two tabs (owner 2026-11-19 「提示词功能移到编辑里，算是自定义页签，原本的保留是基本」): 基本 = the form above, 提示词 =
+ * PersonaPromptPanel (available once the persona exists). One 保存 for the drawer: PATCH the persona, then the panel's
+ * pending custom prompt (PUT …/prompt, null clears it).
  */
 const props = defineProps<{
   open: boolean; personaId: string | null; scope: 'public' | 'mine'; ownerId?: string
@@ -32,6 +36,8 @@ const id = ref<string | null>(null)
 const detail = ref<PersonaDetail | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const tab = ref<'basic' | 'prompt'>('basic')
+const promptPanel = ref<InstanceType<typeof PersonaPromptPanel> | null>(null)
 const noteOf = (tone: PersonaVoice['tone']) => t(`personas.toneNotes.${tone}`)
 const voiceOf = (v?: PersonaVoice): VoiceForm => ({
   tone: v?.tone ?? 'casual', toneNote: v ? v.toneNote ?? noteOf(v.tone) : noteOf('casual'), emoji: v?.emoji ?? 'medium', length: v?.length ?? 'medium',
@@ -49,6 +55,19 @@ const lengthTable = ref<PersonaLengths | null>(null)
 const table = computed(() => detail.value?.lengths ?? lengthTable.value)
 const maxExamples = computed(() => detail.value?.maxExamples ?? 20)
 
+/** The PATCH body of the current form; `baseline` = the one last loaded/saved (unsaved 基本 changes → 提示词 「保存后更新」). */
+function styleBody() {
+  return {
+    name: form.name.trim(), description: form.description.trim() || null,
+    style: {
+      tone: form.voice.tone, toneNote: form.voice.toneNote.trim(), emoji: form.voice.emoji, length: form.voice.length,
+      topics: form.topics, bannedWords: form.bannedWords, hashtags: form.hashtags, audience: form.audience.trim(), notes: form.notes.trim(),
+    },
+  }
+}
+const baseline = ref('')
+const stale = computed(() => JSON.stringify(styleBody()) !== baseline.value)
+
 async function load(pid: string) {
   loading.value = true
   try {
@@ -60,12 +79,14 @@ async function load(pid: string) {
       voice: voiceOf(s), hashtags: [...s.hashtags], audience: s.audience ?? '', notes: s.notes ?? '',
     })
     examples.value = d.examples.map((e) => ({ id: e.id, text: e.text, saved: e.text }))
+    baseline.value = JSON.stringify(styleBody())
   } catch (e) { message.error(errorText(e)); emit('update:open', false) } finally { loading.value = false }
 }
 
 watch(() => [props.open, props.personaId] as const, ([open, pid]) => {
   if (!open) return
   id.value = pid
+  tab.value = 'basic'
   detail.value = null
   examples.value = []
   if (pid) void load(pid)
@@ -76,20 +97,18 @@ watch(() => [props.open, props.personaId] as const, ([open, pid]) => {
 }, { immediate: true })
 
 async function save() {
-  const name = form.name.trim()
-  if (!name) { message.warning(t('personas.nameRequired')); return }
-  const body: Record<string, unknown> = {
-    name, description: form.description.trim() || null,
-    style: {
-      tone: form.voice.tone, toneNote: form.voice.toneNote.trim(), emoji: form.voice.emoji, length: form.voice.length,
-      topics: form.topics, bannedWords: form.bannedWords, hashtags: form.hashtags, audience: form.audience.trim(), notes: form.notes.trim(),
-    },
-  }
+  const body = styleBody()
+  if (!body.name) { tab.value = 'basic'; message.warning(t('personas.nameRequired')); return }
+  const prompt = id.value ? promptPanel.value?.pending() : undefined
+  if (prompt === 'empty') { tab.value = 'prompt'; message.warning(t('personas.prompt.emptyPart')); return }
   saving.value = true
   try {
     if (id.value) {
       await api('PATCH', `/api/personas/${id.value}`, body)
+      baseline.value = JSON.stringify(body)
       forgetPersona(id.value)
+      if (prompt !== undefined) await api('PUT', `/api/personas/${id.value}/prompt`, { customPrompt: prompt })
+      void promptPanel.value?.reset()
       message.success(t('common.saved'))
     } else {
       // 范例 written before the first save are created with the persona in the same transaction
@@ -145,6 +164,8 @@ function removeExample(i: number) {
 <template>
   <a-drawer :open="open" :title="id ? t('personas.edit') : t('scripts.personas.add')" :width="DRAWER_WIDTH.md" destroy-on-close @close="emit('update:open', false)">
     <a-spin :spinning="loading">
+      <a-tabs v-model:active-key="tab">
+      <a-tab-pane key="basic" :tab="t('personas.form.tabBasic')">
       <a-form layout="vertical">
         <!-- 基本 -->
         <a-form-item :label="t('personas.colName')" required>
@@ -191,6 +212,12 @@ function removeExample(i: number) {
         <div class="muted small">{{ t(id ? 'personas.form.examplesHint' : 'personas.form.examplesWithPersona', { max: maxExamples }) }}</div>
 
       </a-form>
+      </a-tab-pane>
+      <a-tab-pane key="prompt" :tab="t('personas.form.tabPrompt')">
+        <PersonaPromptPanel v-if="id" ref="promptPanel" :persona-id="id" :stale="stale" />
+        <div v-else class="muted small">{{ t('personas.prompt.afterCreate') }}</div>
+      </a-tab-pane>
+      </a-tabs>
     </a-spin>
     <template #footer>
       <a-space>

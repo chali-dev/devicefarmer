@@ -23,7 +23,7 @@ import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { buildUserMessage, closeAiRedis, DRAFTS_SCHEMA, loadExamples, SYSTEM_PROMPT } from '../src/modules/ai/drafts.js';
+import { buildUserMessage, closeAiRedis, DRAFTS_SCHEMA, loadExamples, renderPrompt, SYSTEM_PROMPT } from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -112,20 +112,27 @@ try {
   const g = (await http('GET', `/api/personas/${pA.id}/prompt`, A.token)).body;
   const [row] = await db.select().from(schema.personas).where(eq(schema.personas.id, pA.id));
   const ex = await loadExamples(row!);
-  const day = g.prompt.user.match(/^Date: (\S+)/)?.[1];
+  const day = g.prompt.user.match(/^日期：(\S+)/m)?.[1];
   const expected = buildUserMessage({ persona: row!, count: 1, day, examples: ex, recent: [{ title: `上周的拿铁 ${tag}`, body: '拿铁拉花入门' }] });
   const u: string = g.prompt.user;
   check('GET prompt (generated): custom false, system = SYSTEM_PROMPT, user = buildUserMessage (count 1, 2 范例, 1 recent post)',
     g.prompt.custom === false && g.customPrompt === null && g.prompt.system === SYSTEM_PROMPT && u === expected && g.prompt.examples === 2 && g.prompt.recent === 1,
     `${g.prompt.custom} ${g.prompt.examples} ${g.prompt.recent}\n${u}\n---\n${expected}`);
   check('GET prompt: style / banned words / 范例 / recent post in the text, no topic line',
-    u.includes('Positioning: 在家做好一杯手冲') && u.includes('Tone: pro — 讲清原理') && u.includes('- 最便宜') && u.includes('- forbiddenword') && u.includes('- 手冲咖啡')
-      && u.includes('范例一 水温 92 度') && u.includes('范例二 研磨度') && u.includes(`上周的拿铁 ${tag}`) && u.includes('Audience: 咖啡新手') && !u.includes('Requested topic'));
+    u.includes('定位：在家做好一杯手冲') && u.includes('语气：专业干货（讲清原理') && u.includes('- 最便宜') && u.includes('- forbiddenword') && u.includes('- 手冲咖啡')
+      && u.includes('范例一 水温 92 度') && u.includes('范例二 研磨度') && u.includes(`上周的拿铁 ${tag}`) && u.includes('写给谁：咖啡新手') && ['【本次要求】', '【人设】', '【风格】', '【范例】', '【最近发过】'].every((x) => u.includes(x)) && u.includes('\n本次主题：\n'));
   const gt = (await http('GET', `/api/personas/${pA.id}/prompt?topic=${encodeURIComponent('冷萃')}`, A.token)).body;
-  check('GET prompt ?topic=冷萃: the "Requested topic" line names it', gt.prompt.user.includes('Requested topic (every draft is about it, each from a different angle): 冷萃'));
-  check('GET prompt: model, output schema = DRAFTS_SCHEMA, placeholders, template with {{topic}} {{date}} {{count}} {{examples}} {{recent_posts}} and the persona\'s settings',
+  check('GET prompt ?topic=冷萃: the 本次主题 line names it', gt.prompt.user.includes('【本次主题】\n本次主题：冷萃\n（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）'));
+  // the 提示词 tab renders the unsaved boxes client-side with prompt.vars (+ its own topic): the unedited template
+  // filled with them must be exactly what is sent
+  const v = g.prompt.vars as Record<string, string>;
+  check('GET prompt: vars (date, count 1, examples, recent_posts, topic empty) fill the template to exactly prompt.user / system; with topic 冷萃 too',
+    Object.keys(v).sort().join() === 'count,date,examples,recent_posts,topic' && v.count === '1' && v.date === day && v.topic === '' && v.examples.includes('范例 1「')
+      && v.recent_posts.includes(`上周的拿铁 ${tag}`) && renderPrompt(g.template.user, v as any) === u && renderPrompt(g.template.system, v as any) === g.prompt.system
+      && gt.prompt.vars.topic === '冷萃' && renderPrompt(g.template.user, gt.prompt.vars) === gt.prompt.user);
+  check('GET prompt: model, output schema = DRAFTS_SCHEMA, placeholders, template with 本次主题：{{主题}} {{date}} {{count}} {{examples}} {{recent_posts}} and the persona\'s settings',
     g.model === 'claude-opus-5-5' && JSON.stringify(g.schema) === JSON.stringify(DRAFTS_SCHEMA) && g.placeholders.join() === 'topic,date,count,examples,recent_posts' && g.maxLength === 20000
-      && g.template.system === SYSTEM_PROMPT && ['{{topic}}', '{{date}}', '{{count}}', '{{examples}}', '{{recent_posts}}', 'Positioning: 在家做好一杯手冲', '- 最便宜'].every((x) => g.template.user.includes(x))
+      && g.template.system === SYSTEM_PROMPT && ['【本次主题】\n本次主题：{{主题}}\n', '{{date}}', '{{count}}', '{{examples}}', '{{recent_posts}}', '定位：在家做好一杯手冲', '- 最便宜'].every((x) => g.template.user.includes(x))
       && !g.template.user.includes('范例一'));
 
   // ================================================================ what is really sent (generated)
@@ -167,7 +174,7 @@ try {
   const cu: string = gc.prompt.user;
   check('GET prompt (custom): custom true, {{主题}} / {{ date }} / {{count}} / {{topic}} / {{examples}} / {{recent_posts}} filled, {{unknown}} and {单括号} literal, customPrompt returned as stored',
     gc.prompt.custom === true && gc.prompt.system === `你是 冷萃 写手。只输出 JSON。日期 ${day}。` && cu.startsWith('写 1 篇关于「冷萃」的草稿。')
-      && cu.includes('<example name=') && cu.includes('范例一 水温 92 度') && cu.includes(`上周的拿铁 ${tag}`) && cu.includes('保留 {{unknown}} 与 {单括号}。') && !cu.includes('Positioning:')
+      && cu.includes('范例 1「') && cu.includes('范例一 水温 92 度') && cu.includes(`上周的拿铁 ${tag}`) && cu.includes('保留 {{unknown}} 与 {单括号}。') && !cu.includes('定位：')
       && gc.customPrompt?.user === USR && gc.template.system === SYSTEM_PROMPT, `${gc.prompt.system}\n${cu}`);
   const gn = (await http('GET', `/api/personas/${pA.id}/prompt`, A.token)).body;
   check('GET prompt (custom) without a topic: {{topic}} empty', gn.prompt.system === `你是  写手。只输出 JSON。日期 ${day}。` && gn.prompt.user.startsWith('写 1 篇关于「」的草稿。'));
