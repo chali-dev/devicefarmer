@@ -105,9 +105,6 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
   // 已发布的内容不能编辑: the remaining accounts get the content's own texts, no per-account text overrides.
   if (targets.some((t) => t.title?.trim() || t.caption != null || t.hashtags?.length)) await assertNotPublished(db, content.id);
-  const media = await contentMediaOf(db, content.id);
-  const notReady = media.find((m) => m.status !== 'ready');
-  if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
   const now = new Date();
   const translations = await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, content.id));
 
@@ -117,6 +114,12 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
     const [locked] = await tx.select({ stage: schema.contents.stage }).from(schema.contents).where(eq(schema.contents.id, content.id)).for('update');
     if (!locked) throw notFound('内容不存在', 'content.not_found');
     if (locked.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
+    // The content's assets are locked (FOR SHARE) before they are read, so a parallel 素材 delete (media.ts deleteMedia)
+    // either sees this publish task (media.in_use) or has removed the asset before it is read here.
+    await tx.execute(sql`select a.id from content_media cm join media_assets a on a.id = cm.asset_id where cm.content_id = ${content.id} for share of a`);
+    const media = await contentMediaOf(tx, content.id);
+    const notReady = media.find((m) => m.status !== 'ready');
+    if (notReady) throw conflict(`素材「${notReady.name}」尚未就绪（${notReady.status}）`, 'publish.media_not_ready', { name: notReady.name, status: notReady.status });
     const out: DistributeResult = { created: [], existing: [] };
     for (const t of targets) {
       const acc = await visibleAccount(user, t.accountId, tx);

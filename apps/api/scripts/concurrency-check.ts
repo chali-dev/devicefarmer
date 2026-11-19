@@ -285,6 +285,24 @@ try {
     check('archive racing distribute ×10 → never archived with an unfinished publish task', bad === 0, `${bad} archived with open tasks`);
     check('batch archive racing distribute ×10 → never archived with an unfinished publish task', badB === 0, `${badB} archived with open tasks`);
     check('archive / delete racing distribute → no 5xx', dr.every((x) => x.status < 500), dr.filter((x) => x.status >= 500).map((x) => x.text.slice(0, 120)).join(' | '));
+
+    // B7: 素材 delete racing distribute: an unfinished publish task never references a deleted asset
+    const imgs = await Promise.all(Array.from({ length: 8 }, () => uploadPng(A.token)));
+    let gone = 0;
+    const mr: { status: number; text: string }[] = [];
+    for (const m of imgs) {
+      const cr2 = await http('POST', '/api/contents', A.token, { title: `cc-${tag} m`, body: 'x', mediaIds: [m, img] });
+      const id = cr2.body.content.id as string;
+      mr.push(...await Promise.all([
+        http('DELETE', `/api/media/${m}`, A.token),
+        http('POST', `/api/contents/${id}/distribute`, A.token, { targets: [{ accountId: acc2, scheduledAt: future(3) }] }),
+      ]));
+      const open = await db.select().from(PT).where(and(eq(PT.contentId, id), inArray(PT.status, [...UNFINISHED])));
+      const [asset] = await db.select().from(schema.mediaAssets).where(eq(schema.mediaAssets.id, m));
+      if (open.some((p) => p.mediaIds.includes(m)) && (!asset || asset.deletedAt)) gone++;
+    }
+    check('media delete racing distribute ×8 → no unfinished publish task with a deleted asset, no 5xx', gone === 0 && mr.every((x) => x.status < 500),
+      `${gone} tasks with a deleted asset; ${mr.filter((x) => x.status >= 500).map((x) => x.text.slice(0, 100)).join(' | ')}`);
   }
 } finally {
   for (const fn of cleanup.reverse()) await fn().catch((e) => console.log('cleanup:', (e as Error).message));
