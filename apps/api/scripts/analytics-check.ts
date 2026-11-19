@@ -5,8 +5,8 @@
  * - Removed endpoints: POST …/stats, DELETE …/stats/:day, POST …/refresh → 404 (user and admin); no account-stats task.
  * - Exact per-day gains, per-day sums, totals, per-account sums, 7/30/1-day ranges, baseline before the window.
  * - Responses carry no connection / lastRun / apiStats / apiPosts any more.
- * - RBAC: users only see their own accounts (others 404), admins all + owner filter; dashboard widget per role.
- * - Likes/comments in per-account sums and the dashboard widget; days without data are null (chart gaps).
+ * - RBAC: users only see their own accounts (others 404), admins all + owner filter; the dashboard's 媒体号分析 numbers (summary 7 / 30 days) per role.
+ * - Likes/comments in per-account sums and the dashboard's 7-day summary; days without data are null (chart gaps).
  * - Own posts (帖子) from stored rows: list/sort/limit/offset, publish link, RBAC.
  * Creates two temporary users and removes everything afterwards.
  * Usage (from apps/api, API running with ENABLED_PLATFORMS=all): E2E_API=http://127.0.0.1:3190 npx tsx --env-file=../../.env scripts/analytics-check.ts
@@ -146,20 +146,24 @@ try {
   r = await http('GET', `/api/analytics/summary?ownerId=${uB}`, A);
   check('user: owner filter is ignored (still own accounts only)', r.status === 200 && r.body.accounts.length === 5);
 
-  // ---------------------------------------------------------------- dashboard widget
-  const tz = 'UTC';
-  r = await http('GET', `/api/dashboard?tz=${tz}`, A);
-  const w = r.body.widgets?.analytics;
-  check('dashboard widget (user A): +130 / views 230 / shares 15, top = the instagram account',
-    r.status === 200 && w?.followersGained7d === 130 && w.views7d === 230 && w.shares7d === 15 && w.trend.length === 7 && w.top[0]?.id === igM && w.top[0].gain === 100, JSON.stringify(w));
-  const wDay = (d: string) => w?.trend.find((x: any) => x.day === d);
-  check('dashboard widget: likes7d 9 / comments7d 2, trend carries likes/comments per day, days without data are null (not 0)',
-    w?.likes7d === 9 && w.comments7d === 2 && wDay(day(3))?.likes === 9 && wDay(day(3))?.comments === 2 && wDay(day(5))?.likes === null && wDay(day(5))?.followersGained === null
-      && wDay(day(5))?.views === null, JSON.stringify(w?.trend));
-  r = await http('GET', `/api/dashboard?tz=${tz}`, B);
-  check('dashboard widget (user B): +20 only', r.body.widgets?.analytics?.followersGained7d === 20 && r.body.widgets.analytics.accounts === 1, JSON.stringify(r.body.widgets?.analytics));
-  r = await http('GET', `/api/dashboard?tz=${tz}&userId=${uA}`, T);
-  check('dashboard widget (admin viewing as A) = A\'s numbers', r.body.widgets?.analytics?.followersGained7d === 130);
+  // ---------------------------------------------------------------- dashboard 媒体号分析 (simplified 2026-11-19: the page reads summary?days=7|30)
+  r = await http('GET', '/api/dashboard?tz=UTC', A);
+  check('dashboard: no analytics widget any more (the page reads /api/analytics/summary)', r.status === 200 && !('analytics' in (r.body.widgets ?? {})), JSON.stringify(r.body.order));
+  r = await http('GET', '/api/analytics/summary?days=7', A);
+  const w = r.body;
+  const accM = w.accounts?.find((x: any) => x.id === igM);
+  check('dashboard 7 days (user A): +130 / views 230 / shares 15, the instagram account +100',
+    r.status === 200 && w.totals.followersGained === 130 && w.totals.views === 230 && w.totals.shares === 15 && w.days.length === 7 && accM?.range.followersGained === 100, JSON.stringify(w.totals));
+  const wDay = (d: string) => w.days.find((x: any) => x.day === d);
+  check('dashboard 7 days: likes 9 / comments 2, per day likes/comments, days without data are null (not 0)',
+    w.totals.likes === 9 && w.totals.comments === 2 && wDay(day(3))?.likes === 9 && wDay(day(3))?.comments === 2 && wDay(day(5))?.likes === null && wDay(day(5))?.followersGained === null
+      && wDay(day(5))?.views === null, JSON.stringify(w.days));
+  r = await http('GET', '/api/analytics/summary?days=30', A);
+  check('dashboard 30 days (user A): 30 day points, gains at least the 7-day ones', r.status === 200 && r.body.days.length === 30 && r.body.totals.followersGained >= 130, JSON.stringify(r.body.totals));
+  r = await http('GET', '/api/analytics/summary?days=7', B);
+  check('dashboard 7 days (user B): +20 only', r.body.totals?.followersGained === 20 && r.body.totals.accounts === 1, JSON.stringify(r.body.totals));
+  r = await http('GET', `/api/analytics/summary?days=7&ownerId=${uA}`, T);
+  check('dashboard (admin viewing as A, ownerId) = A\'s numbers', r.body.totals?.followersGained === 130);
 
   // ---------------------------------------------------------------- no data source: nothing schedules account-stats
   const statsTasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'account-stats'), inArray(schema.tasks.refId, [igM, fb, igA, ytA, ttA, igB])));

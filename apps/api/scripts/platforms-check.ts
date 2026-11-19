@@ -94,7 +94,7 @@ try {
   if (badCh.body?.channel?.id) channelIds.push(badCh.body.channel.id);
 
   const dash = await http('GET', '/api/dashboard', U);
-  check('dashboard social widget: no connections', dash.status === 200 && dash.body.widgets?.social && !('connections' in dash.body.widgets.social), dash.body.widgets?.social);
+  check('dashboard: no connections anywhere (only the devices widget since 2026-11-19)', dash.status === 200 && JSON.stringify(dash.body.order) === '["devices"]' && !JSON.stringify(dash.body).includes('connections'), JSON.stringify(dash.body).slice(0, 200));
   const ck = await http('POST', `/api/social/accounts/${accId}/checked`, U, { loginStatus: 'logged_in' });
   check('manual "mark checked" is gone too (404, statuses are system-written)', ck.status === 404, ck.status);
 

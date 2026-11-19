@@ -2,7 +2,6 @@ import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { HttpError } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
-import { registerDashboardWidget } from '../dashboard/registry.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
 import { call as youtubeGet, youtubeSource } from '../tracked/youtube.js';
 
@@ -177,17 +176,3 @@ export async function snapshotItems(snap: typeof schema.trendingSnapshots.$infer
   };
 }
 
-/** Public chart data, same for every user: regions collected, latest capture and the top 5 of the newest one. */
-registerDashboardWidget('trending', async () => {
-  if (!trendingAvailable()) return null;
-  const latest = (await latestSnapshots()).sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
-  if (!latest.length) return null;
-  const top = await db.select({ rank: schema.trendingItems.rank, title: schema.trendingItems.title, videoId: schema.trendingItems.videoId, views: schema.trendingItems.views })
-    .from(schema.trendingItems).where(eq(schema.trendingItems.snapshotId, latest[0]!.id)).orderBy(schema.trendingItems.rank).limit(5);
-  return {
-    regions: [...new Set(latest.map((s) => s.region))].sort(),
-    region: latest[0]!.region,
-    capturedAt: latest[0]!.capturedAt.toISOString(),
-    top: top.map((t) => ({ ...t, url: `https://www.youtube.com/watch?v=${encodeURIComponent(t.videoId)}` })),
-  };
-}, { order: 75 });
