@@ -2857,7 +2857,7 @@ const zhCN = {
       admin_only: '仅管理员可以查看其他用户的发布任务',
       bad_status: '当前状态不能执行该操作',
       duplicate_target: '目标账号重复',
-      already_published: '该内容已发布到 @{account}；同一内容在一个账号上只发布一次',
+      already_published: "该内容已发布到 {'@'}{account}；同一内容在一个账号上只发布一次",
       duplicate_unfinished: '该内容在这个账号上已有未完成的发布任务',
       account_not_owner: '账号不属于内容所有者',
       media_not_ready: '素材尚未处理完成',

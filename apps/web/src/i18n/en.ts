@@ -2854,7 +2854,7 @@ const en: Messages = {
       admin_only: "Only admins can see other users' publish tasks",
       bad_status: 'Not possible in the current status',
       duplicate_target: 'The same account is listed twice',
-      already_published: 'This content was already published to @{account}; a content is published only once per account',
+      already_published: "This content was already published to {'@'}{account}; a content is published only once per account",
       duplicate_unfinished: 'This content already has an unfinished publish task on this account',
       account_not_owner: "The account does not belong to the content's owner",
       media_not_ready: 'Some media are still processing',
