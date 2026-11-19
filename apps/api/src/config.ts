@@ -143,6 +143,11 @@ const Env = z.object({
    * server's, e.g. `env -u DOCKER_HOST docker exec -i -e PGPASSWORD cloudphone-dev-postgres-1 pg_dump` (dev).
    */
   PG_DUMP_CMD: z.string().min(1).default('pg_dump'),
+  /**
+   * 导入 (restore a backup) runs `${PG_RESTORE_CMD} --clean --if-exists --no-owner --single-transaction` the same
+   * way. Unset = PG_DUMP_CMD with its trailing `pg_dump` replaced by `pg_restore` (modules/system/restore.ts).
+   */
+  PG_RESTORE_CMD: z.string().min(1).optional(),
   /** API log files (one per UTC day, retention in settings) and the in-memory ring of recent lines. */
   LOG_DIR: z.string().default('var/logs'),
   LOG_RING_SIZE: z.coerce.number().int().min(100).max(100_000).default(5000),

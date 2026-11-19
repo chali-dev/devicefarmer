@@ -476,6 +476,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/system/purge/:kind': { action: 'system.purge', detail: ({ params }) => ({ kind: params.kind }) },
   'POST /api/system/backups': { action: 'system.backup_create' },
   'DELETE /api/system/backups/:id': { action: 'system.backup_delete' },
+  'POST /api/system/backups/:id/restore': { action: 'system.backup_restore' },
 };
 
 /** Cheap `:id` → name lookups, by route prefix. */

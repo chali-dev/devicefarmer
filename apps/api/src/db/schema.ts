@@ -1288,7 +1288,7 @@ export interface GoogleHealth {
 export const dbBackups = pgTable('db_backups', {
   id: uuid('id').primaryKey().defaultRandom(),
   status: text('status', { enum: ['running', 'ok', 'failed'] }).notNull().default('running'),
-  trigger: text('trigger', { enum: ['manual', 'scheduled'] }).notNull(),
+  trigger: text('trigger', { enum: ['manual', 'scheduled', 'pre-restore'] }).notNull(),
   storage: text('storage', { enum: ['local', 's3'] }).notNull(),
   key: text('key').notNull(),
   size: bigint('size', { mode: 'number' }),

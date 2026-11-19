@@ -3,6 +3,9 @@
  * - Database backups: back up now → file in the storage backend → listed → downloadable (custom-format
  *   magic PGDMP, and `pg_restore --list` through PG_RESTORE_CMD or PG_DUMP_CMD with pg_dump→pg_restore) →
  *   retention keeps N → delete; the daily schedule is idempotent; no DB password in payloads/logs/audit.
+ * - 导入 (restore, only when DATABASE_URL is not the main DB): RBAC, 404/409 codes, one at a time, a real round trip
+ *   (backup → marker row + setting changed → restore → both back; safety backup listed + downloadable; source row ok;
+ *   task log steps; audit row kept), the safety backup imported back, the main DB "cloudphone" untouched (read-only probe).
  * - System logs: ring + daily file, level/text/time filters, redaction of secret-looking values.
  * - Connection monitoring: status history written by repo.updateInstance (directly and by the monitor)
  *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
@@ -17,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
+import postgres from 'postgres';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
@@ -254,6 +258,95 @@ try {
   const backupTasks = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'db-backup'), gte(schema.tasks.createdAt, t0)));
   const taskLogs = backupTasks.length ? await db.select().from(schema.taskLogs).where(inArray(schema.taskLogs.taskId, backupTasks.map((x) => x.id))) : [];
   check('no DB password in backup task payloads, results, errors or logs', !leaks(JSON.stringify(backupTasks)) && !leaks(JSON.stringify(taskLogs)) && taskLogs.length > 0);
+
+  // ---------------------------------------------------------------- 导入 (restore), only into a test database
+  const dbName = decodeURIComponent(dbUrl.pathname.slice(1));
+  if (dbName === 'cloudphone') {
+    console.log('  (restore part skipped: DATABASE_URL is the main database "cloudphone"; run against a test DB + test API)');
+  } else {
+    // Read-only probe of the main DB: a restore must never reach it.
+    const mainUrl = new URL(config.DATABASE_URL); mainUrl.pathname = '/cloudphone';
+    const main = postgres(mainUrl.toString(), { max: 1 });
+    const mainProbe = async () => {
+      const [r] = await main`select (select count(*) from audit_logs where at < ${t0}) as audit, (select count(*) from users) as users,
+        (select count(*) from db_backups) as backups, (select count(*) from settings where key like 'restorecheck.%') as markers`;
+      return JSON.stringify(r);
+    };
+    const mainBefore = await mainProbe().catch((e) => `unreadable: ${(e as Error).message}`);
+
+    const ghost = '00000000-0000-4000-8000-000000000000';
+    const ur = await http('POST', `/api/system/backups/${ghost}/restore`, U);
+    check('restore: user gets 403', ur.status === 403, String(ur.status));
+    const nf = await http('POST', `/api/system/backups/${ghost}/restore`, T);
+    check('restore: unknown backup → 404 system.backup_not_found', nf.status === 404 && nf.body?.code === 'system.backup_not_found', `${nf.status} ${JSON.stringify(nf.body)}`);
+    const [failedRow] = await db.insert(schema.dbBackups).values({ status: 'failed', trigger: 'manual', storage: 'local', key: `backups/restorecheck-${tag}.dump`, error: 'seeded' }).returning();
+    const no = await http('POST', `/api/system/backups/${failedRow!.id}/restore`, T);
+    check('restore: failed backup → 409 system.backup_not_ok', no.status === 409 && no.body?.code === 'system.backup_not_ok', `${no.status} ${JSON.stringify(no.body)}`);
+    await db.delete(schema.dbBackups).where(eq(schema.dbBackups.id, failedRow!.id));
+
+    // the backup to restore: settings as they are now
+    const logDaysAtBackup = (await http('GET', '/api/system/settings', T)).body.settings.logRetentionDays as number;
+    const src = await http('POST', '/api/system/backups', T);
+    const srcTask = await waitTask(T, src.body.task.id);
+    const srcRow = (await db.select().from(schema.dbBackups).where(eq(schema.dbBackups.taskId, srcTask.id)))[0];
+    check('restore: source backup ok (row in this script\'s DB = the API\'s DB)', srcTask.status === 'success' && srcRow?.status === 'ok', `${srcTask.status} ${JSON.stringify(srcRow)}`);
+    if (srcRow) backupIds.push(srcRow.id);
+
+    // changes after the backup: a marker row + a setting
+    const markerKey = `restorecheck.${tag}`;
+    await db.insert(schema.settings).values({ key: markerKey, value: { tag } });
+    await http('PUT', '/api/system/settings', T, { logRetentionDays: logDaysAtBackup === 21 ? 22 : 21 });
+    check('restore: data changed after the backup', (await db.select().from(schema.settings).where(eq(schema.settings.key, markerKey))).length === 1
+      && (await http('GET', '/api/system/settings', T)).body.settings.logRetentionDays !== logDaysAtBackup);
+
+    const rs = await http('POST', `/api/system/backups/${srcRow!.id}/restore`, T);
+    check('restore: 202 + task', rs.status === 202 && !!rs.body.task?.id, `${rs.status} ${JSON.stringify(rs.body)}`);
+    const again = await http('POST', `/api/system/backups/${srcRow!.id}/restore`, T);
+    check('restore: a second one while it runs → 409 system.restore_running', again.status === 409 && again.body?.code === 'system.restore_running', `${again.status} ${JSON.stringify(again.body)}`);
+    const rt = await waitTask(T, rs.body.task.id);
+    check('restore: task succeeded', rt.status === 'success', `${rt.status} ${rt.errorCode ?? ''} ${rt.error ?? ''}`);
+    check('restore: marker row gone', (await db.select().from(schema.settings).where(eq(schema.settings.key, markerKey))).length === 0);
+    check('restore: setting back to the backup\'s value', (await http('GET', '/api/system/settings', T)).body.settings.logRetentionDays === logDaysAtBackup);
+    const safetyId = (rt.result as any)?.safetyBackupId as string | undefined;
+    const list3 = (await http('GET', '/api/system/backups', T)).body.backups as any[];
+    const safety = list3.find((b) => b.id === safetyId);
+    if (safetyId) backupIds.push(safetyId);
+    check('restore: safety backup listed (trigger pre-restore, ok)', safety?.trigger === 'pre-restore' && safety.status === 'ok' && safety.size > 0, JSON.stringify(safety));
+    check('restore: source backup still listed ok (not the in-dump "running" copy)', list3.some((b) => b.id === srcRow!.id && b.status === 'ok'));
+    check('restore: every backup listed before is still listed', okRows.filter((b) => b.id !== victim?.id).every((b) => list3.some((x) => x.id === b.id)));
+    const sdl = safetyId ? await http('GET', `/api/system/backups/${safetyId}/download`, T) : null;
+    check('restore: safety backup downloadable (PGDMP)', sdl?.status === 200 && sdl.buf.subarray(0, 5).toString('latin1') === 'PGDMP', String(sdl?.status));
+    const detail = await http('GET', `/api/tasks/${rs.body.task.id}`, T);
+    const msgs = (detail.body.logs as any[]).map((l) => l.message as string);
+    const steps = [/^restore of \S+ started: safety backup first$/, /^pg_dump of \S+ started$/, /^backup stored/, /^pg_restore of \S+ started \(\d+ bytes\)$/, /^database restored from \S+$/, /^migrations applied$/, /^tasks reconciled$/, /^succeeded$/];
+    check('restore: task log has every step in order', steps.every((re) => msgs.some((m) => re.test(m)))
+      && msgs.findIndex((m) => steps[2]!.test(m)) < msgs.findIndex((m) => steps[3]!.test(m)), msgs.join(' | '));
+    check('restore: task log kept the lines from before pg_restore (created, attempt)', msgs.includes('created') && msgs.some((m) => /^attempt 1\/1 started$/.test(m)), msgs.slice(0, 3).join(' | '));
+    check('restore: no DB password in the restore task / log', !leaks(JSON.stringify(rt)) && !leaks(JSON.stringify(detail.body.logs)));
+    await new Promise((r) => setTimeout(r, 300));
+    const ra = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'system.backup_restore'));
+    const okA = ra.find((a) => a.ok && (a.detail as any)?.taskId === rs.body.task.id);
+    check('restore: audit row kept through the restore (target = file, backup + task id)', !!okA && okA.target === path.basename(srcRow!.key) && (okA.detail as any)?.backupId === srcRow!.id, JSON.stringify(ra));
+    check('restore: refused user attempt audited (403)', ra.some((a) => a.status === 403));
+
+    // back to the state right before the restore through the safety backup
+    if (safetyId) {
+      const back = await http('POST', `/api/system/backups/${safetyId}/restore`, T);
+      const bt = await waitTask(T, back.body.task.id);
+      check('restore: safety backup imported → marker + changed setting back', bt.status === 'success'
+        && (await db.select().from(schema.settings).where(eq(schema.settings.key, markerKey))).length === 1
+        && (await http('GET', '/api/system/settings', T)).body.settings.logRetentionDays !== logDaysAtBackup, `${bt.status} ${bt.errorCode ?? ''} ${bt.error ?? ''}`);
+      const s2 = (bt.result as any)?.safetyBackupId as string | undefined;
+      if (s2) backupIds.push(s2);
+      const l4 = (await http('GET', '/api/system/backups', T)).body.backups as any[];
+      check('restore: first restore task + its safety backup still there after the second', l4.some((b) => b.id === safetyId) && l4.some((b) => b.id === s2)
+        && (await http('GET', `/api/tasks/${rs.body.task.id}`, T)).body?.task?.status === 'success');
+      await db.delete(schema.settings).where(eq(schema.settings.key, markerKey));
+    }
+    const mainAfter = await mainProbe().catch((e) => `unreadable: ${(e as Error).message}`);
+    check('restore: main database "cloudphone" untouched (read-only probe)', !mainBefore.startsWith('unreadable') && mainBefore === mainAfter, `${mainBefore} → ${mainAfter}`);
+    await main.end();
+  }
 
   // ---------------------------------------------------------------- system logs
   const fake = `cpfake${randomBytes(8).toString('hex')}`;
