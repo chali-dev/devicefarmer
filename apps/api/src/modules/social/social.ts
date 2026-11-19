@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -38,9 +39,7 @@ export async function getLimits(exec: Exec = db): Promise<Record<string, number>
 
 /** Merges the given platform limits into the stored ones (unknown platforms are rejected by the route schema). */
 export async function saveLimits(input: Record<string, number>): Promise<Record<string, number>> {
-  const next = { ...(await getLimits()), ...input };
-  await db.insert(schema.settings).values({ key: LIMITS_KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
+  await updateSetting(LIMITS_KEY, async (_stored, tx) => ({ ...(await getLimits(tx)), ...input }));
   return getLimits();
 }
 

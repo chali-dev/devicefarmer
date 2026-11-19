@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import { UnrecoverableError } from 'bullmq';
 import { and, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 import type { Comment, CommentReplyStatus, CommentTask, Instance, ReplyEvidence, SocialAccount, Task, TrackedPost, TrackedPostComment } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
@@ -91,9 +92,9 @@ export async function getRules(exec: Exec = db): Promise<CommentRules> {
  */
 export async function saveRules(input: Partial<CommentRules>): Promise<CommentRules> {
   const keys = Object.keys(DEFAULT_RULES) as (keyof CommentRules)[];
-  const next = { ...(await getRules()), ...Object.fromEntries(Object.entries(input).filter(([k, v]) => v !== undefined && (keys as string[]).includes(k))) };
-  await db.insert(schema.settings).values({ key: RULES_KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
+  await updateSetting(RULES_KEY, async (_stored, tx) => ({
+    ...(await getRules(tx)), ...Object.fromEntries(Object.entries(input).filter(([k, v]) => v !== undefined && (keys as string[]).includes(k))),
+  }));
   return getRules();
 }
 

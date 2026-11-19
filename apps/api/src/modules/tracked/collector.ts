@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
+import { updateSetting } from '../../lib/locks.js';
 import type { Instance } from '../../db/schema.js';
 import { adb } from '../../services.js';
 import { scrcpyActive } from '../control/scrcpy-hub.js';
@@ -69,17 +70,14 @@ async function storedHalts(): Promise<Record<string, DeviceHalt>> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.key, HALTS_KEY));
   return { ...((row?.value as Record<string, DeviceHalt> | undefined) ?? {}) };
 }
-async function storeHalts(next: Record<string, DeviceHalt>): Promise<void> {
-  await db.insert(schema.settings).values({ key: HALTS_KEY, value: next })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
-}
 
 export const deviceHalts = (): Promise<Record<string, DeviceHalt>> => storedHalts();
 export const deviceHalt = async (instanceId: string): Promise<DeviceHalt | null> => (await deviceHalts())[instanceId] ?? null;
 
 /** Stops automatic work on the device and raises collector.blocked (admins + device grants, channels). */
 export async function haltDevice(inst: Pick<Instance, 'id' | 'name'>, halt: Omit<DeviceHalt, 'at'>): Promise<void> {
-  await storeHalts({ ...(await storedHalts()), [inst.id]: { ...halt, at: new Date().toISOString() } });
+  // one device's entry merged under the row's lock: halts / resumes of other devices at the same time all survive
+  await updateSetting(HALTS_KEY, (stored) => ({ ...((stored as Record<string, DeviceHalt> | undefined) ?? {}), [inst.id]: { ...halt, at: new Date().toISOString() } }));
   await collectorBlocked(inst, halt.platform, true, halt.code);
 }
 
@@ -92,9 +90,15 @@ export const onDeviceResumed = (fn: (instanceId: string) => Promise<unknown>) =>
 
 /** Clears the device's halt and recovers its alert. Returns whether it was halted. */
 export async function resumeDevice(instanceId: string): Promise<boolean> {
-  const cur = await storedHalts();
-  const halt = cur[instanceId] ?? null;
-  if (halt) { delete cur[instanceId]; await storeHalts(cur); }
+  // under the row's lock: of two parallel resumes only one sees the halt (one recovery, one audit-worthy change)
+  let halt = null as DeviceHalt | null;
+  await updateSetting(HALTS_KEY, (stored) => {
+    const cur = { ...((stored as Record<string, DeviceHalt> | undefined) ?? {}) };
+    halt = cur[instanceId] ?? null;
+    if (!halt) return undefined;
+    delete cur[instanceId];
+    return cur;
+  });
   if (halt) {
     const inst = await getInstance(instanceId);
     if (inst) await collectorBlocked(inst, halt.platform, false);
