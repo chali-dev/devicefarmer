@@ -13,7 +13,7 @@
  * (E2E_API=http://127.0.0.1:<port> for another API).
  */
 import { randomBytes } from 'node:crypto';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { seedStatsDay } from './lib/analytics-seed.js';
@@ -140,10 +140,14 @@ try {
 
   // B: a comment-reply task (B submits the reply → handed to an operator, no approval) + an account.problem alert
   // (what the automatic account check does on a logged-out phone: status written, real trigger called).
+  // 排程 needs the phone's grant (2026-11-19, social.device_not_granted): B holds D1 for the submit only (a legacy
+  // shared row written in the DB), removed again once the task finished, so A is the phone's only user afterwards.
+  await db.insert(schema.instanceGrants).values({ userId: uB, instanceId: D1.id });
   r = await http('POST', `/api/comment-replies/${replyB}/submit`, B, {});
   const taskB: string = r.body?.reply?.taskId;
   check('setup: B submits the reply → scheduled, B\'s comment-reply task', r.status === 200 && r.body.reply?.status === 'scheduled' && !!taskB, r.text.slice(0, 200));
   await waitFor('B reply task finished', async () => ['success', 'failed'].includes((await http('GET', `/api/tasks/${taskB}`, B)).body?.task?.status));
+  await db.delete(schema.instanceGrants).where(and(eq(schema.instanceGrants.userId, uB), eq(schema.instanceGrants.instanceId, D1.id)));
   const [bRow] = await db.update(schema.socialAccounts).set({ loginStatus: 'logged_out', lastCheckCode: 'logged_out' }).where(eq(schema.socialAccounts.id, b.account)).returning();
   await accountChecked(bRow!);
   check('setup: B\'s account checked as logged out (account.problem)', bRow?.loginStatus === 'logged_out');

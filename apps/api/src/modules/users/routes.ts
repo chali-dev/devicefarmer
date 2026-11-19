@@ -1,12 +1,15 @@
 import bcrypt from 'bcryptjs';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { User } from '../../db/schema.js';
-import { badRequest, conflict, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, HttpError, notFound, type ErrorParams } from '../../lib/errors.js';
+import type { AuthUser } from '../auth/rbac.js';
 import { purgeOwnerMedia } from '../media/media.js';
-import { moveDeviceAccounts, type AccountMove } from '../social/assign.js';
+import {
+  builtinAdminId, moveDeviceAccounts, OWNER_DELETED_MESSAGE, OWNER_DISABLED_MESSAGE, releaseDeviceAccounts, UNASSIGN_MESSAGE, type AccountMove,
+} from '../social/assign.js';
 
 const Role = z.enum(['admin', 'user']);
 /** 自定义角色 (auth/roles.ts) of a role-'user' account; null = 普通用户. */
@@ -51,6 +54,40 @@ async function assertRole(tx: Tx, roleId: string) {
 const adminRoleId = () => badRequest('管理员不使用自定义角色', 'users.role_id_admin');
 /** Admins never carry a role id (an older colour may have left one when promoting). */
 const outUser = <U extends { role: string; roleId: string | null }>(u: U) => ({ ...u, roleId: u.role === 'admin' ? null : u.roleId });
+
+/**
+ * A user is disabled / deleted (owner decision 2026-11-19): the social accounts of theirs linked to a phone move to
+ * the builtin admin (social/assign.ts moveDeviceAccounts). Delete = `force` (their unfinished publish tasks /
+ * replies cascade with them). Disable / demote (admin → user: only phones not granted to them) keep the grant rows
+ * (re-enable + 分配 the same user again moves the accounts back) and move per phone in a savepoint: a phone whose
+ * accounts still have unfinished work keeps them (reported as `keptAccounts`); a disabled owner / one without the
+ * grant holds no phone (assign.ts devicesHeld), so nothing runs on those accounts until an admin sorts it out.
+ */
+async function releaseUserAccounts(tx: Tx, actor: AuthUser, userId: string, mode: 'disabled' | 'demoted' | 'deleted') {
+  let phones = await tx.selectDistinct({ id: schema.socialAccounts.instanceId }).from(schema.socialAccounts)
+    .where(and(eq(schema.socialAccounts.userId, userId), isNotNull(schema.socialAccounts.instanceId)));
+  if (mode === 'demoted') {
+    // an admin made a user: only the phones not granted to them
+    const held = new Set((await tx.select({ id: schema.instanceGrants.instanceId }).from(schema.instanceGrants).where(eq(schema.instanceGrants.userId, userId))).map((g) => g.id));
+    phones = phones.filter((p) => !held.has(p.id!));
+  }
+  const moved: AccountMove[] = [];
+  const kept: { instanceId: string; code: string; params?: ErrorParams }[] = [];
+  if (!phones.length) return { moved, kept };
+  const to = (await builtinAdminId(tx)) ?? actor.id;
+  const message = { disabled: OWNER_DISABLED_MESSAGE, demoted: UNASSIGN_MESSAGE, deleted: OWNER_DELETED_MESSAGE }[mode];
+  const opts = { fromUsers: [userId], force: mode === 'deleted', message };
+  for (const { id } of phones) {
+    if (mode === 'deleted') { moved.push(...await moveDeviceAccounts(tx, actor, id!, to, opts)); continue; }
+    try {
+      moved.push(...await tx.transaction((sp) => moveDeviceAccounts(sp, actor, id!, to, opts)));
+    } catch (err) {
+      if (!(err instanceof HttpError) || err.code !== 'instances.assign_account_busy') throw err;
+      kept.push({ instanceId: id!, code: err.code, ...(err.params ? { params: err.params } : {}) });
+    }
+  }
+  return { moved, kept };
+}
 
 /** User management + device grants. Admin only. */
 export const userRoutes: FastifyPluginAsyncZod = async (app) => {
@@ -121,7 +158,16 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
         return { user: outUser(same!) };
       }
       const [u] = await tx.update(schema.users).set(set).where(eq(schema.users.id, target.id)).returning(publicUser);
-      return { user: outUser(u!) };
+      // 禁用 / 降级: the user's accounts on phones they no longer hold go to the builtin admin (see releaseUserAccounts).
+      const rel = disable ? await releaseUserAccounts(tx, req.user, target.id, 'disabled')
+        : demote ? await releaseUserAccounts(tx, req.user, target.id, 'demoted') : null;
+      if (rel && req.audit && (rel.moved.length || rel.kept.length)) {
+        req.audit.extra = { movedAccounts: rel.moved.length, accountIds: rel.moved.map((m) => m.id), keptDevices: rel.kept.map((k) => k.instanceId) };
+      }
+      return {
+        user: outUser(u!),
+        ...(rel ? { movedAccounts: rel.moved.map(({ id, handle }) => ({ id, handle })), keptAccounts: rel.kept } : {}),
+      };
     });
   });
 
@@ -137,10 +183,14 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
     // files behind), then delete the user (checks repeated under the lock).
     await db.transaction(checkDeletable);
     await purgeOwnerMedia(req.params.id);
-    await db.transaction(async (tx) => {
+    const moved = await db.transaction(async (tx) => {
       const target = await checkDeletable(tx);
+      // Accounts on cloud phones would cascade with the user: they move to the builtin admin first.
+      const { moved: m } = await releaseUserAccounts(tx, req.user, target.id, 'deleted');
       await tx.delete(schema.users).where(eq(schema.users.id, target.id));
+      return m;
     });
+    if (req.audit && moved.length) req.audit.extra = { movedAccounts: moved.length, accountIds: moved.map((m) => m.id) };
     reply.code(204);
   });
 
@@ -148,7 +198,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
    * Replace the set of devices a user (role `user`) may access. Admins see every device. A cloud phone belongs to one
    * user (owner decision 2026-11-18): a device newly added here that another user holds → 409 grants.device_assigned
    * (unassign it first; devices the user already had stay, also on legacy multi-user rows), and its linked social
-   * accounts move to the user (social/assign.ts). Removing a device moves nothing. No page uses this endpoint any more
+   * accounts move to the user (social/assign.ts). Removing a device moves its accounts of this user to the builtin
+   * admin (releaseDeviceAccounts, same 409 while busy). No page uses this endpoint any more
    * (我的云机 uses the per-device one below); the scripts set up their placeholder users with it.
    */
   app.put('/api/users/:id/grants', {
@@ -178,6 +229,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
       if (ids.length) await tx.insert(schema.instanceGrants).values(ids.map((instanceId) => ({ userId: u.id, instanceId })));
       const out: AccountMove[] = [];
       for (const i of added) out.push(...await moveDeviceAccounts(tx, req.user, i.id, u.id));
+      // removed phones: their accounts of users who no longer hold them → the builtin admin (owner 2026-11-19)
+      for (const id of [...had].filter((x) => !ids.includes(x)).sort()) out.push(...await releaseDeviceAccounts(tx, req.user, id));
       return out;
     });
     if (req.audit && moved.length) req.audit.extra = { movedAccounts: moved.length, accountIds: moved.map((m) => m.id) };
@@ -188,7 +241,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
    * Assign one device: `userIds` = [] (unassigned, admins only) or exactly one user (role `user`, enabled); more →
    * 400 grants.single_user (owner decision 2026-11-18: a cloud phone belongs to one user). Assigning a (new) user
    * moves the device's linked social accounts to them (social/assign.ts, 409 instances.assign_account_busy while one
-   * has unfinished publish tasks / replies, nothing changed); unassigning moves nothing; the same user again = no-op.
+   * has unfinished publish tasks / replies, nothing changed); unassigning moves the accounts of users who no longer
+   * hold it to the builtin admin (owner decision 2026-11-19, same 409); the same user again = no-op.
    */
   app.put('/api/instances/:id/grants', {
     schema: { params: Id, body: z.object({ userIds: z.array(z.string().uuid()).max(500) }) },
@@ -202,7 +256,7 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
       const to = ids[0];
       if (!to) {
         if (cur.length) await tx.delete(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, inst.id));
-        return [];
+        return releaseDeviceAccounts(tx, req.user, inst.id);
       }
       const [u] = await tx.select({ id: schema.users.id, role: schema.users.role, disabled: schema.users.disabled }).from(schema.users).where(eq(schema.users.id, to)).for('update');
       if (!u) throw badRequest('用户不存在', 'users.not_found');

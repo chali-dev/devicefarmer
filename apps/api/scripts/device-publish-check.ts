@@ -167,6 +167,14 @@ try {
   check('帖子 with a video → device not available (publish.device_feed_video) → operator, phone not tried',
     d.task.status === 'awaiting_operator' && d.task.method === 'manual' && msgs(d).includes('method device not available: publish.device_feed_video') && !msgs(d).includes('method device'), msgs(d).join(' | '));
 
+  // the account's owner no longer holds the phone (owner decision 2026-11-19; grant row removed in the DB) → by hand
+  await db.delete(schema.instanceGrants).where(and(eq(schema.instanceGrants.userId, uA), eq(schema.instanceGrants.instanceId, D0.id)));
+  p = await dist(await content('no grant', [img]), a0.id);
+  d = await waitStatus(A, p.id, ['awaiting_operator', 'failed']);
+  check('owner without the phone\'s grant → device not available (publish.device_not_granted) → operator, phone not tried',
+    d.task.status === 'awaiting_operator' && d.task.method === 'manual' && msgs(d).includes('method device not available: publish.device_not_granted') && !msgs(d).includes('method device'), msgs(d).join(' | '));
+  await db.insert(schema.instanceGrants).values({ userId: uA, instanceId: D0.id });
+
   // no phone at all: the precheck still fails (an operator needs the phone too)
   const aNo = await acc(null);
   p = await dist(await content('no device', [img]), aNo.id);

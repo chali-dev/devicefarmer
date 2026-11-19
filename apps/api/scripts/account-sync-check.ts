@@ -17,7 +17,12 @@
  * user, else the admin; another ownerId → account_sync.owner_mismatch, legacy phone → owner_required), 自动发现 on an
  * unassigned phone → the builtin admin, the sync writes the check result (recordSyncCheck), and assigning a phone
  * moves its linked accounts to the user (logs, personal persona cleared, old owner's content targets removed,
- * comments follow, 409 instances.assign_account_busy with an unfinished reply, unassign keeps the owner, RBAC).
+ * comments follow, 409 instances.assign_account_busy with an unfinished reply, RBAC).
+ * Since 2026-11-19 (owner 「不能，转移给新用户，未分配给 ADMIN」): unassigning (per device, per user) moves the accounts to
+ * the builtin admin (logs, audit, 409 while busy); disabling a user moves them (a busy phone is kept and reported),
+ * deleting one moves them before the cascade; an owner without the phone's grant gets 403 social.device_not_granted on
+ * 立即检测 / 追踪中 同步 / 立即采集 / 同步 / 排程 a reply, an admin's check skips at run time, an admin-scheduled reply
+ * goes to an operator (comment.device_not_granted) and the hourly schedulers give the account no slot.
  * Placeholder devices on ports 5583–5584, 5586–5587, 5590–5591.
  */
 import { randomBytes } from 'node:crypto';
@@ -399,13 +404,134 @@ try {
   g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uA] });
   check('same user again → no-op (nothing moved, no logs)', g.status === 200 && g.body.movedAccounts?.length === 0
     && (await db.select().from(schema.socialAccountLogs).where(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]))).length === nLogs, g.text);
-  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [] });
-  check('unassign → no grant, accounts keep owner A', g.status === 200 && (await db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, D5.id))).length === 0
-    && (await db.select().from(SA).where(inArray(SA.id, [ma.id, mb.id]))).every((a) => a.userId === uA), g.text);
   g = await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id, D6.id] });
   check('per-user grants adding an unassigned phone → its account moves to B', g.status === 200 && g.body.movedAccounts?.length === 1 && (await db.select().from(SA).where(eq(SA.id, oc.accountId!)))[0]?.userId === uB, g.text);
   const re = await applySync({ inst: D5, ownerId: uA, actor: userA, handle: h5a, displayName: 'Moved', deviceIds: [] });
   check('re-sync by the new owner → updated (not taken)', re.result === 'updated' && re.accountId === ma.id);
+
+  // ---------------------------------------------------------------- account-level device actions need the grant (2026-11-19)
+  const owners = async () => (await db.select({ id: SA.id, userId: SA.userId }).from(SA).where(inArray(SA.id, [ma.id, mb.id]))).map((a) => a.userId);
+  const grantRows = (instanceId: string) => db.select().from(schema.instanceGrants).where(eq(schema.instanceGrants.instanceId, instanceId));
+  // A owns ma / mb but no longer holds D5 (written in the DB: the state of legacy data or a disabled owner's kept phone)
+  await db.delete(schema.instanceGrants).where(and(eq(schema.instanceGrants.userId, uA), eq(schema.instanceGrants.instanceId, D5.id)));
+  const denied: [string, string][] = [
+    ['立即检测', `/api/social/accounts/${ma.id}/check`], ['追踪中 同步', `/api/social/accounts/${ma.id}/following/sync`],
+    ['立即采集', `/api/social/accounts/${ma.id}/collect`], ['同步', `/api/social/accounts/${ma.id}/sync`],
+  ];
+  for (const [what, path] of denied) {
+    const r = await http('POST', path, A);
+    check(`owner without the phone's grant: ${what} → 403 social.device_not_granted`, r.status === 403 && r.body.code === 'social.device_not_granted', r.text);
+  }
+  check('nothing queued for the account by those refusals', (await db.select().from(T).where(and(eq(T.refId, ma.id), sql`${T.createdAt} > now() - interval '1 minute'`))).length === 0);
+  const cmA = await http('POST', '/api/comments', A, { accountId: mb.id, text: `grant ${tag}`, authorName: 'Viewer', authorHandle: '@viewer2', externalPostId: 'p2' });
+  const cmAId = cmA.body?.comment?.id ?? cmA.body?.id;
+  const drA = await http('POST', `/api/comments/${cmAId}/replies`, A, { text: `draft ${tag}` });
+  const drAId = drA.body?.reply?.id ?? drA.body?.id;
+  let rq = await http('POST', `/api/comment-replies/${drAId}/submit`, A, { scheduledAt: null });
+  check('owner without the grant: a draft is still saved, 排程 → 403 social.device_not_granted (stays a draft)', drA.status < 300 && rq.status === 403 && rq.body.code === 'social.device_not_granted'
+    && (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, drAId)))[0]?.status === 'draft', `${drA.text} ${rq.text}`);
+  // admins are unaffected; at run time the owner still has no phone → skipped / handed to an operator
+  rq = await http('POST', `/api/social/accounts/${ma.id}/check`, admin);
+  taskIds.add(rq.body?.task?.id);
+  const chkT = rq.status === 202 ? await waitTask(rq.body.task.id) : null;
+  check('admin 立即检测 → 202; the run skips it: social.device_not_granted (owner no longer holds the phone)', rq.status === 202 && chkT?.status === 'success'
+    && (chkT.result as any)?.outcome === 'skipped' && (chkT.result as any)?.code === 'social.device_not_granted', `${rq.text} ${JSON.stringify(chkT?.result)}`);
+  rq = await http('POST', `/api/comment-replies/${drAId}/submit`, admin, { scheduledAt: null });
+  let rep: typeof schema.commentTasks.$inferSelect | undefined;
+  for (let i = 0; i < 60; i++) {
+    [rep] = await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, drAId));
+    if (rep && !['scheduled', 'sending'].includes(rep.status)) break;
+    await sleep(500);
+  }
+  if (rep?.taskId) taskIds.add(rep.taskId);
+  const handLog = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, drAId), eq(schema.commentLogs.action, 'handed_over')));
+  check('admin 排程 the draft → at run time handed to an operator: awaiting_operator, reason comment.device_not_granted', rq.status === 200 && rep?.status === 'awaiting_operator'
+    && rep?.method === 'manual' && handLog.some((l) => l.code === 'comment.device_not_granted'), `${rep?.status} ${JSON.stringify(handLog)}`);
+  await http('POST', `/api/comment-replies/${drAId}/cancel`, admin);
+  // hourly schedulers: the account's phone running, owner without the grant → no slot; with the grant back → slots
+  const { scheduleAccountDeviceChecks } = await import('../src/modules/social/check.js');
+  const { scheduleFollowingSyncs } = await import('../src/modules/social/following.js');
+  const { scheduleFeedCollects } = await import('../src/modules/feed/collect.js');
+  const { ownerHoldsDevice } = await import('../src/modules/social/assign.js');
+  const runSchedulers = async () => {
+    await db.update(schema.instances).set({ status: 'running', adbState: 'device' }).where(eq(schema.instances.id, D5.id));
+    await scheduleAccountDeviceChecks(new Date(), 25 * 3600_000);
+    await scheduleFollowingSyncs(new Date(), 25 * 3600_000);
+    await scheduleFeedCollects(new Date(), 25 * 3600_000);
+    await db.update(schema.instances).set({ status: 'stopped', adbState: null }).where(eq(schema.instances.id, D5.id));
+    const rows = await db.select().from(T).where(and(inArray(T.refId, [ma.id, mb.id]), sql`${T.idempotencyKey} ~ '^(acct-check|following|feed:social):'`));
+    for (const x of rows) taskIds.add(x.id);
+    if (rows.length) await db.update(T).set({ status: 'cancelled', finishedAt: new Date() }).where(inArray(T.id, rows.map((x) => x.id)));
+    return rows;
+  };
+  const none = await runSchedulers();
+  check('schedulers (account check, 追踪中, 帖子采集): owner without the grant → no slot for its accounts', none.length === 0, JSON.stringify(none.map((x) => x.idempotencyKey)));
+  await db.insert(schema.instanceGrants).values({ userId: uA, instanceId: D5.id });
+  const some = await runSchedulers();
+  check('schedulers: grant back → slots for both accounts of all three kinds', ['acct-check', 'following', 'feed:social'].every((k) => [ma.id, mb.id].every((id) => some.some((x) => x.refId === id && x.idempotencyKey!.startsWith(`${k}:`)))),
+    JSON.stringify(some.map((x) => x.idempotencyKey)));
+
+  // ---------------------------------------------------------------- unassigning moves the accounts to the builtin admin
+  const [builtin] = await db.select().from(schema.users).where(eq(schema.users.builtin, true));
+  const cmB = await http('POST', '/api/comments', A, { accountId: ma.id, text: `busy ${tag}`, authorName: 'Viewer', authorHandle: '@viewer3', externalPostId: 'p3' });
+  const cmBId = cmB.body?.comment?.id ?? cmB.body?.id;
+  const drB = await http('POST', `/api/comments/${cmBId}/replies`, A, { text: `busy draft ${tag}` });
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [] });
+  check('unassign with a reply draft on a linked account → 409 instances.assign_account_busy, grant + owners unchanged', g.status === 409 && g.body.code === 'instances.assign_account_busy'
+    && (await grantRows(D5.id)).length === 1 && (await owners()).every((u) => u === uA), g.text);
+  await http('DELETE', `/api/comment-replies/${drB.body?.reply?.id ?? drB.body?.id}`, A);
+  const nLogs2 = (await db.select().from(schema.socialAccountLogs).where(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]))).length;
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [] });
+  check('unassign → 200, no grant, both accounts moved to the builtin admin', g.status === 200 && g.body.movedAccounts?.length === 2 && (await grantRows(D5.id)).length === 0
+    && (await owners()).every((u) => u === builtin!.id), g.text);
+  const ulog = await db.select().from(schema.socialAccountLogs).where(and(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]), eq(schema.socialAccountLogs.message, 'phone unassigned')));
+  check('logs: owner A → builtin admin ("phone unassigned", actor admin)', nLogs2 > 0 && [ma.id, mb.id].every((id) => ulog.some((l) => l.accountId === id && l.field === 'owner'
+    && l.fromValue === `sya${tag}` && l.toValue === builtin!.username && l.actorId === adminRow!.id)), JSON.stringify(ulog));
+  check('the comments follow to the admin', (await db.select().from(schema.comments).where(inArray(schema.comments.id, [cmAId, cmBId]))).every((c) => c.userId === builtin!.id));
+  check('user A no longer lists them; 立即检测 on one → 404', !(await http('GET', '/api/social/accounts', A)).body.items?.some((x: any) => x.id === ma.id || x.id === mb.id)
+    && (await http('POST', `/api/social/accounts/${ma.id}/check`, A)).status === 404);
+  await sleep(500);
+  const audU = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'grants.update'), eq(schema.auditLogs.targetId, D5.id), sql`${schema.auditLogs.at} > now() - interval '1 minute'`));
+  check('audit grants.update of the unassign: moved count + ids only', audU.some((a) => a.ok && (a.detail as any)?.movedAccounts === 2 && (a.detail as any)?.accountIds?.length === 2 && !JSON.stringify(a.detail).includes(h5a)), JSON.stringify(audU.map((a) => a.detail)));
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [] });
+  check('unassign again → nothing moved (admin-owned accounts stay)', g.status === 200 && g.body.movedAccounts?.length === 0, g.text);
+  // per-user grants removing a phone: B's account on D6 → builtin admin
+  g = await http('PUT', `/api/users/${uB}/grants`, admin, { instanceIds: [D2.id] });
+  const [ocRow] = await db.select().from(SA).where(eq(SA.id, oc.accountId!));
+  check('per-user grants removing a phone → its account of that user moves to the builtin admin', g.status === 200 && g.body.movedAccounts?.length === 1 && ocRow?.userId === builtin!.id, g.text);
+
+  // ---------------------------------------------------------------- disabling / deleting a user who holds a phone
+  const C = await login(`syc${tag}`, pw);
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uC] });
+  check('setup: D5 assigned to C → both accounts move to C', g.status === 200 && (await owners()).every((u) => u === uC), g.text);
+  const cmC = await http('POST', '/api/comments', C, { accountId: ma.id, text: `c ${tag}`, authorName: 'Viewer', authorHandle: '@viewer4', externalPostId: 'p4' });
+  const cmCId = cmC.body?.comment?.id ?? cmC.body?.id;
+  const drC = await http('POST', `/api/comments/${cmCId}/replies`, C, { text: `c draft ${tag}` });
+  const drCId = drC.body?.reply?.id ?? drC.body?.id;
+  let pu = await http('PATCH', `/api/users/${uC}`, admin, { disabled: true });
+  check('disable C with a reply draft on the phone → 200 (disabled), that phone\'s accounts kept (keptAccounts, code assign_account_busy)', pu.status === 200 && pu.body.user?.disabled === true
+    && pu.body.keptAccounts?.length === 1 && pu.body.keptAccounts[0].instanceId === D5.id && pu.body.keptAccounts[0].code === 'instances.assign_account_busy'
+    && (await owners()).every((u) => u === uC), pu.text);
+  check('a disabled owner holds no phone (account actions / schedulers skip)', !(await ownerHoldsDevice({ userId: uC, instanceId: D5.id })));
+  await http('PATCH', `/api/users/${uC}`, admin, { disabled: false });
+  await http('DELETE', `/api/comment-replies/${drCId}`, admin);
+  pu = await http('PATCH', `/api/users/${uC}`, admin, { disabled: true });
+  const dlog = await db.select().from(schema.socialAccountLogs).where(and(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]), eq(schema.socialAccountLogs.message, 'owner disabled')));
+  check('disable C → accounts moved to the builtin admin ("owner disabled"), grant row kept', pu.status === 200 && pu.body.movedAccounts?.length === 2 && pu.body.keptAccounts?.length === 0
+    && (await owners()).every((u) => u === builtin!.id) && dlog.filter((l) => l.field === 'owner').length === 2 && (await grantRows(D5.id)).length === 1, pu.text);
+  await sleep(500);
+  const audDis = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'user.update'), eq(schema.auditLogs.targetId, uC), sql`${schema.auditLogs.at} > now() - interval '1 minute'`));
+  check('audit user.update of the disable: moved count + ids', audDis.some((a) => (a.detail as any)?.movedAccounts === 2), JSON.stringify(audDis.map((a) => a.detail)));
+  await http('PATCH', `/api/users/${uC}`, admin, { disabled: false });
+  g = await http('PUT', `/api/instances/${D5.id}/grants`, admin, { userIds: [uC] });
+  check('re-enabled + assigned the same user again → the accounts move back to C', g.status === 200 && g.body.movedAccounts?.length === 2 && (await owners()).every((u) => u === uC), g.text);
+  const drD = await http('POST', `/api/comments/${cmCId}/replies`, C, { text: `c draft 2 ${tag}` });
+  const drDId = drD.body?.reply?.id ?? drD.body?.id;
+  const del = await http('DELETE', `/api/users/${uC}`, admin);
+  const delLog = await db.select().from(schema.socialAccountLogs).where(and(inArray(schema.socialAccountLogs.accountId, [ma.id, mb.id]), eq(schema.socialAccountLogs.message, 'owner deleted')));
+  check('delete C (with a reply draft) → 204, both accounts kept and moved to the builtin admin ("owner deleted"), the draft deleted with C', del.status === 204
+    && (await owners()).length === 2 && (await owners()).every((u) => u === builtin!.id) && delLog.length === 2
+    && !!drDId && (await db.select().from(schema.commentTasks).where(eq(schema.commentTasks.id, drDId))).length === 0, `${drD.text} ${del.text}`);
 } catch (err) {
   check('unexpected error', false, String((err as Error).stack ?? err));
 } finally {

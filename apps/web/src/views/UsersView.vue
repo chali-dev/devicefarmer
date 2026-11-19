@@ -64,7 +64,12 @@ const columns = computed(() => [
 const lockReason = (u: ManagedUser) => (u.builtin ? t('users.builtinTip') : u.id === auth.user?.id ? t('users.selfTip') : null)
 
 async function patch(u: ManagedUser, body: Partial<{ role: Role; roleId: string | null; disabled: boolean; password: string }>): Promise<boolean> {
-  try { await api('PATCH', `/api/users/${u.id}`, body); message.success(t('common.saved')); return true }
+  try {
+    const r = await api<{ keptAccounts?: { instanceId: string }[] }>('PATCH', `/api/users/${u.id}`, body)
+    if (r?.keptAccounts?.length) message.warning(t('users.accountsKept', { n: r.keptAccounts.length }), 8)
+    else message.success(t('common.saved'))
+    return true
+  }
   catch (e) { message.error(errorText(e)); return false }
   finally { await load() }
 }

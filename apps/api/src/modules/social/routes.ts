@@ -8,6 +8,7 @@ import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { isUniqueViolation } from '../proxies/pool.js';
 import { requestAccountCheck } from './check.js';
 import { discoverDeviceAccounts, requestAccountSync } from './sync.js';
+import { assertAccountDevice } from './assign.js';
 import { assertPersonaFor } from '../comments/personas.js';
 import { Lang } from '../content/languages.js';
 import { PLATFORM_IDS, platformById } from './platforms.js';
@@ -257,6 +258,7 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const acc = await visibleAccount(req.user, req.params.id);
     if (acc.platform !== 'instagram') throw badRequest('该平台不支持从云手机同步', 'account_sync.unsupported_platform', { platform: acc.platform });
     if (!acc.instanceId) throw badRequest('账号未绑定云手机，不能同步', 'account_sync.no_device');
+    await assertAccountDevice(req.user, acc);
     const task = await requestAccountSync(req.user, acc.instanceId, undefined, { feed: true });
     if (req.audit) req.audit.extra = { taskId: task.id, instanceId: acc.instanceId };
     reply.code(202);

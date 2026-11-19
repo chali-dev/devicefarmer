@@ -7,6 +7,7 @@ import { getInstance } from '../instances/repo.js';
 import { recordRiskEvent } from '../risk/events.js';
 import { activeStorage } from '../settings/storage.js';
 import { platformById } from '../social/platforms.js';
+import { ownerHoldsDevice } from '../social/assign.js';
 import { TaskError } from '../tasks/core.js';
 import { CollectorDefer, deviceHalt, haltDevice, lockFor, withDevice } from '../tracked/collector.js';
 import { getDevicePublishRules } from './device-rules.js';
@@ -138,6 +139,8 @@ registerPublishMethod({
   async unavailable(input) {
     if (!platformById(input.platform)?.deviceCheck || !isPlatformEnabled(input.platform)) return 'publish.device_unsupported_platform';
     if (!input.account.instanceId) return 'publish.device_no_device';
+    // the account's owner no longer holds the phone (unassigned / disabled, owner decision 2026-11-19): by hand
+    if (!(await ownerHoldsDevice(input.account))) return 'publish.device_not_granted';
     if (!input.media.length) return 'publish.device_no_media';
     // A single video as 帖子 becomes a Reel in the app, and video items in a carousel were not probed: by hand.
     if (input.postType === 'feed' && input.media.some((m) => m.fileType !== 'image')) return 'publish.device_feed_video';

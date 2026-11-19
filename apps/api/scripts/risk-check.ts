@@ -252,6 +252,10 @@ try {
   const s0 = await scheduleAccountDeviceChecks(new Date(), 6 * 3600_000);
   check('schedule off (accountCheckHours null) → nothing created', s0.hours === null && s0.created === 0, JSON.stringify(s0));
   await http('PUT', '/api/risk/settings', T, { accountCheckHours: 6 });
+  // the owner of the account on D2 holds no grant on D2: no slot (owner decision 2026-11-19); then the grant (DB row)
+  const sNo = await scheduleAccountDeviceChecks(new Date(), 6 * 3600_000);
+  check('schedule: the account\'s owner does not hold its running phone → no check created', sNo.created === 0 && sNo.skipped >= 2, JSON.stringify(sNo));
+  await db.insert(schema.instanceGrants).values({ userId, instanceId: D2.id }).onConflictDoNothing();
   const s1 = await scheduleAccountDeviceChecks(new Date(), 6 * 3600_000);
   const sched = await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'account-device-check'), inArray(schema.tasks.refId, [accId, acc2.body.account.id]), like(schema.tasks.idempotencyKey, 'acct-check:%')));
   extraTaskIds.push(...sched.map((x) => x.id));
