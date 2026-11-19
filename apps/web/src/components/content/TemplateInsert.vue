@@ -7,7 +7,7 @@ import { MODAL_WIDTH } from '../common/ui'
 import { loadPersona } from '../comments/persona'
 
 /**
- * 插入话术 for the content editor: lists only the 发文范例 of the target accounts' 账号人设 (the 话术库 page was removed,
+ * 插入话术 for the content editor: lists only the 范例 of the target accounts' 账号人设 (the 话术库 page was removed,
  * owner decision 2026-11-18) and hands the picked text to the editor's current text tab. The person edits the result
  * before saving; nothing is generated or posted. Without a persona on the target accounts it says to set one first.
  */
@@ -22,7 +22,7 @@ const persona = ref<string | undefined>()
 const picked = ref<string | undefined>()
 const replace = ref(false)
 
-const examples = computed(() => personas.value.find((p) => p.persona.id === persona.value)?.examples.post ?? [])
+const examples = computed(() => personas.value.find((p) => p.persona.id === persona.value)?.examples ?? [])
 const current = computed(() => examples.value.find((x) => x.id === picked.value))
 watch(persona, () => { picked.value = undefined })
 

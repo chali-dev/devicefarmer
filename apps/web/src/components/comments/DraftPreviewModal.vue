@@ -7,7 +7,7 @@ import { MODAL_WIDTH } from '../common/ui'
 
 /**
  * AI测试 (人设页 row action and the persona form): a pure STYLE TEST (owner decision 2026-11-18): one draft in the
- * persona's saved 发文风格, optionally on a 主题, generated synchronously by POST /api/personas/:id/drafts/preview
+ * persona's saved 风格, optionally on a 主题, generated synchronously by POST /api/personas/:id/drafts/preview
  * (usually seconds, ≤ 90 s; spinner meanwhile) and never stored; there is no way to save it. 生成 / 重新生成 asks
  * again (rate-limited per persona, ai.rate_limited); 关闭 drops it. Drafts are made on the social account (AI生成草稿).
  */
@@ -55,7 +55,6 @@ watch(() => [props.open, props.personaId] as const, () => {
             <a-descriptions-item :label="t('personas.preview.titleLabel')">{{ data.preview.title }}</a-descriptions-item>
             <a-descriptions-item :label="t('personas.preview.text')">
               <div class="text">{{ data.preview.text }}</div>
-              <div v-if="data.preview.opening || data.preview.closing" class="muted small">{{ t('personas.preview.fixedLines') }}</div>
             </a-descriptions-item>
             <a-descriptions-item :label="t('personas.preview.mediaTags')">
               <a-tag v-for="m in data.preview.mediaTags" :key="m">{{ m }}</a-tag><span v-if="!data.preview.mediaTags.length" class="muted">—</span>

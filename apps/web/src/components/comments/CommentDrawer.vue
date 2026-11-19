@@ -14,7 +14,7 @@ import ReplyScheduleModal from '../feed/ReplyScheduleModal.vue'
 
 /**
  * One comment: its thread, the reply composer (always written by a person, optionally started from one of the account
- * persona's 评论范例; the persona card shows 定位, the 评论风格 and 禁用词 and flags banned words and an off-range length),
+ * persona's 范例; the persona card shows 定位, the 风格 and 禁用词 and flags banned words and an off-range length),
  * the current reply's workflow actions and the history + log. Draft first (owner decision 2026-11-18): the composer only
  * saves a draft; 排程 (preview: account, phone, comment, text + time) queues it, 删除 drops the draft. No approval step.
  */
@@ -55,7 +55,7 @@ const history = computed(() => replies.value.filter((r) => r.id !== active.value
 const editing = computed(() => !active.value || active.value.status === 'draft')
 const errText = (code: string | null, raw: string | null) => (code ? codeText(code, undefined, raw ?? code) : raw ?? '')
 
-/** A 评论范例 inserted from the persona card ({name} = the comment's author); remembered as the reply's template. */
+/** A 范例 inserted from the persona card ({name} = the comment's author); remembered as the reply's template. */
 function insertExample(text: string, id: string) {
   form.text = text.replace(/\{name\}/g, comment.value?.authorName ?? '')
   form.templateId = id

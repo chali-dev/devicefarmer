@@ -7,7 +7,7 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
-import { assertStyleOk, bannedHits, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
+import { bannedHits, exampleWhere, flatStyle, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
@@ -17,7 +17,7 @@ import { assertStyleOk, bannedHits, exampleWhere, MAX_EXAMPLES, normaliseStyle, 
  * merged (owner decision 2026-11-18; 内容分类/素材分类 keep their merge).
  *
  * One form (人设页 `/personas`, owner decision 2026-11-18) holds everything: name, 一句话定位 (`description`), 风格 (`style`:
- * shared topics/banned words + 发文风格 + 评论风格, see persona-style.ts), 范例 (≤ 20 post + ≤ 20 comment = templates of
+ * one style for posts and comments, see persona-style.ts), 范例 (one list of ≤ 20 for posts and comments = templates of
  * the persona in its own scope, edited through the template API; POST may create the first ones in the same transaction).
  * POST/PATCH take all of it. The persona form only has AI测试 (modules/ai, preview); drafts are made on the social accounts.
  */
@@ -50,17 +50,14 @@ export const publicPersona = ({ style: _s, ...p }: Persona) => ({
 
 /** Persona-only fields of the create/patch bodies (style replaces the whole stored style). */
 const PersonaFields = { style: PersonaStyleInput.optional() };
-/** 范例 created with a new persona (same limits as the form: ≤ MAX_EXAMPLES per kind, post ≤ 2200, comment ≤ 500 chars). */
-const NewExamples = z.object({
-  post: z.array(z.string().trim().min(1).max(2200)).max(MAX_EXAMPLES).optional(),
-  comment: z.array(z.string().trim().min(1).max(500)).max(MAX_EXAMPLES).optional(),
-});
+/** 范例 created with a new persona (same limits as the form: ≤ MAX_EXAMPLES, ≤ 2200 chars each). */
+const NewExamples = z.array(z.string().trim().min(1).max(2200)).max(MAX_EXAMPLES);
 const CreateBody = ScopedCreateBody.extend({ ...PersonaFields, examples: NewExamples.optional() });
 const PatchBody = ScopedPatchBody.extend(PersonaFields);
 
 function personaSet(b: z.infer<typeof PatchBody>) {
   const set: Partial<typeof P.$inferInsert> = {};
-  if (b.style !== undefined) { set.style = normaliseStyle(b.style); assertStyleOk(set.style); }
+  if (b.style !== undefined) set.style = normaliseStyle(b.style);
   return set;
 }
 
@@ -124,35 +121,32 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * One persona (anyone who may see it): style, 范例 per kind (templates in the persona's own scope, oldest first) and the
+   * One persona (anyone who may see it): style, 范例 (templates in the persona's own scope, oldest first) and the
    * length ranges. Used by the form and by the persona card of the post editor / reply composers.
    */
   app.get('/api/personas/:id', { schema: { params: Id } }, async (req) => {
     const p = await visiblePersona(req.user, req.params.id);
     const manages = p.ownerType === 'user' || isAdmin(req.user);
-    const examples = await db.select({ id: TPL.id, kind: TPL.kind, name: TPL.name, text: TPL.text, userId: TPL.userId }).from(TPL)
+    const examples = await db.select({ id: TPL.id, name: TPL.name, text: TPL.text }).from(TPL)
       .where(exampleWhere(p)).orderBy(asc(TPL.createdAt), asc(TPL.id));
     return {
       persona: { ...publicPersona(p), writable: manages },
-      examples: {
-        post: examples.filter((e) => e.kind === 'post').map(({ userId: _u, ...e }) => e),
-        comment: examples.filter((e) => e.kind === 'comment').map(({ userId: _u, ...e }) => e),
-      },
+      examples,
       lengths: PERSONA_LENGTHS, maxExamples: MAX_EXAMPLES,
     };
   });
 
   /**
    * scope public (admin) or mine; admins may create a personal persona for another user with ownerId. Optional
-   * `examples` (post/comment texts) become its first 范例 in the same transaction (public: shared templates; personal:
+   * `examples` (texts) become its first 范例 in the same transaction (public: shared templates; personal:
    * the owner's); a text with one of the new persona's banned words → 400 persona.banned_word, nothing created.
    */
   app.post('/api/personas', { schema: { body: CreateBody } }, async (req, reply) => {
     const { examples, ...b } = req.body;
     const { ownerId, sort } = await scoped.createTarget(req.user, b);
     const extra = personaSet(b);
-    const ex = { post: examples?.post ?? [], comment: examples?.comment ?? [] };
-    const hits = bannedHits(extra.style?.bannedWords, [...ex.post, ...ex.comment]);
+    const ex = examples ?? [];
+    const hits = bannedHits(extra.style?.bannedWords, ex);
     if (hits.length) throw badRequest(`范例包含禁用词：${hits.join('、')}`, 'persona.banned_word', { persona: b.name, words: hits.join('、') });
     const [row] = await scoped.uniqueName(b.name, () => db.transaction(async (tx) => {
       const rows = await tx.insert(P).values({
@@ -160,12 +154,11 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       }).returning();
       // created_at 1 ms apart so the 范例 keep the form's order (listed and sent to the model oldest first).
       const t0 = Date.now();
-      const tpl = (['post', 'comment'] as const).flatMap((kind) => ex[kind].map((text) => ({ kind, text })))
-        .map((x, i) => ({ ...x, name: exampleName(x.text), personaId: rows[0]!.id, userId: ownerId, createdBy: req.user.id, createdAt: new Date(t0 + i) }));
+      const tpl = ex.map((text, i) => ({ text, name: exampleName(text), personaId: rows[0]!.id, userId: ownerId, createdBy: req.user.id, createdAt: new Date(t0 + i) }));
       if (tpl.length) await tx.insert(TPL).values(tpl);
       return rows;
     }));
-    if (req.audit) req.audit.extra = { id: row!.id, examples: { post: ex.post.length, comment: ex.comment.length } };
+    if (req.audit) req.audit.extra = { id: row!.id, examples: ex.length };
     reply.code(201);
     return { persona: publicPersona(row!) };
   });
@@ -204,9 +197,8 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
   /**
    * 复制到我的人设: a new personal persona of the caller (admins: of `ownerId`, any existing user; users: only themselves,
    * another ownerId → 403 `persona.admin_only`) from any persona the caller may see (else 404): name 「原名 (副本)」 (taken
-   * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the whole stored style and every 范例 (post +
-   * comment) copied as private templates of the new owner on the new persona (daily AI drafts are set per social account,
-   * nothing to copy). One transaction: the 20-per-kind limit is
+   * names, case-insensitive, get 「(副本 2)」, 「(副本 3)」…), 一句话定位, the style (single shape) and every 范例 copied as private templates of the new owner on the new persona (daily AI drafts are set per social account,
+   * nothing to copy). One transaction: the limit of 20 范例 is
    * checked after the copy and a violation (`persona.examples_full`) leaves nothing behind.
    */
   app.post('/api/personas/:id/copy', {
@@ -226,20 +218,18 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       const [last] = await tx.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(eq(P.ownerId, ownerId));
       const [row] = await tx.insert(P).values({
         ownerType: 'user', ownerId, name: copyName(src.name, taken), description: src.description, sort: (last?.max ?? -1) + 1,
-        style: src.style, createdBy: req.user.id,
+        style: flatStyle(src.style), createdBy: req.user.id,
       }).returning();
       const tpls = await tx.select().from(TPL).where(exampleWhere(src)).orderBy(asc(TPL.createdAt), asc(TPL.id));
       if (tpls.length) {
         // created_at 1 ms apart so the copies keep the source order (范例 are listed oldest first).
         const t0 = Date.now();
         await tx.insert(TPL).values(tpls.map((t, i) => ({
-          userId: ownerId, kind: t.kind, personaId: row!.id, tags: t.tags, name: t.name, text: t.text, createdBy: req.user.id, createdAt: new Date(t0 + i),
+          userId: ownerId, personaId: row!.id, tags: t.tags, name: t.name, text: t.text, createdBy: req.user.id, createdAt: new Date(t0 + i),
         })));
       }
-      const examples = { post: tpls.filter((t) => t.kind === 'post').length, comment: tpls.filter((t) => t.kind === 'comment').length };
-      for (const kind of ['post', 'comment'] as const) {
-        if (examples[kind] > MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条${kind === 'post' ? '发文' : '评论'}范例`, 'persona.examples_full', { max: MAX_EXAMPLES, kind });
-      }
+      const examples = tpls.length;
+      if (examples > MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条范例`, 'persona.examples_full', { max: MAX_EXAMPLES });
       return { row: row!, examples };
     }));
     if (req.audit) req.audit.extra = { sourceId: src.id, id: row.id, name: row.name, ownerId, examples };

@@ -995,8 +995,8 @@ export const personas = pgTable('personas', {
   description: text('description'),
   sort: integer('sort').notNull().default(0),
   /**
-   * 风格 (`PersonaStyle`: shared topics/banned words + 发文风格 `post` + 评论风格 `comment`), stored in the column `brief`
-   * (the former 内容设定). The flat pre-split shape is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
+   * 风格 (`PersonaStyle`, one style for posts and comments), stored in the column `brief` (the former 内容设定). The
+   * split shape of 2026-11-18 is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
    */
   style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
@@ -1013,48 +1013,39 @@ export type PersonaTone = (typeof PERSONA_TONES)[number];
 export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const;
 export type PersonaLevel = (typeof PERSONA_LEVELS)[number];
 /**
- * 人设风格 (personas.brief; split into 发文风格 / 评论风格, owner decision 2026-11-18). Shared: topics and banned words
- * (banned words are checked on posts AND comments). `post`: tone preset (亲切日常/专业干货/幽默俏皮/高冷简洁/温暖治愈) with
- * an editable note, emoji/length low|medium|high (length → post character range, `PERSONA_LENGTHS.post`), hashtags, fixed
- * opening/closing, audience, notes. `comment`: tone + note, emoji, length (→ `PERSONA_LENGTHS.comment`).
+ * 人设风格 (personas.brief; ONE style again since 2026-11-19, owner: 「发文风格和评论风格；建议整成一个吧」): tone preset
+ * (亲切日常/专业干货/幽默俏皮/高冷简洁/温暖治愈) with an editable note, emoji/length low|medium|high (one level: the post
+ * range `PERSONA_LENGTHS.post` and the comment range `PERSONA_LENGTHS.comment` both follow it), hashtags (posts),
+ * audience, notes, topics and banned words (checked on posts AND comments). 固定开头/结尾 were removed (owner 2026-11-19).
  * No language: the language belongs to the social account (账号语言).
  */
-export interface PersonaVoice {
+export interface PersonaStyle {
+  topics?: string[];
+  bannedWords?: string[];
   tone?: PersonaTone;
   toneNote?: string;
   emoji?: PersonaLevel;
   length?: PersonaLevel;
-}
-export interface PersonaPostStyle extends PersonaVoice {
   hashtags?: string[];
   audience?: string;
-  opening?: string;
-  closing?: string;
   notes?: string;
 }
-export type PersonaCommentStyle = PersonaVoice;
-export interface PersonaStyle {
-  topics?: string[];
-  bannedWords?: string[];
-  post?: PersonaPostStyle;
-  comment?: PersonaCommentStyle;
-}
 /**
- * What `personas.brief` may hold: the split shape, or the flat shape written before the split (one tone/emoji/length
- * for posts and replies + hashtags/audience/opening/closing/notes at the top level). `styleOf` reads both: a missing
- * `post`/`comment` takes the flat values. New writes store the split shape only (no data migration needed).
+ * What `personas.brief` may hold: the single shape, or (rows saved 2026-11-18 – 11-19) the split shape with the post
+ * part in `post` and a comment part in `comment`. `styleOf` reads a split row as its `post` part (comment dropped);
+ * `persona-style-merge-migration.ts` (db:migrate) rewrites such rows (and drops the removed `opening` / `closing`), a
+ * save writes the single shape.
  */
-export type StoredPersonaStyle = PersonaStyle & PersonaPostStyle;
+export type StoredPersonaStyle = PersonaStyle & { post?: Omit<PersonaStyle, 'topics' | 'bannedWords'>; comment?: unknown };
 
 /**
- * Saved templates (话术库): reply templates (`kind` comment) and post/caption templates (`kind` post), with an optional
+ * Saved templates = the 范例 of personas (one list for posts and comments; `kind` dropped 2026-11-19, migration 0050), with a
  * persona (人设, `persona_id`) and lowercase tags. Private (user_id) or shared (user_id null, admin-managed). A person picks and edits one.
  * A shared template may only use a public persona; a private one a public persona or one of its owner's.
  */
 export const commentTemplates = pgTable('comment_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  kind: text('kind', { enum: ['comment', 'post'] }).notNull().default('comment'),
   personaId: uuid('persona_id').references(() => personas.id, { onDelete: 'set null' }),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   name: text('name').notNull(),
@@ -1062,7 +1053,7 @@ export const commentTemplates = pgTable('comment_templates', {
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.personaId), index('comment_templates_persona_idx').on(t.personaId)]);
+}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_persona_idx').on(t.personaId)]);
 
 /**
  * 趋势热点: one stored chart per (source, region, category, slot). Slots are `intervalHours` wide (UTC); the

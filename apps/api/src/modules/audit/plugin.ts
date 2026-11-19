@@ -363,8 +363,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: ({ body }) => (body.result === 'sent' ? 'comment.reply_outcome_sent' : 'comment.reply_outcome_failed'),
     detail: ({ body }) => ({ result: body.result, externalReplyId: body.externalReplyId }),
   },
-  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment' }) },
-  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind }) },
+  'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared }) },
+  'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
   // 人设: names only (no 定位, no style texts: only which fields changed); the route adds the persona name of a template.
   'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },

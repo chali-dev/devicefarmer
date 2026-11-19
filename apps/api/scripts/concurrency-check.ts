@@ -413,7 +413,7 @@ try {
       () => n(db.select().from(schema.roles).where(eq(schema.roles.name, rname))));
     cleanup.push(() => db.delete(schema.roles).where(eq(schema.roles.name, rname)));
     const pname = `cc人设${tag}`;
-    await one('人设 create with 范例 (same name)', 15, () => http('POST', '/api/personas', U.token, { scope: 'mine', name: pname, examples: { post: ['示例一'], comment: ['评论一'] } }), 'persona.exists',
+    await one('人设 create with 范例 (same name)', 15, () => http('POST', '/api/personas', U.token, { scope: 'mine', name: pname, examples: ['示例一', '评论一'] }), 'persona.exists',
       () => n(db.select().from(schema.personas).where(eq(schema.personas.name, pname))));
     const [persona] = await db.select().from(schema.personas).where(eq(schema.personas.name, pname));
     const tpl = await db.select().from(schema.commentTemplates).where(eq(schema.commentTemplates.personaId, persona!.id));
@@ -428,7 +428,7 @@ try {
       const p = (await http('POST', '/api/personas', U.token, { scope: 'mine', name: `cc删人设${tag}${i}` })).body.persona.id as string;
       tr.push(...await Promise.all([
         http('DELETE', `/api/personas/${p}`, U.token),
-        ...Array.from({ length: 4 }, (_, k) => http('POST', '/api/comment-templates', U.token, { personaId: p, kind: 'post', name: `t${k}`, text: `范例 ${k}` })),
+        ...Array.from({ length: 4 }, (_, k) => http('POST', '/api/comment-templates', U.token, { personaId: p, name: `t${k}`, text: `范例 ${k}` })),
       ]));
     }
     const orphans = await db.select().from(schema.commentTemplates).where(and(eq(schema.commentTemplates.userId, U.id), sql`${schema.commentTemplates.name} in ('t0','t1','t2','t3')`,

@@ -369,24 +369,24 @@ try {
   // ---------------------------------------------------------------- 人设禁用词 on replies
   {
     const pid = (await http('POST', '/api/personas', A, { scope: 'mine', name: h('persona'), style: {
-      bannedWords: ['加微信', 'Spam'], post: { tone: 'pro', length: 'high' }, comment: { tone: 'warm', toneNote: '暖心短评', length: 'low', emoji: 'high' },
+      bannedWords: ['加微信', 'Spam'], tone: 'warm', toneNote: '暖心短评', length: 'low', emoji: 'high',
     } })).body.persona?.id;
     const ib = await mk(A, 'instagram', h('ib'));
     r = await http('PUT', `/api/social/accounts/${ib}`, A, { personaId: pid });
     const cm = (await mc(A, ib, 'banned')).body.comment?.id;
     check('persona with banned words on a fresh account + a comment', !!pid && r.status === 200 && !!cm, r.text.slice(0, 200));
-    // what the comment drawer's persona card reads: the account's persona → 评论风格 + comment length range + 评论范例 only
-    const exC = await http('POST', '/api/comment-templates', A, { kind: 'comment', name: 'c1', text: `谢谢 {name} 的评论 ${tag}`, personaId: pid });
-    const exP = await http('POST', '/api/comment-templates', A, { kind: 'post', name: 'p1', text: `一篇发文范例 ${tag}`, personaId: pid });
+    // what the comment drawer's persona card reads: the account's persona → its one style + the comment length range + every 范例
+    const exC = await http('POST', '/api/comment-templates', A, { name: 'c1', text: `谢谢 {name} 的评论 ${tag}`, personaId: pid });
+    const exP = await http('POST', '/api/comment-templates', A, { name: 'p1', text: `一篇发文范例 ${tag}`, personaId: pid });
     const cdet = await http('GET', `/api/comments/${cm}`, A);
     const pdet = await http('GET', `/api/personas/${cdet.body.comment?.account?.personaId}`, A);
-    const cst = pdet.body?.persona?.style?.comment;
-    check('comment → account.personaId → persona: 评论风格 (warm, note, emoji many, length low → comment range 4–30, not the post one)',
+    const cst = pdet.body?.persona?.style;
+    check('comment → account.personaId → persona: its style (warm, note, emoji many, length low → comment range 4–30)',
       cdet.body.comment?.account?.personaId === pid && cst?.tone === 'warm' && cst?.toneNote === '暖心短评' && cst?.emoji === 'high' && cst?.length === 'low'
-        && pdet.body.lengths.comment[cst.length].join() === '4,30' && pdet.body.persona.style.post.tone === 'pro', JSON.stringify(pdet.body?.persona?.style));
-    check('插入 lists the persona\'s 评论范例 only (the post example is not among them)',
-      exC.status === 201 && exP.status === 201 && pdet.body.examples.comment.map((e: any) => e.id).join() === exC.body.template.id
-        && !pdet.body.examples.comment.some((e: any) => e.id === exP.body.template.id), JSON.stringify(pdet.body?.examples));
+        && pdet.body.lengths.comment[cst.length].join() === '4,30' && !('post' in cst) && !('comment' in cst), JSON.stringify(pdet.body?.persona?.style));
+    check('插入 lists every 范例 of the persona (one list, oldest first, no kind)',
+      exC.status === 201 && exP.status === 201 && pdet.body.examples.map((e: any) => e.id).join() === `${exC.body.template.id},${exP.body.template.id}`
+        && pdet.body.examples.every((e: any) => !('kind' in e)), JSON.stringify(pdet.body?.examples));
     r = await http('POST', `/api/comments/${cm}/replies`, A, { text: '有问题请加微信聊' });
     const r2 = await http('POST', `/api/comments/${cm}/replies`, A, { text: 'no SPAM here, promise' });
     check('reply with a banned word → 400 persona.banned_word with the words (also case-insensitive), nothing stored',

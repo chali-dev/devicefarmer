@@ -367,20 +367,18 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     return { reply: (await toReplyItems([await recordReplyOutcome(req.user, r, req.body)], req.user))[0] };
   });
 
-  // ------------------------------------------------------------ templates (话术库: kind comment = reply templates, post = captions)
-  /** Visible templates: own + shared (admins: all). `kind` defaults to comment so the reply composer is unchanged; `all` lists both. */
+  // ------------------------------------------------------------ templates = the 范例 of personas (one list, no kind since 2026-11-19)
+  /** Visible templates: own + shared (admins: all). Strict: the removed `kind` → 400. */
   const TemplateQuery = z.object({
-    kind: z.enum(['comment', 'post', 'all']).default('comment'),
     /** persona id, or 'none' for templates without one */
     personaId: z.union([z.string().uuid(), z.literal('none')]).optional(),
     tag: z.string().trim().max(32).optional(),
     /** shared = 公共, own = the caller's 个人, all-users = every 个人 template the caller can see (admins: all users') */
     scope: z.enum(['own', 'shared', 'all-users']).optional(),
     q: z.string().trim().max(100).optional(),
-  });
+  }).strict();
   const templateWhere = (user: AuthUser, q: Partial<z.infer<typeof TemplateQuery>>): SQL | undefined => and(
     isAdmin(user) ? undefined : or(isNull(TPL.userId), eq(TPL.userId, user.id)),
-    q.kind && q.kind !== 'all' ? eq(TPL.kind, q.kind) : undefined,
     q.personaId === 'none' ? isNull(TPL.personaId) : q.personaId ? eq(TPL.personaId, q.personaId) : undefined,
     q.tag ? sql`${TPL.tags} @> array[${q.tag.toLowerCase()}]::text[]` : undefined,
     q.scope === 'shared' ? isNull(TPL.userId) : q.scope === 'own' ? eq(TPL.userId, user.id) : q.scope === 'all-users' ? isNotNull(TPL.userId) : undefined,
@@ -398,7 +396,7 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /** Tags in use among visible templates (filter suggestions; personas come from /api/personas). */
-  app.get('/api/comment-templates/facets', { schema: { querystring: TemplateQuery.pick({ kind: true, scope: true }) } }, async (req) => {
+  app.get('/api/comment-templates/facets', { schema: { querystring: TemplateQuery.pick({ scope: true }).strict() } }, async (req) => {
     const tags = await db.selectDistinct({ t: sql<string>`unnest(${TPL.tags})` }).from(TPL).where(templateWhere(req.user, req.query)).orderBy(sql`1`).limit(500);
     return { tags: tags.map((t) => t.t) };
   });
@@ -407,27 +405,27 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
   const normTags = (tags: string[]) => [...new Set(tags.map((x) => x.trim().toLowerCase()).filter(Boolean))];
   const TemplateBody = z.object({
     name: z.string().trim().min(1).max(100), text: z.string().trim().min(1).max(5000),
-    kind: z.enum(['comment', 'post']).optional(),
     /** required on create, null refused (`template.persona_required`); must fit the template's scope (assertPersonaFor) */
     personaId: z.string().uuid().nullable().optional(),
     tags: z.array(z.string().trim().min(1).max(32)).max(20).transform(normTags).optional(),
-  });
+  }).strict();
   /**
    * Every template belongs to a persona (owner decision 2026-11-18: the 话术库 page is gone, templates are the 范例 of
    * personas, edited in the persona form): no persona → 400 `template.persona_required`. At most `MAX_EXAMPLES` (20) per
-   * persona and kind in the persona's own scope → 400 `persona.examples_full` (checked under a lock on the persona row).
+   * persona in the persona's own scope (one list since 2026-11-19, no kind) → 400 `persona.examples_full` (checked under
+   * a lock on the persona row; a persona that had more than 20 after the merge keeps them, it just takes no new ones).
    */
-  const assertExampleRoom = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], personaId: string, kind: 'post' | 'comment', userId: string | null, exceptId?: string) => {
+  const assertExampleRoom = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], personaId: string, userId: string | null, exceptId?: string) => {
     const [p] = await tx.select().from(P).where(eq(P.id, personaId)).for('update');
     // 防并发: deleted since assertPersonaFor (人设 delete at the same time) → the same refusal instead of an FK error
     if (!p) throw badRequest('人设不存在或不能用于这条话术', 'persona.not_allowed');
     if (p.ownerType === 'public' ? userId !== null : userId !== p.ownerId) return; // not one of its 范例
-    const [n] = await tx.select({ n: count() }).from(TPL).where(and(exampleWhere(p, kind), exceptId ? ne(TPL.id, exceptId) : undefined));
-    if ((n?.n ?? 0) >= MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条${kind === 'post' ? '发文' : '评论'}范例`, 'persona.examples_full', { max: MAX_EXAMPLES, kind });
+    const [n] = await tx.select({ n: count() }).from(TPL).where(and(exampleWhere(p), exceptId ? ne(TPL.id, exceptId) : undefined));
+    if ((n?.n ?? 0) >= MAX_EXAMPLES) throw badRequest(`每个人设最多 ${MAX_EXAMPLES} 条范例`, 'persona.examples_full', { max: MAX_EXAMPLES });
   };
   const personaRequired = () => badRequest('话术必须属于一个人设', 'template.persona_required');
   /** `ownerId` (admin): a private template of another user, e.g. an example (范例) of that user's personal persona. */
-  app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional(), ownerId: z.string().uuid().optional() }) } }, async (req, reply) => {
+  app.post('/api/comment-templates', { schema: { body: TemplateBody.extend({ shared: z.boolean().optional(), ownerId: z.string().uuid().optional() }).strict() } }, async (req, reply) => {
     const { shared, ownerId, ...b } = req.body;
     if ((shared || (ownerId && ownerId !== req.user.id)) && !isAdmin(req.user)) throw forbidden('只有管理员可以创建共享模板', 'comment.admin_only');
     if (!b.personaId) throw personaRequired();
@@ -435,10 +433,10 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     const userId = shared ? null : ownerId ?? req.user.id;
     const p = await assertPersonaFor(userId, personaId);
     const row = await db.transaction(async (tx) => {
-      await assertExampleRoom(tx, personaId, b.kind ?? 'comment', userId);
+      await assertExampleRoom(tx, personaId, userId);
       return (await tx.insert(TPL).values({ ...b, userId, createdBy: req.user.id }).returning())[0]!;
     });
-    if (req.audit) req.audit.extra = { id: row.id, kind: row.kind, persona: p.name };
+    if (req.audit) req.audit.extra = { id: row.id, persona: p.name };
     reply.code(201);
     return { template: templateItem(row, p) };
   });
@@ -451,10 +449,8 @@ export const commentRoutes: FastifyPluginAsyncZod = async (app) => {
     if (req.body.personaId === null) throw personaRequired();
     if (req.body.personaId) await assertPersonaFor(t.userId, req.body.personaId);
     const personaId = req.body.personaId ?? t.personaId;
-    const kind = req.body.kind ?? t.kind;
-    const moves = personaId !== t.personaId || kind !== t.kind;
     const row = await db.transaction(async (tx) => {
-      if (moves && personaId) await assertExampleRoom(tx, personaId, kind, t.userId, t.id);
+      if (personaId !== t.personaId && personaId) await assertExampleRoom(tx, personaId, t.userId, t.id);
       return (await tx.update(TPL).set(set).where(eq(TPL.id, t.id)).returning())[0]!;
     });
     const p = await personaOf(row.personaId);
