@@ -5,7 +5,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiError, api, errorText } from '../api/client'
-import { compactNumber, dayTs, type AccountFollowers, type AccountFollowing, type SocialAccount } from '../api/types'
+import { compactNumber, type AccountFollowers, type AccountFollowing, type SocialAccount } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
@@ -14,13 +14,12 @@ import AudienceList from '../components/social/AudienceList.vue'
 import InitialAvatar from '../components/social/InitialAvatar.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { useAccountSync } from '../components/social/useAccountSync'
-import LineChart from '../components/tracked/LineChart.vue'
 import { dateLocale } from '../i18n'
 
 /**
  * A media account's 关注 / 粉丝 page (/social/accounts/:id, owner 2026-11-19, replaces the row expansion of 我的媒体号):
  * header with the account and its one 同步 button, tabs 关注 (the following list read from its cloud phone) and 粉丝
- * (count + changes + trend from the automatic check, then the newest ≤ 20 followers read from the phone).
+ * (the account's own follower count, then only its newest ≤ 20 followers read from the phone; owner 2026-11-19).
  * RBAC = the account's (owner + admins; others get the API's 404 → not-found state).
  */
 const route = useRoute()
@@ -28,9 +27,6 @@ const router = useRouter()
 const { t } = useI18n()
 const id = computed(() => String(route.params.id))
 const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
-const shortDay = (ts: number) => new Date(ts).toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' })
-const signed = (n: number | null) => (n === null ? '—' : `${n > 0 ? '+' : ''}${compactNumber(n)}`)
-const tone = (n: number | null) => (n === null || n === 0 ? '' : n > 0 ? 'up' : 'down')
 
 const account = ref<SocialAccount | null>(null)
 const notFound = ref(false)
@@ -46,12 +42,11 @@ async function loadAccount() {
   } finally { loading.value = false }
 }
 
-// 粉丝: count / changes / trend (automatic check readings)
+// 粉丝: the account's own follower count (latest reading of the automatic check / sync)
 const fol = ref<AccountFollowers | null>(null)
 async function loadFollowers() {
-  try { fol.value = await api<AccountFollowers>('GET', `/api/social/accounts/${id.value}/followers?days=30`) } catch { fol.value = null }
+  try { fol.value = await api<AccountFollowers>('GET', `/api/social/accounts/${id.value}/followers?days=7`) } catch { fol.value = null }
 }
-const points = computed(() => (fol.value?.series ?? []).map((d) => ({ t: dayTs(d.day), v: d.followers })))
 const followersCount = computed(() => (fol.value?.current ? `${fol.value.current.approx ? '≈' : ''}${compactNumber(fol.value.current.followers)}` : '—'))
 
 // 关注: count for the tab label (the list itself reports it again whenever it loads)
@@ -137,20 +132,7 @@ watch(id, loadAll)
             <AudienceList :account-id="account.id" kind="following" @loaded="(d) => (followingCount = d.current)" />
           </a-tab-pane>
           <a-tab-pane key="followers" :tab="t('social.audience.page.followersTab', { n: followersCount })">
-            <div class="followers-top">
-              <template v-if="fol?.current">
-                <div class="stats">
-                  <a-statistic :title="t('social.audience.current')" :value="followersCount" />
-                  <a-statistic v-for="k in (['today', 'd7', 'd30'] as const)" :key="k" :title="t(`social.audience.change.${k}`)" :value="signed(fol.change[k])" :class="tone(fol.change[k])" />
-                </div>
-                <div class="chart">
-                  <LineChart :points="points" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('social.audience.trend')" />
-                  <div class="muted small">{{ t('social.audience.followersSource', { time: fmt(fol.lastCheckedAt ?? fol.current.at) }) }}</div>
-                </div>
-              </template>
-              <a-empty v-else-if="fol" :image-style="{ height: '40px' }" :description="t('social.audience.followersEmpty')" />
-            </div>
-            <AudienceList :account-id="account.id" kind="followers" />
+            <AudienceList :account-id="account.id" kind="followers" :count="followersCount" />
           </a-tab-pane>
         </a-tabs>
       </a-card>
@@ -171,12 +153,4 @@ watch(id, loadAll)
 .name { color: var(--cp-text-secondary); }
 .actions { flex: none; }
 .tabs-card :deep(.ant-card-body) { padding-top: 4px; }
-.followers-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; align-items: center; margin-bottom: 16px; }
-.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
-.chart { min-width: 0; }
-.up :deep(.ant-statistic-content) { color: var(--cp-success); }
-.down :deep(.ant-statistic-content) { color: var(--cp-error); }
-@media (max-width: 768px) {
-  .followers-top { grid-template-columns: minmax(0, 1fr); }
-}
 </style>

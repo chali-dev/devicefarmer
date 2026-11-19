@@ -17,7 +17,11 @@
  *   (derived from the real following fixture: tab selection / count swapped, a 移除 button added to the rows; no real
  *   followers-tab dump exists, the screen was never probed), tab tap target, storage by kind (capped never marks gone,
  *   complete marks gone only in its own list), GET …/followers/list (paging, search, state, RBAC), …/following state;
- * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); migrations 0044 + 0046 shape +
+ * - the listed accounts' profiles (owner 2026-11-19): pickProfileVisits (missing / older than 7 d, followers first, then
+ *   following by position, one per handle, cap 30), profileOutcome on the real own-profile dump (+ a CONSTRUCTED private
+ *   text: no private profile was ever dumped live), shell / challenge / login / unknown screens, writeProfile (both rows
+ *   of a handle, failed visit keeps counts, not_found), list API fields;
+ * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); migrations 0044 + 0046 + 0047 shape +
  *   db:migrate twice; audit social.following_sync.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/following-check.ts
@@ -29,9 +33,9 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { menuRuleFor } from '../src/modules/auth/role-menus.js';
 import { followingCounter, listSwipe, listTab, parseFollowingScreen } from '../src/modules/social/following-ui.js';
-import { FOLLOWERS_MAX, scheduleFollowingSyncs, writeFollowing } from '../src/modules/social/following.js';
+import { FOLLOWERS_MAX, pickProfileVisits, PROFILE_STALE_MS, PROFILE_VISITS_PER_RUN, profileOutcome, scheduleFollowingSyncs, writeFollowing, writeProfile } from '../src/modules/social/following.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
-import { parseUiDump } from '../src/modules/tracked/instagram-device.js';
+import { classifyIgDump, parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
 
@@ -261,6 +265,74 @@ try {
   const fr2 = await Promise.all([http('GET', `/api/social/accounts/${accA.id}/followers/list`, B), http('GET', `/api/social/accounts/${accA.id}/followers/list`, T)]);
   check('…followers/list RBAC: another user 404, admin 200', fr2[0].status === 404 && fr2[1].status === 200 && fr2[1].body.current === 2, fr2.map((x) => x.status).join(','));
 
+  // ---------------------------------------------------------------- the listed accounts' profiles (粉丝数 / 关注数 / 不公开)
+  const NOW = new Date();
+  const ago = (d: number) => new Date(NOW.getTime() - d * DAY);
+  const vr = (id: string, kind: 'following' | 'followers', handle: string, position: number | null, checked: Date | null, gone: Date | null = null) =>
+    ({ id, kind, handle, position, goneAt: gone, profileCheckedAt: checked });
+  const pick = pickProfileVisits([
+    vr('a', 'following', 'aa', 2, ago(8)), vr('b', 'following', 'bb', 1, null), vr('c', 'following', 'cc', 0, ago(1)), vr('g', 'following', 'gg', 3, null, ago(1)),
+    vr('f2', 'followers', 'f2', 1, null), vr('f1', 'followers', 'f1', 0, ago(30)), vr('fx', 'followers', 'fx', 2, ago(6.9)), vr('d', 'following', 'f1', 4, null),
+  ], NOW);
+  check('pick: missing / older than 7 d only (fresh and gone skipped), followers first by position, then following by position, one per handle',
+    pick.map((x) => x.id).join(',') === 'f1,f2,b,a' && PROFILE_STALE_MS === 7 * DAY, pick.map((x) => x.id).join(','));
+  const many = Array.from({ length: 50 }, (_, i) => vr(`r${i}`, i < 25 ? 'following' : 'followers', `h${i}`, i, null));
+  const pm = pickProfileVisits(many, NOW);
+  check('pick: capped at PROFILE_VISITS_PER_RUN = 30, all 25 followers rows before the following rows', PROFILE_VISITS_PER_RUN === 30 && pm.length === 30
+    && pm.slice(0, 25).every((x) => x.kind === 'followers') && pm.slice(25).map((x) => x.id).join(',') === 'r0,r1,r2,r3,r4', pm.map((x) => x.id).join(','));
+  // real dump of an own profile on bit-ins-02 (followers 0, following 6, posts 1): the same reader as the collector
+  const ownNodes = fx('ig-own-profile-refreshed.xml');
+  const real = profileOutcome(classifyIgDump(ownNodes, 'conchadoroperto650'), ownNodes);
+  check('profile outcome on a real profile dump: counts 0 / 6 / 1, not private, no approx', real.kind === 'profile' && real.followers === 0 && real.following === 6
+    && real.posts === 1 && real.private === false && real.approx.length === 0, JSON.stringify(real));
+  // CONSTRUCTED: the same dump with a "此账户为私密账户" text added (no private profile was ever dumped live)
+  const privXml = readFileSync(new URL('./fixtures/ig-own-profile-refreshed.xml', import.meta.url), 'utf8')
+    .replace('</hierarchy>', '<node text="此账户为私密账户" resource-id="" package="com.instagram.android" content-desc="" bounds="[0,900][1080,960]"/></hierarchy>');
+  const privNodes = parseUiDump(privXml);
+  const priv = profileOutcome(classifyIgDump(privNodes, 'conchadoroperto650'), privNodes);
+  check('profile outcome (constructed private text): private true, counts still read', priv.kind === 'profile' && priv.private === true && priv.followers === 0, JSON.stringify(priv));
+  const mini = (inner: string) => parseUiDump(`<hierarchy><node text="" resource-id="" package="com.instagram.android" content-desc="" bounds="[0,0][1080,2000]">${inner}</node></hierarchy>`);
+  const shell = mini('<node text="" resource-id="com.instagram.android:id/profile_action_bar" package="com.instagram.android" bounds="[0,0][1080,100]"/>');
+  const chal = mini('<node text="Help us confirm it\'s you" resource-id="" package="com.instagram.android" bounds="[0,0][1080,100]"/>');
+  const loginScr = mini('<node text="" resource-id="com.instagram.android:id/login_username" package="com.instagram.android" bounds="[0,0][1080,100]"/>');
+  const other = mini('<node text="something" resource-id="" package="com.instagram.android" bounds="[0,0][1080,100]"/>');
+  const oc = [shell, chal, loginScr, other].map((n) => profileOutcome(classifyIgDump(n, 'someone'), n));
+  check('profile outcome: empty shell → not_found (continue), challenge / login → stop, unknown → timeout',
+    JSON.stringify(oc.map((o) => `${o.kind}:${(o as any).code ?? ''}`)) === JSON.stringify(['code:not_found', 'stop:challenge', 'stop:logged_out', 'code:timeout']), JSON.stringify(oc.map((o) => `${o.kind}:${(o as any).code}`)));
+
+  // storage: alpha is in both lists of accA (current in following, gone in followers), fan1 / fan3 current followers
+  const t1 = new Date(Date.now() - 60_000);
+  await writeProfile(accA.id, 'Alpha', { kind: 'profile', followers: 12500, following: 80, posts: null, approx: ['followers'], private: true, verified: true, displayName: 'Profile Alpha' }, t1);
+  const al = (await db.select().from(FW).where(and(eq(FW.socialAccountId, accA.id), eq(FW.handle, 'alpha'))));
+  check('writeProfile: both rows of the handle (following + followers) get counts, approx, private, verified, checked time; a known display name kept, posts null when not shown',
+    al.length === 2 && al.every((x) => x.followers === 12500 && x.following === 80 && x.posts === null && x.isPrivate === true && x.verified === true
+      && JSON.stringify(x.approx) === '["followers"]' && x.profileCheckedAt?.getTime() === t1.getTime() && x.profileCode === null)
+    && al.find((x) => x.kind === 'following')?.displayName === 'N alpha' && al.find((x) => x.kind === 'followers')?.displayName === 'F Alpha', JSON.stringify(al));
+  await writeProfile(accA.id, 'fan1', { kind: 'profile', followers: 3, following: 4, posts: 5, approx: [], private: false, verified: false, displayName: 'P fan1' }, t1);
+  const t2 = new Date(Date.now() - 30_000);
+  await writeProfile(accA.id, 'fan1', { kind: 'code', code: 'timeout' }, t2);
+  await writeProfile(accA.id, 'fan3', { kind: 'code', code: 'not_found' }, t2);
+  const [f1] = await db.select().from(FW).where(and(eq(FW.socialAccountId, accA.id), eq(FW.handle, 'fan1')));
+  const [f3] = await db.select().from(FW).where(and(eq(FW.socialAccountId, accA.id), eq(FW.handle, 'fan3')));
+  check('writeProfile: a failed visit (timeout) keeps the last counts and checked time, only sets the code (picked again next run); not_found sets the code + checked time, counts null',
+    f1?.followers === 3 && f1.profileCheckedAt?.getTime() === t1.getTime() && f1.profileCode === 'timeout'
+    && f3?.profileCode === 'not_found' && f3.profileCheckedAt?.getTime() === t2.getTime() && f3.followers === null && f3.isPrivate === null, JSON.stringify([f1, f3]));
+  r = await http('GET', `/api/social/accounts/${accA.id}/following`, A);
+  const ia = r.body.items?.find((x: any) => x.handle === 'alpha');
+  check('GET …/following items: followers, following, posts, approx, private, profileCheckedAt, profileCode', !!ia && ia.followers === 12500 && ia.following === 80 && ia.posts === null
+    && JSON.stringify(ia.approx) === '["followers"]' && ia.private === true && new Date(ia.profileCheckedAt).getTime() === t1.getTime() && ia.profileCode === null, r.text);
+  r = await http('GET', `/api/social/accounts/${accA.id}/followers/list`, A);
+  const i3 = r.body.items?.find((x: any) => x.handle === 'fan3');
+  const i1 = r.body.items?.find((x: any) => x.handle === 'fan1');
+  check('GET …/followers/list items: not_found row (counts null, approx []), unread private null; timeout row keeps its counts', !!i3 && i3.profileCode === 'not_found' && i3.followers === null
+    && Array.isArray(i3.approx) && i3.approx.length === 0 && i3.private === null && i1?.followers === 3 && i1.profileCode === 'timeout', r.text);
+  const due = pickProfileVisits(await db.select().from(FW).where(eq(FW.socialAccountId, accA.id)));
+  check('pick on the stored rows: nothing due (alpha / fan3 checked now, fan1\'s failed visit keeps its read of a minute ago, gone rows skipped)', due.length === 0, due.map((x) => `${x.kind}:${x.handle}`).join(','));
+  await db.update(FW).set({ profileCheckedAt: null }).where(and(eq(FW.socialAccountId, accA.id), eq(FW.handle, 'fan1')));
+  await writeProfile(accA.id, 'fan1', { kind: 'code', code: 'timeout' });
+  const due2 = pickProfileVisits(await db.select().from(FW).where(eq(FW.socialAccountId, accA.id)));
+  check('…a row whose visits only failed (never read) stays due for the next run', due2.map((x) => x.handle).join(',') === 'fan1', due2.map((x) => `${x.kind}:${x.handle}`).join(','));
+
   // ---------------------------------------------------------------- role menu rule
   const rule = menuRuleFor('GET', `/api/social/accounts/${accA.id}/following`);
   const rule2 = menuRuleFor('GET', `/api/social/accounts/${accA.id}/followers`);
@@ -273,8 +345,9 @@ try {
   const [uq] = await sqlClient`select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'social_account_following_account_kind_handle' and contype = 'u'`;
   const [olduq] = await sqlClient`select 1 as ok from pg_constraint where conname = 'social_account_following_account_handle'`;
   const [kindCol] = await sqlClient`select column_default, is_nullable from information_schema.columns where table_name = 'social_account_following' and column_name = 'kind'`;
-  check('migrations 0044 + 0046: gone_at nullable, FK cascade, kind not null default following, unique (account, kind, handle), old unique gone',
-    cols.map((c) => c.column_name).join(',') === 'id,social_account_id,handle,display_name,verified,position,first_seen_at,last_seen_at,gone_at,kind'
+  check('migrations 0044 + 0046 + 0047: gone_at nullable, profile columns nullable, FK cascade, kind not null default following, unique (account, kind, handle), old unique gone',
+    cols.map((c) => c.column_name).join(',') === 'id,social_account_id,handle,display_name,verified,position,first_seen_at,last_seen_at,gone_at,kind,followers,following,posts,approx,is_private,profile_checked_at,profile_code'
+    && cols.filter((c) => ['followers', 'following', 'posts', 'approx', 'is_private', 'profile_checked_at', 'profile_code'].includes(String(c.column_name))).every((c) => c.is_nullable === 'YES')
     && cols.find((c) => c.column_name === 'gone_at')?.is_nullable === 'YES' && fk?.confdeltype === 'c' && /\(social_account_id, kind, handle\)/.test(String(uq?.def))
     && !olduq && kindCol?.is_nullable === 'NO' && /'following'/.test(String(kindCol?.column_default)), `${cols.map((c) => c.column_name)} ${fk?.confdeltype} ${uq?.def} ${JSON.stringify(kindCol)}`);
   const mig = () => execFileSync('npx', ['tsx', '--env-file=../../.env', 'src/db/migrate.ts'], { env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });

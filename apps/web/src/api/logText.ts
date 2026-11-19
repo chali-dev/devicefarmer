@@ -179,6 +179,9 @@ const RULES: Rule[] = [
   [/^followers: list stopped growing before its end$/, 'followersStalled', () => ({})],
   [/^followers list skipped: (\S+)$/, 'followersSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^followers list read: (\d+) accounts \((\d+) new, (\d+) gone\)$/, 'followersRead', (m) => ({ n: m[1]!, added: m[2]!, gone: m[3]! })],
+  // the listed accounts' profiles (粉丝数 / 关注数 / 不公开, same task)
+  [/^profiles read: (\d+) \(private (\d+), failed (\d+)\)$/, 'followProfilesRead', (m) => ({ n: m[1]!, priv: m[2]!, failed: m[3]! })],
+  [/^profile visit failed$/, 'followProfileFailed', (_m, d) => ({ handle: String(d?.handle ?? '?') })],
   [/^feed collected: (\d+) posts \((\d+) new\), (\d+) comments \((\d+) new\)$/, 'feedCollected', (m) => ({ posts: m[1]!, newPosts: m[2]!, comments: m[3]!, newComments: m[4]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点
