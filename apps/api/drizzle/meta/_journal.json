@@ -330,6 +330,13 @@
       "when": 1795065717154,
       "tag": "0046_account_followers",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1795069259702,
+      "tag": "0047_follow_list_profiles",
+      "breakpoints": true
     }
   ]
 }

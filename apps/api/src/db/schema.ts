@@ -871,6 +871,21 @@ export const socialAccountFollowing = pgTable('social_account_following', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   /** Not in the list any more (seen missing by a complete read); cleared when it shows up again. */
   goneAt: timestamp('gone_at', { withTimezone: true }),
+  /**
+   * The listed account's own profile (owner 2026-11-19): read by opening its public profile on the account's phone
+   * (account-following, ≤ PROFILE_VISITS_PER_RUN per run, again after 7 days). null = not shown / never read.
+   */
+  followers: integer('followers'),
+  following: integer('following'),
+  posts: integer('posts'),
+  /** Counters the app abbreviated (≈). */
+  approx: text('approx').array(),
+  /** 不公开: the profile says the account is private (its counts still show). */
+  isPrivate: boolean('is_private'),
+  /** Last profile visit that read the profile or found it missing; null = never (or only failed visits). */
+  profileCheckedAt: timestamp('profile_checked_at', { withTimezone: true }),
+  /** null = read; not_found / timeout / parse_failed / bad_handle = the last visit's problem. */
+  profileCode: text('profile_code'),
 }, (t) => [
   unique('social_account_following_account_kind_handle').on(t.socialAccountId, t.kind, t.handle),
   index('social_account_following_account_idx').on(t.socialAccountId, t.kind, t.goneAt, t.position),

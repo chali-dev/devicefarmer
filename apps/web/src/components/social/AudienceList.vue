@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ExportOutlined, InfoCircleOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { ExportOutlined, InfoCircleOutlined, LockOutlined, SyncOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
-import type { AccountFollowing, Task } from '../../api/types'
+import { compactNumber, type AccountFollowing, type FollowingEntry, type Task } from '../../api/types'
 import { dateLocale } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import { pagination } from '../common/ui'
@@ -12,12 +12,15 @@ import InitialAvatar from './InitialAvatar.vue'
 
 /**
  * One list of the account's 关注 / 粉丝 page (owner 2026-11-19): `following` = the accounts it follows
- * (GET …/following), `followers` = its newest ≤ 20 followers (GET …/followers/list). Both are read by the same device
+ * (GET …/following, search / state / paging), `followers` = its current newest ≤ 20 followers only (GET …/followers/list,
+ * owner 2026-11-19 「粉丝页只列出前20笔粉丝」: one line with the account's own follower count `count`, no filters, no
+ * paging, no gone rows). Every row shows the listed account's 粉丝数 / 关注数 and 不公开, read from its profile by the
+ * same task (≤ 30 profiles per run, again after 7 days). Both lists are read by the same device
  * task (account-following): 同步更新 queues one (POST …/following/sync); every account-following task of this account
  * (also step 3 of the row's 同步 button and scheduled reads) is followed and reloads the list when it ends.
  * Read only: no follow / unfollow / remove, no tags or notes (owner: 「不作这功能先」「都不要」).
  */
-const props = defineProps<{ accountId: string; kind: 'following' | 'followers' }>()
+const props = defineProps<{ accountId: string; kind: 'following' | 'followers'; /** followers: the account's own follower count (formatted) */ count?: string }>()
 const emit = defineEmits<{ loaded: [data: AccountFollowing] }>()
 const { t } = useI18n()
 const store = useInstancesStore()
@@ -31,8 +34,10 @@ const page = reactive({ current: 1, pageSize: 20 })
 async function load() {
   loading.value = true
   try {
-    const p = new URLSearchParams({ limit: String(page.pageSize), offset: String((page.current - 1) * page.pageSize), state: q.state })
-    if (q.text.trim()) p.set('q', q.text.trim())
+    const p = isFollowers.value
+      ? new URLSearchParams({ limit: '20', offset: '0', state: 'current' })
+      : new URLSearchParams({ limit: String(page.pageSize), offset: String((page.current - 1) * page.pageSize), state: q.state })
+    if (!isFollowers.value && q.text.trim()) p.set('q', q.text.trim())
     const path = isFollowers.value ? 'followers/list' : 'following'
     data.value = await api<AccountFollowing>('GET', `/api/social/accounts/${props.accountId}/${path}?${p}`)
     if (data.value.pending && !syncTask.value) syncTask.value = data.value.pending.taskId
@@ -52,10 +57,17 @@ const stateOptions = computed(() => [
 const columns = computed(() => [
   { title: t('social.audience.colAccount'), key: 'handle', ellipsis: true },
   { title: t('social.audience.colName'), key: 'displayName', ellipsis: true },
-  isFollowers.value ? { title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 190 } : { title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 180 },
-  { title: t('social.audience.colStatus'), key: 'status', width: 210 },
+  { title: t('social.audience.colFollowers'), key: 'followers', width: 96, align: 'right' as const },
+  { title: t('social.audience.colFollowing'), key: 'following', width: 96, align: 'right' as const },
+  ...(isFollowers.value
+    ? [{ title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 190 }]
+    : [{ title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 180 }, { title: t('social.audience.colStatus'), key: 'status', width: 200 }]),
   { title: '', key: 'open', width: 56, align: 'center' as const },
 ])
+/** A listed account's counter as read from its profile: ≈ when the app abbreviated it, — when unknown. */
+const countText = (r: FollowingEntry, k: 'followers' | 'following') => (r[k] === null ? '—' : `${r.approx.includes(k) ? '≈' : ''}${compactNumber(r[k])}`)
+const countTip = (r: FollowingEntry) => (r.profileCode === 'not_found' ? t('social.audience.profileNotFound', { time: fmt(r.profileCheckedAt) })
+  : r.profileCheckedAt ? t('social.audience.profileReadAt', { time: fmt(r.profileCheckedAt) }) : t('social.audience.profileNotRead'))
 const max = computed(() => data.value?.settings.max ?? (isFollowers.value ? 20 : 200))
 const unsupportedText = computed(() => (data.value?.unsupported ? codeText(data.value.unsupported, {}, data.value.unsupported) : ''))
 /** Last run of the device task, as this list saw it (the followers part has its own result inside it). */
@@ -117,8 +129,11 @@ onMounted(() => { void load() })
 <template>
   <div class="audience-list">
     <div class="bar">
-      <a-space wrap :size="[12, 4]">
-        <strong v-if="data">{{ t(isFollowers ? 'social.audience.totalFollowers' : 'social.audience.totalFollowing', { n: data.current }) }}</strong>
+      <a-space v-if="isFollowers" wrap :size="[12, 4]">
+        <strong>{{ t('social.audience.followersCount', { n: count ?? '—' }) }}</strong>
+      </a-space>
+      <a-space v-else wrap :size="[12, 4]">
+        <strong v-if="data">{{ t('social.audience.totalFollowing', { n: data.current }) }}</strong>
         <a-input-search v-model:value="q.text" :placeholder="t('social.audience.search')" allow-clear class="search" @search="search" />
         <a-select v-model:value="q.state" :options="stateOptions" class="state" @change="search" />
       </a-space>
@@ -133,11 +148,11 @@ onMounted(() => { void load() })
       </a-space>
     </div>
     <a-alert v-if="data?.unsupported && !isFollowers" type="info" show-icon :message="unsupportedText" class="gap" />
-    <a-empty v-if="data && !data.total && !q.text && q.state !== 'gone' && !data.gone"
+    <a-empty v-if="data && !data.total && (isFollowers || (!q.text && q.state !== 'gone' && !data.gone))"
       :description="isFollowers ? t('social.audience.followersListEmpty', { max }) : t('social.audience.followingEmpty', { max })" />
     <a-table
       v-else :data-source="data?.items ?? []" :columns="columns" row-key="id" size="middle" :loading="loading" :scroll="{ x: 640 }"
-      :pagination="pagination({ current: page.current, pageSize: page.pageSize, total: data?.total ?? 0, totalText: (n: number) => t('social.total', { n }) })"
+      :pagination="isFollowers ? false : pagination({ current: page.current, pageSize: page.pageSize, total: data?.total ?? 0, totalText: (n: number) => t('social.total', { n }) })"
       @change="onTable"
     >
       <template #headerCell="{ column }">
@@ -152,7 +167,15 @@ onMounted(() => { void load() })
             <InitialAvatar :name="record.displayName" :handle="record.handle" :size="28" />
             <a :href="`https://www.instagram.com/${record.handle}/`" target="_blank" rel="noopener noreferrer">{{ '@' + record.handle }}</a>
             <a-tag v-if="record.verified" color="blue">{{ t('social.audience.verified') }}</a-tag>
+            <a-tooltip v-if="record.private" :title="t('social.audience.privateHint')">
+              <a-tag class="private"><LockOutlined /> {{ t('social.audience.private') }}</a-tag>
+            </a-tooltip>
           </span>
+        </template>
+        <template v-else-if="column.key === 'followers' || column.key === 'following'">
+          <a-tooltip :title="countTip(record)">
+            <span :class="{ muted: record[column.key] === null }">{{ countText(record, column.key) }}</span>
+          </a-tooltip>
         </template>
         <template v-else-if="column.key === 'displayName'"><span v-if="record.displayName">{{ record.displayName }}</span><span v-else class="muted">—</span></template>
         <template v-else-if="column.key === 'lastSeenAt'">{{ fmt(record.lastSeenAt) }}</template>
@@ -168,7 +191,7 @@ onMounted(() => { void load() })
         </template>
       </template>
     </a-table>
-    <div class="muted small">{{ isFollowers ? t('social.audience.followersListHint', { max }) : t('social.audience.followingSource') }}</div>
+    <div class="muted small">{{ isFollowers ? t('social.audience.followersListHint', { max }) : t('social.audience.followingSource') }} {{ t('social.audience.profilesHint', { n: 30 }) }}</div>
   </div>
 </template>
 
@@ -179,5 +202,6 @@ onMounted(() => { void load() })
 .state { width: 170px; }
 .who { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .who .ant-tag { margin-inline-end: 0; }
+.private { color: var(--cp-text-secondary); }
 .gap { margin-bottom: 0; }
 </style>

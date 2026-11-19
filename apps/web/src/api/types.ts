@@ -803,6 +803,12 @@ export interface AccountFollowers {
 export interface FollowingEntry {
   id: string; handle: string; displayName: string | null; verified: boolean | null; position: number | null
   firstSeenAt: string; lastSeenAt: string; goneAt: string | null
+  /** the listed account's own profile, read on the phone (≤ 30 per run, again after 7 days); null = not shown / never read */
+  followers: number | null; following: number | null; posts: number | null; approx: string[]
+  /** 不公开 (private account); null = never read */
+  private: boolean | null; profileCheckedAt: string | null
+  /** null = read; not_found / timeout / parse_failed / bad_handle = the last visit's problem */
+  profileCode: string | null
 }
 export interface FollowingRun { taskId: string; status: string; at: string; errorCode: string | null; result: Record<string, unknown> | null }
 /** GET /api/social/accounts/:id/following (kind following) and …/followers/list (kind followers, ≤ 20 newest per run) */
