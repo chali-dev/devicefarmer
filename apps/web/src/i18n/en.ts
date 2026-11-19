@@ -2054,6 +2054,8 @@ const en: Messages = {
       retention: 'Retention',
       logRetention: 'Keep log files',
       historyRetention: 'Keep connection history',
+      cleanNow: 'Clean up now',
+      cleaned: 'Cleaned up: {files} log files and {rows} connection history rows deleted',
       empty: 'No matching log lines',
     },
     conn: {

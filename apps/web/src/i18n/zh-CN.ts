@@ -2065,6 +2065,8 @@ const zhCN = {
       retention: '保留期',
       logRetention: '日志文件保留',
       historyRetention: '连线历史保留',
+      cleanNow: '立即清理',
+      cleaned: '已清理：删除 {files} 个日志文件、{rows} 条连线历史',
       empty: '没有匹配的日志',
     },
     conn: {
