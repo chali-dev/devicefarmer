@@ -54,7 +54,6 @@ function search() { page.current = 1; void loadFollowing() }
 function onTable(p: { current?: number; pageSize?: number }) { page.current = p.current ?? 1; page.pageSize = p.pageSize ?? page.pageSize; void loadFollowing() }
 const columns = computed(() => [
   { title: t('social.audience.colAccount'), key: 'handle' },
-  { title: t('social.audience.colFirstSeen'), key: 'firstSeenAt', width: 170 },
   { title: t('social.audience.colLastSeen'), key: 'lastSeenAt', width: 170 },
 ])
 const unsupportedText = computed(() => (fw.value?.unsupported ? codeText(fw.value.unsupported, {}, fw.value.unsupported) : ''))
@@ -170,7 +169,6 @@ watch(tab, (v) => { if (v === 'following' && !fw.value) void loadFollowing() })
                   <a-tag v-if="record.goneAt">{{ t('social.audience.gone', { time: fmt(record.goneAt) }) }}</a-tag>
                 </div>
               </template>
-              <template v-else-if="column.key === 'firstSeenAt'">{{ fmt(record.firstSeenAt) }}</template>
               <template v-else-if="column.key === 'lastSeenAt'">{{ fmt(record.lastSeenAt) }}</template>
             </template>
           </a-table>
