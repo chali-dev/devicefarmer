@@ -171,6 +171,10 @@ const RULES: Rule[] = [
   [/^following sync skipped: (\S+)$/, 'followingSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^following sync failed: (\S+)$/, 'followingFailed', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^following list read: (\d+) accounts \((\d+) new, (\d+) gone\)$/, 'followingRead', (m) => ({ n: m[1]!, added: m[2]!, gone: m[3]! })],
+  // 粉丝 list (≤ 20 newest, same task)
+  [/^followers: list stopped growing before its end$/, 'followersStalled', () => ({})],
+  [/^followers list skipped: (\S+)$/, 'followersSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^followers list read: (\d+) accounts \((\d+) new, (\d+) gone\)$/, 'followersRead', (m) => ({ n: m[1]!, added: m[2]!, gone: m[3]! })],
   [/^feed collected: (\d+) posts \((\d+) new\), (\d+) comments \((\d+) new\)$/, 'feedCollected', (m) => ({ posts: m[1]!, newPosts: m[2]!, comments: m[3]!, newComments: m[4]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点

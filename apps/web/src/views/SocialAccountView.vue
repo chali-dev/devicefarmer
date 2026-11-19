@@ -1,0 +1,182 @@
+<script setup lang="ts">
+import { ArrowLeftOutlined, DownOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { message } from 'ant-design-vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { ApiError, api, errorText } from '../api/client'
+import { compactNumber, dayTs, type AccountFollowers, type AccountFollowing, type SocialAccount } from '../api/types'
+import PageContainer from '../components/common/PageContainer.vue'
+import StatusTag from '../components/common/StatusTag.vue'
+import SocialAccountFeedDrawer from '../components/feed/SocialAccountFeedDrawer.vue'
+import AccountAiGenerateModal from '../components/social/AccountAiGenerateModal.vue'
+import AudienceList from '../components/social/AudienceList.vue'
+import InitialAvatar from '../components/social/InitialAvatar.vue'
+import PlatformTag from '../components/social/PlatformTag.vue'
+import { useAccountSync } from '../components/social/useAccountSync'
+import LineChart from '../components/tracked/LineChart.vue'
+import { dateLocale } from '../i18n'
+
+/**
+ * A media account's 关注 / 粉丝 page (/social/accounts/:id, owner 2026-11-19, replaces the row expansion of 我的媒体号):
+ * header with the account and its one 同步 button, tabs 关注 (the following list read from its cloud phone) and 粉丝
+ * (count + changes + trend from the automatic check, then the newest ≤ 20 followers read from the phone).
+ * RBAC = the account's (owner + admins; others get the API's 404 → not-found state).
+ */
+const route = useRoute()
+const router = useRouter()
+const { t } = useI18n()
+const id = computed(() => String(route.params.id))
+const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
+const shortDay = (ts: number) => new Date(ts).toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' })
+const signed = (n: number | null) => (n === null ? '—' : `${n > 0 ? '+' : ''}${compactNumber(n)}`)
+const tone = (n: number | null) => (n === null || n === 0 ? '' : n > 0 ? 'up' : 'down')
+
+const account = ref<SocialAccount | null>(null)
+const notFound = ref(false)
+const loading = ref(false)
+async function loadAccount() {
+  loading.value = true
+  try {
+    account.value = (await api<{ account: SocialAccount }>('GET', `/api/social/accounts/${id.value}`)).account
+    notFound.value = false
+  } catch (e) {
+    if (e instanceof ApiError && (e.status === 404 || e.status === 400)) notFound.value = true
+    else message.error(errorText(e))
+  } finally { loading.value = false }
+}
+
+// 粉丝: count / changes / trend (automatic check readings)
+const fol = ref<AccountFollowers | null>(null)
+async function loadFollowers() {
+  try { fol.value = await api<AccountFollowers>('GET', `/api/social/accounts/${id.value}/followers?days=30`) } catch { fol.value = null }
+}
+const points = computed(() => (fol.value?.series ?? []).map((d) => ({ t: dayTs(d.day), v: d.followers })))
+const followersCount = computed(() => (fol.value?.current ? `${fol.value.current.approx ? '≈' : ''}${compactNumber(fol.value.current.followers)}` : '—'))
+
+// 关注: count for the tab label (the list itself reports it again whenever it loads)
+const followingCount = ref<number | null>(null)
+async function loadFollowingCount() {
+  try { followingCount.value = (await api<AccountFollowing>('GET', `/api/social/accounts/${id.value}/following?limit=1`)).current } catch { followingCount.value = null }
+}
+
+const tab = computed<'following' | 'followers'>({
+  get: () => (route.query.tab === 'followers' ? 'followers' : 'following'),
+  set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
+})
+
+const { syncing, syncLabel, syncDisabled, syncNow } = useAccountSync(() => { void loadAccount(); void loadFollowers() })
+
+const feedOpen = ref(false)
+const aiOpen = ref(false)
+function onMore({ key }: { key: string | number }) {
+  if (key === 'detail') feedOpen.value = true
+  else if (key === 'ai') aiOpen.value = true
+}
+const profileLink = computed(() => account.value?.profileUrl || (account.value?.platform === 'instagram' ? `https://www.instagram.com/${account.value.handle}/` : null))
+const back = () => router.push({ path: '/social', query: { tab: 'accounts' } })
+
+function loadAll() { void loadAccount(); void loadFollowers(); void loadFollowingCount() }
+onMounted(loadAll)
+watch(id, loadAll)
+</script>
+
+<template>
+  <PageContainer :title="t('social.audience.page.open')">
+    <template #title>
+      <span class="title">
+        <a-button type="text" :aria-label="t('social.audience.page.back')" @click="back"><template #icon><ArrowLeftOutlined /></template></a-button>
+        {{ t('social.audience.page.open') }}
+      </span>
+    </template>
+
+    <a-card v-if="notFound" :bordered="false">
+      <a-result status="404" :sub-title="t('social.audience.page.notFound')">
+        <template #extra><a-button type="primary" @click="back">{{ t('social.audience.page.back') }}</a-button></template>
+      </a-result>
+    </a-card>
+
+    <template v-else>
+      <a-card :bordered="false" :loading="loading && !account">
+        <div v-if="account" class="head">
+          <InitialAvatar :name="account.displayName" :handle="account.handle" :size="56" />
+          <div class="who">
+            <div class="line">
+              <PlatformTag :platform="account.platform" icon-only />
+              <a v-if="profileLink" :href="profileLink" target="_blank" rel="noopener noreferrer" class="handle">@{{ account.handle }}</a>
+              <span v-else class="handle">@{{ account.handle }}</span>
+              <StatusTag kind="socialLogin" :status="account.loginStatus" />
+            </div>
+            <div v-if="account.displayName" class="name">{{ account.displayName }}</div>
+            <div class="muted small">
+              {{ account.lastCheckedAt ? t('social.audience.page.lastSync', { time: fmt(account.lastCheckedAt) }) : t('social.audience.page.neverSync') }}
+            </div>
+          </div>
+          <a-space wrap class="actions">
+            <a-tooltip :title="syncDisabled(account) ? t('social.syncNoDevice') : t('social.syncNowHint')">
+              <a-button type="primary" :disabled="syncDisabled(account)" :loading="!!syncing[account.id]" @click="syncNow(account)">
+                <template #icon><SyncOutlined /></template>{{ syncLabel(account.id) }}
+              </a-button>
+            </a-tooltip>
+            <a-dropdown>
+              <a-button>{{ t('social.more') }} <DownOutlined /></a-button>
+              <template #overlay>
+                <a-menu @click="onMore">
+                  <a-menu-item key="detail">{{ t('social.audience.page.detail') }}</a-menu-item>
+                  <a-menu-item key="ai" :disabled="!account.personaId" :title="account.personaId ? undefined : t('social.aiDrafts.noPersonaGenerate')">{{ t('social.aiDrafts.generateNow') }}</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </a-space>
+        </div>
+      </a-card>
+
+      <a-card v-if="account" :bordered="false" class="tabs-card">
+        <a-tabs v-model:active-key="tab">
+          <a-tab-pane key="following" :tab="t('social.audience.page.followingTab', { n: followingCount ?? '—' })">
+            <AudienceList :account-id="account.id" kind="following" @loaded="(d) => (followingCount = d.current)" />
+          </a-tab-pane>
+          <a-tab-pane key="followers" :tab="t('social.audience.page.followersTab', { n: followersCount })">
+            <div class="followers-top">
+              <template v-if="fol?.current">
+                <div class="stats">
+                  <a-statistic :title="t('social.audience.current')" :value="followersCount" />
+                  <a-statistic v-for="k in (['today', 'd7', 'd30'] as const)" :key="k" :title="t(`social.audience.change.${k}`)" :value="signed(fol.change[k])" :class="tone(fol.change[k])" />
+                </div>
+                <div class="chart">
+                  <LineChart :points="points" :height="110" :format-time="shortDay" :format="compactNumber" :aria-label="t('social.audience.trend')" />
+                  <div class="muted small">{{ t('social.audience.followersSource', { time: fmt(fol.lastCheckedAt ?? fol.current.at) }) }}</div>
+                </div>
+              </template>
+              <a-empty v-else-if="fol" :image-style="{ height: '40px' }" :description="t('social.audience.followersEmpty')" />
+            </div>
+            <AudienceList :account-id="account.id" kind="followers" />
+          </a-tab-pane>
+        </a-tabs>
+      </a-card>
+    </template>
+
+    <SocialAccountFeedDrawer v-model:open="feedOpen" :account="account" />
+    <AccountAiGenerateModal v-model:open="aiOpen" :account="account" />
+  </PageContainer>
+</template>
+
+<style scoped>
+.title { display: inline-flex; align-items: center; gap: 4px; }
+.head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.who { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.line .ant-tag { margin-inline-end: 0; }
+.handle { font-size: 18px; font-weight: 600; word-break: break-all; }
+.name { color: var(--cp-text-secondary); }
+.actions { flex: none; }
+.tabs-card :deep(.ant-card-body) { padding-top: 4px; }
+.followers-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 16px; align-items: center; margin-bottom: 16px; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.chart { min-width: 0; }
+.up :deep(.ant-statistic-content) { color: var(--cp-success); }
+.down :deep(.ant-statistic-content) { color: var(--cp-error); }
+@media (max-width: 768px) {
+  .followers-top { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

@@ -799,9 +799,12 @@ export interface FollowingEntry {
   firstSeenAt: string; lastSeenAt: string; goneAt: string | null
 }
 export interface FollowingRun { taskId: string; status: string; at: string; errorCode: string | null; result: Record<string, unknown> | null }
-/** GET /api/social/accounts/:id/following */
+/** GET /api/social/accounts/:id/following (kind following) and …/followers/list (kind followers, ≤ 20 newest per run) */
 export interface AccountFollowing {
-  items: FollowingEntry[]; total: number; following: number; gone: number
+  kind: 'following' | 'followers'
+  items: FollowingEntry[]; total: number
+  /** current entries of this list (`following` = the same, older field name, following list only) */
+  current: number; following?: number; gone: number
   unsupported: string | null; halted: boolean
   settings: { hours: number | null; max: number }
   last: FollowingRun | null; lastSynced: FollowingRun | null
