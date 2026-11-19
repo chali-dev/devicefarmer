@@ -679,8 +679,8 @@ export const contentTagLinks = pgTable('content_tag_links', {
  * Status: pending | scheduled → running → published | awaiting_operator (manual method: handed to an
  * operator, who records the outcome) | failed | cancelled. `user_id` = the account's owner.
  * Media and texts are snapshots taken at distribution (what was scheduled is what gets published).
- * At most one unfinished row per (content, account) (partial unique index); a second publish of an
- * already published pair needs `republish`.
+ * At most one unfinished row per (content, account) (partial unique index); an already published pair is
+ * never published again (1 个内容只发布一次; `republish` is LEGACY, always false now).
  */
 export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled'] as const;
 export type PublishStatus = (typeof PUBLISH_STATUSES)[number];

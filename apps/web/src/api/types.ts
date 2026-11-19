@@ -426,7 +426,7 @@ export interface PublishTaskItem {
   id: string; userId: string; ownerName: string | null; contentId: string; accountId: string; platform: string
   title: string | null; caption: string; hashtags: string[]; text: string; options: Record<string, unknown>; mediaIds: string[]
   scheduledAt: string; status: PublishStatus; method: 'api' | 'manual' | 'device' | null; attemptNo: number; maxAttempts: number; taskId: string | null
-  republish: boolean; externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
+  externalId: string | null; url: string | null; error: string | null; errorCode: string | null; publishedAt: string | null
   postType: PostType
   /** 云手机发帖: what the phone showed before 分享 (the screenshot via GET /api/publish/tasks/:id/evidence). */
   evidence: { at: string; inputText: string | null; excerpt: string | null } | null; hasEvidence: boolean
@@ -439,6 +439,8 @@ export interface PublishTaskItem {
   media: ContentMedia[]
   /** Only with `group=content`: the older tasks of the same content + account (newest first, ≤ 20). */
   previous?: PublishAttempt[]
+  /** Only with `group=content`: how many older tasks there are in all (`previous` holds at most 20). */
+  previousTotal?: number
 }
 /** One task of a content + account (编辑后重新发布 leaves several): list `previous`, detail `history`. */
 export interface PublishAttempt {

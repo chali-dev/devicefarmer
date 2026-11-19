@@ -322,7 +322,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     detail: ({ body }) => {
       const targets = Array.isArray(body.targets) ? (body.targets as Body[]) : [];
       return {
-        accountIds: targets.map((t) => t.accountId), count: targets.length, republish: body.republish,
+        accountIds: targets.map((t) => t.accountId), count: targets.length,
         scheduledAt: targets.map((t) => t.scheduledAt ?? null), postTypes: targets.map((t) => t.postType ?? 'feed'),
       };
     },

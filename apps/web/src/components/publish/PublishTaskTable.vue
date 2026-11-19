@@ -9,12 +9,13 @@ import StatusTag from '../common/StatusTag.vue'
 import { actionColumn, pagination, TABLE_SIZE } from '../common/ui'
 import PlatformTag from '../social/PlatformTag.vue'
 import PostTypeTag from './PostTypeTag.vue'
+import PublishAttemptRows from './PublishAttemptRows.vue'
 
 /**
  * Publish task list (GET /api/publish/tasks rows), shared by 排程发布 (今日 / 待发布 / 发布记录) and 媒体管理 → 发文日志.
  * `mode`: `queue` shows the device column, `result` the post link / error. Opening a row is the caller's drawer.
  * Callers list with `group=content`: one row per content + account (its newest task); the older attempts
- * (编辑后重新发布) are folded under it (expand: status, time, error, 查看).
+ * (编辑后重新发布) are always shown under it (no fold; newest 5, then 「还有 N 条」 = open the newest task's drawer).
  */
 const props = defineProps<{
   items: PublishTaskItem[]; total: number; loading: boolean; current: number; pageSize: number
@@ -27,6 +28,8 @@ const auth = useAuthStore()
 const fmt = (d: string | null) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const errText = (x: Pick<PublishTaskItem, 'errorCode' | 'error'>) => (x.errorCode ? codeText(x.errorCode, undefined, x.error ?? x.errorCode) : '')
 const hasPrevious = (r: PublishTaskItem) => !!r.previous?.length
+/** Every row with earlier attempts stays expanded; there is no expand column. */
+const expandedKeys = computed(() => props.items.filter(hasPrevious).map((r) => r.id))
 const columns = computed(() => [
   { title: t('publish.colTime'), key: 'time', width: 170 },
   { title: t('publish.colAccount'), key: 'account', width: 220 },
@@ -43,17 +46,10 @@ const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 <template>
   <a-table :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: scrollX }"
     :locale="emptyText ? { emptyText } : undefined"
-    :pagination="pagination({ current, pageSize, total })" :row-expandable="hasPrevious" @change="(p: any) => emit('change', p)">
+    :pagination="pagination({ current, pageSize, total })" :row-expandable="hasPrevious" :expanded-row-keys="expandedKeys" :show-expand-column="false"
+    :expand-row-by-click="false" @change="(p: any) => emit('change', p)">
     <template #expandedRowRender="{ record }">
-      <div class="prev">
-        <div class="muted small">{{ t('publish.previousTitle', { n: record.previous.length }) }}</div>
-        <div v-for="a in (record as PublishTaskItem).previous" :key="a.id" class="prev-row">
-          <span class="small">{{ fmt(a.publishedAt ?? a.updatedAt) }}</span>
-          <StatusTag kind="publish" :status="a.status" />
-          <a-typography-text v-if="a.errorCode" type="danger" class="small">{{ errText(a) }}</a-typography-text>
-          <a-button type="link" size="small" @click="emit('open', a.id)">{{ t('common.view') }}</a-button>
-        </div>
-      </div>
+      <PublishAttemptRows class="prev" :attempts="record.previous" :total="record.previousTotal" @open="(id) => emit('open', id)" @more="emit('open', record.id)" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'time'">{{ fmt(record.status === 'published' ? record.publishedAt : record.scheduledAt) }}</template>
@@ -64,7 +60,6 @@ const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
       </template>
       <template v-else-if="column.key === 'status'">
         <StatusTag kind="publish" :status="record.status" />
-        <a-tag v-if="record.previous?.length" class="small">{{ t('publish.previousCount', { n: record.previous.length }) }}</a-tag>
         <div v-if="record.status === 'pending' && record.errorCode"><a-typography-text type="danger" class="small">{{ errText(record as PublishTaskItem) }}</a-typography-text></div>
       </template>
       <template v-else-if="column.key === 'device'">
@@ -86,6 +81,8 @@ const scrollX = computed(() => columns.value.reduce((n, c) => n + c.width, 0))
 </template>
 
 <style scoped>
-.prev { display: flex; flex-direction: column; gap: 4px; padding-left: 8px; }
-.prev-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.prev { margin-left: 8px; max-width: 760px; }
+/* The attempts belong to the row above: no separator line between them, compact padding. */
+:deep(.ant-table-expanded-row > td) { padding-top: 0 !important; padding-bottom: 8px !important; background: transparent !important; }
+:deep(tr.ant-table-row:has(+ .ant-table-expanded-row) > td) { border-bottom: none; }
 </style>

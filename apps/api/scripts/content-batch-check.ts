@@ -246,6 +246,9 @@ try {
     await http('POST', `/api/publish/tasks/${ptDone}/cancel`, A.token);
     console.log('  (fixture: publish task of pDone set to published directly in the DB)');
     await sqlClient`update publish_tasks set status = 'published', published_at = now() where id = ${ptDone!}`;
+    // 1 个内容只发布一次: the single 分发 refuses the published pair too, also with an older page's `republish: true`
+    r = await http('POST', `/api/contents/${pDone}/distribute`, A.token, { targets: [{ accountId: igA }], republish: true });
+    check('single distribute to the published pair (even with republish: true) → 409 publish.already_published', r.status === 409 && r.body.code === 'publish.already_published', r.text);
     // banned word: A's personal persona with a banned word, set on igA2 AFTER the content was saved (saving would refuse it)
     const pers = await http('POST', '/api/personas', A.token, { scope: 'mine', name: `cbper ${tag}`, style: { bannedWords: [`BANWORD${tag}`] } });
     const persSet = await http('PUT', `/api/social/accounts/${igA2}`, A.token, { personaId: pers.body.persona?.id });
