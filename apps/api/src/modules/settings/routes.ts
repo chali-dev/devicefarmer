@@ -115,10 +115,9 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return mediaLimitsView();
   });
 
-  /** Env-configured values shown read-only in the UI (publish defaults, audit retention, media limits). Cheap. */
+  /** Env-configured defaults (publish timeout, media limits, adb ports); the audit retention is a setting (系统配置 → 日志). Cheap. */
   app.get('/api/settings/config', async () => ({
     publish: { timeoutMs: config.PUBLISH_TIMEOUT_MS },
-    auditRetentionDays: config.AUDIT_RETENTION_DAYS,
     media: { imageMaxMb: config.MEDIA_IMAGE_MAX_MB, videoMaxMb: config.MEDIA_VIDEO_MAX_MB, allowedTypes: config.MEDIA_ALLOWED_TYPES.split(',').map((s) => s.trim()).filter(Boolean) },
     adbPorts: { min: config.ADB_PORT_MIN, max: config.ADB_PORT_MAX },
   }));

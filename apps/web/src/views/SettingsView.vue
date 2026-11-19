@@ -1,23 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { api } from '../api/client'
-import type { SettingsConfig } from '../api/types'
 import AiSettings from '../components/settings/AiSettings.vue'
 import MediaLimitSettings from '../components/settings/MediaLimitSettings.vue'
 import PublishTaskSettings from '../components/settings/PublishTaskSettings.vue'
-import RetentionSettings from '../components/settings/RetentionSettings.vue'
 import StorageSettings from '../components/settings/StorageSettings.vue'
 import BackupPanel from '../components/system/BackupPanel.vue'
 import LogRetentionSettings from '../components/system/LogRetentionSettings.vue'
 import PageContainer from '../components/common/PageContainer.vue'
 
 /**
- * 系统配置 (admin, owner's menu list of 2026-11-18): 数据 (database backups + task retention) and 日志 (log / history
- * retention + the read-only audit retention) — the former 备份与保留 tab split on 2026-11-19 (old ?tab=backup → data), 发布任务, 素材上传, 存储 and AI. The former read-only 环境变量 tab is gone:
- * its values are the defaults of 发布任务 / 素材上传 (shown as a hint under each field), AUDIT_RETENTION_DAYS stays
- * read-only in 备份与保留. The active tab is
+ * 系统配置 (admin, owner's menu list of 2026-11-18): 数据 (database backups) and 日志 (every log / history retention in
+ * one form, 2026-11-19) — the former 备份与保留 tab split on 2026-11-19 (old ?tab=backup → data), 发布任务, 素材上传, 存储 and AI.
+ * The former read-only 环境变量 tab is gone: env values are only defaults. The active tab is
  * in the URL (?tab=), so other pages link straight to their settings (e.g. /settings?tab=storage). The alert rules
  * moved to 告警通道 (?tab=rules), the system logs to 系统日志 (/logs). The former 追踪采集 tab (?tab=tracked) is gone
  * (2026-11-19): every tracked account picks its own 采集手机, the YouTube API key moved to 趋势热点 (/trending?youtubeKey=1).
@@ -41,8 +37,6 @@ const tab = computed<Tab>({
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
 
-const cfg = ref<SettingsConfig | null>(null)
-onMounted(async () => { try { cfg.value = await api<SettingsConfig>('GET', '/api/settings/config') } catch { /* tabs show — */ } })
 </script>
 
 <template>
@@ -51,11 +45,9 @@ onMounted(async () => { try { cfg.value = await api<SettingsConfig>('GET', '/api
       <a-tabs v-model:active-key="tab" destroy-inactive-tab-pane>
         <a-tab-pane key="data" :tab="t('settings.tabs.data')">
           <BackupPanel />
-          <a-divider />
-          <RetentionSettings />
         </a-tab-pane>
         <a-tab-pane key="logRetention" :tab="t('settings.tabs.logRetention')">
-          <LogRetentionSettings :audit-retention-days="cfg?.auditRetentionDays ?? null" />
+          <LogRetentionSettings />
         </a-tab-pane>
         <a-tab-pane key="publishRetry" :tab="t('settings.tabs.publishRetry')"><PublishTaskSettings /></a-tab-pane>
         <a-tab-pane key="media" :tab="t('settings.tabs.media')"><MediaLimitSettings /></a-tab-pane>

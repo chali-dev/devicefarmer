@@ -8,7 +8,7 @@ import { dateLocale } from '../../i18n'
 
 /**
  * Settings → Alerts (admin): which alert kinds go to the in-app bell, cooldown, recipients, "recovered"
- * notices and notification retention. External channels
+ * notices (notification retention: 系统配置 → 日志). External channels
  * (Telegram…) and the kinds each receives live on their own page (/alert-channels).
  */
 const { t } = useI18n()
@@ -44,7 +44,6 @@ async function saveRules() {
     setRules((await api<{ rules: Rules }>('PUT', '/api/settings/alerts', {
       kinds: Object.fromEntries(Object.entries(r.kinds).map(([k, v]) => [k, { inApp: v.inApp }])),
       cooldownMinutes: r.cooldownMinutes, notifyAdmins: r.notifyAdmins, recovered: r.recovered,
-      retentionDays: r.retentionDays,
     })).rules)
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
@@ -88,9 +87,6 @@ const kindColumns = [
           </a-form-item>
           <a-form-item>
             <a-checkbox v-model:checked="rules.recovered">{{ t('alerts.settings.recovered') }}</a-checkbox>
-          </a-form-item>
-          <a-form-item :label="t('alerts.settings.retention')" :extra="t('alerts.settings.retentionHint')">
-            <a-input-number v-model:value="rules.retentionDays" :min="1" :max="limits.retentionMax" :precision="0" :addon-after="t('settings.retention.dayUnit')" style="width: 200px" />
           </a-form-item>
           <a-space wrap>
             <a-button type="primary" :loading="saving" @click="saveRules">{{ t('common.save') }}</a-button>

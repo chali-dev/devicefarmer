@@ -1,6 +1,5 @@
 import { lt } from 'drizzle-orm';
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
-import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 
 /** Safety net: any key matching this is dropped from `detail`, at any depth. */
@@ -72,15 +71,8 @@ export function auditRequest(req: FastifyRequest, e: Omit<AuditEntry, 'method' |
   recordAudit(req.log, { ...e, method: req.method, path: req.routeOptions.url ?? req.url.split('?')[0]!, ip: req.ip });
 }
 
-/** Deletes entries older than AUDIT_RETENTION_DAYS now and every 24 h. Returns the stop function. */
-export function startAuditRetention(log: FastifyBaseLogger): () => void {
-  const purge = async () => {
-    const cutoff = new Date(Date.now() - config.AUDIT_RETENTION_DAYS * 86_400_000);
-    const rows = await db.delete(schema.auditLogs).where(lt(schema.auditLogs.at, cutoff)).returning({ id: schema.auditLogs.id });
-    if (rows.length) log.info({ deleted: rows.length, days: config.AUDIT_RETENTION_DAYS }, 'audit retention purge');
-  };
-  const run = () => void purge().catch((err) => log.warn({ err }, 'audit retention purge failed'));
-  run();
-  const timer = setInterval(run, 86_400_000);
-  return () => clearInterval(timer);
+/** Deletes audit entries older than `days` (系统配置 → 日志 操作日志, run by the hourly system maintenance). */
+export async function purgeAuditLog(days: number): Promise<number> {
+  const rows = await db.delete(schema.auditLogs).where(lt(schema.auditLogs.at, new Date(Date.now() - days * 86_400_000))).returning({ id: schema.auditLogs.id });
+  return rows.length;
 }

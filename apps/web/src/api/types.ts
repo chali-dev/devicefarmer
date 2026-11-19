@@ -512,12 +512,6 @@ export interface DashboardResponse {
   widgets: DashboardWidgets & Record<string, unknown>
   errors: Record<string, string>
 }
-export interface SettingsConfig {
-  publish: { timeoutMs: number }
-  auditRetentionDays: number
-  media: { imageMaxMb: number; videoMaxMb: number; allowedTypes: string[] }
-  adbPorts: { min: number; max: number }
-}
 export interface SystemInfo {
   health: { ok: boolean; checks: Record<string, string>; capabilities: { kvm: boolean } }
   capacity: DashboardCapacity
@@ -526,13 +520,6 @@ export interface SystemInfo {
   uptimeSec: number
   stf: { reachable: boolean; devices: number; present: number; ready: number }
 }
-export interface TaskRetentionSettings {
-  retention: { days: number | null; updatedAt: string | null }
-  defaultDays: number
-  maxDays: number
-  lastCleanup: { id: string; status: TaskStatus; result: { tasks: number; logs: number; cutoff: string | null } | null; finishedAt: string | null; createdAt: string } | null
-}
-
 // ---------------------------------------------------------------- comments & engagement (评论互动)
 export type CommentStatus = 'new' | 'read' | 'replied' | 'hidden' | 'ignored'
 /** dry_run = LEGACY test mode (removed 2026-11-18, old rows became drafts); never produced any more. */

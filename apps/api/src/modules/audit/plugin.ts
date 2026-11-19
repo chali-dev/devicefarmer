@@ -467,7 +467,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   // system management (系统管理)
   'PUT /api/system/settings': {
     action: 'system.settings',
-    detail: ({ body }) => ({ backup: body.backup, logRetentionDays: body.logRetentionDays, historyRetentionDays: body.historyRetentionDays }),
+    detail: ({ body }) => ({
+      backup: body.backup, logRetentionDays: body.logRetentionDays, historyRetentionDays: body.historyRetentionDays, auditRetentionDays: body.auditRetentionDays,
+      riskEventsRetentionDays: body.riskEventsRetentionDays, taskRetentionDays: body.taskRetentionDays, notificationRetentionDays: body.notificationRetentionDays,
+    }),
   },
   'POST /api/system/maintenance': { action: 'system.maintenance' },
   'POST /api/system/backups': { action: 'system.backup_create' },

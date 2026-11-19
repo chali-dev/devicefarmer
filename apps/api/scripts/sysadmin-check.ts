@@ -6,6 +6,9 @@
  * - System logs: ring + daily file, level/text/time filters, redaction of secret-looking values.
  * - Connection monitoring: status history written by repo.updateInstance (directly and by the monitor)
  *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
+ * - Retention (系统配置 → 日志, one form): log files, device history, audit log (env AUDIT_RETENTION_DAYS = default
+ *   only), task logs (tasks.retention, null = keep), 风控记录, notifications (alerts.rules, one stored value):
+ *   strict validation, defaults, single stored values, and 立即清理 runs every purge on seeded old rows with counts.
  * - Admin-only routes (a user gets 403) and audit entries.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3104 npx tsx --env-file=../../.env scripts/sysadmin-check.ts
  */
@@ -102,6 +105,71 @@ try {
   check('settings saved (partial update keeps the rest)', put.status === 200 && put.body.settings.backup.keep === 2 && put.body.settings.logRetentionDays === before.logRetentionDays, JSON.stringify(put.body));
   const bad = await http('PUT', '/api/system/settings', T, { backup: { enabled: true, hour: 24, keep: 2 } });
   check('invalid hour refused (400)', bad.status === 400);
+
+  // ---------------------------------------------------------------- retention (系统配置 → 日志)
+  const RET = ['logRetentionDays', 'historyRetentionDays', 'auditRetentionDays', 'taskRetentionDays', 'riskEventsRetentionDays', 'notificationRetentionDays'] as const;
+  let g = await http('GET', '/api/system/settings', T);
+  check('retention: every field returned with defaults + max', RET.every((f) => f in g.body.settings && f in g.body.max) && g.body.defaults.riskEventsRetentionDays === 90
+    && g.body.defaults.auditRetentionDays === Math.min(config.AUDIT_RETENTION_DAYS, 3650) && g.body.defaults.taskRetentionDays === 90 && g.body.defaults.notificationRetentionDays === 30, JSON.stringify(g.body));
+  const [sysRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'system'));
+  const storedAudit = (sysRow?.value as any)?.auditRetentionDays;
+  check('retention: audit retention defaults to env AUDIT_RETENTION_DAYS while not stored', storedAudit !== undefined || g.body.settings.auditRetentionDays === config.AUDIT_RETENTION_DAYS, JSON.stringify(g.body.settings));
+  const tasksBefore = (await http('GET', '/api/settings/tasks', T)).body;
+  const alertsBefore = (await http('GET', '/api/settings/alerts', T)).body;
+  check('retention: task / notification values are the stored tasks.retention / alerts.rules ones',
+    g.body.settings.taskRetentionDays === tasksBefore.retention.days && g.body.settings.notificationRetentionDays === alertsBefore.rules.retentionDays);
+  const badBodies = [{ auditRetentionDays: 0 }, { auditRetentionDays: 3651 }, { riskEventsRetentionDays: 'x' }, { riskEventsRetentionDays: 1.5 }, { taskRetentionDays: 0 },
+    { taskRetentionDays: 3651 }, { notificationRetentionDays: 366 }, { notificationRetentionDays: null }, { historyRetentionDays: 91 }, { nope: 1 }];
+  const badCodes = await Promise.all(badBodies.map((b) => http('PUT', '/api/system/settings', T, b).then((r) => r.status)));
+  check('retention: invalid values / unknown fields refused (400, strict)', badCodes.every((c) => c === 400), badCodes.join(','));
+  const all = { logRetentionDays: 20, historyRetentionDays: 9, auditRetentionDays: 30, taskRetentionDays: 1, riskEventsRetentionDays: 5, notificationRetentionDays: 5 };
+  const putAll = await http('PUT', '/api/system/settings', T, all);
+  g = await http('GET', '/api/system/settings', T);
+  check('retention: one PUT saves all six', putAll.status === 200 && RET.every((f) => g.body.settings[f] === all[f] && putAll.body.settings[f] === all[f]) && g.body.settings.backup.keep === 2, JSON.stringify(putAll.body));
+  const tk = (await http('GET', '/api/settings/tasks', T)).body; const al = (await http('GET', '/api/settings/alerts', T)).body;
+  check('retention: task + notification values written to their single stored rows', tk.retention.days === 1 && al.rules.retentionDays === 5, `${tk.retention.days} ${al.rules.retentionDays}`);
+  const [sysAfter] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'system'));
+  check('retention: no copy of task / notification retention in the system row', !('taskRetentionDays' in (sysAfter!.value as object)) && !('notificationRetentionDays' in (sysAfter!.value as object)));
+  await http('PUT', '/api/settings/alerts', T, { retentionDays: 6 });
+  check('retention: alerts API still writes the same value', (await http('GET', '/api/system/settings', T)).body.settings.notificationRetentionDays === 6);
+  await http('PUT', '/api/system/settings', T, { notificationRetentionDays: 5 });
+  const keep = await http('PUT', '/api/system/settings', T, { taskRetentionDays: null });
+  check('retention: task logs 永久保留 (null) accepted', keep.status === 200 && keep.body.settings.taskRetentionDays === null && (await http('GET', '/api/settings/tasks', T)).body.retention.days === null);
+
+  // seeded old rows: audit (30 d), risk events (5 d), tasks (kept while null, then 1 d), notifications (5 d)
+  const ago = (d: number) => new Date(Date.now() - d * 86_400_000);
+  const [aOld, aNew] = await db.insert(schema.auditLogs).values([
+    { action: `test.ret_${tag}`, method: 'PUT', path: '/x', status: 200, ok: true, at: ago(31) },
+    { action: `test.ret_${tag}`, method: 'PUT', path: '/x', status: 200, ok: true, at: ago(25) },
+  ]).returning();
+  const [rOld, rNew] = await db.insert(schema.riskEvents).values([
+    { source: 'collector', code: `test.ret_${tag}`, at: ago(6) }, { source: 'collector', code: `test.ret_${tag}`, at: ago(4) },
+  ]).returning();
+  const [tOld] = await db.insert(schema.tasks).values({ type: 'test.ret', status: 'success', finishedAt: ago(2), payload: {} } as any).returning();
+  const admin = (await http('GET', '/api/auth/me', T)).body.user;
+  const [nOld, nNew] = await db.insert(schema.notifications).values([
+    { userId: admin.id, kind: 'task.failed', severity: 'warning', params: {}, readAt: ago(6), createdAt: ago(6) },
+    { userId: admin.id, kind: 'task.failed', severity: 'warning', params: {}, readAt: ago(1), createdAt: ago(1) },
+  ] as any).returning();
+  const exists = async (tbl: any, id: string) => (await db.select({ id: tbl.id }).from(tbl).where(eq(tbl.id, id))).length === 1;
+  const mKeep = await http('POST', '/api/system/maintenance', T);
+  check('立即清理 runs every purge: audit / risk / notifications past retention deleted, newer kept, counts returned',
+    mKeep.status === 200 && !(await exists(schema.auditLogs, aOld!.id)) && await exists(schema.auditLogs, aNew!.id)
+    && !(await exists(schema.riskEvents, rOld!.id)) && await exists(schema.riskEvents, rNew!.id)
+    && !(await exists(schema.notifications, nOld!.id)) && await exists(schema.notifications, nNew!.id)
+    && mKeep.body.result.auditDeleted >= 1 && mKeep.body.result.riskEventsDeleted >= 1 && mKeep.body.result.notificationsDeleted >= 1
+    && ['logFilesDeleted', 'historyDeleted', 'tasksDeleted', 'taskLogsDeleted'].every((k) => k in mKeep.body.result), JSON.stringify(mKeep.body.result));
+  check('立即清理: task logs 永久保留 keeps the old finished task', await exists(schema.tasks, tOld!.id) && mKeep.body.result.tasksDeleted === 0);
+  await http('PUT', '/api/system/settings', T, { taskRetentionDays: 1, auditRetentionDays: 10 });
+  const mTasks = await http('POST', '/api/system/maintenance', T);
+  check('立即清理: task logs past 1 day deleted; audit row now past 10 days deleted', !(await exists(schema.tasks, tOld!.id)) && mTasks.body.result.tasksDeleted >= 1
+    && !(await exists(schema.auditLogs, aNew!.id)), JSON.stringify(mTasks.body.result));
+  await new Promise((r) => setTimeout(r, 500));
+  const [retAudit] = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.action, 'system.settings'), eq(schema.auditLogs.status, 200)))
+    .orderBy(schema.auditLogs.at).then((rows) => rows.filter((x) => (x.detail as any)?.riskEventsRetentionDays === 5));
+  check('audit: system.settings records the retention values', !!retAudit && (retAudit.detail as any).auditRetentionDays === 30 && (retAudit.detail as any).taskRetentionDays === 1, JSON.stringify(retAudit?.detail));
+  const riskView = (await http('GET', '/api/risk/settings', T)).body;
+  check('风控 settings report the 风控记录 retention from the setting', riskView.eventRetentionDays === 5, String(riskView.eventRetentionDays));
 
   // ---------------------------------------------------------------- backup now ×3 (keep 2)
   const runs: any[] = [];
@@ -267,7 +335,10 @@ try {
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
   if (userId) await http('DELETE', `/api/users/${userId}`, T);
   for (const id of backupIds) await http('DELETE', `/api/system/backups/${id}`, T);
-  if (before) await http('PUT', '/api/system/settings', T, { backup: before.backup, logRetentionDays: before.logRetentionDays, historyRetentionDays: before.historyRetentionDays });
+  if (before) {
+    const { updatedAt: _u, ...restore } = before;
+    await http('PUT', '/api/system/settings', T, restore);
+  }
   const passed = results.filter(([, ok]) => ok).length;
   console.log(`\n${passed}/${results.length} passed`);
   await events.close();

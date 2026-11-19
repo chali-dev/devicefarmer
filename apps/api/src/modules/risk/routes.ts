@@ -5,7 +5,8 @@ import { db, schema } from '../../db/index.js';
 import { notFound } from '../../lib/errors.js';
 import { PLATFORMS } from '../social/platforms.js';
 import { deviceHalts, deviceUsage, resumeDevice } from '../tracked/collector.js';
-import { listRiskEvents, RISK_RETENTION_DAYS } from './events.js';
+import { getSystemSettings } from '../system/settings.js';
+import { listRiskEvents } from './events.js';
 import { capacityPerHour, getRiskSettings, RiskDeviceInput, riskDefaults, saveRiskSettings } from './settings.js';
 
 /**
@@ -17,7 +18,7 @@ export const riskRoutes: FastifyPluginAsyncZod = async (app) => {
 
   const settingsView = async () => {
     const device = await getRiskSettings(true);
-    return { device, defaults: riskDefaults(), capacityPerHour: capacityPerHour(device), eventRetentionDays: RISK_RETENTION_DAYS };
+    return { device, defaults: riskDefaults(), capacityPerHour: capacityPerHour(device), eventRetentionDays: (await getSystemSettings()).riskEventsRetentionDays };
   };
 
   /** 云手机节奏 + 社交号自动检测 interval. Env TRACKED_DEVICE_* are the defaults. */
