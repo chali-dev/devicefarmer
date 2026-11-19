@@ -20,7 +20,6 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { db, schema } from '../src/db/index.js';
-import { libraryDir } from '../src/modules/library/library.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -140,13 +139,13 @@ try {
   check('install on the dead row fails (adb)', failedTask.status === 'failed', failedTask.error);
   check('new task carries refType library_app + refId + payload.library', failedTask.refType === 'library_app' && failedTask.refId === libId && failedTask.payload?.library?.versionCode === lib.versionCode && failedTask.payload.library.preinstall === false);
 
-  // ---- old-style task row (as written before this change: no ref, APK path in the library dir)
-  const legacyPath = `${libraryDir({ package: lib.package, versionCode: lib.versionCode })}/0-base.apk`;
-  const [legacy] = await db.insert(schema.tasks).values({
+  // a preinstall task row of the system (no operator)
+  const [pre] = await db.insert(schema.tasks).values({
     type: 'install-apk', instanceId: off.id, instanceName: `${off.name} · 预装 ${lib.package} ${lib.versionName}`, status: 'success',
-    payload: { apkPaths: [legacyPath], sizes: [1] }, createdBy: null, finishedAt: new Date(),
+    refType: 'library_app', refId: libId, payload: { library: { package: lib.package, versionCode: lib.versionCode, versionName: lib.versionName, preinstall: true } },
+    createdBy: null, finishedAt: new Date(),
   }).returning();
-  fixtureTasks.push(legacy!.id);
+  fixtureTasks.push(pre!.id);
   // an unrelated upload install of the same device must not match
   const [other] = await db.insert(schema.tasks).values({ type: 'install-apk', instanceId: off.id, instanceName: off.name, status: 'success', payload: { apkPaths: ['/tmp/x/0-base.apk'], sizes: [1] } }).returning();
   fixtureTasks.push(other!.id);
@@ -155,9 +154,9 @@ try {
   r = await http('GET', `/api/library/${libId}/logs`, T);
   const items = r.body?.items ?? [];
   const f = items.find((x: any) => x.taskId === failedTask.id);
-  const l = items.find((x: any) => x.taskId === legacy!.id);
+  const l = items.find((x: any) => x.taskId === pre!.id);
   check('admin log: failed install with device, operator, version, error', !!f && f.status === 'failed' && f.instanceName === dead.name && f.operator === process.env.ADMIN_USERNAME && f.versionCode === lib.versionCode && f.versionName === lib.versionName && !!f.error && f.preinstall === false && f.deviceExists === true, f ? `${f.instanceName} · ${f.operator} · ${f.error}` : 'missing');
-  check('admin log: old task matched by its library APK path (version from the path, 预装 from the label, system operator)', !!l && l.versionCode === lib.versionCode && l.preinstall === true && l.operator === null && l.instanceName === off.name);
+  check('admin log: preinstall row (version + 预装 from payload.library, system operator)', !!l && l.versionCode === lib.versionCode && l.preinstall === true && l.operator === null && l.instanceName === off.name);
   check('admin log: upload installs outside the library are not listed', !items.some((x: any) => x.taskId === other!.id) && r.body.total === items.length);
   r = await http('GET', `/api/library/${libId}/logs?limit=1&offset=1`, T);
   check('log paging (limit/offset, total)', r.status === 200 && r.body.items.length === 1 && r.body.total >= 2);

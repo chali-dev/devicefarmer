@@ -9,8 +9,7 @@
  *   admin: any owner's), default on create (one phone → it, several / none → none), PATCH / batch POST …/phone (owner's
  *   phones only, other platforms refused, whole-batch 404), refusals tracked.no_phone / phone_not_allowed /
  *   collector_halted on refresh, 同步, 立即采集 and the scheduler, offline phone → task fails tracked.collector_offline,
- *   device deleted → phone unset, the data migration from tracked.collectors on seeded rows (run twice = no-op),
- *   the removed settings endpoints (404), audit.
+ *   device deleted → phone unset, the removed settings endpoints (404), audit.
  * - Needs TikTok and YouTube enabled: run the API (and this script) with ENABLED_PLATFORMS=all.
  * - Never calls an external platform: the YouTube API key set here is a syntactically valid dummy that is cleared
  *   again before any refresh could use it. The real YouTube Data API path runs only when YOUTUBE_TEST_API_KEY is
@@ -25,8 +24,6 @@ import { randomBytes } from 'node:crypto';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { refreshTrackedAccount, upsertPosts } from '../src/modules/tracked/tracked.js';
-import { migrateTrackedIgSchedule } from '../src/db/tracked-schedule-migration.js';
-import { migrateTrackedPhones } from '../src/db/tracked-phone-migration.js';
 import { scheduleTrackedRefreshes } from '../src/modules/tracked/schedule.js';
 import { scheduleFeedCollects } from '../src/modules/feed/collect.js';
 import { withCaptcha } from './lib/login.js';
@@ -163,31 +160,6 @@ try {
   check('pause + unfavorite', r.status === 200 && r.body.account.status === 'paused' && r.body.account.favorite === false);
   r = await http('PATCH', `/api/tracked-accounts/${tt.id}`, A.token, { favorite: true });
   check('favorite again', r.body.account?.favorite === true);
-
-  // ---------------------------------------------------------------- data migration: existing Instagram rows → 定时采集 24 h, once
-  {
-    const TA = schema.trackedAccounts;
-    const marker = `migration.tracked_ig_schedule.test-${tag}`;
-    const legacy = await db.insert(TA).values([
-      { userId: A.id, platform: 'instagram', handle: `mig1${tag}`, profileUrl: `https://www.instagram.com/mig1${tag}/` },
-      { userId: A.id, platform: 'instagram', handle: `mig2${tag}`, profileUrl: `https://www.instagram.com/mig2${tag}/` },
-      { userId: A.id, platform: 'youtube', handle: `mig3${tag}`, profileUrl: `https://www.youtube.com/@mig3${tag}` },
-    ]).returning();
-    accountIds.push(...legacy.map((x) => x.id));
-    const ids = legacy.map((x) => x.id);
-    const m1 = await migrateTrackedIgSchedule(sqlClient, () => undefined, { marker, onlyIds: ids });
-    const after1 = await db.select().from(TA).where(inArray(TA.id, ids));
-    const ig1 = after1.filter((x) => x.platform === 'instagram');
-    check('IG schedule migration: existing Instagram rows without an interval → 24 h, first slot within the hour; YouTube untouched',
-      m1.updated === 2 && !m1.skipped && ig1.every((x) => x.refreshIntervalHours === 24 && !!x.nextRefreshAt && x.nextRefreshAt.getTime() - Date.now() <= 3600_000)
-      && after1.find((x) => x.platform === 'youtube')!.refreshIntervalHours === null, JSON.stringify(m1));
-    await db.update(TA).set({ refreshIntervalHours: null, nextRefreshAt: null }).where(eq(TA.id, ids[0]!));
-    const m2 = await migrateTrackedIgSchedule(sqlClient, () => undefined, { marker, onlyIds: ids });
-    const [off] = await db.select().from(TA).where(eq(TA.id, ids[0]!));
-    check('IG schedule migration runs once: rerun is a no-op, an interval switched off afterwards stays off', m2.skipped && m2.updated === 0 && off!.refreshIntervalHours === null);
-    await db.delete(schema.settings).where(eq(schema.settings.key, marker));
-    await db.delete(TA).where(inArray(TA.id, ids));
-  }
 
   // ---------------------------------------------------------------- manual entry removed; history seeded in the DB
   const day = 86_400_000;
@@ -488,14 +460,10 @@ try {
       const id = u.body.user?.id ?? u.body.id; userIds.push(id);
       return { id, token: await login(name, pw) };
     })();
-    const adminId = (await http('GET', '/api/auth/me', T)).body.user.id as string;
 
     // ---- settings endpoints of the removed global collector
     const gone = await Promise.all([http('GET', '/api/settings/tracked-collectors', T), http('PUT', '/api/settings/tracked-collectors/instagram', T, { instanceId: pA1 })]);
     check('removed: GET/PUT /api/settings/tracked-collectors → 404', gone.every((x) => x.status === 404), gone.map((x) => x.status).join(','));
-    const [legacyRow] = await sqlClient`select 1 from settings where key = 'tracked.collectors'`;
-    const [markerRow] = await sqlClient`select 1 from settings where key = 'migration.tracked_own_phone'`;
-    check('db:migrate ran the 采集手机 data migration here (marker set, no tracked.collectors row)', !legacyRow && !!markerRow);
 
     // ---- picker endpoint
     let r = await http('GET', '/api/tracked-accounts/phones', A.token);
@@ -659,41 +627,6 @@ try {
     await db.delete(schema.tasks).where(sql`${schema.tasks.type} = 'feed-collect' and ${schema.tasks.refId} in (${a2.id}, ${a3.id}, ${c1.id}) and ${schema.tasks.status} in ('pending', 'scheduled')`);
     await db.update(TA).set({ refreshIntervalHours: null, nextRefreshAt: null }).where(inArray(TA.id, [a2.id, a3.id, c1.id]));
 
-    // ---- data migration from the removed setting (seeded rows, a test marker / key)
-    const marker = `migration.tracked_own_phone.test-${tag}`;
-    const key = `tracked.collectors.test-${tag}`;
-    const seeded = await db.insert(TA).values([
-      { userId: adminId, platform: 'instagram', handle: `mg1${tag}`, profileUrl: `https://www.instagram.com/mg1${tag}/` }, // admin owner: old collector pB
-      { userId: B.id, platform: 'instagram', handle: `mg2${tag}`, profileUrl: `https://www.instagram.com/mg2${tag}/` },    // B granted pB: old collector
-      { userId: C.id, platform: 'instagram', handle: `mg3${tag}`, profileUrl: `https://www.instagram.com/mg3${tag}/` },    // C: only pA2 → that
-      { userId: A.id, platform: 'instagram', handle: `mg4${tag}`, profileUrl: `https://www.instagram.com/mg4${tag}/` },    // A: two phones, not pB → none
-      { userId: A.id, platform: 'youtube', handle: `mg5${tag}`, profileUrl: `https://www.youtube.com/@mg5${tag}` },       // other platform: untouched
-      { userId: C.id, platform: 'instagram', handle: `mg6${tag}`, profileUrl: `https://www.instagram.com/mg6${tag}/`, instanceId: pA1 }, // already set: kept
-    ]).returning();
-    accountIds.push(...seeded.map((x) => x.id));
-    const ids = seeded.map((x) => x.id);
-    const haltedAt = new Date(Date.now() - 3600_000).toISOString();
-    await db.insert(schema.settings).values({ key, value: { instagram: { instanceId: pB, haltedAt, haltCode: 'tracked.collector_challenge' } } });
-    const logs: string[] = [];
-    const m1 = await migrateTrackedPhones(sqlClient, (m) => logs.push(m), { marker, collectorsKey: key, onlyIds: ids });
-    const got1 = Object.fromEntries((await db.select().from(TA).where(inArray(TA.id, ids)).orderBy(TA.handle)).map((x) => [x.handle, x.instanceId]));
-    const halts1 = ((await db.select().from(schema.settings).where(eq(schema.settings.key, 'risk.halts')))[0]?.value ?? {}) as Record<string, any>;
-    const [keyLeft] = await sqlClient`select 1 from settings where key = ${key}`;
-    const [mk1] = await sqlClient`select value from settings where key = ${marker}`;
-    check('migration: admin owner → old collector, B (granted) → old collector, C (one phone) → it, A (two phones, not the collector) → none, YouTube + already set untouched',
-      got1[`mg1${tag}`] === pB && got1[`mg2${tag}`] === pB && got1[`mg3${tag}`] === pA2 && got1[`mg4${tag}`] === null && got1[`mg5${tag}`] === null && got1[`mg6${tag}`] === pA1
-      && m1.fromCollector === 2 && m1.single === 1 && m1.none === 1 && !m1.skipped, `${JSON.stringify(got1)} ${JSON.stringify(m1)}`);
-    check('migration: the halt on the old collector entry moved to risk.halts (source collector), setting row deleted, marker written, one log line',
-      halts1[pB]?.at === haltedAt && halts1[pB]?.source === 'collector' && halts1[pB]?.code === 'tracked.collector_challenge' && m1.haltsMoved === 1
-      && !keyLeft && !!mk1 && m1.settingDeleted === true && logs.length === 1, `${JSON.stringify(halts1[pB])} ${logs.join(' | ')}`);
-    const m2 = await migrateTrackedPhones(sqlClient, (m) => logs.push(m), { marker, collectorsKey: key, onlyIds: ids });
-    const got2 = Object.fromEntries((await db.select().from(TA).where(inArray(TA.id, ids)).orderBy(TA.handle)).map((x) => [x.handle, x.instanceId]));
-    check('migration run twice = no-op (marker): nothing changed, no log', m2.skipped === true && JSON.stringify(got2) === JSON.stringify(got1) && logs.length === 1);
-    const h2 = ((await db.select().from(schema.settings).where(eq(schema.settings.key, 'risk.halts')))[0]?.value ?? {}) as Record<string, unknown>;
-    delete h2[pB];
-    await db.update(schema.settings).set({ value: h2 }).where(eq(schema.settings.key, 'risk.halts'));
-    await sqlClient`delete from settings where key = ${marker}`;
-
     // ---- device deleted → phone unset (FK set null)
     await db.update(TA).set({ instanceId: pA2 }).where(eq(TA.id, a3.id));
     await db.delete(schema.instances).where(eq(schema.instances.id, pA2));
@@ -797,7 +730,7 @@ try {
   }
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (accountIds.length) await db.delete(schema.tasks).where(inArray(schema.tasks.refId, accountIds));
-  // rows of the admin (采集手机 checks, migration seed) are not removed by deleting the test users
+  // rows of the admin (采集手机 checks) are not removed by deleting the test users
   if (accountIds.length) await db.delete(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, accountIds));
   const left = await db.select().from(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, accountIds.length ? accountIds : ['00000000-0000-0000-0000-000000000000']));
   const leftUsers = await db.select().from(schema.users).where(sql`${schema.users.username} like ${`tr_${tag}`}`);

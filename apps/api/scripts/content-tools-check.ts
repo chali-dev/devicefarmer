@@ -1,10 +1,8 @@
 /**
  * 话术库 + 定时采集 + 趋势热点 test against the real API, DB, Redis/BullMQ and (where noted) the real YouTube Data API. No mocks.
- * - Templates (comment_templates with persona (personas, see personas-check.ts) and tags; no kind since 2026-11-19,
- *   migration 0050): the 范例 of personas: a template without a persona is refused (create and edit,
+ * - Templates (comment_templates with persona (personas, see personas-check.ts) and tags; no kind): the 范例 of personas: a template without a persona is refused (create and edit,
  *   template.persona_required); CRUD, `kind` in a body / query → 400 (strict), shared vs private
- *   rules, isolation/RBAC, filters, facets, audit; migration 0040 (delete templates without a persona) run twice in a
- *   rolled-back transaction.
+ *   rules, isolation/RBAC, filters, facets, audit.
  * - Scheduled collection: per-account interval, the collection tick enqueues each due slot exactly once (also under two
  *   concurrent ticks), skips paused / in-progress / manual-only / unconfigured accounts with codes, re-checks at run time.
  *   Scheduled refresh tasks created here run in the future and are cancelled, so no YouTube call is made for them.
@@ -165,41 +163,6 @@ try {
   check('admin edits shared template', r.status === 200 && r.body.template.persona?.name === `Chef2 ${tag}`);
   r = await http('DELETE', `/api/comment-templates/${aComment.id}`, A.token);
   check('delete own template → 204', r.status === 204);
-  const [kc] = await sqlClient`select count(*)::int n from information_schema.columns where table_name = 'comment_templates' and column_name = 'kind'`;
-  const [ki] = await sqlClient`select count(*)::int n from pg_indexes where indexname = 'comment_templates_kind_idx'`;
-  check('migration 0050: comment_templates.kind and its index are gone', kc?.n === 0 && ki?.n === 0, `${kc?.n} ${ki?.n}`);
-
-  // migration 0040: templates without a persona are deleted (data only); executed twice in a rolled-back transaction
-  {
-    const { readFileSync } = await import('node:fs');
-    const sqlText = readFileSync(new URL('../drizzle/0040_templates_need_persona.sql', import.meta.url), 'utf8');
-    const stmts = sqlText.split('--> statement-breakpoint').map((x) => x.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean);
-    const seeded = await db.insert(schema.commentTemplates).values([
-      { userId: null, name: `legacy shared ${tag}`, text: 'old demo post' },
-      { userId: A.id, name: `legacy own ${tag}`, text: 'old demo reply' },
-      { userId: A.id, name: `legacy with persona ${tag}`, text: 'kept', personaId: pFit.id },
-    ]).returning({ id: schema.commentTemplates.id });
-    templateIds.push(...seeded.map((x) => x.id));
-    const ROLLBACK = new Error('rollback');
-    let seen: Record<string, number> = {};
-    try {
-      await sqlClient.begin(async (tx) => {
-        const n = async () => (await tx`select count(*)::int n from comment_templates where persona_id is null`)[0]!.n as number;
-        const before = await n();
-        let first = 0; let second = 0;
-        for (const st of stmts) first += (await tx.unsafe(st)).count;
-        for (const st of stmts) second += (await tx.unsafe(st)).count;
-        const kept = (await tx`select count(*)::int n from comment_templates where id = ${seeded[2]!.id}`)[0]!.n as number;
-        seen = { before, first, second, after: await n(), kept };
-        throw ROLLBACK;
-      });
-    } catch (e) { if (e !== ROLLBACK) throw e; }
-    check('migration 0040: deletes every template without a persona (seeded shared + private), keeps templates with one; a second run deletes nothing',
-      seen.before! >= 2 && seen.first === seen.before && seen.second === 0 && seen.after === 0 && seen.kept === 1, JSON.stringify(seen));
-    const { createHash } = await import('node:crypto');
-    const [mig] = await sqlClient`select count(*)::int n from drizzle.__drizzle_migrations where hash = ${createHash('sha256').update(sqlText).digest('hex')}`;
-    check('the migration was applied once by db:migrate (drizzle journal: exactly one row with its hash, so a rerun is a no-op)', mig?.n === 1, String(mig?.n));
-  }
 
   // ================================================================ 定时采集 (scheduled collection)
   const track = async (token: string, input: string, platform?: string) => {

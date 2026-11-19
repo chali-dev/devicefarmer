@@ -30,11 +30,6 @@ export async function configuredLanguages(ownerId: string | null): Promise<strin
   return rows.map((r) => r.lang!).filter((l) => l !== SOURCE_LANG);
 }
 
-/** Languages offered for content: Chinese first, then the 配置语系. */
-export async function offeredLanguages(ownerId: string | null): Promise<string[]> {
-  return [SOURCE_LANG, ...(await configuredLanguages(ownerId))];
-}
-
 export const publicTranslation = (r: ContentTranslation) => ({
   lang: r.lang, title: r.title, body: r.body, platformHints: r.platformHints, createdAt: r.createdAt, updatedAt: r.updatedAt,
 });

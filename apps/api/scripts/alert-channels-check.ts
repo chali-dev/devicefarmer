@@ -10,18 +10,16 @@
  *   (no loop), de-duplicated by the cooldown; the alert itself keeps its cooldown (no second fan-out).
  * - Test endpoint vs the real API (fake token → 400 alerts.telegram_unauthorized). A real message is sent only
  *   with TELEGRAM_TEST_TOKEN + TELEGRAM_TEST_CHAT.
- * - Data migration: the old `alerts.telegram` settings key + per-kind telegram flags → exactly one channel
- *   (real `db:migrate` run as a child process), rerun creates none.
  * Creates one temporary user; removes everything afterwards (settings restored).
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/alert-channels-check.ts
  */
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
-import { openSecret, sealSecret } from '../src/lib/secret-box.js';
+import { openSecret } from '../src/lib/secret-box.js';
 import { recover } from '../src/modules/notify/notify.js';
+import { accountChecked } from '../src/modules/notify/triggers.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 
@@ -56,7 +54,7 @@ const tag = randomBytes(3).toString('hex');
 const nm = (s: string) => `ac-${tag}-${s}`;
 const TOKENS = [fakeToken(), fakeToken(), fakeToken(), fakeToken()] as const;
 const leaks = (s: string) => TOKENS.some((tk) => s.includes(tk) || s.includes(tk.split(':')[1]!));
-const saved = Object.fromEntries(await Promise.all(['alerts.rules', 'alerts.telegram'].map(async (k) =>
+const saved = Object.fromEntries(await Promise.all(['alerts.rules'].map(async (k) =>
   [k, (await db.select().from(schema.settings).where(eq(schema.settings.key, k)))[0]?.value ?? null] as const)));
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const userIds: string[] = [];
@@ -147,8 +145,12 @@ try {
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `ac_${tag}_one` });
   check('setup: account of user A', r.status === 200 || r.status === 201, r.text);
   const acc: string = r.body.account.id; refIds.push(acc);
-  r = await http('POST', `/api/social/accounts/${acc}/checked`, A, { loginStatus: 'logged_out' });
-  check('account.problem raised (manual check)', r.status === 200, r.text);
+  // account.problem as the automatic account check raises it (status written, then its trigger)
+  const checked = async (id: string, loginStatus: 'logged_out' | 'needs_verification') => {
+    const [row] = await db.update(schema.socialAccounts).set({ loginStatus, lastCheckCode: loginStatus }).where(eq(schema.socialAccounts.id, id)).returning();
+    await accountChecked(row!);
+  };
+  await checked(acc, 'logged_out');
   const tasks = await waitFor('fan-out tasks', async () => { const x = await tgTasks(acc); return x.length >= 2 ? x : null; }, 10_000);
   await sleep(1000);
   const all = await tgTasks(acc);
@@ -179,12 +181,12 @@ try {
   check('no loop: the failure notices created no further channel tasks', since.length === 2, String(since.length));
 
   // cooldown: the same alert again → nothing; another alert → fan-out again, but channel.failed stays de-duplicated
-  r = await http('POST', `/api/social/accounts/${acc}/checked`, A, { loginStatus: 'logged_out' });
+  await checked(acc, 'logged_out');
   await sleep(1500);
   check('cooldown unchanged: the same alert within the cooldown → no new channel tasks', (await tgTasks(acc)).length === 2);
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `ac_${tag}_two` });
   const acc2: string = r.body.account.id; refIds.push(acc2);
-  await http('POST', `/api/social/accounts/${acc2}/checked`, A, { loginStatus: 'needs_verification' });
+  await checked(acc2, 'needs_verification');
   const second = await waitFor('second fan-out', async () => { const x = await tgTasks(acc2); return x.length >= 2 ? x : null; }, 10_000);
   await Promise.all(second.map((t) => finished(t.id)));
   await sleep(1500);
@@ -200,7 +202,7 @@ try {
   await http('PATCH', `/api/alert-channels/${ch2}`, T, { enabled: false });
   r = await http('POST', '/api/social/accounts', A, { platform: 'instagram', handle: `ac_${tag}_three` });
   const acc3: string = r.body.account.id; refIds.push(acc3);
-  await http('POST', `/api/social/accounts/${acc3}/checked`, A, { loginStatus: 'logged_out' });
+  await checked(acc3, 'logged_out');
   const third = await waitFor('third fan-out', async () => (await tgTasks(acc3)).at(0), 10_000);
   await sleep(1000);
   check('channel disabled by PATCH → skipped by the next fan-out', (await tgTasks(acc3)).length === 1 && (third.payload as any).channelId === ch1);
@@ -221,30 +223,6 @@ try {
   check('delete → 204, gone', r.status === 204 && (await db.select().from(CH).where(eq(CH.id, ch5))).length === 0);
   r = await http('DELETE', `/api/alert-channels/${ch5}`, T);
   check('delete again → 404', r.status === 404 && r.body.code === 'alerts.channel_not_found');
-
-  // ---------------------------------------------------------------- data migration from the old settings key
-  const oldTok = fakeToken();
-  await db.insert(schema.settings).values({ key: 'alerts.telegram', value: { enabled: true, chatId: '-1005550001112', tokenEnc: sealSecret(oldTok), language: 'en' } })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: { enabled: true, chatId: '-1005550001112', tokenEnc: sealSecret(oldTok), language: 'en' } } });
-  const [rulesRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'alerts.rules'));
-  const oldRules = { ...(rulesRow?.value as object), kinds: { 'device.down': { inApp: true, telegram: true }, 'account.problem': { inApp: true, telegram: false }, 'publish.failed': { inApp: true, telegram: true }, 'connection.expired': { inApp: true, telegram: false } } };
-  await db.update(schema.settings).set({ value: oldRules }).where(eq(schema.settings.key, 'alerts.rules'));
-  const before = await db.select({ id: CH.id }).from(CH);
-  const migrate = () => execFileSync('npx', ['tsx', '--env-file=../../.env', 'src/db/migrate.ts'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const out1 = migrate();
-  const after = await db.select().from(CH);
-  const made = after.filter((c) => !before.some((b) => b.id === c.id));
-  channelIds.push(...made.map((c) => c.id));
-  const m = made[0];
-  check('db:migrate: old Telegram settings → exactly one channel (name Telegram, enabled, chat id, language)',
-    made.length === 1 && m!.type === 'telegram' && /^Telegram/.test(m!.name) && m!.enabled && m!.config.chatId === '-1005550001112' && m!.config.language === 'en', JSON.stringify(made.map((c) => ({ ...c, config: { ...c.config, botTokenEnc: '…' } }))));
-  check('migrated: sealed token carried over (decrypts to the old token)', !!m && openSecret(String(m.config.botTokenEnc)) === oldTok);
-  check('migrated: kinds from the old per-kind telegram flags (kinds without an old flag take their default: collector.blocked on, task.failed off)', !!m && [...m.kinds].sort().join() === 'collector.blocked,device.down,publish.failed', m?.kinds.join());
-  check('migrated: old settings key removed', (await db.select().from(schema.settings).where(eq(schema.settings.key, 'alerts.telegram'))).length === 0 && /migrated the Telegram settings/.test(out1));
-  migrate();
-  check('db:migrate again → no further channel', (await db.select({ id: CH.id }).from(CH)).length === after.length);
-  r = await http('GET', '/api/settings/alerts', T);
-  check('rules after migration: in-app switches only, the telegram flags are ignored', r.status === 200 && r.body.rules.kinds['device.down'].inApp === true && r.body.rules.kinds['device.down'].telegram === undefined);
 
   // ---------------------------------------------------------------- audit
   await sleep(800);

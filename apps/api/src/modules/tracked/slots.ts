@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-/** 定时采集 slot maths (pure; shared by the scheduler, the routes and the data migration). */
+/** 定时采集 slot maths (pure; shared by the scheduler and the routes). */
 export const HOUR_MS = 3600_000;
 /** Default 定时采集 interval of new Instagram tracked accounts (read on its 采集手机). */
 export const IG_DEFAULT_INTERVAL_HOURS = 24;

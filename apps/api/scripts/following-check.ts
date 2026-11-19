@@ -21,12 +21,11 @@
  *   following by position, one per handle, cap 30), profileOutcome on the real own-profile dump (+ a CONSTRUCTED private
  *   text: no private profile was ever dumped live), shell / challenge / login / unknown screens, writeProfile (both rows
  *   of a handle, failed visit keeps counts, not_found), list API fields;
- * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); migrations 0044 + 0046 + 0047 shape +
- *   db:migrate twice; audit social.following_sync.
+ * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); cascade on account
+ *   delete; audit social.following_sync.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/following-check.ts
  */
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { and, eq, inArray, like, sql } from 'drizzle-orm';
@@ -339,22 +338,7 @@ try {
   const rule3 = menuRuleFor('GET', `/api/social/accounts/${accA.id}/followers/list`);
   check('权限管理: …/following, …/followers and …/followers/list belong to the social menu', [rule, rule2, rule3].every((x) => JSON.stringify(x?.menus) === '["social"]'), JSON.stringify([rule, rule2, rule3]));
 
-  // ---------------------------------------------------------------- migration 0044 shape, run twice
-  const cols = await sqlClient`select column_name, is_nullable from information_schema.columns where table_name = 'social_account_following' order by ordinal_position`;
-  const [fk] = await sqlClient`select confdeltype from pg_constraint where conname = 'social_account_following_social_account_id_social_accounts_id_fk'`;
-  const [uq] = await sqlClient`select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'social_account_following_account_kind_handle' and contype = 'u'`;
-  const [olduq] = await sqlClient`select 1 as ok from pg_constraint where conname = 'social_account_following_account_handle'`;
-  const [kindCol] = await sqlClient`select column_default, is_nullable from information_schema.columns where table_name = 'social_account_following' and column_name = 'kind'`;
-  check('migrations 0044 + 0046 + 0047: gone_at nullable, profile columns nullable, FK cascade, kind not null default following, unique (account, kind, handle), old unique gone',
-    cols.map((c) => c.column_name).join(',') === 'id,social_account_id,handle,display_name,verified,position,first_seen_at,last_seen_at,gone_at,kind,followers,following,posts,approx,is_private,profile_checked_at,profile_code'
-    && cols.filter((c) => ['followers', 'following', 'posts', 'approx', 'is_private', 'profile_checked_at', 'profile_code'].includes(String(c.column_name))).every((c) => c.is_nullable === 'YES')
-    && cols.find((c) => c.column_name === 'gone_at')?.is_nullable === 'YES' && fk?.confdeltype === 'c' && /\(social_account_id, kind, handle\)/.test(String(uq?.def))
-    && !olduq && kindCol?.is_nullable === 'NO' && /'following'/.test(String(kindCol?.column_default)), `${cols.map((c) => c.column_name)} ${fk?.confdeltype} ${uq?.def} ${JSON.stringify(kindCol)}`);
-  const mig = () => execFileSync('npx', ['tsx', '--env-file=../../.env', 'src/db/migrate.ts'], { env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const out1 = mig();
-  const out2 = mig();
-  const [cnt] = await sqlClient`select count(*)::int as n from drizzle.__drizzle_migrations`;
-  check('db:migrate twice: both succeed', /migrations applied/.test(out1) && /migrations applied/.test(out2) && Number(cnt?.n) >= 45, `${cnt?.n}`);
+  // ---------------------------------------------------------------- cascade
   await http('DELETE', `/api/social/accounts/${accA.id}`, T);
   check('account deleted → its following rows go with it (cascade)', (await db.select().from(FW).where(eq(FW.socialAccountId, accA.id))).length === 0);
 

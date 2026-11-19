@@ -2,16 +2,14 @@ import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import {
-  PERSONA_LEVELS, PERSONA_TONES, type Persona, type PersonaLevel, type PersonaStyle, type PersonaTone, type StoredPersonaStyle,
+  PERSONA_LEVELS, PERSONA_TONES, type Persona, type PersonaLevel, type PersonaStyle, type PersonaTone,
 } from '../../db/schema.js';
 import { badRequest } from '../../lib/errors.js';
 
 /**
  * 人设风格: ONE style for posts and comments (owner 2026-11-19, merged back from 发文风格 / 评论风格): tone preset +
  * editable note, emoji amount, length (one level → the post range and the comment range of `PERSONA_LENGTHS`), hashtags
- * (posts), audience, notes, topics, banned words (checked on posts AND comments); no fixed opening/closing (removed
- * 2026-11-19, stored ones are dropped on read and by the migration). The AI
- * drafts prompt uses all of it with the post range; the comment composers show tone/emoji/banned words with the comment
+ * (posts), audience, notes, topics, banned words (checked on posts AND comments); no fixed opening/closing. The AI drafts prompt uses all of it with the post range; the comment composers show tone/emoji/banned words with the comment
  * range. Banned words: `assertNoBannedWords`, code `persona.banned_word`.
  */
 
@@ -41,8 +39,8 @@ export const EMOJI_PROMPT: Record<PersonaLevel, string> = {
 
 const Words = (max: number, len: number) => z.array(z.string().trim().min(1).max(len)).max(max);
 /**
- * The whole style (PATCH replaces it). Strict: the split body of 2026-11-18 (`post` / `comment`) and the removed
- * `opening` / `closing` are refused.
+ * The whole style (PATCH replaces it). Strict: unknown fields (e.g. a `post` / `comment` part or
+ * `opening` / `closing`) are refused.
  */
 export const PersonaStyleInput = z.object({
   topics: Words(20, 60).optional(),
@@ -74,19 +72,9 @@ export function normaliseStyle(s: z.infer<typeof PersonaStyleInput>): PersonaSty
 /** A style as read (defaults filled). */
 export type FullStyle = PersonaStyle & Required<Pick<PersonaStyle, 'topics' | 'bannedWords' | 'hashtags' | 'tone' | 'emoji' | 'length'>>;
 
-/**
- * The stored row in the single shape: a split row (2026-11-18) becomes its `post` part, the comment part and the removed
- * fixed opening/closing are dropped.
- */
-export function flatStyle(s: StoredPersonaStyle | null | undefined): PersonaStyle {
-  const { post, comment: _c, ...rest } = s ?? {};
-  const { opening: _o, closing: _cl, ...flat } = { ...rest, ...(post ?? {}) } as PersonaStyle & { opening?: unknown; closing?: unknown };
-  return defined(flat);
-}
-
 /** The style with defaults (亲切日常, 适中, 中). */
-export function styleOf(p: { style: StoredPersonaStyle | null | undefined }): FullStyle {
-  const s = flatStyle(p.style);
+export function styleOf(p: { style: PersonaStyle | null | undefined }): FullStyle {
+  const s = defined(p.style ?? {});
   return { ...s, topics: s.topics ?? [], bannedWords: s.bannedWords ?? [], hashtags: s.hashtags ?? [], tone: s.tone ?? 'casual', emoji: s.emoji ?? 'medium', length: s.length ?? 'medium' };
 }
 

@@ -270,12 +270,6 @@ function errorCode(err: unknown): string | null {
   return typeof c === 'string' ? c : null;
 }
 
-/** Old-format jobs (before the task centre) carried the op input in the job data. */
-function legacyPayload(data: Record<string, unknown>): Record<string, unknown> {
-  const { taskId: _t, op: _o, instanceId: _i, ...rest } = data;
-  return rest;
-}
-
 async function processJob(job: Job<{ taskId: string }>): Promise<void> {
   const taskId = job.data.taskId;
   const [row] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId));
@@ -310,7 +304,7 @@ async function processJob(job: Job<{ taskId: string }>): Promise<void> {
     : null;
   const ctx: TaskContext = {
     task: claimed, attempt, signal: ac.signal,
-    payload: (claimed.payload ?? legacyPayload(job.data as Record<string, unknown>)) as Record<string, unknown>,
+    payload: (claimed.payload ?? {}) as Record<string, unknown>,
     log: (level, message, data) => taskLog(claimed, level, message, data),
   };
   try {

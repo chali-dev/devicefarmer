@@ -1,7 +1,7 @@
 /**
  * AI 草稿 against the real API, DB, Redis and the real Anthropic API. No mocks.
  * - Personas carry no daily AI settings (owner decision 2026-11-18): draftEnabled/draftsPerDay/draftOwnerId in POST/PATCH
- *   are stripped, not returned, and the columns are gone (migration drop_legacy).
+ *   are stripped and not returned.
  * - The prompt (buildUserMessage + loadExamples, no model call): 定位, the persona's one style (tone preset + note,
  *   emoji, post length range, hashtags, audience, notes, topics, banned words; no fixed opening/closing since
  *   2026-11-19), Language zh-CN, the persona's oldest 5 范例 of its one list (in its own scope; not other users'
@@ -135,10 +135,8 @@ try {
     check('prompt: topics, banned words, hashtags (# stripped), audience, notes, recent posts; no fixed opening/closing lines',
       has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('写给谁：上班族')
         && has('备注：不要推荐品牌') && has('上周的汤') && !has('固定开头') && !has('固定结尾') && !SYSTEM_PROMPT.includes('固定开头'));
-    // a row still holding the removed opening/closing (written before 2026-11-19, never migrated): nothing added to a draft
-    const legacy = { ...row!, style: { ...row!.style, opening: '今晚吃什么？', closing: '你们最爱哪道？' } as any };
-    const cd = composeDraft({ title: 't', body: '正文', hashtags: ['#a'], mediaTags: [] }, legacy);
-    check('composeDraft adds no fixed lines (also for a row with a stored opening/closing)', cd.body === '正文' && cd.text === '正文\n\n#a' && !buildUserMessage({ persona: legacy, count: 1, day: '2026-11-18', examples: [], recent: [] }).includes('今晚吃什么'), JSON.stringify(cd));
+    const cd = composeDraft({ title: 't', body: '正文', hashtags: ['#a'], mediaTags: [] }, row!);
+    check('composeDraft adds no fixed lines (body + hashtag line only)', cd.body === '正文' && cd.text === '正文\n\n#a', JSON.stringify(cd));
     check('prompt without a topic: 【本次主题】 with an empty 本次主题： + the choose-yourself hint', has('【本次主题】\n本次主题：\n（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）'));
     const withTopic = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: ex, recent: [], topic: '咖啡豆保存' });
     check('prompt with a topic: 【本次主题】 本次主题：咖啡豆保存 + the different-angle line',

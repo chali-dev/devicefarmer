@@ -1,1 +1,0 @@
-ALTER TABLE "publish_tasks" ADD COLUMN "post_type" text DEFAULT 'feed' NOT NULL;

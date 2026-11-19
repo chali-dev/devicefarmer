@@ -1,1 +1,0 @@
-ALTER TABLE "media_assets" ADD COLUMN "disable_on_ready" boolean DEFAULT false NOT NULL;

@@ -9,7 +9,7 @@ import { db, schema } from '../../db/index.js';
  * passes one; a running task keeps its own. Device operations derive their phone lock from it (collector.ts `lockFor`).
  *
  * Not listed (hard-coded on purpose): schedulers / cleanups / alert sends (collection-schedule, tasks-cleanup,
- * notifications-cleanup, notify-*), the legacy AI task types, and the device lifecycle ops (create / start / stop /
+ * notifications-cleanup, notify-*) and the device lifecycle ops (create / start / stop /
  * restart / delete / apply-settings / set-proxy / uninstall-app) which have no timeout: a timeout there would fail the
  * task (and mark the device error) while the container work is still running.
  */

@@ -5,7 +5,7 @@
  *   held by a test-only trigger against the monitor (created and dropped by this script).
  *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
  *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
- * - 系统配置 → 任务超时 (`tasks.timeouts`, 2026-11-19): the publish.timeout data migration (twice), GET defaults per type,
+ * - 系统配置 → 任务超时 (`tasks.timeouts`): GET defaults per type,
  *   strict PUTs, unknown type 404, null = default, a new task takes the value (createTask), audit, old path 404; the
  *   发帖 row is set to 2 min for the run.
  * - No automatic publish retries (2026-11-18): every round is one attempt; distribute's maxAttempts
@@ -38,7 +38,6 @@ import { cancelTask, closeTaskQueues, createTask } from '../src/modules/tasks/co
 import { refreshContentStatus } from '../src/modules/content/content.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type (for the idempotency checks below)
 import '../src/modules/media/media.js'; // registers media-process (任务超时 check)
-import { migrateTaskTimeouts } from '../src/db/task-timeouts-migration.js';
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 import { withCaptcha } from './lib/login.js';
@@ -88,7 +87,7 @@ const ptIds = new Set<string>();
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
 // 发布任务 (timeout) for this run (restored in finally).
-const TIMEOUT_KEYS = ['tasks.timeouts', 'publish.timeout', 'publish.retry'];
+const TIMEOUT_KEYS = ['tasks.timeouts'];
 const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
@@ -105,14 +104,6 @@ const contentStatus = async (token: string, id: string) => (await http('GET', `/
 try {
   // ---------------------------------------------------------------- 任务超时 setting (admin, strict, one row per type)
   {
-    // data migration of the former 发布任务 setting: publish.timeout {timeoutSec} → tasks.timeouts.publish, rows deleted
-    await db.delete(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
-    await db.insert(schema.settings).values([{ key: 'publish.timeout', value: { timeoutSec: 240 } }, { key: 'publish.retry', value: { maxAttempts: 3, backoffSec: 60 } }]);
-    const m1 = await migrateTaskTimeouts(sqlClient);
-    const m2 = await migrateTaskTimeouts(sqlClient);
-    const rows = await db.select().from(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
-    check('data migration: publish.timeout 240 s → tasks.timeouts.publish 4 min, publish.timeout + publish.retry deleted, second run = no-op',
-      m1 && !m2 && rows.length === 1 && rows[0]!.key === 'tasks.timeouts' && JSON.stringify(rows[0]!.value) === JSON.stringify({ publish: 240_000 }), JSON.stringify(rows));
     await db.delete(schema.settings).where(inArray(schema.settings.key, TIMEOUT_KEYS));
 
     const g = await http('GET', '/api/settings/task-timeouts', T);

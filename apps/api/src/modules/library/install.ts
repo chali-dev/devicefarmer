@@ -1,10 +1,10 @@
-import { and, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { LibraryApp } from '../../db/schema.js';
 import { adb } from '../../services.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { visibleTasks } from '../tasks/routes.js';
-import { LIBRARY_TASK_REF, libraryDir } from './library.js';
+import { LIBRARY_TASK_REF } from './library.js';
 
 const I = schema.instances;
 const T = schema.tasks;
@@ -86,43 +86,31 @@ export interface InstallLogItem {
   preinstall: boolean;
 }
 
-const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
 /**
- * Install log of a package (every version): install-apk tasks created from the library. New tasks carry
- * refType library_app + payload.library; older ones (before the ref was recorded) are matched by their
- * APK path inside the library directory of the package. Visibility = task centre rule (visibleTasks).
+ * Install log of a package (every version): install-apk tasks created from the library (refType library_app +
+ * payload.library). Visibility = task centre rule (visibleTasks).
  */
 export async function installLog(user: AuthUser, pkg: string, limit: number, offset: number): Promise<{ items: InstallLogItem[]; total: number }> {
-  const legacyPrefix = `${libraryDir({ package: pkg, versionCode: '' })}`.replace(/\/?$/, '/');
   const where = and(
-    eq(T.type, 'install-apk'),
-    or(
-      and(eq(T.refType, LIBRARY_TASK_REF), sql`${T.payload}->'library'->>'package' = ${pkg}`),
-      and(isNull(T.refType), sql`${T.payload}->'apkPaths'->>0 like ${`${likeEscape(legacyPrefix)}%`}`),
-    ),
+    eq(T.type, 'install-apk'), eq(T.refType, LIBRARY_TASK_REF), sql`${T.payload}->'library'->>'package' = ${pkg}`,
     visibleTasks(user),
   );
-  const [rows, [tot], versions] = await Promise.all([
+  const [rows, [tot]] = await Promise.all([
     db.select({
       id: T.id, status: T.status, errorCode: T.errorCode, error: T.error, createdAt: T.createdAt, finishedAt: T.finishedAt,
       instanceId: T.instanceId, label: T.instanceName, current: I.name, operator: schema.users.username, payload: T.payload,
     }).from(T).leftJoin(I, eq(I.id, T.instanceId)).leftJoin(schema.users, eq(schema.users.id, T.createdBy))
       .where(where).orderBy(desc(T.createdAt)).limit(limit).offset(offset),
     db.select({ n: count() }).from(T).where(where),
-    db.select({ versionCode: schema.libraryApps.versionCode, versionName: schema.libraryApps.versionName }).from(schema.libraryApps).where(eq(schema.libraryApps.package, pkg)),
   ]);
-  const nameOf = new Map(versions.map((v) => [v.versionCode, v.versionName]));
   const items = rows.map((r): InstallLogItem => {
-    const p = (r.payload ?? {}) as { library?: { versionCode: string; versionName: string | null; preinstall: boolean }; apkPaths?: string[] };
-    const legacyCode = p.library ? null : p.apkPaths?.[0]?.slice(legacyPrefix.length).split('/')[0] ?? null;
-    const versionCode = p.library?.versionCode ?? legacyCode;
+    const { library } = r.payload as { library: { versionCode: string; versionName: string | null; preinstall: boolean } };
     return {
       taskId: r.id, status: r.status, errorCode: r.errorCode, error: r.error, createdAt: r.createdAt, finishedAt: r.finishedAt,
       instanceId: r.instanceId, instanceName: r.current ?? (r.label ?? '').split(' · ')[0]!, deviceExists: r.current != null,
       operator: r.operator ?? null,
-      versionCode, versionName: p.library ? p.library.versionName : (versionCode ? nameOf.get(versionCode) ?? null : null),
-      preinstall: p.library ? p.library.preinstall : / · 预装 /.test(r.label ?? ''),
+      versionCode: library.versionCode, versionName: library.versionName, preinstall: library.preinstall,
     };
   });
   return { items, total: tot?.n ?? 0 };

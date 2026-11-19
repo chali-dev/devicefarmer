@@ -994,10 +994,10 @@ export const personas = pgTable('personas', {
   description: text('description'),
   sort: integer('sort').notNull().default(0),
   /**
-   * 风格 (`PersonaStyle`, one style for posts and comments), stored in the column `brief` (the former 内容设定). The
-   * split shape of 2026-11-18 is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
+   * 风格 (`PersonaStyle`, one style for posts and comments), stored in the column `brief` (the former 内容设定);
+   * defaults are applied on read (`styleOf`).
    */
-  style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
+  style: jsonb('brief').$type<PersonaStyle>().notNull().default({}),
   /**
    * 自定义提示词 (owner 2026-11-19): the WHOLE prompt a person wrote for AI测试 / 「AI生成草稿」 instead of the generated
    * one (placeholders `{{topic}}` … filled per request, modules/ai/prompt.ts); null = generated from the persona.
@@ -1034,16 +1034,9 @@ export interface PersonaStyle {
   audience?: string;
   notes?: string;
 }
-/**
- * What `personas.brief` may hold: the single shape, or (rows saved 2026-11-18 – 11-19) the split shape with the post
- * part in `post` and a comment part in `comment`. `styleOf` reads a split row as its `post` part (comment dropped);
- * `persona-style-merge-migration.ts` (db:migrate) rewrites such rows (and drops the removed `opening` / `closing`), a
- * save writes the single shape.
- */
-export type StoredPersonaStyle = PersonaStyle & { post?: Omit<PersonaStyle, 'topics' | 'bannedWords'>; comment?: unknown };
 
 /**
- * Saved templates = the 范例 of personas (one list for posts and comments; `kind` dropped 2026-11-19, migration 0050), with a
+ * Saved templates = the 范例 of personas (one list for posts and comments), with a
  * persona (人设, `persona_id`) and lowercase tags. Private (user_id) or shared (user_id null, admin-managed). A person picks and edits one.
  * A shared template may only use a public persona; a private one a public persona or one of its owner's.
  */

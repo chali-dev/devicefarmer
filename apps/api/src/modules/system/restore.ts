@@ -21,7 +21,8 @@ import { getBackup, MAGIC, pgConnection, scrub, takeBackup } from './backup.js';
  *   1. a safety backup of the current data (trigger `pre-restore`, no retention pruning); if it fails, nothing else runs;
  *   2. the backup file is copied from its storage to a temp file, its PGDMP magic checked;
  *   3. `${PG_RESTORE_CMD} --clean --if-exists --no-owner --single-transaction` (all or nothing; password only in PGPASSWORD);
- *   4. the schema/data migrations (a backup of an older release is brought up to date);
+ *   4. the schema migrations (a backup of an older release of this baseline is brought up to date; backups taken
+ *      before the migrations were squashed on 2026-11-19 do not fit and fail here);
  *   5. what the restored tables cannot know is put back: the backup list exactly as it was before (it describes files in
  *      storage, incl. the safety backup), the task rows behind it, this task with its log and its audit row;
  *   6. task reconciliation as at startup (unfinished tasks of the backup are re-queued, running ones fail as interrupted).
@@ -140,9 +141,8 @@ registerTaskHandler<{ backupId: string }>(RESTORE_TYPE, {
       const snap = await snapshot(ctx.task.id);
       await runRestore(tmp, ctx.signal);
       // From here on the tables hold the backup's rows: this task's own row is back only after putBack.
-      const migrationLines: string[] = [];
       let migrationError: string | null = null;
-      try { await runMigrations((m) => migrationLines.push(m)); } catch (err) { migrationError = (err as Error).message; }
+      try { await runMigrations(); } catch (err) { migrationError = (err as Error).message; }
       try {
         await putBack(snap);
       } catch (err) {
@@ -152,7 +152,7 @@ registerTaskHandler<{ backupId: string }>(RESTORE_TYPE, {
       }
       await ctx.log('info', `database restored from ${name}`, { backupId: source.id, safetyBackupId: safety.backupId });
       if (migrationError) throw new TaskError('system.restore_migrations_failed', `restored, but the migrations failed: ${migrationError}`.slice(0, 1000));
-      await ctx.log('info', 'migrations applied', migrationLines.length ? { lines: migrationLines } : undefined);
+      await ctx.log('info', 'migrations applied');
 
       const logger = {
         info: (o: unknown, m?: string) => { void ctx.log('info', m ?? String(o), typeof o === 'object' ? o as Json : undefined).catch(() => undefined); },

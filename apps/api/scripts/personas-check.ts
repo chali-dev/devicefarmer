@@ -11,10 +11,8 @@
  * - Delete → its templates are deleted, accounts become 未设人设. No merge for personas (owner decision 2026-11-18): POST …/merge → 404 for
  *   everyone, nothing moved.
  * - The one persona form (2026-11-19: ONE style + ONE list of 范例): 定位 (description), style = tone + note, emoji, length,
- *   topics, banned words, hashtags, audience, notes (no fixed opening/closing); strict validation (the split body of
- *   2026-11-18, opening/closing and a language are refused), normalisation, defaults; a stored split row is read as its
- *   post part and rewritten flat on save; the data migration (persona-style-merge-migration.ts) on seeded rows, run
- *   twice = no-op; GET /api/personas/:id (style for everyone who may see it, one list of 范例 in the persona's own
+ *   topics, banned words, hashtags, audience, notes (no fixed opening/closing); strict validation (a split
+ *   post/comment body, opening/closing and a language are refused), normalisation, defaults; GET /api/personas/:id (style for everyone who may see it, one list of 范例 in the persona's own
  *   scope without kind, length ranges, no AI fields), admin-created examples for a user's personal persona (ownerId), `kind` → 400.
  * - Creating a persona WITH 范例 (POST /api/personas `examples`: string[]): one transaction, form order kept, public →
  *   shared templates, admin for a user (ownerId) → that user's; more than 20 → 400 and nothing created; a banned
@@ -159,40 +157,6 @@ try {
     let x = await http('PATCH', `/api/personas/${plain.id}`, A.token, { style: { tone: 'pro', length: 'high' }, description: '专业' });
     check('PATCH replaces the whole style together with the description (other fields back to defaults)', x.status === 200 && x.body.persona.style.tone === 'pro'
       && x.body.persona.style.length === 'high' && x.body.persona.style.emoji === 'medium' && x.body.persona.description === '专业');
-
-    // compatibility: a row in the split shape of 2026-11-18 (with the removed opening/closing) is read as its post part
-    const SPLIT = {
-      topics: ['咖啡'], bannedWords: ['便宜'],
-      post: { tone: 'cool', toneNote: '少说话', emoji: 'low', length: 'high', hashtags: ['coffee'], audience: '上班族', opening: '嗨', closing: '回见', notes: '旧备注' },
-      comment: { tone: 'warm', toneNote: '暖心', emoji: 'high', length: 'low' },
-    };
-    const [split] = await db.insert(P).values({ ownerType: 'user', ownerId: A.id, name: `Split ${tag}`, style: SPLIT as any }).returning();
-    const [split2] = await db.insert(P).values({ ownerType: 'user', ownerId: A.id, name: `Split2 ${tag}`, style: SPLIT as any }).returning();
-    const [flatOld] = await db.insert(P).values({ ownerType: 'user', ownerId: A.id, name: `FlatOld ${tag}`, style: { tone: 'pro', opening: '早', closing: '晚', topics: ['x'] } as any }).returning();
-    x = await http('GET', `/api/personas/${split!.id}`, A.token);
-    const fs = x.body?.persona?.style;
-    check('old split row read: shared topics/banned words + the post part; comment part and opening/closing dropped',
-      x.status === 200 && fs.topics.join() === '咖啡' && fs.bannedWords.join() === '便宜' && fs.tone === 'cool' && fs.toneNote === '少说话' && fs.emoji === 'low'
-        && fs.length === 'high' && fs.hashtags.join() === 'coffee' && fs.audience === '上班族' && fs.notes === '旧备注'
-        && !('post' in fs) && !('comment' in fs) && !('opening' in fs) && !('closing' in fs), JSON.stringify(fs));
-    const splitList = (await plist(A.token, 'scope=mine')).items.find((p) => p.id === split!.id);
-    check('old split row read the same way in the list', splitList?.style?.tone === 'cool' && !('post' in (splitList?.style ?? {})), JSON.stringify(splitList?.style));
-    x = await http('PATCH', `/api/personas/${split!.id}`, A.token, { style: { ...fs, tone: 'warm' } });
-    const [splitRow] = await db.select({ brief: P.style }).from(P).where(eq(P.id, split!.id));
-    check('saving an old split persona stores the flat shape (old values kept, tone changed)',
-      x.status === 200 && (splitRow?.brief as any)?.tone === 'warm' && (splitRow?.brief as any)?.audience === '上班族' && !('post' in (splitRow?.brief ?? {})) && !('comment' in (splitRow?.brief ?? {})),
-      JSON.stringify(splitRow?.brief));
-    // the data migration of db:migrate (persona-style-merge-migration.ts), limited to the rows seeded here, run twice
-    const { migratePersonaStyles } = await import('../src/db/persona-style-merge-migration.js');
-    const ids = [split2!.id, flatOld!.id, sp.id];
-    const m1 = await migratePersonaStyles(sqlClient, { onlyIds: ids });
-    const m2 = await migratePersonaStyles(sqlClient, { onlyIds: ids });
-    const rows = new Map((await db.select({ id: P.id, brief: P.style }).from(P).where(inArray(P.id, ids))).map((r) => [r.id, r.brief as any]));
-    const s2 = rows.get(split2!.id); const fo = rows.get(flatOld!.id);
-    check('data migration: split row → flat post part (comment, opening, closing dropped), flat row loses opening/closing, a new row untouched; second run = no-op',
-      m1 === 2 && m2 === 0 && s2?.tone === 'cool' && s2?.notes === '旧备注' && s2?.topics?.join() === '咖啡' && !('post' in s2) && !('comment' in s2) && !('opening' in s2) && !('closing' in s2)
-        && fo?.tone === 'pro' && fo?.topics?.join() === 'x' && !('opening' in fo) && !('closing' in fo)
-        && JSON.stringify(rows.get(sp.id)) === JSON.stringify(stored?.brief), `${m1} ${m2} ${JSON.stringify(s2)} ${JSON.stringify(fo)}`);
 
     // 范例: ONE list per persona (no kind); admin adds one for A (ownerId)
     const ex1 = await http('POST', '/api/comment-templates', A.token, { name: 'e1', text: `发文范例 ${tag}`, personaId: sp.id });

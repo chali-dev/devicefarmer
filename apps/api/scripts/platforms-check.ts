@@ -4,8 +4,6 @@
  *   (404, also for admins); GET /api/platforms only carries `enabled` + `features`; /api/publish/platforms has no
  *   `methods`; alert rules / kinds / channel kinds have no connection.expired and no accountCheckHours (PUT with it
  *   is a 400); the dashboard social widget has no `connections`; the manual "mark checked" is gone (404).
- * - Schema (migration drop_legacy): platform_connections / comment_sync_states dropped, settings row platform.apps and
- *   tasks of the removed types gone.
  * - A leftover BullMQ job of a removed-type task (its row deleted) is consumed by the real worker without a trace.
  * Creates a temporary user; removes everything it created and restores alerts.rules.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3190 npx tsx --env-file=../../.env scripts/platforms-check.ts
@@ -98,15 +96,7 @@ try {
   const ck = await http('POST', `/api/social/accounts/${accId}/checked`, U, { loginStatus: 'logged_in' });
   check('manual "mark checked" is gone too (404, statuses are system-written)', ck.status === 404, ck.status);
 
-  // ---------------------------------------------------------------- schema: the removed tables / settings are gone (0048 drop_legacy)
-  const [reg] = await sql<{ pc: string | null; cs: string | null }[]>`select to_regclass('platform_connections')::text as pc, to_regclass('comment_sync_states')::text as cs`;
-  check('tables platform_connections and comment_sync_states dropped', reg!.pc === null && reg!.cs === null, reg);
-  const [apps] = await sql<{ n: number }[]>`select count(*)::int as n from settings where key = 'platform.apps'`;
-  check('settings row platform.apps gone', apps!.n === 0, apps);
-  const [left] = await sql<{ n: number }[]>`select count(*)::int as n from tasks where type in ('account-stats', 'comment-sync', 'social-account-check')`;
-  check('no task rows of the removed types', left!.n === 0, left);
-
-  // ---------------------------------------------------------------- a leftover job of a removed-type task (row deleted by the migration)
+  // ---------------------------------------------------------------- a leftover job of a removed task type (no row)
   const ghost = crypto.randomUUID();
   await q.add('account-stats', { taskId: ghost }, { jobId: ghost, removeOnComplete: true, removeOnFail: true });
   let consumed = false;

@@ -9,7 +9,6 @@ import { opApplySettings, opCreate, opDelete, opImportApp, opInstallApk, opPushA
 export type DeviceOpName = 'create' | 'start' | 'stop' | 'restart' | 'delete' | 'install-apk' | 'uninstall-app' | 'apply-settings' | 'set-proxy' | 'import-app' | 'push-asset';
 /** Ops that need no device (instanceId absent): background jobs of other modules (each registers its handler). */
 export type TaskOpName = 'media-process' | 'tracked-refresh';
-export type OpName = DeviceOpName | TaskOpName;
 /** Task payload of the device ops (stored in tasks.payload; ids and paths only, no secrets). */
 export interface OpJob {
   /** create: app library ids to install afterwards (omitted = the preinstall-flagged apps) */

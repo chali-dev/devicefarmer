@@ -7,7 +7,7 @@ import { badRequest, notFound } from '../../lib/errors.js';
 import { ScopedCreateBody, ScopedListQuery, ScopedPatchBody, scopedList } from '../../lib/scoped-list.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { writeLogs } from '../social/social.js';
-import { bannedHits, exampleWhere, flatStyle, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
+import { bannedHits, exampleWhere, MAX_EXAMPLES, normaliseStyle, PERSONA_LENGTHS, PersonaStyleInput, styleOf } from './persona-style.js';
 
 /**
  * 人设 (personas) of the script library, scoped like media categories: public personas are managed by admins and usable
@@ -221,7 +221,7 @@ export const personaRoutes: FastifyPluginAsyncZod = async (app) => {
       const [last] = await tx.select({ max: sql<number | null>`max(${P.sort})` }).from(P).where(eq(P.ownerId, ownerId));
       const [row] = await tx.insert(P).values({
         ownerType: 'user', ownerId, name: copyName(src.name, taken), description: src.description, sort: (last?.max ?? -1) + 1,
-        style: flatStyle(src.style), customPrompt: src.customPrompt ?? null, createdBy: req.user.id,
+        style: src.style, customPrompt: src.customPrompt ?? null, createdBy: req.user.id,
       }).returning();
       const tpls = await tx.select().from(TPL).where(exampleWhere(src)).orderBy(asc(TPL.createdAt), asc(TPL.id));
       if (tpls.length) {

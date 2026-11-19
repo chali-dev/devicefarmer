@@ -20,13 +20,12 @@
  *   with the owner), RBAC (others' account / tracked account 404, no phone / wrong platform 400), comment + reply
  *   scheduled and handed over like the account's own posts (offline phone, unknown link, unknown author), one active
  *   reply per tracked comment, minimum gap defers, 回复记录 on both sides (each filtered),
- *   tracked post deleted → the record stays; migration 0036 shape;
- * - evidence screenshot endpoint (owner 200 PNG, others 404); migration 0035 shape + db:migrate twice; audit;
+ *   tracked post deleted → the record stays;
+ * - evidence screenshot endpoint (owner 200 PNG, others 404); schema of post comments; audit;
  * - 人设禁用词: a post comment containing a word banned by the account's persona → 400 persona.banned_word.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/feed-check.ts
  */
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { and, eq, inArray, like, sql } from 'drizzle-orm';
@@ -559,15 +558,10 @@ try {
   check('schedule off → nothing', s3.hours === null && s3.created === 0);
   await http('POST', `/api/risk/devices/${d2.id}/resume`, T);
 
-  // ---------------------------------------------------------------- migration 0035 shape, run twice
+  // ---------------------------------------------------------------- schema: post comments without a comment
   const [idx] = await sqlClient`select indexdef from pg_indexes where indexname = 'comment_tasks_one_active_idx'`;
   const [col] = await sqlClient`select is_nullable from information_schema.columns where table_name = 'comment_tasks' and column_name = 'comment_id'`;
-  check('migration: comment_id nullable, one-active index ignores failed / cancelled only', col?.is_nullable === 'YES' && /'failed'.*'cancelled'/.test(String(idx?.indexdef)) && !/dry_run|rejected/.test(String(idx?.indexdef)), `${col?.is_nullable} ${idx?.indexdef}`);
-  const mig = () => execFileSync('npx', ['tsx', '--env-file=../../.env', 'src/db/migrate.ts'], { env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const out1 = mig();
-  const out2 = mig();
-  const [cnt] = await sqlClient`select count(*)::int as n from drizzle.__drizzle_migrations`;
-  check('db:migrate twice: both succeed, no new migration rows', /migrations applied/.test(out1) && /migrations applied/.test(out2) && Number(cnt?.n) >= 36, `${cnt?.n}`);
+  check('schema: comment_id nullable, one-active index ignores failed / cancelled only', col?.is_nullable === 'YES' && /'failed'.*'cancelled'/.test(String(idx?.indexdef)) && !/dry_run|rejected/.test(String(idx?.indexdef)), `${col?.is_nullable} ${idx?.indexdef}`);
 
   // ---------------------------------------------------------------- audit
   await new Promise((res) => setTimeout(res, 500));

@@ -43,7 +43,7 @@ docker compose -f docker-compose.dev.yml up -d
 # 3. 配置与数据库
 cp .env.example .env        # 修改 JWT_SECRET / ADMIN_PASSWORD，DOCKER_HOST 中的 $HOME 写成绝对路径
 npm install
-npm run db:migrate && npm run db:seed
+npm run db:migrate && npm run db:seed   # 初始数据：内置管理员、demo-user（设置了 DEMO_USER_PASSWORD 时）、1 个公共示例素材、3 个公共人设
 
 # 4. 启动
 npm run dev:api             # http://127.0.0.1:3000  （健康检查 /api/health）

@@ -10,7 +10,7 @@
  *   `settings.role_menus` with the menu list.
  * - device logs: GET /api/system/device-logs on two placeholder devices (no container; status events written as rows):
  *   exact totals per device / type (status, adb, offline) / time range, paging, names, 400 on a bad type, user 403.
- * - 自定义角色: migration shape (roles table, users.role_id nullable FK RESTRICT, case-insensitive unique name); admin CRUD
+ * - 自定义角色: schema (roles table, users.role_id nullable FK RESTRICT, case-insensitive unique name); admin CRUD
  *   (validation: empty / too long / reserved names, unknown + admin-only menus, strict body, duplicate name in another
  *   case → 409 role.name_taken, unknown id → 404), user 403; a user with a custom role gets exactly the role's menus in
  *   the login body and /api/auth/me, its switched-off menus' endpoints → 403 rbac.menu_disabled while its own answer,
@@ -171,7 +171,7 @@ try {
   const again = await Promise.all(['/api/analytics/summary?days=7', '/api/trending', '/api/tasks/stats', '/api/publish/tasks', '/api/tracked-accounts'].map(async (p) => (await http('GET', p, UT)).status));
   check('re-enabled: every endpoint answers again', r.status === 200 && again.every((s) => s === 200), again.join(','));
 
-  // ---------------------------------------------------------------- 自定义角色: migration shape
+  // ---------------------------------------------------------------- 自定义角色: schema
   const cols = await sqlClient`select table_name, column_name, data_type, is_nullable from information_schema.columns
     where (table_name = 'roles') or (table_name = 'users' and column_name = 'role_id') order by table_name, ordinal_position`;
   const fk = await sqlClient`select rc.delete_rule from information_schema.referential_constraints rc
@@ -179,7 +179,7 @@ try {
   const idx = await sqlClient`select indexdef from pg_indexes where indexname = 'roles_name_lower'`;
   const colNames = cols.filter((c) => c.table_name === 'roles').map((c) => c.column_name).join(',');
   const rid = cols.find((c) => c.table_name === 'users');
-  check('migration: roles table + users.role_id nullable uuid FK RESTRICT + unique lower(name)',
+  check('schema: roles table + users.role_id nullable uuid FK RESTRICT + unique lower(name)',
     colNames === 'id,name,description,menus,created_at,updated_at' && rid?.data_type === 'uuid' && rid?.is_nullable === 'YES'
     && fk[0]?.delete_rule === 'RESTRICT' && /UNIQUE/.test(idx[0]?.indexdef ?? '') && /lower\(name\)/.test(idx[0]?.indexdef ?? ''),
     JSON.stringify({ colNames, rid, fk, idx }));

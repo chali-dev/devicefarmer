@@ -1,2 +1,0 @@
-ALTER TABLE "social_accounts" ADD COLUMN "ai_drafts_enabled" boolean DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE "social_accounts" ADD COLUMN "ai_drafts_per_day" integer DEFAULT 4 NOT NULL;

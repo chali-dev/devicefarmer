@@ -1,4 +1,4 @@
-/** Tag rules of tracked accounts (追踪账号), shared by the API and the category → tag data migration. */
+/** Tag rules of tracked accounts (追踪账号). */
 
 /** Max length of one tag (checked on the trimmed value). */
 export const TAG_MAX = 32;
