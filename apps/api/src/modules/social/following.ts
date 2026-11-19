@@ -13,6 +13,7 @@ import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, classifyIgDump, dumpExcerpt, igDeviceAccounts, requireApp, screenProblem, visitIgScreen, type IgScreen, type UiNode } from '../tracked/instagram-device.js';
 import { autoCheckUnsupported } from './check.js';
+import { visibleAccount } from './social.js';
 import { followingCounter, isFollowList, listSwipe, listTab, parseFollowingScreen, type FollowListKind } from './following-ui.js';
 
 /**
@@ -475,7 +476,12 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
 }
 
 // New type on its own queue (a draining old leader never sees it). One attempt: the next slot or 同步 runs again.
-registerTaskHandler<Payload>(FOLLOWING_TYPE, { queue: QUEUE, concurrency: 2, timeoutMs: TASK_TIMEOUT_MS, maxAttempts: 1, run });
+registerTaskHandler<Payload>(FOLLOWING_TYPE, {
+  queue: QUEUE, concurrency: 2, timeoutMs: TASK_TIMEOUT_MS, maxAttempts: 1, run,
+  // Retry (task centre) replays the stored payload: re-check what the request checked, as the caller (the account may
+  // have moved to another user with its phone since the task was created).
+  async beforeRetry(task, user) { await visibleAccount(user, (task.payload as Payload | null)?.socialAccountId ?? task.refId ?? ''); },
+});
 
 /**
  * Hourly: every Instagram social account on a running, not halted phone, once per followingSyncHours at a fixed

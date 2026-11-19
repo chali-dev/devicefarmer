@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import WebSocket from 'ws';
+import { HttpError } from '../../lib/errors.js';
 import { events, type PlatformEvent } from '../../lib/events.js';
 import { accessibleInstanceIds, type AuthUser } from '../auth/rbac.js';
+
+/** An open socket re-checks its user (disabled / removed) this often. */
+const RECHECK_MS = 15_000;
 
 /** Real-time instance/task updates, filtered per user by RBAC. First message: {type:"auth",token}. */
 export const eventsRoutes: FastifyPluginAsync = async (app) => {
@@ -10,6 +14,7 @@ export const eventsRoutes: FastifyPluginAsync = async (app) => {
     let allowed: Set<string> | 'all' = new Set();
     let refreshedAt = 0;
     const authTimer = setTimeout(() => { if (!user) client.close(4001, 'auth timeout'); }, 5000);
+    let recheck: NodeJS.Timeout | null = null;
 
     const refresh = async () => {
       if (!user || Date.now() - refreshedAt < 5000) return;
@@ -38,6 +43,10 @@ export const eventsRoutes: FastifyPluginAsync = async (app) => {
         await refresh();
         clearTimeout(authTimer);
         events.on('event', onEvent);
+        // A user disabled or removed meanwhile stops receiving events (the socket is closed like an expired login).
+        recheck = setInterval(() => {
+          if (user) app.reloadUser(user.id).catch((err) => { if (!(err instanceof HttpError)) return; events.off('event', onEvent); client.close(4001, 'unauthorized'); });
+        }, RECHECK_MS);
         client.send(JSON.stringify({ type: 'ready' }));
       } catch {
         client.close(4001, 'unauthorized');
@@ -46,6 +55,7 @@ export const eventsRoutes: FastifyPluginAsync = async (app) => {
 
     client.on('close', () => {
       clearTimeout(authTimer);
+      if (recheck) clearInterval(recheck);
       events.off('event', onEvent);
     });
   });

@@ -18,8 +18,12 @@ declare module 'fastify' {
     requireAdmin: (req: FastifyRequest) => Promise<void>;
     /** Verifies a raw token (used by WebSocket first-message auth). */
     userFromToken: (token: string) => Promise<AuthUser>;
+    /** Re-reads a user (long-lived WebSockets re-check it): 401 auth.account_disabled when disabled or removed. */
+    reloadUser: (id: string) => Promise<AuthUser>;
   }
 }
+
+const safeDecode = (url: string) => { try { return decodeURIComponent(url.split('?')[0]!); } catch { return url; } };
 
 export const authPlugin = fp(async (app: FastifyInstance) => {
   await app.register(fjwt, {
@@ -33,6 +37,8 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
     if (!u || u.disabled) throw unauthorized('account disabled or removed', 'auth.account_disabled');
     return { id: u.id, username: u.username, role: u.role, roleId: u.roleId };
   }
+
+  app.decorate('reloadUser', loadUser);
 
   app.decorate('userFromToken', async (token: string) => {
     let payload: { sub: string };
@@ -50,7 +56,9 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   // validation, so a refused request is a 403 whatever it carries; only for paths of a MENU_API rule. Without a valid
   // token nothing happens here (the route's own authenticate answers 401).
   app.addHook('onRequest', async (req) => {
-    const rule = menuRuleFor(req.method, req.url);
+    // The matched route pattern (e.g. /api/analytics/summary), not the raw URL: a percent-encoded path such as
+    // /api/%61nalytics/… is routed to the same handler but would not match the rules' regexes.
+    const rule = menuRuleFor(req.method, req.routeOptions.url ?? safeDecode(req.url));
     if (!rule) return;
     let payload: { sub: string };
     try { payload = await req.jwtVerify<{ sub: string }>(); } catch { return; }

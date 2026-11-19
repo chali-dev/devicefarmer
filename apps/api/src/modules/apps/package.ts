@@ -15,6 +15,7 @@ export interface PreparedApp {
 }
 
 const BUNDLE_EXT = ['.apks', '.xapk', '.apkm', '.zip'];
+class BundleTooLarge extends Error {}
 
 /**
  * Stores an upload in its own directory. A single .apk is used as-is; a split bundle
@@ -38,10 +39,22 @@ export async function prepareUpload(stream: Readable & { truncated?: boolean }, 
   if (isApk) return { name: filename, apkPaths: [raw], sizes: [(await fs.promises.stat(raw)).size] };
 
   let entries: Record<string, Uint8Array>;
+  // Unpacked in memory: cap the declared uncompressed size (fflate inflates into a buffer of exactly that size), so a
+  // small "zip bomb" can't exhaust the API's memory. APKs barely compress, so 2× the upload limit is generous.
+  const maxUnpacked = 2 * config.MAX_APK_MB * 1024 * 1024;
+  let unpacked = 0;
   try {
-    entries = unzipSync(await fs.promises.readFile(raw), { filter: (f) => f.name.toLowerCase().endsWith('.apk') && !f.name.includes('/') });
+    entries = unzipSync(await fs.promises.readFile(raw), {
+      filter: (f) => {
+        if (!(f.name.toLowerCase().endsWith('.apk') && !f.name.includes('/'))) return false;
+        unpacked += f.originalSize;
+        if (unpacked > maxUnpacked) throw new BundleTooLarge();
+        return true;
+      },
+    });
   } catch (err) {
     await fs.promises.rm(dir, { recursive: true, force: true });
+    if (err instanceof BundleTooLarge) throw badRequest(`解压后超过 ${2 * config.MAX_APK_MB} MB 上限`, 'apps.too_large', { max: 2 * config.MAX_APK_MB });
     throw badRequest(`无法解压拆分包（可能已加密或损坏）：${(err as Error).message}`, 'apps.bad_bundle', { error: (err as Error).message });
   }
   const names = Object.keys(entries).sort((a, b) => (a === 'base.apk' ? -1 : b === 'base.apk' ? 1 : a.localeCompare(b)));
