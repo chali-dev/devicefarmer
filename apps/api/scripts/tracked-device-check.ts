@@ -1,5 +1,5 @@
 /**
- * Tracked accounts read on the collector device (Instagram app, owner decision 2026-11-18). Real API, DB, BullMQ,
+ * Tracked accounts read on their 采集手机 (Instagram app, owner decisions 2026-11-18 / 2026-11-19). Real API, DB, BullMQ,
  * adb and the real Instagram app on the BitBrowser phone (no mocks). At most 5 profile visits on the phone
  * (natgeo, instagram, natgeo again by the scheduler, one username that does not exist); every other check
  * ends before a visit. Navigation + reading the screen only: no taps, no typing, no likes/follows.
@@ -13,15 +13,19 @@
  * removed directly from the DB at the end (no delete op: that would adb-disconnect the port the main API uses).
  * The phone must be on (running); the script stops before any visit otherwise.
  *
- * Checks: count parsing (zh 万/亿, en K/M/B, commas, decimals) incl. a real dump file (--dump); RBAC (only admins
- * read/set the collector); new Instagram accounts get 定时采集 every 24 h; no collector → refresh refused with
- * tracked.collector_unset and the scheduler skips with that code (no task, no alert); offline device → task fails
+ * The accounts belong to the admin (an admin owner may use any phone as 采集手机), set with the batch
+ * POST /api/tracked-accounts/phone. NOT re-run since the global collector setting was replaced (2026-11-19).
+ *
+ * Checks: count parsing (zh 万/亿, en K/M/B, commas, decimals) incl. a real dump file (--dump); RBAC (a user can't set the
+ * phone on their account: not theirs → tracked.phone_not_allowed; can't list the admin's phones → 403); new Instagram
+ * accounts get 定时采集 every 24 h; no 采集手机 → refresh refused with tracked.no_phone and the scheduler skips with that
+ * code (no task, no alert); offline device → task fails
  * tracked.collector_offline; a viewer session on the device → deferred tracked.collector_busy; two refreshes at
  * once run one after the other with ≥ the minimum interval between their visits (the second deferred, not
  * dropped); real values (> 0, approx flags, snapshot source device, verified); a scheduled run goes through the
  * same pace; a username that does not exist → tracked.collector_profile_unavailable; halt (challenge) → refusal
  * tracked.collector_halted + collector.blocked alert, resume clears both; the phone is back on the launcher and
- * no dump file is left in /data/local/tmp; audit of the setting.
+ * no dump file is left in /data/local/tmp; audit tracked.phone_batch.
  */
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -30,7 +34,7 @@ import WebSocket from 'ws';
 import { db, schema } from '../src/db/index.js';
 import { adb } from '../src/services.js';
 import { classifyIgDump, parseCompactCount, parseUiDump } from '../src/modules/tracked/instagram-device.js';
-import { haltCollector } from '../src/modules/tracked/collector.js';
+import { haltDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -96,8 +100,6 @@ let userId: string | null = null;
 const accountIds: string[] = [];
 const extRows: { source: string; instance: string }[] = [];
 const touchedTasks: string[] = [];
-const before = (await http('GET', '/api/settings/tracked-collectors', admin)).body;
-const prevIg = before?.collectors?.find((c: any) => c.platform === 'instagram')?.instanceId ?? null;
 
 async function extDevice(name: string, adbPort: number, running: boolean) {
   const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `tdchk-src-${name}-${tag}`, config: { apiUrl: 'not a url' } }).returning();
@@ -108,7 +110,8 @@ async function extDevice(name: string, adbPort: number, running: boolean) {
   extRows.push({ source: src!.id, instance: row!.id });
   return row!;
 }
-const setCollector = (body: Record<string, unknown>, token = admin) => http('PUT', '/api/settings/tracked-collectors/instagram', token, body);
+/** 采集手机 of the test accounts (batch, as the admin who owns them). */
+const setPhone = (instanceId: string | null, token = admin) => http('POST', '/api/tracked-accounts/phone', token, { ids: accountIds, instanceId });
 const account = async (id: string) => (await http('GET', `/api/tracked-accounts/${id}`, admin)).body.account;
 
 try {
@@ -136,17 +139,13 @@ try {
   const u = await http('POST', '/api/users', admin, { username: `tdc${tag}`, password: pw, role: 'user' });
   userId = u.body.user?.id ?? u.body.id;
   const user = await login(`tdc${tag}`, pw);
-  const ru = await http('GET', '/api/settings/tracked-collectors', user);
-  const pu = await setCollector({ instanceId: null }, user);
-  check('only admins read / set the collector device (user → 403)', ru.status === 403 && pu.status === 403, `${ru.status} ${pu.status}`);
-  const r404 = await setCollector({ instanceId: '00000000-0000-0000-0000-000000000000' });
-  check('unknown device → 404 tracked.collector_device_not_found', r404.status === 404 && r404.body?.code === 'tracked.collector_device_not_found');
-  check('empty body → 400', (await setCollector({})).status === 400);
-  await setCollector({ instanceId: null });
+  const meId = (await http('GET', '/api/auth/me', admin)).body.user.id as string;
+  const ru = await http('GET', `/api/tracked-accounts/phones?ownerId=${meId}`, user);
+  check("a user can't list the admin's phones (403 tracked.admin_only)", ru.status === 403 && ru.body?.code === 'tracked.admin_only', `${ru.status}`);
 
   // ---------------------------------------------------------------- default schedule + unset collector
   const mk = async (input: string) => {
-    const r = await http('POST', '/api/tracked-accounts', admin, { input });
+    const r = await http('POST', '/api/tracked-accounts', admin, { input, instanceId: null });
     if (r.status !== 201) throw new Error(`create ${input}: ${r.status} ${r.text}`);
     accountIds.push(r.body.account.id);
     return r.body.account;
@@ -156,28 +155,31 @@ try {
   const nouser = await mk(`https://www.instagram.com/${NO_SUCH_USER}/`);
   check('new Instagram tracked accounts: 定时采集 every 24 h by default, next slot within the hour',
     [natgeo, insta, nouser].every((a) => a.refreshIntervalHours === 24 && a.nextRefreshAt && Date.parse(a.nextRefreshAt) - Date.now() <= 3600_000 && Date.parse(a.nextRefreshAt) > Date.now() - 60_000));
-  check('no collector: dataMode device_unconfigured', natgeo.dataMode === 'device_unconfigured', natgeo.dataMode);
+  check('no 采集手机: dataMode device_unconfigured', natgeo.dataMode === 'device_unconfigured', natgeo.dataMode);
   let r = await http('POST', `/api/tracked-accounts/${natgeo.id}/refresh`, admin);
-  check('no collector: refresh refused 400 tracked.collector_unset', r.status === 400 && r.body?.code === 'tracked.collector_unset', r.text.slice(0, 120));
-  // Scheduler with no collector: skipped with the code, no task.
+  check('no 采集手机: refresh refused 400 tracked.no_phone', r.status === 400 && r.body?.code === 'tracked.no_phone', r.text.slice(0, 120));
+  // Scheduler with no phone: skipped with the code, no task.
   await db.update(schema.trackedAccounts).set({ nextRefreshAt: new Date(Date.now() - 60_000) }).where(eq(schema.trackedAccounts.id, natgeo.id));
   const run1 = await http('POST', '/api/collection/run', admin);
   await waitTask(run1.body.task.id);
   const n1 = await account(natgeo.id);
   const t1 = await db.select().from(T).where(and(eq(T.refType, 'tracked_account'), eq(T.refId, natgeo.id)));
-  check('no collector: scheduled slot skipped with tracked.collector_unset, no task, next slot advanced',
-    n1.scheduleSkipCode === 'tracked.collector_unset' && t1.length === 0 && Date.parse(n1.nextRefreshAt) > Date.now(), `${n1.scheduleSkipCode} tasks=${t1.length}`);
+  check('no 采集手机: scheduled slot skipped with tracked.no_phone, no task, next slot advanced',
+    n1.scheduleSkipCode === 'tracked.no_phone' && t1.length === 0 && Date.parse(n1.nextRefreshAt) > Date.now(), `${n1.scheduleSkipCode} tasks=${t1.length}`);
   const alertsUnset = await db.select().from(schema.notifications).where(sql`${schema.notifications.createdAt} >= ${startedAt.toISOString()}::timestamptz and ${schema.notifications.kind} in ('task.failed', 'collector.blocked')`);
-  check('no collector: no alert raised', alertsUnset.length === 0);
+  check('no 采集手机: no alert raised', alertsUnset.length === 0);
 
   // ---------------------------------------------------------------- offline device
   const off = await extDevice('off', 5798, false);
-  check('admin sets an (offline) collector device', (await setCollector({ instanceId: off.id })).status === 200);
+  const otherUserPhone = await http('PATCH', `/api/tracked-accounts/${natgeo.id}`, user, { instanceId: off.id });
+  check("a user can't touch the admin's account (404)", otherUserPhone.status === 404);
+  const offSet = await setPhone(off.id);
+  check('admin sets an (offline) 采集手机 on the 3 accounts (batch)', offSet.status === 200 && offSet.body.updated.length === 3, offSet.text.slice(0, 160));
   r = await http('POST', `/api/tracked-accounts/${natgeo.id}/refresh`, admin);
   const offTask = await waitTask(r.body.taskId);
   touchedTasks.push(offTask.id);
-  check('offline collector: task fails tracked.collector_offline (no visit)', offTask.status === 'failed' && offTask.errorCode === 'tracked.collector_offline', `${offTask.status} ${offTask.errorCode}`);
-  check('offline collector: account error with the code', (await account(natgeo.id)).lastErrorCode === 'tracked.collector_offline');
+  check('offline 采集手机: task fails tracked.collector_offline (no visit)', offTask.status === 'failed' && offTask.errorCode === 'tracked.collector_offline', `${offTask.status} ${offTask.errorCode}`);
+  check('offline 采集手机: account error with the code', (await account(natgeo.id)).lastErrorCode === 'tracked.collector_offline');
 
   // ---------------------------------------------------------------- the real phone
   const serial = adb.serialFor(BIT_PORT);
@@ -185,9 +187,11 @@ try {
   const top = await adb.shell(BIT_PORT, 'dumpsys activity activities | grep " ResumedActivity"');
   console.log(`   phone before: ${top.trim().slice(0, 140)}`);
   const phone = await extDevice('bit', BIT_PORT, true);
-  const set = await setCollector({ instanceId: phone.id });
-  check('collector set to the phone: state shows the device online, not halted',
-    set.status === 200 && set.body.collectors[0].device?.id === phone.id && !set.body.collectors[0].halted && set.body.pace.minIntervalSec === MIN_INTERVAL, JSON.stringify(set.body.pace));
+  const set = await setPhone(phone.id);
+  const pv = (await account(natgeo.id)).phone;
+  const pace = (await http('GET', '/api/tracked-accounts/capacity', admin)).body.pace;
+  check('采集手机 set to the phone: the account shows it online, not halted; pace as configured',
+    set.status === 200 && pv?.id === phone.id && pv.online === true && !pv.halted && pace.minIntervalSec === MIN_INTERVAL, JSON.stringify({ pv, pace }));
   check('dataMode device; /platforms reports a device source for Instagram',
     (await account(natgeo.id)).dataMode === 'device' && (await http('GET', '/api/tracked-accounts/platforms', admin)).body.platforms.find((p: any) => p.id === 'instagram')?.api?.kind === 'device');
 
@@ -280,19 +284,19 @@ try {
   check('failure log keeps a short excerpt, not the dump', !!excerpt && String((excerpt.data as any)?.excerpt ?? '').length <= 300 && !String((excerpt.data as any)?.excerpt).includes('<node'));
 
   // ---- halt (as on a challenge screen) → refusal + alert; resume clears both
-  await haltCollector('instagram', phone, 'tracked.collector_challenge');
-  const h1 = (await http('GET', '/api/settings/tracked-collectors', admin)).body.collectors[0];
+  await haltDevice(phone, { code: 'tracked.collector_challenge', source: 'collector', platform: 'instagram' });
+  const h1 = { halted: (await http('GET', '/api/instances/automation', admin)).body.devices?.[phone.id]?.halted };
   r = await http('POST', `/api/tracked-accounts/${insta.id}/refresh`, admin);
   const [blocked] = await db.select().from(schema.notifications).where(and(eq(schema.notifications.kind, 'collector.blocked'), eq(schema.notifications.refId, phone.id)));
   check('halted: state shows it, refresh refused 409 tracked.collector_halted, collector.blocked alert to admins',
     !!h1.halted && h1.halted.code === 'tracked.collector_challenge' && r.status === 409 && r.body?.code === 'tracked.collector_halted' && !!blocked && !blocked.recovered,
     `${r.status} ${r.body?.code}`);
   check('halted: dataMode device_unconfigured', (await account(insta.id)).dataMode === 'device_unconfigured');
-  const resumed = await setCollector({ resume: true });
+  const resumed = await http('POST', `/api/risk/devices/${phone.id}/resume`, admin);
   const [st] = await db.select().from(schema.alertStates).where(and(eq(schema.alertStates.kind, 'collector.blocked'), eq(schema.alertStates.key, `${phone.id}:instagram`)));
-  check('resume: halt cleared, alert state recovered', resumed.status === 200 && !resumed.body.collectors[0].halted && st?.active === false);
-  const audit = await db.select().from(schema.auditLogs).where(eq(schema.auditLogs.action, 'settings.tracked_collector'));
-  check('collector changes are audited (settings.tracked_collector)', audit.length >= 3);
+  check('resume (device card): halt cleared, alert state recovered', resumed.status === 200 && resumed.body.resumed === true && !(await account(insta.id)).phone?.halted && st?.active === false);
+  const audit = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'tracked.phone_batch'), sql`${schema.auditLogs.at} >= ${startedAt.toISOString()}::timestamptz`));
+  check('采集手机 changes are audited (tracked.phone_batch)', audit.length >= 2);
 
   // ---- the phone afterwards
   const after = await adb.shell(BIT_PORT, 'dumpsys activity activities | grep " ResumedActivity"; ls /data/local/tmp');
@@ -303,7 +307,6 @@ try {
   console.error('✗', (err as Error).message);
 } finally {
   if (accountIds.length) await db.delete(schema.trackedAccounts).where(inArray(schema.trackedAccounts.id, accountIds));
-  await http('PUT', '/api/settings/tracked-collectors/instagram', admin, { instanceId: prevIg && !extRows.some((e) => e.instance === prevIg) ? prevIg : null }).catch(() => undefined);
   for (const e of extRows) {
     await db.delete(schema.tasks).where(eq(schema.tasks.instanceId, e.instance));
     await db.delete(schema.instances).where(eq(schema.instances.id, e.instance));

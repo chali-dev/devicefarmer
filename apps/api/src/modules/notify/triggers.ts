@@ -41,7 +41,7 @@ async function accountOf(id: string) {
   return acc;
 }
 
-/** The tracked-account collector device stopped on a challenge screen (blocked) or was resumed / read fine again. */
+/** A cloud phone stopped by 风控 on a challenge screen (blocked) or was resumed / read fine again. */
 export async function collectorBlocked(inst: Pick<Instance, 'id' | 'name'>, platform: string, blocked: boolean, code?: string): Promise<void> {
   const a = { kind: 'collector.blocked' as const, refId: inst.id, key: `${inst.id}:${platform}`, params: { name: inst.name, platform, code } };
   if (blocked) await notify(a);

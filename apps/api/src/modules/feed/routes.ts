@@ -11,7 +11,7 @@ import { platformById } from '../social/platforms.js';
 import { getRiskSettings } from '../risk/settings.js';
 import { storageFor } from '../settings/storage.js';
 import { visibleAccount } from '../social/social.js';
-import { collectorEntry, deviceHalt } from '../tracked/collector.js';
+import { deviceHalt } from '../tracked/collector.js';
 import { getVisibleAccount } from '../tracked/tracked.js';
 import { FEED_TYPE, feedRef, requestFeedCollect, socialFeedUnsupported, trackedFeedUnsupported, type FeedKind } from './collect.js';
 
@@ -255,7 +255,7 @@ export const feedRoutes: FastifyPluginAsyncZod = async (app) => {
     const unsupported = trackedFeedUnsupported(acc);
     return {
       account: { id: acc.id, platform: acc.platform, handle: acc.handle, userId: acc.userId },
-      collect: await collectState('tracked', unsupported, (await collectorEntry('instagram'))?.instanceId ?? null, runs),
+      collect: await collectState('tracked', unsupported, acc.instanceId, runs),
       // 评论 / 回复 with an own account's cloud phone (platforms the phone can send on)
       send: { deviceCapable: !!platformById(acc.platform)?.deviceCheck && isPlatformEnabled(acc.platform) },
       activity,

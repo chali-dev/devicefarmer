@@ -3,16 +3,17 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { HttpError } from '../../lib/errors.js';
 import { adb } from '../../services.js';
 import { recordRiskEvent } from '../risk/events.js';
-import { collectorEntry, collectorWorked, deviceHalt, haltCollector, requireCollector, withCollector, type CollectorDevice } from './collector.js';
+import { collectorWorked, haltDevice, type CollectorDevice } from './collector.js';
+import { requireTrackedPhone, withTrackedPhone } from './phone.js';
 import type { Metric, ProfileData, SourceContext, TrackedSource } from './platforms.js';
 
 /**
- * Instagram tracked accounts read in the Instagram app on the collector device (owner decision
- * 2026-11-18). Per visit: check the app is installed → open the profile deep link in the app (`am start
+ * Instagram tracked accounts read in the Instagram app on the account's own 采集手机 (owner decisions
+ * 2026-11-18 / 2026-11-19, phone.ts). Per visit: check the app is installed → open the profile deep link in the app (`am start
  * -p`) → poll `uiautomator dump` (≤ PROFILE_WAIT_MS) until the profile header (or another known screen)
  * shows → parse → HOME → delete the dump. Navigation and reading the screen only: no taps, no typing, no
  * likes/follows/comments, no fingerprint changes, no captcha solving, no account switching, no random
- * "human" behaviour. A challenge / verification / rate-limit screen halts collection (collector.ts) and
+ * "human" behaviour. A challenge / verification / rate-limit screen halts the phone (collector.ts) and
  * alerts the admins. Recent posts are not read (v1: opening each post means many more screens).
  *
  * Verified on Instagram 433.0.0.42.68 (Android 16, zh-CN UI): header ids below; a username that does not
@@ -250,7 +251,7 @@ async function readProfile(dev: CollectorDevice, handle: string, ctx: SourceCont
     case 'challenge':
       await log('error', 'collector: challenge screen, collection halted', { excerpt: dumpExcerpt(nodes) });
       await risk('tracked.collector_challenge');
-      await haltCollector('instagram', dev.inst, 'tracked.collector_challenge', ctx.trackedAccountId ?? null);
+      await haltDevice(dev.inst, { code: 'tracked.collector_challenge', source: 'collector', platform: 'instagram', trackedAccountId: ctx.trackedAccountId ?? null });
       throw coded(409, 'Instagram 显示了验证/限制页面：采集已停止，需人工处理', 'tracked.collector_challenge');
     case 'login':
       await log('warn', 'collector: Instagram is not logged in', { excerpt: dumpExcerpt(nodes) });
@@ -285,11 +286,11 @@ export async function igDeviceAccounts(dev: CollectorDevice): Promise<string[]> 
 export const instagramDeviceSource: TrackedSource = {
   kind: 'device',
   capabilities: { profile: true, recentPosts: false, metrics: ['followers', 'following', 'posts'] },
-  isConfigured: async () => { const e = await collectorEntry('instagram'); return !!e && !(await deviceHalt(e.instanceId)); },
-  requireConfigured: async () => { await requireCollector('instagram'); },
+  isConfigured: async () => true,
+  requireConfigured: async (account) => { await requireTrackedPhone(account ?? { userId: '', instanceId: null }); },
   async fetchProfile(account, ctx = {}) {
     if (!IG_HANDLE.test(account.handle)) throw coded(400, 'Instagram 账号格式不正确', 'tracked.bad_handle', { platform: 'Instagram' });
-    return withCollector('instagram', ctx.log ?? (async () => undefined), (dev) => readProfile(dev, account.handle, ctx));
+    return withTrackedPhone(account, ctx.log ?? (async () => undefined), (dev) => readProfile(dev, account.handle, ctx));
   },
   fetchRecentPosts: async () => [],
 };

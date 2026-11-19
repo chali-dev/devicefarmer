@@ -14,6 +14,7 @@ import { SCHEDULE_INTERVALS, scheduleCapacity } from './schedule.js';
 import { firstSlot, IG_DEFAULT_INTERVAL_HOURS } from './slots.js';
 import { trackedFeedUnsupported } from '../feed/collect.js';
 import { normTags, TAG_LIMIT, TAG_MAX } from './tags.js';
+import { defaultPhone, phoneAllowed, phonePickerList, phonesAllowed, usesPhone } from './phone.js';
 
 const ta = schema.trackedAccounts;
 const ts = schema.trackedAccountSnapshots;
@@ -24,7 +25,7 @@ const HttpUrl = z.string().trim().max(1000).url().refine((u) => /^https?:\/\//i.
 const Tags = z.array(z.string().trim().min(1).max(TAG_MAX)).max(TAG_LIMIT);
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const Platform = z.enum(PLATFORM_IDS);
-/** 定时采集 interval in hours; null = off. Only for platforms with a data source (API or collector device). */
+/** 定时采集 interval in hours; null = off. Only for platforms with a data source (API or 采集手机). */
 const Interval = z.number().int().refine((n) => SCHEDULE_INTERVALS.includes(n), 'unsupported interval').nullable();
 
 /** Why `hours` can't be set on this platform, as a code (null = OK). Switching off is always allowed. */
@@ -36,6 +37,18 @@ function assertSchedulable(platform: string, hours: number | null): void {
 }
 /** Columns for a new interval: the first slot is within the next hour at the account's minute offset. */
 const scheduleSet = (id: string, hours: number | null) => ({ refreshIntervalHours: hours, nextRefreshAt: hours === null ? null : firstSlot(id), scheduleSkipCode: null });
+
+/** 采集手机: null clears it. */
+const PhoneId = z.string().uuid().nullable();
+
+/** Why `instanceId` can't be this account's 采集手机, as a code (null = OK). Clearing is always allowed. */
+const phoneSkip = (platform: string, allowed: boolean, instanceId: string | null) => (instanceId === null ? null
+  : !usesPhone(platform) ? 'tracked.phone_unsupported' : !allowed ? 'tracked.phone_not_allowed' : null);
+async function assertPhone(ownerId: string, platform: string, instanceId: string | null): Promise<void> {
+  const code = phoneSkip(platform, instanceId === null || await phoneAllowed(ownerId, instanceId), instanceId);
+  if (code === 'tracked.phone_unsupported') throw badRequest('该平台不在云手机上采集，不能设置采集手机', code);
+  if (code) throw badRequest('只能选择该追踪账号所有者的云手机', code);
+}
 
 const like = (q: string) => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 const blankToNull = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim());
@@ -71,6 +84,8 @@ const CreateBody = z.object({
   notes: optText(1000),
   /** Omitted = the platform default (Instagram 24 h, others off). */
   refreshIntervalHours: Interval.optional(),
+  /** 采集手机 (platforms read in the app). Omitted = the owner's only phone when there is exactly one, else none. */
+  instanceId: PhoneId.optional(),
 });
 
 const UpdateBody = z.object({
@@ -83,12 +98,13 @@ const UpdateBody = z.object({
   status: z.enum(['active', 'paused']).optional(),
   notes: optText(1000),
   refreshIntervalHours: Interval.optional(),
+  instanceId: PhoneId.optional(),
 });
 
 /**
  * Tracked accounts (追踪账号): external public profiles a user observes, with follower history and
- * public posts. Data comes from official APIs (YouTube) or the collector device (Instagram, read in the app;
- * owner decision 2026-11-18). Manual entry of snapshots/posts was removed (old rows stay readable/deletable).
+ * public posts. Data comes from official APIs (YouTube) or the account's own 采集手机 (Instagram, read in the app;
+ * owner decisions 2026-11-18 / 2026-11-19, phone.ts). Manual entry of snapshots/posts was removed (old rows stay readable/deletable).
  */
 export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
@@ -125,8 +141,48 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     return { tags: tags.map((t) => t.t) };
   });
 
-  /** Scheduled collector-device load of all users (aggregate numbers only), for the 采集频率 capacity hint. */
-  app.get('/api/tracked-accounts/capacity', async () => scheduleCapacity());
+  /** The owner whose phones a picker shows: the caller, or (admins only) `ownerId`. */
+  const phoneOwner = (user: AuthUser, ownerId?: string) => {
+    if (ownerId && ownerId !== user.id && !isAdmin(user)) throw forbidden('仅管理员可以查看其他用户的云手机', 'tracked.admin_only');
+    return ownerId ?? user.id;
+  };
+  const OwnerQuery = z.object({ ownerId: z.string().uuid().optional() });
+
+  /** Scheduled load per 采集手机 of the owner (aggregate numbers only), for the 采集频率 capacity hint. */
+  app.get('/api/tracked-accounts/capacity', { schema: { querystring: OwnerQuery } }, async (req) => scheduleCapacity(phoneOwner(req.user, req.query.ownerId)));
+
+  /** 采集手机 picker: the cloud phones the owner may use (users: their granted phones; an admin owner: every phone). */
+  app.get('/api/tracked-accounts/phones', { schema: { querystring: OwnerQuery } }, async (req) => ({
+    items: await phonePickerList(phoneOwner(req.user, req.query.ownerId)),
+  }));
+
+  /**
+   * Batch 设置采集手机. All ids must be visible to the caller, else the whole batch is 404. Per row the phone must be
+   * one of THAT row's owner's phones (`tracked.phone_not_allowed`) on a platform read in the app
+   * (`tracked.phone_unsupported`); those rows are skipped, rows already on it are `unchanged`. null clears it.
+   */
+  app.post('/api/tracked-accounts/phone', {
+    schema: { body: z.object({ ids: z.array(z.string().uuid()).min(1).max(500), instanceId: PhoneId }) },
+  }, async (req) => {
+    const ids = [...new Set(req.body.ids)];
+    const instanceId = req.body.instanceId;
+    const rows = await db.select().from(ta).where(and(inArray(ta.id, ids), ownerWhere(req.user)));
+    if (rows.length !== ids.length) throw notFound('追踪账号不存在', 'tracked.not_found');
+    const allowed = await phonesAllowed(rows.map((r) => ({ userId: r.userId, instanceId })));
+    const updated: string[] = [];
+    const unchanged: string[] = [];
+    const skipped: { id: string; code: string }[] = [];
+    const ok: string[] = [];
+    for (const acc of rows) {
+      const code = phoneSkip(acc.platform, allowed.has(`${acc.userId}:${instanceId}`), instanceId);
+      if (code) skipped.push({ id: acc.id, code });
+      else if (acc.instanceId === instanceId) unchanged.push(acc.id);
+      else ok.push(acc.id);
+    }
+    if (ok.length) updated.push(...(await db.update(ta).set({ instanceId }).where(inArray(ta.id, ok)).returning({ id: ta.id })).map((r) => r.id));
+    if (req.audit) req.audit.extra = { updated: updated.length, unchanged: unchanged.length, skipped: skipped.length };
+    return { updated, unchanged, skipped };
+  });
 
   /**
    * Batch 设置采集频率. All ids must be visible to the caller (own rows; admins any), else the whole batch is
@@ -162,21 +218,24 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const b = req.body;
     const p = parseProfile(b.input, b.platform);
     if (req.audit) req.audit.target = display(p);
-    // Instagram (read on the collector device) is collected on a schedule by default (24 h); the form may pick
+    // Instagram (read on the account's 采集手机) is collected on a schedule by default (24 h); the form may pick
     // another interval or off.
     const id = randomUUID();
     const interval = b.refreshIntervalHours !== undefined ? b.refreshIntervalHours : p.platform === 'instagram' ? IG_DEFAULT_INTERVAL_HOURS : null;
     assertSchedulable(p.platform, interval);
+    // 采集手机: the given one (must be the owner's), else the owner's only phone
+    const instanceId = b.instanceId !== undefined ? b.instanceId : usesPhone(p.platform) ? await defaultPhone(req.user.id) : null;
+    await assertPhone(req.user.id, p.platform, instanceId);
     const [row] = await db.insert(ta).values({
       id, userId: req.user.id, platform: p.platform, handle: p.handle, profileUrl: p.profileUrl, externalId: p.externalId,
       displayName: blankToNull(b.displayName) ?? null, tags: normTags(b.tags ?? []),
-      favorite: b.favorite ?? false, notes: blankToNull(b.notes) ?? null,
+      favorite: b.favorite ?? false, notes: blankToNull(b.notes) ?? null, instanceId,
       ...scheduleSet(id, interval),
     }).returning().catch((err) => {
       if (isUnique(err)) throw conflict(`已在追踪 ${display(p)}`, 'tracked.duplicate', { account: display(p) });
       throw err;
     });
-    if (req.audit) req.audit.extra = { id: row!.id, platform: p.platform, handle: p.handle };
+    if (req.audit) req.audit.extra = { id: row!.id, platform: p.platform, handle: p.handle, instanceId };
     reply.code(201);
     return { account: (await toPublicAccounts([row!]))[0] };
   });
@@ -200,6 +259,10 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     if (b.refreshIntervalHours !== undefined && b.refreshIntervalHours !== cur.refreshIntervalHours) {
       assertSchedulable(cur.platform, b.refreshIntervalHours);
       Object.assign(set, scheduleSet(cur.id, b.refreshIntervalHours));
+    }
+    if (b.instanceId !== undefined && b.instanceId !== cur.instanceId) {
+      await assertPhone(cur.userId, cur.platform, b.instanceId);
+      set.instanceId = b.instanceId;
     }
     if (!Object.keys(set).length) throw badRequest('nothing to update', 'common.nothing_to_update');
     const [row] = await db.update(ta).set(set).where(eq(ta.id, cur.id)).returning();
@@ -256,7 +319,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     reply.code(204);
   });
 
-  // ------------------------------------------------------------ refresh (official API / collector device, async task)
+  // ------------------------------------------------------------ refresh (official API / 采集手机, async task)
   const enqueueRefresh = (acc: TrackedAccount, userId: string) => enqueueTask('tracked-refresh', { trackedAccountId: acc.id }, userId, {
     refType: REF_TYPE, refId: acc.id, label: display(acc),
   });
@@ -272,7 +335,7 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /**
    * 同步 (the single button of 追踪号, owner 2026-11-18): step 1 = this refresh, step 2 = the feed collection
-   * (帖子与评论, Instagram on the collector phone), queued by step 1 once it succeeded. Platforms without a feed
+   * (帖子与评论, Instagram on the account's 采集手机), queued by step 1 once it succeeded. Platforms without a feed
    * source just refresh (`feed: false`).
    */
   app.post('/api/tracked-accounts/:id/sync', { schema: { params: Id } }, async (req, reply) => {

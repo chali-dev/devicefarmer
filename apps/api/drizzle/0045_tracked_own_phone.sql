@@ -1,0 +1,3 @@
+ALTER TABLE "tracked_accounts" ADD COLUMN "instance_id" uuid;--> statement-breakpoint
+ALTER TABLE "tracked_accounts" ADD CONSTRAINT "tracked_accounts_instance_id_instances_id_fk" FOREIGN KEY ("instance_id") REFERENCES "public"."instances"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "tracked_accounts_instance_idx" ON "tracked_accounts" USING btree ("instance_id");

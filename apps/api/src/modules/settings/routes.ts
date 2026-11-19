@@ -8,7 +8,6 @@ import { HttpError } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
 import { getYoutubeSettings, saveYoutubeApiKey } from '../tracked/youtube.js';
-import { COLLECTOR_PLATFORMS, collectorSettings, saveCollector } from '../tracked/collector.js';
 import { FIXED_MENUS, GRANTABLE_MENUS, DEFAULT_USER_MENUS, getUserMenus, saveUserMenus } from '../auth/role-menus.js';
 import { getPublishTimeout, PublishTimeoutInput, publicTimeout, publishTimeoutDefault, savePublishTimeout } from '../publish/timeout-settings.js';
 import { getMediaLimitSettings, MAX_IMAGE_MB, MAX_VIDEO_MB, mediaLimitDefaults, MEDIA_TYPE_IDS, MediaLimitsInput, saveMediaLimitSettings } from '../media/limits.js';
@@ -41,21 +40,8 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return { youtube: await saveYoutubeApiKey(req.body.apiKey) };
   });
 
-  /**
-   * 追踪账号采集设备: per platform (Instagram) the device whose app is read for tracked accounts, its halt state
-   * (challenge screen → stopped until resumed) and the pace counters. `instanceId: null` unsets it.
-   */
-  app.get('/api/settings/tracked-collectors', async () => collectorSettings());
-  app.put('/api/settings/tracked-collectors/:platform', {
-    schema: {
-      params: z.object({ platform: z.enum(COLLECTOR_PLATFORMS) }),
-      body: z.object({ instanceId: z.string().uuid().nullable().optional(), resume: z.boolean().optional() })
-        .refine((b) => b.instanceId !== undefined || b.resume, 'nothing to update'),
-    },
-  }, async (req) => {
-    assertPlatformEnabled(req.params.platform);
-    return saveCollector(req.params.platform, req.body);
-  });
+  // 追踪账号采集设备 (/api/settings/tracked-collectors, key tracked.collectors) was removed on 2026-11-19: every tracked
+  // account is read on its own 采集手机 (tracked_accounts.instance_id, tracked/phone.ts).
 
   // 多语言内容: the admin language list (/api/settings/languages, key content.languages) was removed on 2026-11-18:
   // the source is fixed to zh-CN and 配置语系 = the languages bound to social accounts (content/languages.ts).

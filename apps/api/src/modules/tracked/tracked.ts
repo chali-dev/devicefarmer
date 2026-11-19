@@ -8,6 +8,7 @@ import { PLATFORMS, platformDef, registerSource, type PostData, type SourceConte
 import { youtubeSource } from './youtube.js';
 import { instagramDeviceSource } from './instagram-device.js';
 import { CollectorDefer } from './collector.js';
+import { phoneViews, type PhoneView } from './phone.js';
 import { createTask, registerTaskHandler } from '../tasks/core.js';
 import { queueFeedAfter } from '../feed/collect.js';
 
@@ -36,8 +37,9 @@ export async function getVisibleAccount(user: AuthUser, id: string): Promise<Tra
 }
 
 /**
- * How data reaches this account: an official API or the collector device (each configured or not), or no
- * source at all (`manual_only`, kept as the value for compatibility: manual entry was removed, only old rows show).
+ * How data reaches this account: an official API or its 采集手机 (each configured or not), or no source at all
+ * (`manual_only`, kept as the value for compatibility: manual entry was removed, only old rows show). Per platform
+ * here; toPublicAccounts turns `device` into `device_unconfigured` for an account without a usable phone.
  */
 export type DataMode = 'api' | 'api_unconfigured' | 'device' | 'device_unconfigured' | 'manual_only';
 export async function dataModes(): Promise<Map<string, DataMode>> {
@@ -58,7 +60,7 @@ export interface LatestStats {
 export async function toPublicAccounts(rows: TrackedAccount[]) {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
-  const [latestRows, followerRows, taskRows, owners, modes] = await Promise.all([
+  const [latestRows, followerRows, taskRows, owners, modes, phones] = await Promise.all([
     db.selectDistinctOn([ts.trackedAccountId]).from(ts).where(inArray(ts.trackedAccountId, ids)).orderBy(ts.trackedAccountId, desc(ts.capturedAt), desc(ts.id)),
     db.execute<{ id: string; followers: number; captured_at: string; rn: number }>(sql`
       select tracked_account_id as id, followers::float8 as followers, captured_at, rn from (
@@ -75,6 +77,7 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users)
       .where(inArray(schema.users.id, [...new Set(rows.map((r) => r.userId))])),
     dataModes(),
+    phoneViews(rows),
   ]);
   const latest = new Map(latestRows.map((s) => [s.trackedAccountId, s]));
   const fol = new Map<string, { cur?: number; prev?: number; prevAt?: string }>();
@@ -90,10 +93,14 @@ export async function toPublicAccounts(rows: TrackedAccount[]) {
     const f = fol.get(r.id);
     const { refId: _r, ...task } = tasks.get(r.id) ?? { refId: null };
     const { category: _legacy, ...row } = r; // LEGACY column, no longer exposed (folded into tags)
+    const phone: PhoneView | null = phones.get(r.id) ?? null;
+    const mode = modes.get(r.platform) ?? 'manual_only';
     return {
       ...row,
       ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
-      dataMode: modes.get(r.platform) ?? 'manual_only',
+      // a device source needs the account's own phone (set, still the owner's, not halted by 风控)
+      dataMode: mode === 'device' && (!phone || !phone.allowed || phone.halted) ? 'device_unconfigured' as const : mode,
+      phone,
       latest: s ? {
         capturedAt: s.capturedAt.toISOString(), source: s.source, approx: s.approx ?? [],
         followers: s.followers, following: s.following, posts: s.posts, views: s.views,
@@ -136,7 +143,7 @@ export type RefreshOutcome =
   | { outcome: 'gone' };
 
 /**
- * Refreshes one tracked account from its platform's source (official API, or the collector device):
+ * Refreshes one tracked account from its platform's source (official API, or its 采集手机):
  * profile, a snapshot of the counters (source = the source's kind, approximate metrics listed) and recent
  * posts when the source has them. Platforms without a source are a no-op (`manual_only`). On failure the
  * account is marked `error` (paused stays paused) with a coded message, and the error is rethrown so the
@@ -200,7 +207,7 @@ export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Pr
   if (busy.has(acc.id)) return { code: 'tracked.refresh_in_progress', message: '该账号正在刷新', status: 409 };
   const src = platformDef(acc.platform).source;
   if (src) {
-    try { await src.requireConfigured(); } catch (err) {
+    try { await src.requireConfigured(acc); } catch (err) {
       const e = err as Error & { code?: string; statusCode?: number };
       return { code: e.code ?? 'tracked.api_not_configured', message: e.message, status: e.statusCode ?? 400 };
     }
@@ -211,8 +218,8 @@ export async function refreshRefusal(acc: TrackedAccount, busy: Set<string>): Pr
 /** A refresh deferred more often than this (device busy for hours…) fails with the last deferral code. */
 const MAX_DEFERRALS = 30;
 
-// Device-less job on the unified task core (also for the collector device: it is not the task's device,
-// the visit is serialised and paced in collector.ts). One attempt: a failed official-API call (quota, bad
+// Device-less job on the unified task core (also for the 采集手机: it is not the task's device, the visit is
+// serialised and paced in collector.ts). One attempt: a failed official-API call (quota, bad
 // key) or a failed screen read is not helped by an automatic retry; the user can retry from the task centre.
 // A scheduled run (payload.scheduled) re-checks the account when it starts: paused, schedule switched off or
 // the source unconfigured since it was queued → a skipped no-op instead of a call.

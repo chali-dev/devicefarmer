@@ -13,6 +13,6 @@ export const platformRoutes: FastifyPluginAsyncZod = async (app) => {
   /** The web's single source for platforms: every enabled social platform and the features that depend on one. */
   app.get('/api/platforms', { preHandler: app.authenticate }, async () => ({
     enabled: enabledPlatforms().map((p) => ({ id: p.id, name: p.name })),
-    features: { trending: trendingAvailable(), youtubeKey: isPlatformEnabled('youtube'), trackedCollector: isPlatformEnabled('instagram') },
+    features: { trending: trendingAvailable(), youtubeKey: isPlatformEnabled('youtube') },
   }));
 };

@@ -338,7 +338,8 @@ export const mediaFavorites = pgTable('media_favorites', {
  * entirely separate from the user's own managed social accounts. `platform` is a code registry id
  * (modules/tracked/platforms.ts), `handle` its normalised identity (lowercase handle, or a YouTube channel id).
  * Data comes from official APIs (YouTube Data API) or, for Instagram, from reading the profile header in the
- * Instagram app on the admin-configured collector device (owner decision 2026-11-18, modules/tracked/collector.ts).
+ * Instagram app on the account's own 采集手机 `instance_id` (owner decision 2026-11-19: one of the owner's cloud
+ * phones, modules/tracked/phone.ts; the former global collector setting was removed).
  * Manual entry was removed; old `manual` rows stay readable.
  */
 export const trackedAccounts = pgTable('tracked_accounts', {
@@ -351,7 +352,9 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   displayName: text('display_name'),
   avatarUrl: text('avatar_url'),
   bio: text('bio'),
-  /** Verified badge as last read on the collector device (Instagram); null = unknown. */
+  /** 采集手机: the owner's cloud phone the account is read on (Instagram); null = not set. */
+  instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
+  /** Verified badge as last read on the 采集手机 (Instagram); null = unknown. */
   verified: boolean('verified'),
   /** LEGACY: no longer read or written (categories were folded into `tags` by src/db/tracked-category-data-migration.ts); drop in a later release. */
   category: text('category'),
@@ -363,7 +366,7 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastError: text('last_error'),
   lastErrorCode: text('last_error_code'),
-  /** `manual`: legacy rows only (manual entry was removed). `device`: read on the collector device. */
+  /** `manual`: legacy rows only (manual entry was removed). `device`: read on the 采集手机. */
   lastSource: text('last_source', { enum: ['api', 'manual', 'device'] }),
   notes: text('notes'),
   /** 定时采集: refresh every N hours (null = off). The hourly collection tick enqueues `tracked-refresh` for due rows. */
@@ -382,6 +385,7 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   index('tracked_accounts_user_category_idx').on(t.userId, t.category),
   index('tracked_accounts_user_favorite_idx').on(t.userId, t.favorite),
   index('tracked_accounts_tags_idx').using('gin', t.tags),
+  index('tracked_accounts_instance_idx').on(t.instanceId),
 ]);
 
 /** Public counters over time. NULL = not available on that platform / not entered. */
@@ -410,7 +414,7 @@ export const trackedPosts = pgTable('tracked_posts', {
   views: bigint('views', { mode: 'number' }),
   likes: bigint('likes', { mode: 'number' }),
   comments: bigint('comments', { mode: 'number' }),
-  /** `device`: read in the Instagram app on the collector phone (modules/feed; externalId = media pk, title = caption). */
+  /** `device`: read in the Instagram app on the 采集手机 (modules/feed; externalId = media pk, title = caption). */
   source: text('source', { enum: ['api', 'manual', 'device'] }).notNull(),
   /** Device source: photo | video | carousel as the app labels the post. */
   mediaType: text('media_type'),
@@ -426,7 +430,7 @@ export const trackedPosts = pgTable('tracked_posts', {
 ]);
 
 /**
- * Comments under a tracked account's posts as read on the collector phone (modules/feed, read only; never
+ * Comments under a tracked account's posts as read on the 采集手机 (modules/feed, read only; never
  * replied to). Unique per post + stable id: Instagram shows no comment id, so `external_id` is a hash of
  * post pk + author + normalised text (feed/ig-ui.ts commentKey). `published_at` is approximate (the app shows
  * "11小时前"), set on first sight and kept.

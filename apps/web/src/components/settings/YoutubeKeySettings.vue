@@ -5,7 +5,7 @@ import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 
-/** Settings → Tracked accounts (admin): YouTube Data API key. Write-only: the API only says whether it is set. */
+/** 趋势热点 → YouTube API 密钥 (admin): YouTube Data API key (trending + YouTube tracked accounts). Write-only: the API only says whether it is set. */
 const { t } = useI18n()
 type KeyState = { apiKeySet: boolean; updatedAt: string | null }
 const keySaving = ref(false)
@@ -29,7 +29,6 @@ async function saveKey(clear = false) {
 <template>
   <div class="settings-pane">
     <a-spin :spinning="!keyState">
-      <a-typography-title :level="5">{{ t('tracked.youtubeKey') }}</a-typography-title>
       <a-typography-paragraph type="secondary">{{ t('tracked.youtubeKeyHint') }}</a-typography-paragraph>
       <a-form layout="vertical">
         <a-form-item :label="t('tracked.youtubeKeyState')">

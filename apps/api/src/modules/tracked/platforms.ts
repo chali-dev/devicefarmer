@@ -8,7 +8,7 @@ import type { TrackedAccount } from '../../db/schema.js';
  *
  * Data sources: an official API used with credentials the owner configured (`kind: 'api'`, YouTube), or —
  * by the owner's decision of 2026-11-18, Instagram only — reading the profile header in the platform's app
- * on the admin-configured collector device (`kind: 'device'`, instagram-device.ts: navigation + screen reads,
+ * on the account's own 采集手机 (`kind: 'device'`, instagram-device.ts: navigation + screen reads,
  * paced, stops on any challenge). No other scraping (no web pages, no other platforms). Manual entry was
  * removed; a platform without a source has no data mode (`manual_only` = no source, legacy rows only).
  */
@@ -63,16 +63,19 @@ export interface PostData {
 
 export type Metric = 'followers' | 'following' | 'posts' | 'views';
 
-/** Data source of one platform: an official API, or the app on the collector device. */
+/** Data source of one platform: an official API, or the app on the account's 采集手机. */
 export interface TrackedSource {
   /** Snapshot source written by a refresh. */
   kind: 'api' | 'device';
   capabilities: { profile: boolean; recentPosts: boolean; metrics: Metric[] };
-  /** Whether what it needs is configured (the YouTube API key, the collector device). */
+  /**
+   * Whether what it needs is configured: the YouTube API key (platform-wide); a device source is always "configured"
+   * at platform level, the account's own 采集手机 is checked by requireConfigured(account).
+   */
   isConfigured(): Promise<boolean>;
-  /** Throws the coded "can't run" error (tracked.youtube_no_api_key, tracked.collector_unset / collector_halted). */
-  requireConfigured(): Promise<void>;
-  fetchProfile(account: Pick<TrackedAccount, 'handle' | 'externalId'>, ctx?: SourceContext): Promise<ProfileData>;
+  /** Throws the coded "can't run" error (tracked.youtube_no_api_key; tracked.no_phone / phone_not_allowed / collector_halted). */
+  requireConfigured(account?: Pick<TrackedAccount, 'userId' | 'instanceId'>): Promise<void>;
+  fetchProfile(account: Pick<TrackedAccount, 'handle' | 'externalId' | 'userId' | 'instanceId'>, ctx?: SourceContext): Promise<ProfileData>;
   /** `profile` is the result of fetchProfile in the same refresh (sources may reuse what it found). */
   fetchRecentPosts(account: Pick<TrackedAccount, 'handle' | 'externalId'>, profile: ProfileData, limit: number): Promise<PostData[]>;
 }
