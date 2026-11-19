@@ -67,11 +67,11 @@ export const contentCategoryRoutes: FastifyPluginAsyncZod = async (app) => {
     return { category: row };
   });
 
-  /** Contents using it become 未分类 (their legacy text is cleared too, see content-category-data-migration.ts). */
+  /** Contents using it become 未分类. */
   app.delete('/api/content-categories/:id', { schema: { params: Id } }, async (req, reply) => {
     const cur = scoped.manageable(req.user, await findCategory(req.params.id));
     await db.transaction(async (tx) => {
-      const moved = await tx.update(C).set({ categoryId: null, category: null }).where(eq(C.categoryId, cur.id)).returning({ id: C.id });
+      const moved = await tx.update(C).set({ categoryId: null }).where(eq(C.categoryId, cur.id)).returning({ id: C.id });
       await tx.delete(CC).where(eq(CC.id, cur.id));
       if (req.audit) req.audit.extra = { contents: moved.length };
     });
@@ -85,7 +85,7 @@ export const contentCategoryRoutes: FastifyPluginAsyncZod = async (app) => {
     if (req.audit) req.audit.target = src.name;
     scoped.assertMerge(src, dst);
     const moved = await db.transaction(async (tx) => {
-      const rows = await tx.update(C).set({ categoryId: dst.id, category: null }).where(eq(C.categoryId, src.id)).returning({ id: C.id });
+      const rows = await tx.update(C).set({ categoryId: dst.id }).where(eq(C.categoryId, src.id)).returning({ id: C.id });
       await tx.delete(CC).where(eq(CC.id, src.id));
       return rows.length;
     });

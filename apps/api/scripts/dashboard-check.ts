@@ -156,7 +156,7 @@ try {
   }) as typeof schema.mediaAssets.$inferInsert;
   const ms = await db.insert(schema.mediaAssets).values([
     media({ ownerType: 'public', ownerId: null, status: 'ready', fileSize: 1000 }),
-    media({ ownerType: 'public', ownerId: null, status: 'disabled', fileSize: 500, fileType: 'video', mimeType: 'video/mp4' }),
+    media({ ownerType: 'public', ownerId: null, status: 'failed', fileSize: 500, fileType: 'video', mimeType: 'video/mp4' }),
     media({ ownerType: 'user', ownerId: A, status: 'ready', fileSize: 2000 }),
     media({ ownerType: 'user', ownerId: A, status: 'processing', fileSize: 3000, fileType: 'video', mimeType: 'video/mp4' }),
     media({ ownerType: 'user', ownerId: B, status: 'ready', fileSize: 4000 }),

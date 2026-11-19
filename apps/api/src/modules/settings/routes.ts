@@ -43,9 +43,6 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
   // 追踪账号采集设备 (/api/settings/tracked-collectors, key tracked.collectors) was removed on 2026-11-19: every tracked
   // account is read on its own 采集手机 (tracked_accounts.instance_id, tracked/phone.ts).
 
-  // 多语言内容: the admin language list (/api/settings/languages, key content.languages) was removed on 2026-11-18:
-  // the source is fixed to zh-CN and 配置语系 = the languages bound to social accounts (content/languages.ts).
-
   /** Task centre retention + the last cleanup run. */
   const lastCleanup = async () => {
     const [t] = await db.select({ id: schema.tasks.id, status: schema.tasks.status, result: schema.tasks.result, finishedAt: schema.tasks.finishedAt, createdAt: schema.tasks.createdAt })
@@ -87,8 +84,7 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /**
    * 发布任务: the timeout of a publish round's single attempt (publish/timeout-settings.ts; env value = default). No
-   * retries since 2026-11-18: an older page's maxAttempts/backoffSec are accepted and ignored. `retry` keeps its name
-   * so an older page still reads the timeout.
+   * retries since 2026-11-18 (the path and the `retry` key keep their former names).
    */
   const timeoutView = async () => ({ retry: publicTimeout(await getPublishTimeout()), defaults: publicTimeout({ timeoutMs: publishTimeoutDefault(), updatedAt: null }) });
   app.get('/api/settings/publish-retry', async () => timeoutView());

@@ -167,8 +167,6 @@ export const tasks = pgTable('tasks', {
   attempts: integer('attempts').notNull().default(0),
   maxAttempts: integer('max_attempts').notNull().default(1),
   timeoutMs: integer('timeout_ms'),
-  /** Base delay of the retry backoff for this task; null = the handler's (publish rounds: LEGACY, no retries since 2026-11-18, written null). */
-  backoffMs: integer('backoff_ms'),
   priority: integer('priority').notNull().default(0),
   /** Unique per type (see tasks_idem_idx): creating again with the same key returns the existing task. */
   idempotencyKey: text('idempotency_key'),
@@ -234,8 +232,6 @@ export const settings = pgTable('settings', {
  * recorded in `storage` under public/{images,videos,thumbnails}/ or users/{owner_id}/...,
  * always with random names. Upload stores the file with status 'processing'; the media-process
  * queue job computes metadata + thumbnail and sets 'ready' or 'failed' (`error`).
- * 'disabled' is LEGACY (public media is always visible since 2026-11-18; never written, existing rows
- * are set ready by src/db/media-visibility-migration.ts; non-admins still don't see one).
  * `deleted_at` marks a row whose files are being purged: it is hidden immediately, the files are
  * deleted, then the row (and its tags/favorites, by cascade) is removed. A row that stays with
  * deleted_at set means a storage delete failed; purgeDeletedMedia() retries it.
@@ -294,12 +290,10 @@ export const mediaAssets = pgTable('media_assets', {
   duration: doublePrecision('duration'),
   /** sha256 hex of the file. */
   checksum: text('checksum').notNull(),
-  status: text('status', { enum: ['processing', 'ready', 'failed', 'disabled'] }).notNull().default('processing'),
+  status: text('status', { enum: ['processing', 'ready', 'failed'] }).notNull().default('processing'),
   error: text('error'),
   /** Crop/compress requested at upload (null = stored as uploaded) and, once done, what it did. */
   processing: jsonb('processing').$type<MediaProcessing>(),
-  /** LEGACY (migration 0039, expand/contract): no longer written or read (对用户可见 removed 2026-11-18); drop in a later release. */
-  disableOnReady: boolean('disable_on_ready').notNull().default(false),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -356,8 +350,6 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
   /** Verified badge as last read on the 采集手机 (Instagram); null = unknown. */
   verified: boolean('verified'),
-  /** LEGACY: no longer read or written (categories were folded into `tags` by src/db/tracked-category-data-migration.ts); drop in a later release. */
-  category: text('category'),
   /** Lowercase, deduplicated. */
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   /** The account is private to its owner, so a favorite is just a flag (no per-user table needed). */
@@ -381,8 +373,6 @@ export const trackedAccounts = pgTable('tracked_accounts', {
   unique('tracked_accounts_user_platform_handle').on(t.userId, t.platform, t.handle),
   index('tracked_accounts_next_refresh_idx').on(t.nextRefreshAt).where(sql`refresh_interval_hours is not null`),
   index('tracked_accounts_user_status_idx').on(t.userId, t.status),
-  // LEGACY (with the `category` column): drop in a later release.
-  index('tracked_accounts_user_category_idx').on(t.userId, t.category),
   index('tracked_accounts_user_favorite_idx').on(t.userId, t.favorite),
   index('tracked_accounts_tags_idx').using('gin', t.tags),
   index('tracked_accounts_instance_idx').on(t.instanceId),
@@ -481,19 +471,6 @@ export const auditLogs = pgTable('audit_logs', {
  * The account's egress proxy is its device's proxy (instances.proxy_id); it is never stored here.
  * No platform passwords are stored. Rows cascade with their owner; deleting a device unlinks (logged).
  */
-/**
- * LEGACY (分组, removed): accounts are grouped by persona (人设) now. `social-group-data-migration.ts` (run by db:migrate)
- * turned every group into a persona or a tag; the code no longer reads or writes this table or `social_accounts.group_id`.
- * Kept for rollbacks (expand/contract); drop both (and social_accounts_group_idx) in a later release.
- */
-export const socialAccountGroups = pgTable('social_account_groups', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [uniqueIndex('social_account_groups_user_name').on(t.userId, sql`lower(${t.name})`)]);
-
 export const socialAccounts = pgTable('social_accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -502,8 +479,6 @@ export const socialAccounts = pgTable('social_accounts', {
   displayName: text('display_name'),
   profileUrl: text('profile_url'),
   externalId: text('external_id'),
-  /** LEGACY, not read or written (see socialAccountGroups); drop in a later release. */
-  groupId: uuid('group_id').references(() => socialAccountGroups.id, { onDelete: 'set null' }),
   instanceId: uuid('instance_id').references(() => instances.id, { onDelete: 'set null' }),
   /** 账号人设: a public persona or one of the account owner's personal personas (assertPersonaFor). */
   personaId: uuid('persona_id').references((): AnyPgColumn => personas.id, { onDelete: 'set null' }),
@@ -512,12 +487,6 @@ export const socialAccounts = pgTable('social_accounts', {
    * translation in this language (else the Chinese source); the set of these = the 配置语系 offered in the editor.
    */
   lang: text('lang'),
-  /**
-   * LEGACY (expand/contract): the former 每日 AI 草稿 switch + count of the account. The daily drafts were removed on
-   * 2026-11-18 (owner decision); never read, written or returned since. Drop both columns in a later release.
-   */
-  aiDraftsEnabled: boolean('ai_drafts_enabled').notNull().default(false),
-  aiDraftsPerDay: integer('ai_drafts_per_day').notNull().default(4),
   loginStatus: text('login_status', { enum: ['unknown', 'logged_in', 'logged_out', 'needs_verification'] }).notNull().default('unknown'),
   accountStatus: text('account_status', { enum: ['active', 'limited', 'suspended', 'disabled'] }).notNull().default('active'),
   notes: text('notes'),
@@ -536,7 +505,6 @@ export const socialAccounts = pgTable('social_accounts', {
 }, (t) => [
   uniqueIndex('social_accounts_platform_handle').on(t.platform, sql`lower(${t.handle})`),
   index('social_accounts_user_idx').on(t.userId, t.createdAt),
-  index('social_accounts_group_idx').on(t.groupId),
   index('social_accounts_instance_platform_idx').on(t.instanceId, t.platform),
   index('social_accounts_status_idx').on(t.loginStatus, t.accountStatus),
   index('social_accounts_created_at_idx').on(t.createdAt),
@@ -570,39 +538,6 @@ export const socialAccountLogs = pgTable('social_account_logs', {
   toValue: text('to_value'),
   message: text('message'),
 }, (t) => [index('social_account_logs_account_at_idx').on(t.accountId, t.at)]);
-
-/**
- * LEGACY (official platform APIs removed on 2026-11-18 by owner decision): no code reads or writes this
- * table any more; src/db/official-api-removal-migration.ts deleted its rows (sealed OAuth tokens).
- * Drop the table in the next release (expand/contract), together with comment_sync_states and the
- * `settings` row `platform.apps` (OAuth app credentials, also unused now).
- * Was: official-API authorisation of a social account (OAuth), 1:1 with the account, tokens sealed with secret-box.
- */
-export const platformConnections = pgTable('platform_connections', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  socialAccountId: uuid('social_account_id').notNull().unique().references(() => socialAccounts.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  platform: text('platform').notNull(),
-  /** Platform-side account (YouTube channel id, Instagram user id, TikTok open_id) and its display name. */
-  externalAccountId: text('external_account_id'),
-  externalAccountName: text('external_account_name'),
-  scopes: text('scopes').array().notNull().default(sql`'{}'::text[]`),
-  accessTokenEnc: text('access_token_enc').notNull(),
-  refreshTokenEnc: text('refresh_token_enc'),
-  expiresAt: timestamp('expires_at', { withTimezone: true }),
-  refreshExpiresAt: timestamp('refresh_expires_at', { withTimezone: true }),
-  status: text('status', { enum: ['connected', 'expired', 'revoked', 'error'] }).notNull().default('connected'),
-  lastError: text('last_error'),
-  lastErrorCode: text('last_error_code'),
-  connectedBy: uuid('connected_by').references(() => users.id, { onDelete: 'set null' }),
-  connectedAt: timestamp('connected_at', { withTimezone: true }).notNull().defaultNow(),
-  lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
-  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [
-  index('platform_connections_user_idx').on(t.userId),
-  index('platform_connections_platform_status_idx').on(t.platform, t.status),
-]);
 
 /**
  * Account analytics (账号分析): one row per own social account and UTC day. Two kinds of values:
@@ -672,11 +607,6 @@ export const contents = pgTable('contents', {
   title: text('title').notNull(),
   /** Base caption / description; publish tasks copy it unless they override it. */
   body: text('body').notNull().default(''),
-  /**
-   * Legacy free-text category, replaced by `category_id` (content-category-data-migration.ts). No longer read; the code
-   * only clears it when it changes a content's category (so the migration never re-links it). Drop in a later release.
-   */
-  category: text('category'),
   /** 内容分类: a public category or one of the owner's personal categories (assertCategoryFor). */
   categoryId: uuid('category_id').references(() => contentCategories.id, { onDelete: 'set null' }),
   /** Source (original) language, BCP-47 (e.g. zh-CN). Null = not set (rows from before 多语言内容). */
@@ -693,7 +623,6 @@ export const contents = pgTable('contents', {
 }, (t) => [
   index('contents_user_created_idx').on(t.userId, t.createdAt),
   index('contents_user_status_idx').on(t.userId, t.status),
-  index('contents_user_category_idx').on(t.userId, t.category),
   index('contents_category_id_idx').on(t.categoryId),
   index('contents_created_at_idx').on(t.createdAt),
 ]);
@@ -748,13 +677,12 @@ export const contentTagLinks = pgTable('content_tag_links', {
  * ref_id = this id, idempotency key publish:<id>:<attempt_no>). `task_id` is the current scheduler task;
  * every reschedule/retry bumps `attempt_no` and creates a new tasks row (older ones stay as history).
  * Status: pending | scheduled → running → published | awaiting_operator (manual method: handed to an
- * operator, who records the outcome) | failed | cancelled | dry_run (LEGACY: the former 云手机发帖 test mode, removed
- * 2026-11-18; no longer produced, db:migrate turned old rows into cancelled; kept in the enum for expand/contract). `user_id` = the account's owner.
+ * operator, who records the outcome) | failed | cancelled. `user_id` = the account's owner.
  * Media and texts are snapshots taken at distribution (what was scheduled is what gets published).
  * At most one unfinished row per (content, account) (partial unique index); a second publish of an
  * already published pair needs `republish`.
  */
-export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled', 'dry_run'] as const;
+export const PUBLISH_STATUSES = ['pending', 'scheduled', 'running', 'awaiting_operator', 'published', 'failed', 'cancelled'] as const;
 export type PublishStatus = (typeof PUBLISH_STATUSES)[number];
 export const PUBLISH_UNFINISHED: readonly PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator'];
 /** Post type (帖子 / Reels / 限动). Which types a platform accepts: modules/publish/platforms.ts. */
@@ -952,29 +880,12 @@ export const comments = pgTable('comments', {
 ]);
 
 /**
- * LEGACY (official-API comment sync removed on 2026-11-18): no longer read or written. Drop in the next release.
- * Was: per-account sync cursor (YouTube page token; Instagram ISO time of the newest comment seen) and last result.
- */
-export const commentSyncStates = pgTable('comment_sync_states', {
-  accountId: uuid('account_id').primaryKey().references(() => socialAccounts.id, { onDelete: 'cascade' }),
-  cursor: text('cursor'),
-  lastTaskId: uuid('last_task_id'),
-  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
-  lastFetched: integer('last_fetched'),
-  lastNew: integer('last_new'),
-  lastError: text('last_error'),
-  lastErrorCode: text('last_error_code'),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-});
-
-/**
  * Reply tasks (评论回复任务). The text is always written by a person (optionally starting from a template).
- * draft → pending_review → approved → (scheduled) → sending → sent | awaiting_operator → sent | failed;
- * rejected / cancelled. At most one reply per comment that is not failed / rejected / cancelled.
+ * draft → scheduled → sending → sent | awaiting_operator → sent | failed; cancelled.
+ * At most one reply per comment that is not failed / cancelled.
  * `round` is bumped when a rate-limited send is deferred (idempotency key comment-reply:<id>:<round>).
  */
-/** dry_run = LEGACY (test mode removed 2026-11-18; db:migrate turned old rows back into drafts), never produced now. */
-export const COMMENT_REPLY_STATUSES = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'rejected', 'cancelled', 'dry_run'] as const;
+export const COMMENT_REPLY_STATUSES = ['draft', 'scheduled', 'sending', 'awaiting_operator', 'sent', 'failed', 'cancelled'] as const;
 export type CommentReplyStatus = (typeof COMMENT_REPLY_STATUSES)[number];
 
 /** What a device send left as proof (screenshot before 发布 / 分享, or of the failing screen) + a short screen excerpt. */
@@ -998,7 +909,7 @@ export const commentTasks = pgTable('comment_tasks', {
    * keeps the id and fails `comment.comment_gone` instead of turning into a comment directly under the post.
    */
   trackedCommentId: uuid('tracked_comment_id'),
-  /** Device send: screenshot + what the input field showed (old dry_run rows: the test-mode rehearsal's). */
+  /** Device send: screenshot + what the input field showed. */
   evidence: jsonb('evidence').$type<ReplyEvidence>(),
   platform: text('platform').notNull(),
   text: text('text').notNull(),
@@ -1018,10 +929,6 @@ export const commentTasks = pgTable('comment_tasks', {
   authorId: uuid('author_id').references(() => users.id, { onDelete: 'set null' }),
   authorName: text('author_name'),
   submittedAt: timestamp('submitted_at', { withTimezone: true }),
-  reviewerId: uuid('reviewer_id').references(() => users.id, { onDelete: 'set null' }),
-  reviewerName: text('reviewer_name'),
-  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
-  reviewNote: text('review_note'),
   /** Who sent it: null = the API job; the operator for a manual reply. */
   senderId: uuid('sender_id').references(() => users.id, { onDelete: 'set null' }),
   senderName: text('sender_name'),
@@ -1030,12 +937,12 @@ export const commentTasks = pgTable('comment_tasks', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 }, (t) => [
-  // dry_run (LEGACY test mode, nothing posted) does not block a real reply afterwards. A draft does block.
-  uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
+  // A draft blocks too.
+  uniqueIndex('comment_tasks_one_active_idx').on(t.commentId).where(sql`status not in ('failed', 'cancelled')`),
   index('comment_tasks_post_idx').on(t.postId, t.createdAt),
   index('comment_tasks_tracked_post_idx').on(t.trackedPostId, t.createdAt),
   // one active reply per tracked comment, like comment_tasks_one_active_idx
-  uniqueIndex('comment_tasks_tracked_one_active_idx').on(t.trackedCommentId).where(sql`tracked_comment_id is not null and status not in ('failed', 'rejected', 'cancelled', 'dry_run')`),
+  uniqueIndex('comment_tasks_tracked_one_active_idx').on(t.trackedCommentId).where(sql`tracked_comment_id is not null and status not in ('failed', 'cancelled')`),
   index('comment_tasks_user_status_idx').on(t.userId, t.status, t.updatedAt),
   index('comment_tasks_account_status_idx').on(t.accountId, t.status, t.updatedAt),
   index('comment_tasks_account_hash_idx').on(t.accountId, t.textHash, t.submittedAt),
@@ -1079,16 +986,11 @@ export const personas = pgTable('personas', {
   /** 一句话定位 (one-line positioning). */
   description: text('description'),
   sort: integer('sort').notNull().default(0),
-  /** LEGACY (daily AI drafts moved to social accounts 2026-11-18): not read or written; drop in a later release. */
-  draftEnabled: boolean('draft_enabled').notNull().default(false),
-  draftsPerDay: integer('drafts_per_day').notNull().default(4),
   /**
    * 风格 (`PersonaStyle`: shared topics/banned words + 发文风格 `post` + 评论风格 `comment`), stored in the column `brief`
    * (the former 内容设定). The flat pre-split shape is still read (`StoredPersonaStyle`); defaults are applied on read (`styleOf`).
    */
   style: jsonb('brief').$type<StoredPersonaStyle>().notNull().default({}),
-  /** LEGACY (see draftEnabled): not read or written; drop in a later release. */
-  draftOwnerId: uuid('draft_owner_id').references(() => users.id, { onDelete: 'set null' }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
@@ -1145,11 +1047,6 @@ export const commentTemplates = pgTable('comment_templates', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   kind: text('kind', { enum: ['comment', 'post'] }).notNull().default('comment'),
-  /**
-   * Legacy free-text persona, replaced by `persona_id` (persona-data-migration.ts). No longer read; the code only clears it
-   * when it changes a template's persona (so the migration never re-links it). Drop in a later release.
-   */
-  persona: text('persona'),
   personaId: uuid('persona_id').references(() => personas.id, { onDelete: 'set null' }),
   tags: text('tags').array().notNull().default(sql`'{}'::text[]`),
   name: text('name').notNull(),
@@ -1157,7 +1054,7 @@ export const commentTemplates = pgTable('comment_templates', {
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.persona), index('comment_templates_persona_idx').on(t.personaId)]);
+}, (t) => [index('comment_templates_user_idx').on(t.userId, t.name), index('comment_templates_kind_idx').on(t.kind, t.personaId), index('comment_templates_persona_idx').on(t.personaId)]);
 
 /**
  * 趋势热点: one stored chart per (source, region, category, slot). Slots are `intervalHours` wide (UTC); the
@@ -1412,9 +1309,7 @@ export type MediaCategory = typeof mediaCategories.$inferSelect;
 export type PoolProxy = typeof proxies.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type SocialAccount = typeof socialAccounts.$inferSelect;
-export type SocialAccountGroup = typeof socialAccountGroups.$inferSelect;
 export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;
-export type PlatformConnection = typeof platformConnections.$inferSelect;
 export type TrackedAccount = typeof trackedAccounts.$inferSelect;
 export type TrackedSnapshot = typeof trackedAccountSnapshots.$inferSelect;
 export type SocialAccountStats = typeof socialAccountStats.$inferSelect;

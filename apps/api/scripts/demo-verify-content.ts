@@ -177,7 +177,7 @@ try {
   r = await http('PUT', `/api/media/${e1.id}`, U, { categoryId: prodCat.id });
   check('assigning a public category to a private asset → 400 media.category_mismatch', r.status === 400 && r.body.code === 'media.category_mismatch');
   r = await http('PUT', `/api/media/${e1.id}`, U, { status: 'disabled' });
-  check('disable a private asset → 400 media.visibility_removed', r.status === 400 && r.body.code === 'media.visibility_removed');
+  check('status is not editable (stripped → 400 common.nothing_to_update)', r.status === 400 && r.body.code === 'common.nothing_to_update');
   r = await http('PUT', `/api/media/${e1.id}`, U, {});
   check('empty update → 400 common.nothing_to_update', r.status === 400 && r.body.code === 'common.nothing_to_update');
   r = await http('DELETE', `/api/media/${e1.id}`, U);
@@ -188,7 +188,7 @@ try {
   const p1 = r.body.item; await waitReady(T, p1.id);
   r = await http('PUT', `/api/media/${p1.id}`, T, { status: 'disabled' });
   const seenEn = await http('GET', `/api/media/${p1.id}`, U);
-  check('admin disable → 400 media.visibility_removed; user still 200', r.status === 400 && r.body.code === 'media.visibility_removed' && seenEn.status === 200);
+  check('admin status PUT → 400 common.nothing_to_update; user still 200', r.status === 400 && r.body.code === 'common.nothing_to_update' && seenEn.status === 200);
   r = await upload(T, 'mine', `${tmp}-b1.jpg`, await jpeg(100, 100), 'image/jpeg');
   const b1 = r.body.item; await waitReady(T, b1.id);
   r = await http('POST', '/api/media/batch-delete', U, { ids: [p1.id, b1.id] });

@@ -125,8 +125,6 @@ export interface CreateTaskInput {
   idempotencyKey?: string | null;
   maxAttempts?: number;
   timeoutMs?: number | null;
-  /** Base delay of the exponential retry backoff for this task (default: the handler's backoffMs). */
-  backoffMs?: number | null;
   /** BullMQ priority (1 = highest; 0 = none). */
   priority?: number;
   retryOf?: string | null;
@@ -141,7 +139,7 @@ async function addJob(task: Task): Promise<void> {
     delay,
     priority: task.priority || undefined,
     attempts: Math.max(1, task.maxAttempts - task.attempts),
-    backoff: { type: 'exponential', delay: task.backoffMs ?? h.backoffMs ?? 5000 },
+    backoff: { type: 'exponential', delay: h.backoffMs ?? 5000 },
     removeOnComplete: true,
     removeOnFail: true,
   });
@@ -161,7 +159,6 @@ export async function createTask(input: CreateTaskInput): Promise<{ task: Task; 
     payload: input.payload ?? {},
     maxAttempts: Math.max(1, input.maxAttempts ?? h.maxAttempts ?? 1),
     timeoutMs: input.timeoutMs === undefined ? h.timeoutMs ?? null : input.timeoutMs,
-    backoffMs: input.backoffMs ?? null,
     priority: input.priority ?? 0,
     idempotencyKey: input.idempotencyKey ?? null,
     retryOf: input.retryOf ?? null,
@@ -250,7 +247,7 @@ export async function retryTask(task: Task, user: AuthUser): Promise<Task> {
     type: task.type, userId: user.id,
     instance: task.instanceId ? { id: task.instanceId, name: task.instanceName ?? '' } : null,
     label: task.instanceName, refType: task.refType, refId: task.refId,
-    payload: task.payload ?? {}, maxAttempts: task.maxAttempts, timeoutMs: task.timeoutMs, backoffMs: task.backoffMs, priority: task.priority, retryOf: task.id,
+    payload: task.payload ?? {}, maxAttempts: task.maxAttempts, timeoutMs: task.timeoutMs, priority: task.priority, retryOf: task.id,
   });
   await taskLog(task, 'info', 'retried as a new task', { newTaskId: created.id, by: user.username });
   return created;
@@ -328,7 +325,7 @@ async function processJob(job: Job<{ taskId: string }>): Promise<void> {
       await failTask(cur, code, message, ['running']);
       throw new UnrecoverableError(message);
     }
-    const retryIn = (cur.backoffMs ?? h.backoffMs ?? 5000) * 2 ** job.attemptsMade;
+    const retryIn = (h.backoffMs ?? 5000) * 2 ** job.attemptsMade;
     const back = await updateTask(taskId, { status: 'pending', error: message.slice(0, 2000), errorCode: code }, eq(schema.tasks.status, 'running'));
     if (back) await taskLog(back, 'warn', `attempt ${attempt}/${cur.maxAttempts} failed, retrying`, { error: message, code, retryInMs: retryIn });
     throw err; // BullMQ schedules the next attempt

@@ -43,7 +43,6 @@ import { publishRoutes } from './modules/publish/routes.js';
 import './modules/publish/publish.js'; // registers the publish task handler (manual publishing)
 import { personaRoutes } from './modules/comments/personas.js';
 import { aiRoutes } from './modules/ai/routes.js';
-import './modules/ai/drafts.js'; // AI 草稿: legacy account-drafts / persona-drafts handlers (old queued tasks finish skipped); no schedule since 2026-11-18
 import { commentRoutes } from './modules/comments/routes.js'; // also registers the comment-reply task handler
 import './modules/comments/dashboard.js'; // comments widget on the dashboard + task-retention keep rule
 import { analyticsRoutes } from './modules/analytics/routes.js';

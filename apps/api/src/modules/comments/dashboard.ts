@@ -4,7 +4,7 @@ import { registerDashboardWidget, type DashboardCtx } from '../dashboard/registr
 import { registerTaskKeepRule } from '../tasks/retention.js';
 
 /** Reply states that still need the scheduling task (and its history) around. */
-const REPLY_UNFINISHED = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator'] as const;
+const REPLY_UNFINISHED = ['draft', 'scheduled', 'sending', 'awaiting_operator'] as const;
 
 // Task retention must not delete the task of a reply that is still in progress.
 registerTaskKeepRule('comment-reply', (id) => sql`exists (select 1 from ${schema.commentTasks} c where c.task_id = ${id}
@@ -30,10 +30,10 @@ registerDashboardWidget('comments', async (ctx) => {
   return {
     total: comments.reduce((s, x) => s + Number(x.n), 0),
     unread: c.new ?? 0,
-    /** Replies written but not submitted (there is no review step since 2026-11-18). */
+    /** Replies written but not submitted. */
     drafts: r.draft ?? 0,
     awaitingOperator: r.awaiting_operator ?? 0,
-    queued: (r.pending_review ?? 0) + (r.approved ?? 0) + (r.scheduled ?? 0) + (r.sending ?? 0),
+    queued: (r.scheduled ?? 0) + (r.sending ?? 0),
     sent7d: recent.sent ?? 0,
     failed7d: recent.failed ?? 0,
   };

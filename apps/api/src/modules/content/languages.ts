@@ -10,8 +10,6 @@ import type { Content, ContentTranslation, SocialAccount } from '../../db/schema
  *   language only matters once an account posts in it, and binding it to an account is what adds it.
  * - Translations (`content_translations`) are written by people; publishing uses the translation in the target
  *   account's language, else the source text (`textsForAccount`).
- * LEGACY: the admin setting `content.languages` ({ languages, defaultSource }) is no longer read or written; the row is
- * kept for rollback (expand/contract) and can be deleted in a later release.
  */
 export const SOURCE_LANG = 'zh-CN';
 

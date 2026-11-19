@@ -3,7 +3,7 @@
  * (translations are written by people; there is no translation provider).
  * - Language model (2026-11-18): Chinese (zh-CN) is the fixed source; 配置语系 = languages bound to social accounts.
  *   GET /api/contents/languages per viewer (users: own accounts; admins: all or ?ownerId=), the old admin setting
- *   /api/settings/languages is gone (404) while its LEGACY row stays untouched; new contents are zh-CN, another source
+ *   /api/settings/languages is gone (404); new contents are zh-CN, another source
  *   language is refused (content.source_lang_fixed); older contents keep theirs read-only (a missing one may become
  *   zh-CN); personas have no language (style.lang refused, 2026-11-18): AI drafts are Chinese, accounts carry the language.
  * - Translations CRUD: PUT creates (201) / replaces (200), list + detail include them, DELETE (204, then 404),
@@ -41,8 +41,6 @@ const tag = randomBytes(3).toString('hex');
 const pw = randomBytes(12).toString('hex');
 const userIds: string[] = [];
 const contentIds: string[] = [];
-const [langRow] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'content.languages'));
-const LEGACY_LANGS = { languages: ['zh-CN', 'en', 'fr'], defaultSource: 'fr' };
 const personaIds: string[] = [];
 const startedAt = new Date();
 const SECRET_TEXT = `译文机密-${tag}-नमस्ते`;
@@ -57,9 +55,6 @@ try {
   const B = await mk(`trchk-b-${tag}`);
 
   // ---------------------------------------------------------------- language model (zh-CN source + account languages)
-  // LEGACY admin setting: present but never read again (it must not change anything below) and kept as is.
-  await db.insert(schema.settings).values({ key: 'content.languages', value: LEGACY_LANGS })
-    .onConflictDoUpdate({ target: schema.settings.key, set: { value: LEGACY_LANGS } });
   check('settings/languages removed (admin GET/PUT 404)', (await http('GET', '/api/settings/languages', T)).status === 404
     && (await http('PUT', '/api/settings/languages', T, { languages: ['en'], defaultSource: 'en' })).status === 404);
   const accA = await http('POST', '/api/social/accounts', A.token, { platform: 'instagram', handle: `trchk_a_${tag}`, lang: 'EN' });
@@ -173,8 +168,6 @@ try {
   const allAudit = await db.select().from(schema.auditLogs).where(gte(schema.auditLogs.at, startedAt));
   check('audit: translated text never stored', !JSON.stringify(allAudit).includes(SECRET_TEXT) && !JSON.stringify(allAudit).includes('हिंदी'));
   check('audit: translation detail is the language only', audit.every((a) => Object.keys(a.detail as object).every((k) => k === 'lang' || k === 'error')), JSON.stringify(audit[0]?.detail));
-  const [legacy] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'content.languages'));
-  check('LEGACY content.languages row kept unchanged (expand/contract)', JSON.stringify(legacy?.value) === JSON.stringify(LEGACY_LANGS));
 
   // ---------------------------------------------------------------- cascade
   const before = (await db.select().from(schema.contentTranslations).where(eq(schema.contentTranslations.contentId, c1.id))).length;
@@ -187,8 +180,6 @@ try {
   if (contentIds.length) await db.delete(schema.contents).where(inArray(schema.contents.id, contentIds));
   if (personaIds.length) await db.delete(schema.personas).where(inArray(schema.personas.id, personaIds));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
-  if (langRow) await db.update(schema.settings).set({ value: langRow.value }).where(eq(schema.settings.key, 'content.languages'));
-  else await db.delete(schema.settings).where(eq(schema.settings.key, 'content.languages'));
   await sqlClient.end();
 }
 

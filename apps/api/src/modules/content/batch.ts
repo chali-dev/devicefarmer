@@ -82,8 +82,7 @@ export async function batchContents(user: AuthUser, b: { ids: string[]; action: 
           case 'set-category': {
             const next = b.categoryId ? (await assertCategoryFor(cur.userId, b.categoryId, tx)).id : null;
             if (cur.categoryId === next) return false;
-            // The legacy text is cleared whenever the category changes (see content-category-data-migration.ts).
-            await tx.update(c).set({ categoryId: next, category: null, updatedAt: new Date() }).where(eq(c.id, id));
+            await tx.update(c).set({ categoryId: next, updatedAt: new Date() }).where(eq(c.id, id));
             return true;
           }
           case 'add-tags':

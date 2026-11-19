@@ -167,8 +167,7 @@ export const EXCEPTION_SQL = sql`(${sa.loginStatus} in ('logged_out', 'needs_ver
 export const isException = (a: Pick<SocialAccount, 'loginStatus' | 'accountStatus' | 'lastError'>) =>
   a.loginStatus === 'logged_out' || a.loginStatus === 'needs_verification' || a.accountStatus !== 'active' || a.lastError !== null;
 
-/** Legacy `group_id` (social_account_groups) and `ai_drafts_enabled` / `ai_drafts_per_day` (see schema.ts) are never returned. */
-export interface SocialAccountItem extends Omit<SocialAccount, 'groupId' | 'aiDraftsEnabled' | 'aiDraftsPerDay'> {
+export interface SocialAccountItem extends SocialAccount {
   ownerName: string | null;
   /** 账号人设 name (personaId is on the row). */
   personaName: string | null;
@@ -205,7 +204,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
   ]);
   const canSee = (id: string) => access === 'all' || access.has(id);
   const proxies = await proxyViews(insts.filter((i) => i.proxyId && canSee(i.id)).map((i) => i.proxyId!));
-  return rows.map(({ groupId: _legacyGroup, aiDraftsEnabled: _legacyAi, aiDraftsPerDay: _legacyAiPerDay, ...r }) => {
+  return rows.map((r) => {
     const inst = insts.find((i) => i.id === r.instanceId);
     return {
       ...r,

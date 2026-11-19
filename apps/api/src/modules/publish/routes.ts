@@ -10,7 +10,7 @@ import { enabledPlatforms } from '../social/platforms.js';
 import { PUBLISH_CAPABILITIES, capabilityOf, composeText, postTypesOf } from './platforms.js';
 import { storageFor } from '../settings/storage.js';
 import { DevicePublishBody, getDevicePublishRules, saveDevicePublishRules } from './device-rules.js';
-import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish, retryPublish } from './publish.js';
+import { cancelPublish, editPublish, recordOutcome, REF_TYPE, reschedulePublish } from './publish.js';
 
 const pt = schema.publishTasks;
 /** The day a task belongs to: when it was published, else when it is (was) due. */
@@ -194,16 +194,6 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     const row = await visiblePublishTask(req.user, req.params.id);
     const next = await reschedulePublish(req.user, row, req.body.scheduledAt ? new Date(req.body.scheduledAt) : null);
     if (req.audit) req.audit.extra = { taskId: next.taskId, attemptNo: next.attemptNo };
-    return { task: (await toPublishItems([next], req.user))[0] };
-  });
-
-  app.post('/api/publish/tasks/:id/retry', {
-    schema: { params: Id, body: z.object({ scheduledAt: z.string().datetime({ offset: true }).nullable().optional() }) },
-  }, async (req, reply) => {
-    const row = await visiblePublishTask(req.user, req.params.id);
-    const next = await retryPublish(req.user, row, req.body.scheduledAt ? new Date(req.body.scheduledAt) : null);
-    if (req.audit) req.audit.extra = { taskId: next.taskId, attemptNo: next.attemptNo };
-    reply.code(202);
     return { task: (await toPublishItems([next], req.user))[0] };
   });
 

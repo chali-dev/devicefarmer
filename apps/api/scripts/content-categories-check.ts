@@ -7,15 +7,11 @@
  * - Counts per category (exact, per viewer), list filter categoryId / none, facets without categories.
  * - Delete → contents become 未分类; merge moves contents and deletes the source (scope rules).
  * - Audit entries (names only).
- * - The data migration (src/db/content-category-data-migration.ts): legacy free-text categories seeded directly in the
- *   DB (two users, case/space variants), migrated twice → personal categories created once, contents linked, no re-link
- *   after a category is deleted or cleared.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/content-categories-check.ts
  */
 import { randomBytes } from 'node:crypto';
 import { eq, ilike, inArray } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
-import { migrateContentCategoryTexts } from '../src/db/content-category-data-migration.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
@@ -131,7 +127,7 @@ try {
   const T1 = (await content(T, { title: `t1 ${tag}`, categoryId: old.id })).body.content;
   const T2 = (await content(T, { title: `t2 ${tag}`, categoryId: launch.id })).body.content;
   const T3 = (await content(T, { title: `t3 ${tag}`, ownerId: A.id, categoryId: aFood.id })).body.content;
-  check('contents with allowed categories (public or own); category returned as {id,name,ownerType,ownerId}, legacy text not returned',
+  check('contents with allowed categories (public or own); category returned as {id,name,ownerType,ownerId}',
     A1?.category?.id === aVlog.id && A1.category.name === `Vlog ${tag} Pro` && A1.category.ownerType === 'user' && A2?.category?.id === event.id
       && B2?.category?.id === bVlog.id && A4?.category === null && T3?.category?.id === aFood.id && T3.userId === A.id && A1.categoryId === aVlog.id);
   r = await http('PUT', `/api/contents/${A4.id}`, A.token, { categoryId: bVlog.id });
@@ -205,43 +201,6 @@ try {
   const cActs = await sqlClient`select detail from audit_logs where at >= ${startedAt.toISOString()}::timestamptz and action = 'content.create' and target = ${`a1 ${tag}`}`;
   check('audit: content create records the category name', cActs[0]?.detail?.category === `Vlog ${tag} Pro`, JSON.stringify(cActs[0]?.detail));
 
-  // ================================================================ data migration (legacy free-text category)
-  const legacy = async (userId: string, category: string) => {
-    const [row] = await db.insert(C).values({ userId, title: `mig ${tag} ${contentIds.length}`, category }).returning();
-    contentIds.push(row!.id);
-    return row!.id;
-  };
-  // A pre-existing personal category of B with the same name is reused, never duplicated.
-  const bPre = (await cat(B.token, { scope: 'mine', name: `Mig Travel ${tag}` })).body.category;
-  const L = {
-    a1: await legacy(A.id, ` Mig Promo ${tag} `), a2: await legacy(A.id, `mig promo ${tag}`), a3: await legacy(A.id, `Mig Promo ${tag}`),
-    a4: await legacy(A.id, `MIG Diary ${tag}`),
-    b1: await legacy(B.id, `mig PROMO ${tag}`), b2: await legacy(B.id, `mig travel ${tag}`), bBlank: await legacy(B.id, '   '),
-  };
-  const run1 = await migrateContentCategoryTexts(sqlClient, () => {});
-  const run2 = await migrateContentCategoryTexts(sqlClient, () => {});
-  const cs = await db.select().from(CC).where(ilike(CC.name, `%mig%${tag}%`));
-  const rows = await db.select().from(C).where(inArray(C.id, Object.values(L)));
-  const cid = (id: string) => rows.find((x) => x.id === id)?.categoryId;
-  const aPromo = cs.find((p) => p.ownerId === A.id && p.name.toLowerCase().includes('promo'));
-  const aDiary = cs.find((p) => p.ownerId === A.id && p.name.toLowerCase().includes('diary'));
-  const bPromo = cs.find((p) => p.ownerId === B.id && p.name.toLowerCase().includes('promo'));
-  check('migration run 1: 3 categories created, 6 contents linked; run 2: nothing', run1.created === 3 && run1.linked === 6 && run2.created === 0 && run2.linked === 0, JSON.stringify([run1, run2]));
-  check('migration: personal categories per owner only (no public), trimmed, most used spelling wins',
-    cs.length === 4 && cs.every((p) => p.ownerType === 'user') && aPromo?.name === `Mig Promo ${tag}` && bPromo?.name === `mig PROMO ${tag}` && aDiary?.name === `MIG Diary ${tag}`,
-    cs.map((p) => `${p.ownerType}:${p.name}`).join());
-  check('migration: case/space variants linked to one category per owner',
-    [L.a1, L.a2, L.a3].every((id) => cid(id) === aPromo!.id) && cid(L.a4) === aDiary!.id && cid(L.b1) === bPromo!.id);
-  check('migration: an existing personal category with the same name is reused; blank text skipped', cid(L.b2) === bPre.id && cid(L.bBlank) === null);
-  r = await http('DELETE', `/api/content-categories/${aDiary!.id}`, A.token);
-  r = await http('PUT', `/api/contents/${L.a1}`, A.token, { categoryId: null });
-  const run3 = await migrateContentCategoryTexts(sqlClient, () => {});
-  const after = await db.select().from(C).where(inArray(C.id, [L.a1, L.a4]));
-  check('migration does not re-link contents whose category was deleted or cleared', run3.created === 0 && run3.linked === 0 && after.every((x) => x.categoryId === null && x.category === null), JSON.stringify(run3));
-  r = await http('GET', `/api/contents?pageSize=100&categoryId=${aPromo!.id}`, A.token);
-  check('migrated contents are listed by category (A: a2, a3)', r.body.total === 2, String(r.body.total));
-  r = await http('GET', `/api/content-categories?scope=mine`, A.token);
-  check('migrated category counts (A Promo = 2)', r.body.categories.find((x: any) => x.id === aPromo!.id)?.count === 2);
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack ?? (err as Error).message}`, false);
 } finally {

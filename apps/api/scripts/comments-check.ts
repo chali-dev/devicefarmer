@@ -6,9 +6,9 @@
  * - Manual comment entry (threads), list/detail/status/delete, publish-task link by external post id.
  * - Reply workflow end to end on the manual path, without approval (removed 2026-11-18): draft → scheduled →
  *   awaiting_operator → sent / failed; approve / reject / batch-approve endpoints 404, scheduled send + cancel, edit rules.
- * - Draft first (owner decision 2026-11-18): every new reply is a draft without a task even when an older page sends
- *   `submit: true`; only POST …/submit (排程) queues it; a draft can be deleted (DELETE, drafts only, logged), a
- *   scheduled reply can't (409); `testMode` in PUT /api/comments/settings is accepted and ignored, never returned.
+ * - Draft first (owner decision 2026-11-18): every new reply is a draft without a task (a `submit` field is stripped);
+ *   only POST …/submit (排程) queues it; a draft can be deleted (DELETE, drafts only, logged), a scheduled reply can't
+ *   (409); the removed `testMode` in PUT /api/comments/settings is refused (400, strict body), never returned.
  * - Anti-abuse: one reply per comment (again allowed after failed / rejected / cancelled), duplicate-text
  *   limit (normalized), per-account send rate limit (deferred, not dropped), every block logged with its code.
  * - Idempotency of the reply job (same key → same task), RBAC/isolation (admin, user A, user B), templates, audit.
@@ -101,11 +101,11 @@ try {
   r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, requireApproval: true });
   check('admin: the removed requireApproval rule → 400', r.status === 400);
   r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20, testMode: true });
+  check('admin: the removed testMode → 400 (strict body)', r.status === 400, r.text);
+  r = await http('PUT', '/api/comments/settings', T, { duplicateMax: 3, sendsPerHour: 20 });
   const [stored] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'comments.rules'));
-  check('admin: PUT rules; the removed testMode of an older page is accepted, ignored, not stored or returned',
+  check('admin: PUT rules; no testMode stored or returned',
     r.status === 200 && r.body.rules.sendsPerHour === 20 && !('testMode' in r.body.rules) && !('testMode' in (stored?.value as object)), r.text);
-  r = await http('PUT', '/api/comments/settings', T, { testMode: 'no' });
-  check('admin: a non-boolean testMode is still a 400 (strict body)', r.status === 400, r.text);
 
   // ---------------------------------------------------------------- accounts (no modes / sync any more)
   r = await http('GET', '/api/comments/accounts', A);
@@ -186,7 +186,7 @@ try {
   check('user B: reply to A\'s comment → 404', r.status === 404);
   r = await http('POST', `/api/comments/${c[0]}/replies`, A, { text: `Thank you, Viewer 0! ${tag}`, submit: true, scheduledAt: new Date().toISOString() });
   const r1 = r.body.reply?.id as string;
-  check('draft first: a new reply is a draft without a task, also with submit: true from an older page', r.status === 201 && r.body.reply.status === 'draft' && !r.body.reply.taskId
+  check('draft first: a new reply is a draft without a task (a submit field is stripped)', r.status === 201 && r.body.reply.status === 'draft' && !r.body.reply.taskId
     && (await db.select().from(schema.tasks).where(and(eq(schema.tasks.refType, 'comment_reply'), eq(schema.tasks.refId, r1)))).length === 0, r.text);
   r = await http('POST', `/api/comment-replies/${r1}/submit`, A, { scheduledAt: null });
   check('A: 排程 (submit) → scheduled at once (no approval), send task created', r.status === 200 && r.body.reply.status === 'scheduled' && !!r.body.reply.taskId && r.body.reply.authorName === `cca${tag}`, r.text);
@@ -296,7 +296,7 @@ try {
   const rl: string[] = [];
   for (let i = 0; i < 3; i++) {
     r = await replyAndSchedule(cr2[i]!, T, { text: `Admin reply ${i} ${tag}` });
-    check(`admin reply ${i}: scheduled (no reviewer)`, r.status === 200 && r.body.reply.reviewerName === null && r.body.reply.status === 'scheduled', r.text);
+    check(`admin reply ${i}: scheduled (no reviewer)`, r.status === 200 && !('reviewerName' in r.body.reply) && r.body.reply.status === 'scheduled', r.text);
     rl.push(r.body.reply.id);
     if (i < 2) await waitReply(r.body.reply.id, ['awaiting_operator']);
   }

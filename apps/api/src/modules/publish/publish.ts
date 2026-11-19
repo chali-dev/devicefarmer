@@ -187,42 +187,31 @@ async function currentTask(row: PublishTask): Promise<Task | undefined> {
  * Starts a new round (reschedule, manual retry): bumps attempt_no, detaches the old task-centre task
  * (cancelled if still waiting; its runner no longer matches task_id) and schedules a new one.
  */
-async function newRound(user: AuthUser, id: string, from: PublishStatus[], scheduledAt: Date | null, action: 'rescheduled' | 'retried'): Promise<PublishTask> {
+/** Reschedule a waiting round: a new round (attempt_no + 1, new task) at the given time (null = now). */
+export async function reschedulePublish(user: AuthUser, row: PublishTask, scheduledAt: Date | null): Promise<PublishTask> {
   const now = new Date();
   const when = scheduledAt && scheduledAt > now ? scheduledAt : now;
   const { prev, next } = await db.transaction(async (tx) => {
-    const [cur] = await tx.select().from(pt).where(eq(pt.id, id)).for('update');
+    const [cur] = await tx.select().from(pt).where(eq(pt.id, row.id)).for('update');
     if (!cur) throw conflict('发布任务不存在', 'publish.not_found');
-    if (!from.includes(cur.status)) throw conflict(`当前状态（${cur.status}）不能执行该操作`, 'publish.bad_status', { status: cur.status });
+    if (cur.status !== 'pending' && cur.status !== 'scheduled') throw conflict(`当前状态（${cur.status}）不能执行该操作`, 'publish.bad_status', { status: cur.status });
     assertPlatformEnabled(cur.platform);
-    if (action === 'retried' && !cur.republish) {
-      const [done] = await tx.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, cur.contentId), eq(pt.accountId, cur.accountId), eq(pt.status, 'published'), ne(pt.id, cur.id)));
-      if (done) throw conflict('该内容已发布到这个账号', 'publish.already_published', { account: cur.accountId });
-    }
-    const fresh = action === 'retried' || cur.status === 'dry_run';
     const [n] = await tx.update(pt).set({
       status: when > now ? 'scheduled' : 'pending', scheduledAt: when, attemptNo: cur.attemptNo + 1, taskId: null, maxAttempts: 1,
-      error: fresh ? null : cur.error, errorCode: fresh ? null : cur.errorCode, method: fresh ? null : cur.method,
-    }).where(eq(pt.id, id)).returning().catch((err) => {
+    }).where(eq(pt.id, row.id)).returning().catch((err) => {
       const e = err as { code?: string; cause?: { code?: string } };
       if (e.code === '23505' || e.cause?.code === '23505') throw conflict('该内容在这个账号上已有未完成的发布任务', 'publish.duplicate_unfinished');
       throw err;
     });
-    await publishLog(n!, 'info', action, { scheduledAt: when.toISOString(), previousTaskId: cur.taskId, attemptNo: n!.attemptNo }, user, tx);
+    await publishLog(n!, 'info', 'rescheduled', { scheduledAt: when.toISOString(), previousTaskId: cur.taskId, attemptNo: n!.attemptNo }, user, tx);
     return { prev: cur, next: n! };
   });
   const old = await currentTask(prev);
   if (old && !isFinal(old.status)) await cancelTask(old, user.username).catch(() => undefined);
-  const row = await scheduleRun(next, action === 'retried' ? prev.taskId : null);
-  await refreshContentStatus(row.contentId);
-  return row;
+  const out = await scheduleRun(next, null);
+  await refreshContentStatus(out.contentId);
+  return out;
 }
-
-// retry (POST …/retry) = the same snapshot again: LEGACY for older pages (the UI offers 编辑后重新发布 instead, which
-// distributes the edited content as a new publish task). dry_run = a test-mode rehearsal of an old colour (test mode
-// removed 2026-11-18; db:migrate turned them into cancelled).
-export const reschedulePublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['pending', 'scheduled'], at, 'rescheduled');
-export const retryPublish = (user: AuthUser, row: PublishTask, at: Date | null) => newRound(user, row.id, ['failed', 'cancelled', 'dry_run'], at, 'retried');
 
 /** Cancel while waiting (pending/scheduled) or while handed to an operator. */
 export async function cancelPublish(user: AuthUser, row: PublishTask): Promise<PublishTask> {

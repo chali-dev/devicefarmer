@@ -127,8 +127,8 @@ export async function setContentTags(tx: Tx, contentId: string, names: string[])
 export function deriveStatus(stage: Content['stage'], counts: Partial<Record<PublishStatus, number>>): ContentStatus {
   if (stage === 'archived') return 'archived';
   const n = (s: PublishStatus) => counts[s] ?? 0;
-  // Cancelled rows and test-mode rehearsals (dry_run: nothing was posted) don't count.
-  const total = (Object.keys(counts) as PublishStatus[]).filter((s) => s !== 'cancelled' && s !== 'dry_run').reduce((a, s) => a + n(s), 0);
+  // Cancelled rows don't count.
+  const total = (Object.keys(counts) as PublishStatus[]).filter((s) => s !== 'cancelled').reduce((a, s) => a + n(s), 0);
   if (!total) return stage;
   if (n('published') === total) return 'published';
   if (n('published') > 0) return 'partially_published';
@@ -137,14 +137,14 @@ export function deriveStatus(stage: Content['stage'], counts: Partial<Record<Pub
 }
 
 /**
- * Publish task counts per status. Per (content, account) only the LATEST task counts (cancelled / dry_run rows aside,
+ * Publish task counts per status. Per (content, account) only the LATEST task counts (cancelled rows aside,
  * which are counted as they are): a failed task that was followed by a new one (编辑后重新发布, no automatic retries
  * since 2026-11-18) is history and no longer makes the content 发布失败 / 部分发布.
  */
 export async function publishCounts(exec: Exec, contentIds: string[]): Promise<Map<string, Partial<Record<PublishStatus, number>>>> {
   const out = new Map<string, Partial<Record<PublishStatus, number>>>();
   if (!contentIds.length) return out;
-  const IGNORED: PublishStatus[] = ['cancelled', 'dry_run'];
+  const IGNORED: PublishStatus[] = ['cancelled'];
   const [latest, ignored] = await Promise.all([
     exec.selectDistinctOn([pt.contentId, pt.accountId], { id: pt.contentId, s: pt.status }).from(pt)
       .where(and(inArray(pt.contentId, contentIds), notInArray(pt.status, IGNORED)))
@@ -275,9 +275,9 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
     publishSummaries(viewer, ids),
     publishedCounts(db, ids),
   ]);
-  return rows.map(({ category: _legacy, ...r }) => ({
+  return rows.map((r) => ({
     ...r,
-    /** 内容分类 (the legacy text column is not returned). */
+    /** 内容分类. */
     category: r.categoryId && cats.has(r.categoryId) ? categoryRef(cats.get(r.categoryId)!) : null,
     ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),

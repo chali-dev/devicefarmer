@@ -40,7 +40,7 @@ const ListQuery = z.object({
   /** Comma-separated tag names; an asset must carry all of them (case-insensitive). */
   tags: z.string().trim().max(400).optional(),
   tag: z.string().trim().max(32).optional(),
-  status: z.enum(['processing', 'ready', 'failed', 'disabled']).optional(),
+  status: z.enum(['processing', 'ready', 'failed']).optional(),
   /** all-users scope (admin): one user's private media */
   ownerId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
@@ -166,8 +166,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
    * unknown user → 404 users.not_found, with scope public → 400 media.bad_scope),
    * optional process (JSON, ProcessOptionsSchema: crop/compress in the job), and the same metadata as
    * PUT /api/media/:id (MediaMetaSchema + assertMetaFor): name (default: file name without extension),
-   * categoryId, tags (JSON array of strings). A legacy status=ready is ignored, status=disabled is refused
-   * (media.visibility_removed: public media is always visible to users). All checks run before the file is stored, so a refused upload leaves no row.
+   * categoryId, tags (JSON array of strings). All checks run before the file is stored, so a refused upload leaves no row.
    * Returns 201 with status 'processing'; a media-process task does the rest.
    */
   app.post('/api/media/upload', async (req, reply) => {
@@ -192,7 +191,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     const tagsRaw = field('tags');
     let tags: unknown;
     if (tagsRaw) { try { tags = JSON.parse(tagsRaw); } catch { tags = tagsRaw; } }
-    const metaParsed = MediaMetaSchema.safeParse({ name: field('name') || undefined, categoryId, tags, status: field('status') || undefined });
+    const metaParsed = MediaMetaSchema.safeParse({ name: field('name') || undefined, categoryId, tags });
     if (!metaParsed.success) {
       file.file.resume();
       const detail = metaParsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ');
@@ -246,7 +245,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     assertCanManage(req.user, a);
     const b = req.body;
     const set: Partial<MediaAsset> = {};
-    await assertMetaFor({ ownerType: a.ownerType, ownerId: a.ownerId }, { categoryId: b.categoryId, status: b.status });
+    await assertMetaFor({ ownerType: a.ownerType, ownerId: a.ownerId }, { categoryId: b.categoryId });
     if (b.name !== undefined) set.name = b.name;
     if (b.categoryId !== undefined) set.categoryId = b.categoryId;
     if (!Object.keys(set).length && b.tags === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
@@ -324,7 +323,7 @@ export const mediaRoutes: FastifyPluginAsyncZod = async (app) => {
     const assets: MediaAsset[] = [];
     for (const id of assetIds) {
       const a = await getVisibleMedia(req.user, id);
-      if (a.status !== 'ready' && a.status !== 'disabled') throw conflict(`素材「${a.name}」尚未处理完成（${a.status}）`, 'media.not_ready', { status: a.status, name: a.name });
+      if (a.status !== 'ready') throw conflict(`素材「${a.name}」尚未处理完成（${a.status}）`, 'media.not_ready', { status: a.status, name: a.name });
       assets.push(a);
     }
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, instanceIds));

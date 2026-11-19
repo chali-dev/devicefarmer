@@ -22,19 +22,17 @@ import { CollectorDefer, deviceHalt, haltDevice, onDeviceResumed, withDevice } f
  * Comments & engagement (评论互动, P5).
  *
  * - Received comments are entered by hand (the operator copies them from the phone). The official-API
- *   comment sync (task `comment-sync`, comment_sync_states) was removed on 2026-11-18 by owner decision;
+ *   comment sync was removed on 2026-11-18 by owner decision;
  *   rows it stored earlier (source `api`) stay readable.
  * - Replies (comment_tasks) are always written by a person, optionally from a saved template. No
  *   generated text, no automatic replies, no "reply to all": one reply task per comment request.
  * - No approval step (owner decision 2026-11-18): a submitted reply goes straight to its send task
- *   (draft → scheduled → sending → awaiting_operator). pending_review / approved / rejected stay in the
- *   status list for old rows only; src/db/comment-approval-migration.ts moved waiting rows on.
+ *   (draft → scheduled → sending → awaiting_operator).
  * - Draft first, no test mode (owner decision 2026-11-18): every reply / post comment is saved as a `draft`
  *   (no task, nothing on the phone); only 排程 (submitReply, a time or now) queues it, and the cloud phone then
- *   really sends it. `dry_run` (the former test mode) stays in the enum for old rows only;
- *   src/db/test-mode-removal-migration.ts turned those back into drafts.
+ *   really sends it.
  * - Anti-abuse (owner's hard constraint), each block written to comment_logs with a reason code:
- *   one reply per comment (unless the previous one failed / was rejected / cancelled; also a DB
+ *   one reply per comment (unless the previous one failed / was cancelled; also a DB
  *   partial unique index), the same text at most `duplicateMax` times per account per
  *   `duplicateWindowHours`, at most `sendsPerHour` sends per account (a send over the limit is
  *   deferred to the next free slot, never dropped or pushed through).
@@ -49,9 +47,9 @@ export const REPLY_REF = 'comment_reply';
 export const REPLY_TYPE = 'comment-reply';
 const REPLY_MAX_ATTEMPTS = 3;
 /** Reply states that block another reply to the same comment. */
-export const REPLY_ACTIVE: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent'];
+export const REPLY_ACTIVE: CommentReplyStatus[] = ['draft', 'scheduled', 'sending', 'awaiting_operator', 'sent'];
 /** Reply states counted by the duplicate-text rule (submitted and not dropped). */
-const DUP_COUNTED: CommentReplyStatus[] = ['pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator', 'sent'];
+const DUP_COUNTED: CommentReplyStatus[] = ['scheduled', 'sending', 'awaiting_operator', 'sent'];
 
 type Exec = typeof db | Tx;
 type Level = 'debug' | 'info' | 'warn' | 'error';
@@ -85,10 +83,7 @@ export async function getRules(exec: Exec = db): Promise<CommentRules> {
   };
 }
 
-/**
- * Stored with the known fields only: the removed `requireApproval` and `testMode` of an old row are dropped on the next
- * save (an old colour reading the row then falls back to its own default, test mode ON, i.e. never posts).
- */
+/** Stored with the known fields only. */
 export async function saveRules(input: Partial<CommentRules>): Promise<CommentRules> {
   const keys = Object.keys(DEFAULT_RULES) as (keyof CommentRules)[];
   const next = { ...(await getRules()), ...Object.fromEntries(Object.entries(input).filter(([k, v]) => v !== undefined && (keys as string[]).includes(k))) };
@@ -207,12 +202,12 @@ export async function setCommentStatus(user: AuthUser, c: Comment, status: 'new'
 /** Deletes a manually entered comment (and its reply history). API comments are kept (hide them instead). */
 export async function deleteManualComment(user: AuthUser, c: Comment): Promise<void> {
   if (c.source !== 'manual') throw conflict('只能删除人工录入的评论，接口同步的评论可以隐藏', 'comment.not_manual');
-  const [busy] = await db.select({ id: R.id }).from(R).where(and(eq(R.commentId, c.id), inArray(R.status, ['approved', 'scheduled', 'sending', 'awaiting_operator'])));
+  const [busy] = await db.select({ id: R.id }).from(R).where(and(eq(R.commentId, c.id), inArray(R.status, ['scheduled', 'sending', 'awaiting_operator'])));
   if (busy) throw conflict('该评论有正在发送的回复，请先取消', 'comment.reply_in_progress');
   await db.delete(C).where(eq(C.id, c.id));
 }
 
-// ---------------------------------------------------------------- replies: compose / review
+// ---------------------------------------------------------------- replies: compose
 
 const lockKey = (tx: Tx, key: string) => tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 const isUnique = (err: unknown) => {
@@ -313,7 +308,7 @@ export async function submitReply(user: AuthUser, r: CommentTask, scheduledAt?: 
 
 /**
  * Creates the task-centre task of the reply's current round (runAt = scheduledAt). The reply is `scheduled`
- * until its task runs (also for "now"; `approved` is only on old rows).
+ * until its task runs (also for "now").
  */
 async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<CommentTask> {
   const now = new Date();
@@ -326,12 +321,12 @@ async function scheduleSend(r: CommentTask, actor: AuthUser | null): Promise<Com
       runAt: when, idempotencyKey: `comment-reply:${r.id}:${r.round}`, maxAttempts: r.maxAttempts,
     });
     const [done] = await db.update(R).set({ taskId: task.id, status: 'scheduled' })
-      .where(and(eq(R.id, r.id), eq(R.round, r.round), inArray(R.status, ['approved', 'scheduled']))).returning();
+      .where(and(eq(R.id, r.id), eq(R.round, r.round), eq(R.status, 'scheduled'))).returning();
     await replyLog(done ?? r, { action: when ? 'scheduled' : 'queued', data: { runAt: when?.toISOString() ?? null, round: r.round }, taskId: task.id, actor });
     return done ?? r;
   } catch (err) {
     const [failed] = await db.update(R).set({ status: 'failed', error: (err as Error).message.slice(0, 500), errorCode: 'comment.enqueue_failed' })
-      .where(and(eq(R.id, r.id), inArray(R.status, ['approved', 'scheduled']))).returning();
+      .where(and(eq(R.id, r.id), eq(R.status, 'scheduled'))).returning();
     if (failed) await replyLog(failed, { level: 'error', action: 'failed', code: 'comment.enqueue_failed', message: (err as Error).message });
     throw err;
   }
@@ -343,11 +338,11 @@ async function currentTask(r: CommentTask): Promise<Task | undefined> {
   return t;
 }
 
-/** Cancel before it is sent (draft, review, queued/scheduled, or handed to an operator). */
+/** Cancel before it is sent (draft, queued/scheduled, or handed to an operator). */
 export async function cancelReply(user: AuthUser, r: CommentTask): Promise<CommentTask> {
-  const from: CommentReplyStatus[] = ['draft', 'pending_review', 'approved', 'scheduled', 'awaiting_operator'];
+  const from: CommentReplyStatus[] = ['draft', 'scheduled', 'awaiting_operator'];
   if (!from.includes(r.status)) throw conflict(`当前状态（${r.status}）不能取消`, 'comment.bad_status', { status: r.status });
-  if (r.status === 'approved' || r.status === 'scheduled') {
+  if (r.status === 'scheduled') {
     const t = await currentTask(r);
     if (t && !isFinal(t.status)) {
       if (t.status === 'running') throw conflict('回复正在发送，无法取消', 'comment.bad_status', { status: 'sending' });
@@ -508,8 +503,7 @@ async function runReply(ctx: TaskContext<ReplyPayload>): Promise<unknown> {
     const [r] = await tx.select().from(R).where(eq(R.id, id)).for('update');
     if (!r) return { kind: 'gone' as const };
     // `sending` of this same task = an earlier attempt was cut off before the hand-over / the paste.
-    // `approved` = an old row queued before the approval step was removed.
-    if (r.taskId !== ctx.task.id || !['approved', 'scheduled', 'sending'].includes(r.status)) return { kind: 'skip' as const, r };
+    if (r.taskId !== ctx.task.id || !['scheduled', 'sending'].includes(r.status)) return { kind: 'skip' as const, r };
     if (halted) return { kind: 'park' as const, r };
     await lockKey(tx, `comment-send:${r.accountId}`);
     const now = Date.now();
@@ -650,7 +644,7 @@ registerTaskHandler<ReplyPayload>(REPLY_TYPE, {
     if (!id) return;
     const status = task.status === 'cancelled' ? 'cancelled' as const : 'failed' as const;
     const [row] = await db.update(R).set({ status, error: task.error, errorCode: task.errorCode ?? (status === 'cancelled' ? 'comment.cancelled' : 'comment.failed') })
-      .where(and(eq(R.id, id), eq(R.taskId, task.id), inArray(R.status, ['approved', 'scheduled', 'sending']))).returning();
+      .where(and(eq(R.id, id), eq(R.taskId, task.id), inArray(R.status, ['scheduled', 'sending']))).returning();
     if (row) await replyLog(row, { level: status === 'cancelled' ? 'warn' : 'error', action: status, code: row.errorCode, message: `task ${task.status}`, taskId: task.id });
   },
 });

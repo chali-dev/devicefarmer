@@ -36,7 +36,6 @@ const tab = computed<Tab>({
   set: (v) => { void router.replace({ query: { ...route.query, tab: v } }) },
 })
 const QUEUE: PublishStatus[] = ['pending', 'scheduled', 'running', 'awaiting_operator']
-/** dry_run (former test mode) is no longer produced; db:migrate turned old rows into cancelled. */
 const HISTORY: PublishStatus[] = ['published', 'failed', 'cancelled']
 const ALL: PublishStatus[] = [...QUEUE, ...HISTORY]
 /** Today = every task of the day except cancelled ones (same as the dashboard card). */

@@ -3,23 +3,17 @@
  * - API: every OAuth / connection / API-check / app-credential endpoint, comment sync and analytics refresh are gone
  *   (404, also for admins); GET /api/platforms only carries `enabled` + `features`; /api/publish/platforms has no
  *   `methods`; alert rules / kinds / channel kinds have no connection.expired and no accountCheckHours (PUT with it
- *   is a 400); the dashboard social widget has no `connections`; the generic manual "mark checked" still works.
- * - Data migration (src/db/official-api-removal-migration.ts, run by db:migrate) on seeded rows: platform_connections
- *   rows deleted (sealed tokens gone); unfinished account-stats / comment-sync / social-account-check tasks cancelled
- *   with the task log line, finished ones and other types untouched; a waiting publish round with method 'api'
- *   becomes method null + publish log, an awaiting_operator one is untouched; connection.expired notifications and
- *   alert states deleted (others kept); channel kinds cleaned (a channel left with no kind is disabled, not "all");
- *   alerts.rules loses accountCheckHours + kinds.connection.expired. A second run changes nothing.
- * - A leftover BullMQ job of a cancelled removed-type task is consumed by the real worker without touching the row
- *   (stays cancelled, no task.unknown_type).
+ *   is a 400); the dashboard social widget has no `connections`; the manual "mark checked" is gone (404).
+ * - Schema (migration drop_legacy): platform_connections / comment_sync_states dropped, settings row platform.apps and
+ *   tasks of the removed types gone.
+ * - A leftover BullMQ job of a removed-type task (its row deleted) is consumed by the real worker without a trace.
  * Creates a temporary user; removes everything it created and restores alerts.rules.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:3190 npx tsx --env-file=../../.env scripts/platforms-check.ts
  */
-import { randomBytes } from 'node:crypto';
+import crypto, { randomBytes } from 'node:crypto';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import { sqlClient as sql } from '../src/db/index.js';
-import { migrateOfficialApiRemoval, REMOVED_PUBLISH_LOG, REMOVED_TASK_LOG } from '../src/db/official-api-removal-migration.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
@@ -102,85 +96,23 @@ try {
   const dash = await http('GET', '/api/dashboard', U);
   check('dashboard social widget: no connections', dash.status === 200 && dash.body.widgets?.social && !('connections' in dash.body.widgets.social), dash.body.widgets?.social);
   const ck = await http('POST', `/api/social/accounts/${accId}/checked`, U, { loginStatus: 'logged_in' });
-  check('manual "mark checked" still works', ck.status === 200, ck.status);
+  check('manual "mark checked" is gone too (404, statuses are system-written)', ck.status === 404, ck.status);
 
-  // ---------------------------------------------------------------- data migration
-  const [conn] = await sql<{ id: string }[]>`insert into platform_connections (social_account_id, user_id, platform, access_token_enc, refresh_token_enc, scopes)
-    values (${accId}, ${userId}, 'instagram', ${`sealed-${tag}`}, ${`sealedR-${tag}`}, '{x}') returning id`;
-  const task = async (type: string, status: string) => (await sql<{ id: string }[]>`insert into tasks (type, status, created_by, instance_name, payload, max_attempts)
-    values (${type}, ${status}, ${userId}, ${`plc ${tag}`}, '{}'::jsonb, 1) returning id`)[0]!.id;
-  const tStats = await task('account-stats', 'pending');
-  const tSync = await task('comment-sync', 'scheduled');
-  const tCheck = await task('social-account-check', 'running');
-  const tDone = await task('account-stats', 'success');
-  const tOther = await task('tracked-refresh', 'scheduled');
-  const taskIds = [tStats, tSync, tCheck, tDone, tOther];
-  const [content] = await sql<{ id: string }[]>`insert into contents (user_id, title, body) values (${userId}, ${`plc ${tag}`}, 'x') returning id`;
-  const pub = async (status: string) => (await sql<{ id: string }[]>`insert into publish_tasks (user_id, content_id, account_id, platform, caption, status, method, created_by)
-    values (${userId}, ${content!.id}, ${accId}, 'instagram', '', ${status}, 'api', ${userId}) returning id`)[0]!.id;
-  const pWaiting = await pub('scheduled');
-  // one unfinished row per content+account (partial unique index): the second one is already finished-ish
-  const pAwaiting = (await sql<{ id: string }[]>`update publish_tasks set status = 'awaiting_operator' where id = ${await (async () => {
-    const [c2] = await sql<{ id: string }[]>`insert into contents (user_id, title, body) values (${userId}, ${`plc2 ${tag}`}, 'x') returning id`;
-    return (await sql<{ id: string }[]>`insert into publish_tasks (user_id, content_id, account_id, platform, caption, status, method, created_by)
-      values (${userId}, ${c2!.id}, ${accId}, 'instagram', '', 'pending', 'api', ${userId}) returning id`)[0]!.id;
-  })()} returning id`)[0]!.id;
-  const publishIds = [pWaiting, pAwaiting];
-  await sql`insert into notifications (user_id, kind, severity, params) values (${userId}, 'connection.expired', 'error', '{}'::jsonb), (${userId}, 'device.down', 'error', '{}'::jsonb)`;
-  await sql`insert into alert_states (kind, key, active) values ('connection.expired', ${`plc-${tag}`}, true), ('device.down', ${`plc-${tag}`}, true)`;
-  const chan = async (name: string, kinds: string[]) => (await sql<{ id: string }[]>`insert into alert_channels (name, type, enabled, config, kinds)
-    values (${name}, 'telegram', true, '{}'::jsonb, ${kinds}) returning id`)[0]!.id;
-  const cMixed = await chan(`plc mixed ${tag}`, ['connection.expired', 'device.down']);
-  const cOnly = await chan(`plc only ${tag}`, ['connection.expired']);
-  const cAll = await chan(`plc all ${tag}`, []);
-  channelIds.push(cMixed, cOnly, cAll);
-  await sql`insert into settings (key, value) values ('alerts.rules', ${JSON.stringify({ cooldownMinutes: 17, accountCheckHours: 12, kinds: { 'connection.expired': { inApp: false }, 'device.down': { inApp: false } } })}::jsonb)
-    on conflict (key) do update set value = excluded.value`;
+  // ---------------------------------------------------------------- schema: the removed tables / settings are gone (0048 drop_legacy)
+  const [reg] = await sql<{ pc: string | null; cs: string | null }[]>`select to_regclass('platform_connections')::text as pc, to_regclass('comment_sync_states')::text as cs`;
+  check('tables platform_connections and comment_sync_states dropped', reg!.pc === null && reg!.cs === null, reg);
+  const [apps] = await sql<{ n: number }[]>`select count(*)::int as n from settings where key = 'platform.apps'`;
+  check('settings row platform.apps gone', apps!.n === 0, apps);
+  const [left] = await sql<{ n: number }[]>`select count(*)::int as n from tasks where type in ('account-stats', 'comment-sync', 'social-account-check')`;
+  check('no task rows of the removed types', left!.n === 0, left);
 
-  const logs: string[] = [];
-  const r1 = await migrateOfficialApiRemoval(sql, (m) => logs.push(m), { taskIds, publishTaskIds: publishIds });
-  check('migration run 1: counts', r1.connections >= 1 && r1.tasks === 3 && r1.publishTasks === 1 && r1.notifications >= 1 && r1.alertStates >= 1
-    && r1.channels >= 2 && r1.channelsDisabled >= 1 && r1.rules === 1, r1);
-  check('migration logs one summary line', logs.length === 1 && logs[0]!.startsWith('official platform APIs removed:'), logs);
-  const [connLeft] = await sql`select count(*)::int as n from platform_connections`;
-  check('platform_connections: all rows deleted (no sealed token left)', connLeft!.n === 0 && !(await sql`select 1 from platform_connections where id = ${conn!.id}`).length);
-  const st = await sql<{ id: string; status: string; error: string | null; finished_at: Date | null }[]>`select id, status, error, finished_at from tasks where id = any(${taskIds}::uuid[])`;
-  const s = (id: string) => st.find((x) => x.id === id)!;
-  check('removed-type tasks (pending/scheduled/running) cancelled with finished_at', [tStats, tSync, tCheck].every((id) => s(id).status === 'cancelled' && s(id).finished_at && s(id).error === REMOVED_TASK_LOG), st);
-  check('finished removed-type task and other types untouched', s(tDone).status === 'success' && s(tOther).status === 'scheduled');
-  const tl = await sql<{ task_id: string; message: string }[]>`select task_id, message from task_logs where task_id = any(${taskIds}::uuid[])`;
-  check('task log "cancelled: official platform APIs removed" once per cancelled task', [tStats, tSync, tCheck].every((id) => tl.filter((l) => l.task_id === id && l.message === REMOVED_TASK_LOG).length === 1)
-    && !tl.some((l) => l.task_id === tDone || l.task_id === tOther));
-  const pr = await sql<{ id: string; status: string; method: string | null }[]>`select id, status, method from publish_tasks where id = any(${publishIds}::uuid[])`;
-  const pl = await sql<{ publish_task_id: string; message: string }[]>`select publish_task_id, message from publish_logs where publish_task_id = any(${publishIds}::uuid[])`;
-  check('waiting api publish round → method null + publish log; awaiting_operator untouched',
-    pr.find((x) => x.id === pWaiting)?.method === null && pr.find((x) => x.id === pWaiting)?.status === 'scheduled'
-    && pr.find((x) => x.id === pAwaiting)?.method === 'api' && pl.filter((l) => l.publish_task_id === pWaiting && l.message === REMOVED_PUBLISH_LOG).length === 1
-    && !pl.some((l) => l.publish_task_id === pAwaiting), { pr, pl });
-  const nk = await sql<{ kind: string }[]>`select kind from notifications where user_id = ${userId}`;
-  check('connection.expired notifications deleted, others kept', nk.length === 1 && nk[0]!.kind === 'device.down', nk);
-  const as = await sql<{ kind: string }[]>`select kind from alert_states where key = ${`plc-${tag}`}`;
-  check('connection.expired alert states deleted, others kept', as.length === 1 && as[0]!.kind === 'device.down', as);
-  const cs = await sql<{ id: string; enabled: boolean; kinds: string[] }[]>`select id, enabled, kinds from alert_channels where id = any(${[cMixed, cOnly, cAll]}::uuid[])`;
-  const c = (id: string) => cs.find((x) => x.id === id)!;
-  check('channel kinds cleaned: mixed keeps device.down (enabled), only-connection.expired disabled with no kinds, "all" untouched',
-    JSON.stringify(c(cMixed).kinds) === '["device.down"]' && c(cMixed).enabled && c(cOnly).kinds.length === 0 && !c(cOnly).enabled && c(cAll).enabled && c(cAll).kinds.length === 0, cs);
-  const [rules] = await sql<{ value: any }[]>`select value from settings where key = 'alerts.rules'`;
-  check('alerts.rules: accountCheckHours and kinds.connection.expired removed, the rest kept',
-    !('accountCheckHours' in rules!.value) && !('connection.expired' in rules!.value.kinds) && rules!.value.kinds['device.down'].inApp === false && rules!.value.cooldownMinutes === 17, rules!.value);
-
-  const r2 = await migrateOfficialApiRemoval(sql, () => undefined, { taskIds, publishTaskIds: publishIds });
-  check('migration run 2: no-op', Object.values(r2).every((n) => n === 0), r2);
-  const st2 = await sql<{ n: number }[]>`select count(*)::int as n from task_logs where task_id = any(${taskIds}::uuid[])`;
-  check('run 2 wrote no task logs', st2[0]!.n === tl.length);
-
-  // ---------------------------------------------------------------- a leftover job of a cancelled removed-type task
-  await q.add('account-stats', { taskId: tStats }, { jobId: tStats, removeOnComplete: true, removeOnFail: true });
+  // ---------------------------------------------------------------- a leftover job of a removed-type task (row deleted by the migration)
+  const ghost = crypto.randomUUID();
+  await q.add('account-stats', { taskId: ghost }, { jobId: ghost, removeOnComplete: true, removeOnFail: true });
   let consumed = false;
-  for (let i = 0; i < 50 && !consumed; i++) { await sleep(200); consumed = !(await q.getJob(tStats)); }
-  const [after] = await sql<{ status: string; error_code: string | null }[]>`select status, error_code from tasks where id = ${tStats}`;
-  const tl2 = await sql<{ n: number }[]>`select count(*)::int as n from task_logs where task_id = ${tStats}`;
-  check('leftover job consumed by the worker; the task stays cancelled (no task.unknown_type), no new log', consumed && after!.status === 'cancelled' && after!.error_code === null && tl2[0]!.n === 1, { consumed, after, logs: tl2[0]!.n });
+  for (let i = 0; i < 50 && !consumed; i++) { await sleep(200); consumed = !(await q.getJob(ghost)); }
+  const [after] = await sql<{ n: number }[]>`select count(*)::int as n from tasks where id = ${ghost}`;
+  check('leftover job consumed by the worker without creating or touching a task row', consumed && after!.n === 0, { consumed, after });
 } finally {
   await sql`delete from alert_states where key = ${`plc-${tag}`}`;
   if (channelIds.length) await sql`delete from alert_channels where id = any(${channelIds}::uuid[])`;

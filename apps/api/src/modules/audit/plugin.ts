@@ -39,8 +39,6 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/notifications/read-all',
   'POST /api/notifications/delete',
   'POST /api/notifications/delete-read',
-  // LEGACY: the removed daily AI-draft switch of an older page; accepted and ignored, changes nothing.
-  'PUT /api/social/accounts/:id/ai-drafts',
 ]);
 
 /** Routes that are read-only for some bodies: 批量发布's preview (`dryRun: true`) creates nothing. */
@@ -331,7 +329,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'POST /api/publish/tasks/:id/cancel': { action: 'publish.cancel' },
   'POST /api/publish/tasks/:id/reschedule': { action: 'publish.reschedule', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
-  'POST /api/publish/tasks/:id/retry': { action: 'publish.retry', detail: ({ body }) => ({ scheduledAt: body.scheduledAt }) },
   'PATCH /api/publish/tasks/:id': { action: 'publish.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'POST /api/publish/tasks/:id/outcome': {
     action: ({ body }) => (body.result === 'published' ? 'publish.outcome_published' : 'publish.outcome_failed'),
@@ -368,8 +365,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'POST /api/comment-templates': { action: 'comment.template_create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ shared: body.shared, kind: body.kind ?? 'comment' }) },
   'PUT /api/comment-templates/:id': { action: 'comment.template_update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), kind: body.kind }) },
   'DELETE /api/comment-templates/:id': { action: 'comment.template_delete' },
-  // 人设: names only (no 定位, no style texts: only which fields changed); the route adds draftEnabled/draftsPerDay, the
-  // persona name of a template and the merge target.
+  // 人设: names only (no 定位, no style texts: only which fields changed); the route adds the persona name of a template.
   'POST /api/personas': { action: 'persona.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ scope: body.scope, name: body.name, fields: Object.keys(body).filter((k) => body[k] !== undefined) }) },
   'PATCH /api/personas/:id': { action: 'persona.update', detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined), name: body.name, sort: body.sort }) },
   'DELETE /api/personas/:id': { action: 'persona.delete' },

@@ -47,8 +47,7 @@ function cleanName(s: string, max: number): string {
 // ---------------------------------------------------------------- access rules
 
 /**
- * Non-admins see public assets only when ready (not processing/failed; legacy 'disabled' rows, which the
- * public-media-visibility migration turns ready, stay hidden) and only their own private ones.
+ * Non-admins see public assets only when ready (not processing/failed) and only their own private ones.
  */
 export function canView(user: AuthUser, a: MediaAsset): boolean {
   if (a.deletedAt) return false;
@@ -103,17 +102,11 @@ export const MediaMetaSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   categoryId: z.string().uuid().nullable().optional(),
   tags: z.array(MediaTag).max(20).optional(),
-  /**
-   * LEGACY (owner decision 2026-11-18: public media is always visible to every user, no 对用户可见).
-   * 'ready' from an older page is accepted and ignored; 'disabled' is refused (media.visibility_removed).
-   */
-  status: z.enum(['ready', 'disabled']).optional(),
 });
 export type MediaMeta = z.infer<typeof MediaMetaSchema>;
 
-/** Rules for metadata of an asset of `owner`: category of the same owner; hiding an asset is gone. */
-export async function assertMetaFor(owner: Owner, m: Pick<MediaMeta, 'categoryId' | 'status'>): Promise<void> {
-  if (m.status === 'disabled') throw badRequest('公共素材始终对所有用户可见，已不能停用', 'media.visibility_removed');
+/** Rules for metadata of an asset of `owner`: category of the same owner. */
+export async function assertMetaFor(owner: Owner, m: Pick<MediaMeta, 'categoryId'>): Promise<void> {
   if (m.categoryId) await assertCategoryFor(owner, m.categoryId);
 }
 

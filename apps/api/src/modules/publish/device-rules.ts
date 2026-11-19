@@ -4,16 +4,12 @@ import { db, schema } from '../../db/index.js';
 
 /**
  * 风控 → 云手机发帖 (settings key `publish.device`, owner decision 2026-11-18): limits of the `device` publish
- * method (modules/publish/device.ts) per social account. The former `testMode` switch was removed (owner decision
- * 2026-11-18: content is a draft until a person distributes / schedules it, then the phone really posts); a stored
- * `testMode` is ignored and dropped on the next save, and a PUT that still sends it is accepted with it ignored.
+ * method (modules/publish/device.ts) per social account. Always on, no test mode (owner decision 2026-11-18: content is
+ * a draft until a person distributes / schedules it, then the phone really posts).
  *
  * - postsPerDay: device runs per account per rolling 24 h.
  * - minGapMin: minimum minutes between two device runs of one account.
  * Over a limit the run is deferred to a new round at the allowed time, never dropped.
- * The former `enabled` switch was removed too (owner decision 2026-11-18: cloud-phone posting is always on); a stored
- * `enabled` (also false) is ignored and dropped on the next save, a PUT that still sends it is accepted with it ignored.
- * An old colour reading a stored value without `enabled` falls back to its own default (on).
  */
 const KEY = 'publish.device';
 
@@ -22,10 +18,8 @@ export const DevicePublishInput = z.object({
   minGapMin: z.number().int().min(0).max(1440),
 });
 export type DevicePublishRules = z.infer<typeof DevicePublishInput>;
-/** PUT body: partial; `testMode` / `enabled` of an older page are accepted and ignored (removed settings), anything else unknown is refused. */
-export const DevicePublishBody = DevicePublishInput.partial()
-  .extend({ testMode: z.boolean().optional(), enabled: z.boolean().optional() }).strict()
-  .transform(({ testMode: _t, enabled: _e, ...rest }) => rest);
+/** PUT body: partial, anything unknown is refused. */
+export const DevicePublishBody = DevicePublishInput.partial().strict();
 export const DEFAULT_DEVICE_PUBLISH: DevicePublishRules = { postsPerDay: 3, minGapMin: 60 };
 
 /** Stored values over the defaults; an invalid stored field falls back to its default. */

@@ -125,8 +125,6 @@ const Target = z.object({
 });
 const DistributeBody = z.object({
   targets: z.array(Target).min(1).max(50),
-  /** LEGACY (older pages / scripts): accepted and ignored, every publish round is one attempt since 2026-11-18. */
-  maxAttempts: z.number().int().min(1).max(10).optional(),
   republish: z.boolean().optional(),
 });
 
@@ -266,8 +264,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
       const set: Partial<typeof c.$inferInsert> = {};
       if (b.title !== undefined) set.title = b.title;
       if (b.body !== undefined) set.body = b.body;
-      // The legacy text is cleared whenever the category changes (see content-category-data-migration.ts).
-      if (b.categoryId !== undefined) Object.assign(set, { categoryId: b.categoryId, category: null });
+      if (b.categoryId !== undefined) set.categoryId = b.categoryId;
       if (b.platformHints !== undefined) set.platformHints = b.platformHints;
       // The source language can no longer be changed (older contents keep theirs, read-only). The one exception: a
       // legacy content without a source language may be declared Chinese (unless it has a Chinese translation).

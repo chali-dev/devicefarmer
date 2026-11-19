@@ -20,7 +20,7 @@ import { writeLogs, type LogEntry, type Tx } from './social.js';
  * don't follow yet (accounts synced before this rule).
  */
 const SA = schema.socialAccounts;
-const REPLY_UNFINISHED = ['draft', 'pending_review', 'approved', 'scheduled', 'sending', 'awaiting_operator'] as const;
+const REPLY_UNFINISHED = ['draft', 'scheduled', 'sending', 'awaiting_operator'] as const;
 export const ASSIGN_MESSAGE = 'phone assigned';
 
 export interface AccountMove { id: string; handle: string; from: string; personaCleared: boolean; targetsRemoved: number }

@@ -8,7 +8,7 @@ import { toContentItems } from '../content/content.js';
 import { distribute } from '../publish/publish.js';
 import { toPublishItems } from '../publish/routes.js';
 import { visibleAccount } from '../social/social.js';
-import { AccountDraftSaveInput, AccountDraftsInput, previewAccountDraft, previewDraft, PreviewInput, PREVIEW_LIMIT, saveAccountDraft } from './drafts.js';
+import { AccountDraftSaveInput, previewAccountDraft, previewDraft, PreviewInput, PREVIEW_LIMIT, saveAccountDraft } from './drafts.js';
 import { AI_MODELS, AiSettingsInput, getAiSettings, saveAiSettings } from './settings.js';
 
 const Id = z.object({ id: z.string().uuid() });
@@ -43,15 +43,6 @@ export const aiRoutes: FastifyPluginAsyncZod = async (app) => {
       throw err;
     }
   });
-
-  /**
-   * LEGACY (the removed daily switch, for a page of an older release): GET answers in the old shape with the switch
-   * off and no runs (the legacy columns are not read), PUT is accepted and ignores its body (nothing written, not
-   * audited). RBAC as before (others 404).
-   */
-  const legacyState = async (a: { personaId: string | null }) => ({ enabled: false, personaId: a.personaId, runs: [], ai: { keySet: (await getAiSettings()).keySet } });
-  app.get('/api/social/accounts/:id/ai-drafts', { schema: { params: Id } }, async (req) => legacyState(await visibleAccount(req.user, req.params.id)));
-  app.put('/api/social/accounts/:id/ai-drafts', { schema: { params: Id, body: AccountDraftsInput } }, async (req) => legacyState(await visibleAccount(req.user, req.params.id)));
 
   /**
    * 「AI生成草稿」 step 1: one draft generated synchronously for this account (≤ 90 s, aborted when the client leaves),

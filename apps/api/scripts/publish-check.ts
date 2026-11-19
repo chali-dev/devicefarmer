@@ -6,12 +6,11 @@
  *   Pushing media to a real phone is not covered here. Instagram runs try the `device` method (云手机发帖) first: adb
  *   doesn't see the placeholder phone, so they are handed to an operator (reason publish.device_offline), as before.
  * - No automatic publish retries (2026-11-18): every round is one attempt. 系统配置 → 发布任务 (`publish.timeout`) is
- *   set to 120 s for the run (validation 400s, an older page's maxAttempts/backoffSec accepted + ignored and never
- *   stored (the LEGACY `publish.retry` row stays untouched), audit detail without them); distribute's maxAttempts is
- *   ignored (1); the TikTok round on the offline phone fails once with publish.device_offline (1 attempt, no "will
+ *   set to 120 s for the run (strict: maxAttempts/backoffSec → 400, audit detail timeout only); distribute's maxAttempts
+ *   is stripped (1 attempt); the POST …/retry endpoint is gone (404); the TikTok round on the offline phone fails once with publish.device_offline (1 attempt, no "will
  *   retry", no new round queued); 编辑后重新发布 = the content edited + distributed again to that account → a NEW
  *   publish task with the edited text (the failed one stays, no `republish` needed), the content status follows the
- *   newest task per account; a new round takes a changed timeout (300 s). The previous rows of both keys are restored.
+ *   newest task per account; a new round takes a changed timeout (300 s). The previous `publish.timeout` row is restored.
  * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
  *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
@@ -76,7 +75,7 @@ const ptIds = new Set<string>();
 const t0 = new Date((await sqlClient`select now() as now`)[0]!.now as Date);
 const PINNED = 'pc-test-pinned-online';
 // 发布任务 (timeout) for this run (restored in finally).
-const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, ['publish.retry', 'publish.timeout']));
+const prevRetryRows = await db.select().from(schema.settings).where(inArray(schema.settings.key, ['publish.timeout']));
 
 const ptask = async (token: string, id: string) => (await http('GET', `/api/publish/tasks/${id}`, token)).body;
 async function waitStatus(token: string, id: string, statuses: string[], ms = 60_000) {
@@ -99,12 +98,10 @@ try {
     check('publish task setting saved (timeout 120 s); no attempts/backoff in the response; default = env', ok.status === 200 && ok.body.retry.timeoutSec === 120 && ok.body.retry.timeoutMs === 120_000
       && !('maxAttempts' in ok.body.retry) && !('backoffSec' in ok.body.retry) && !('maxAttempts' in ok.body.defaults)
       && ok.body.defaults.timeoutMs === Number(process.env.PUBLISH_TIMEOUT_MS ?? 600_000), ok.text.slice(0, 300));
-    const retryRowBefore = JSON.stringify((await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.retry')))[0]?.value ?? null);
     const old = await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 4, backoffSec: 2 });
-    check('older page PUT {maxAttempts, backoffSec} (no timeoutSec): 200, accepted + ignored, timeout kept', old.status === 200 && old.body.retry.timeoutSec === 120 && !('maxAttempts' in old.body.retry), old.text.slice(0, 200));
     const old2 = await http('PUT', '/api/settings/publish-retry', T, { maxAttempts: 7, backoffSec: 9, timeoutSec: 120 });
-    const retryRowAfter = JSON.stringify((await db.select().from(schema.settings).where(eq(schema.settings.key, 'publish.retry')))[0]?.value ?? null);
-    check('older page PUT with all three fields: 200; the LEGACY publish.retry row is never written', old2.status === 200 && old2.body.retry.timeoutSec === 120 && retryRowAfter === retryRowBefore, `${retryRowBefore} → ${retryRowAfter}`);
+    const after = await http('GET', '/api/settings/publish-retry', T);
+    check('the removed maxAttempts / backoffSec → 400 (strict), timeout kept', old.status === 400 && old2.status === 400 && after.body.retry.timeoutSec === 120, `${old.status} ${old2.status}`);
     await new Promise((res) => setTimeout(res, 1500));
     const aus = await db.select().from(schema.auditLogs).where(and(eq(schema.auditLogs.action, 'settings.publish_retry'), gte(schema.auditLogs.at, t0), eq(schema.auditLogs.status, 200)))
       .orderBy(schema.auditLogs.at);
@@ -267,7 +264,7 @@ try {
   r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA, caption: 'TT caption', hashtags: ['#fyp', 'fyp', 'demo'] }], maxAttempts: 2 });
   const ttTask = r.body.created?.[0];
   if (ttTask) ptIds.add(ttTask.id);
-  check('distribute to TikTok (an older page\'s maxAttempts 2 ignored → 1): hashtags normalised', r.status === 201 && ttTask.hashtags.join() === 'fyp,demo' && ttTask.maxAttempts === 1 && ttTask.text === 'TT caption\n\n#fyp #demo', r.text.slice(0, 200));
+  check('distribute to TikTok (a maxAttempts 2 in the body is stripped → 1): hashtags normalised', r.status === 201 && ttTask.hashtags.join() === 'fyp,demo' && ttTask.maxAttempts === 1 && ttTask.text === 'TT caption\n\n#fyp #demo', r.text.slice(0, 200));
 
   // ---------------------------------------------------------------- distribution: YouTube scheduled + Instagram now
   const runAt = new Date(Date.now() + 6000);
@@ -283,7 +280,7 @@ try {
   const [ytRow0] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, ytTask.taskId));
   check('scheduler task: type publish, scheduled, runAt, idempotency key publish:<id>:1, ref publish, 1 attempt, no backoff, timeout 120 s',
     ytRow0?.type === 'publish' && ytRow0.status === 'scheduled' && Math.abs(ytRow0.runAt!.getTime() - runAt.getTime()) < 1000
-    && ytRow0.idempotencyKey === `publish:${ytTask.id}:1` && ytRow0.refType === 'publish' && ytRow0.refId === ytTask.id && ytRow0.maxAttempts === 1 && ytTask.maxAttempts === 1 && ytRow0.backoffMs === null && ytRow0.timeoutMs === 120_000,
+    && ytRow0.idempotencyKey === `publish:${ytTask.id}:1` && ytRow0.refType === 'publish' && ytRow0.refId === ytTask.id && ytRow0.maxAttempts === 1 && ytTask.maxAttempts === 1 && !('backoffMs' in ytRow0) && ytRow0.timeoutMs === 120_000,
     `${ytRow0?.status} ${ytRow0?.idempotencyKey} max=${ytRow0?.maxAttempts} timeout=${ytRow0?.timeoutMs}`);
   check('content status after distribution: scheduled (stage ready)', await contentStatus(A, cVid.id) === 'scheduled');
 
@@ -443,13 +440,9 @@ try {
   check('after cancel the media can be deleted; it drops out of the drafts', r.status === 204 && (await http('GET', `/api/contents/${cLater.id}`, A)).body.content.media.length === 0
     && (await http('GET', `/api/contents/${cImg.id}`, A)).body.content.media.map((m: any) => m.id).join() === imgA1);
 
-  // LEGACY retry endpoint (older pages; the UI offers 编辑后重新发布): still schedules the same snapshot, 1 attempt
+  // the former retry endpoint (same snapshot again) is gone: the UI offers 编辑后重新发布 (a new publish task)
   r = await http('POST', `/api/publish/tasks/${later.id}/retry`, A, {});
-  check('legacy retry of a cancelled task: 202, round 3, retry_of = previous scheduler task', r.status === 202 && r.body.task.attemptNo === 3, r.text.slice(0, 160));
-  d = await waitStatus(A, later.id, ['awaiting_operator', 'failed']);
-  const lastRun = d.runs[d.runs.length - 1];
-  check('retried run: media snapshot gone → fails at once with publish.media_unavailable (no retry)', d.task.status === 'failed' && d.task.errorCode === 'publish.media_unavailable'
-    && lastRun.attempts === 1 && lastRun.retryOf === newRun!.id && d.runs.length === 3, `${d.task.status} ${d.task.errorCode} attempts=${lastRun?.attempts}`);
+  check('POST …/retry of a cancelled task → 404 (endpoint removed)', r.status === 404, r.text.slice(0, 160));
 
   // operator failure
   r = await http('POST', '/api/contents', A, { title: `pc-${tag} opfail`, mediaIds: [imgA1] });
@@ -471,10 +464,7 @@ try {
   r = await http('GET', `/api/tasks/${op.taskId}`, A);
   check('task centre shows the publish task to its owner; generic retry is disabled (canRetry false)', r.status === 200 && r.body.task.type === 'publish' && r.body.task.canRetry === false);
   r = await http('POST', `/api/publish/tasks/${op.id}/retry`, A, {});
-  d = await waitStatus(A, op.id, ['awaiting_operator', 'failed']);
-  check('legacy retry after operator failure → awaiting operator again, history keeps 2 rounds (1 attempt each)', d.task.status === 'awaiting_operator' && d.runs.length === 2 && d.task.attemptNo === 2
-    && d.runs.every((x: any) => x.maxAttempts === 1));
-  await http('POST', `/api/publish/tasks/${op.id}/cancel`, A);
+  check('no retry after an operator failure (POST …/retry → 404)', r.status === 404, r.text.slice(0, 160));
 
   // ---------------------------------------------------------------- account checks
   r = await http('POST', `/api/contents/${cOp.id}/distribute`, A, { targets: [{ accountId: igSusp }] });
@@ -521,8 +511,8 @@ try {
   {
     const [ttRun] = await db.select().from(schema.tasks).where(eq(schema.tasks.id, d.task.taskId));
     const lines = ttRun ? await db.select().from(schema.taskLogs).where(eq(schema.taskLogs.taskId, ttRun.id)) : [];
-    check('scheduler task: failed, timeout_ms 120000, no backoff, no "failed, retrying" line', ttRun?.status === 'failed' && ttRun.timeoutMs === 120_000 && ttRun.backoffMs === null
-      && !lines.some((l) => /retrying/.test(l.message)), `${ttRun?.status} ${ttRun?.timeoutMs} ${ttRun?.backoffMs}`);
+    check('scheduler task: failed, timeout_ms 120000, no "failed, retrying" line', ttRun?.status === 'failed' && ttRun.timeoutMs === 120_000
+      && !lines.some((l) => /retrying/.test(l.message)), `${ttRun?.status} ${ttRun?.timeoutMs}`);
     await sleep(4000);
     const later2 = await ptask(A, ttTask.id);
     const open = await db.select({ id: schema.tasks.id }).from(schema.tasks).where(and(eq(schema.tasks.refId, ttTask.id), inArray(schema.tasks.status, ['pending', 'scheduled', 'running'])));
@@ -635,14 +625,14 @@ try {
   // ---------------------------------------------------------------- audit
   const audit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.username, `pca${tag}`)));
   const acts = new Set(audit.map((a) => a.action));
-  const want = ['content.create', 'content.update', 'content.distribute', 'content.delete', 'publish.outcome_published', 'publish.outcome_failed', 'publish.reschedule', 'publish.cancel', 'publish.retry', 'publish.update'];
+  const want = ['content.create', 'content.update', 'content.distribute', 'content.delete', 'publish.outcome_published', 'publish.outcome_failed', 'publish.reschedule', 'publish.cancel', 'publish.update'];
   check('audit entries for content + publish actions', want.every((a) => acts.has(a)), want.filter((a) => !acts.has(a)).join(',') || 'all present');
   const dist = audit.find((a) => a.action === 'content.distribute' && a.status === 201);
   check('audit detail allowlisted (no captions)', !!dist && Array.isArray((dist.detail as any).accountIds) && !JSON.stringify(audit.map((a) => a.detail)).includes('Edited caption'));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);
 } finally {
-  await db.delete(schema.settings).where(inArray(schema.settings.key, ['publish.retry', 'publish.timeout']));
+  await db.delete(schema.settings).where(inArray(schema.settings.key, ['publish.timeout']));
   if (prevRetryRows.length) await db.insert(schema.settings).values(prevRetryRows);
   // Users first: their contents, accounts, publish tasks and private media go with them.
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);

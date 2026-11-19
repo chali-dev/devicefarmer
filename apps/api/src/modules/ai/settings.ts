@@ -8,10 +8,6 @@ import { openSecret, sealSecret } from '../../lib/secret-box.js';
  * secret-box and write-only (the API only reports `keySet`, like the YouTube key); it is never put in task payloads,
  * logs or audit entries. Used only by AI drafts (drafts.ts: AI测试 and 「AI生成草稿」, both started by a person).
  * There is no global on/off (removed 2026-11-18, owner: 「系统配置 AI KEY 模型；启用放在媒体号里」): only the key decides.
- * A stored `enabled` of an older release is ignored (a stored false blocks nothing) and dropped on the next save; a PUT
- * with it from an older page is accepted and ignores it (zod strips it). The same holds for `hour` (the daily
- * generation hour, removed with the daily drafts on 2026-11-18: not returned, a PUT with it is accepted and ignores it,
- * a stored value is dropped on the next save).
  */
 const KEY = 'ai';
 
@@ -20,7 +16,7 @@ export const AI_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-
 export type AiModel = (typeof AI_MODELS)[number];
 export const DEFAULT_AI_MODEL: AiModel = 'claude-opus-5-5';
 
-interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel; /** LEGACY: ignored, dropped on save */ hour?: number; /** LEGACY: ignored, dropped on save */ enabled?: boolean }
+interface StoredAi { apiKeyEnc?: string; workspaceId?: string; model?: AiModel }
 
 /**
  * `workspaceId`: an Anthropic API key that isn't scoped to a workspace (personal / service account key created for "all
@@ -36,9 +32,6 @@ export const AiSettingsInput = z.object({
   /** undefined keeps, null/'' clears. */
   workspaceId: z.union([z.string().trim().regex(/^wrkspc_[A-Za-z0-9]{8,64}$/, 'invalid workspace id'), z.literal(''), z.null()]).optional(),
   model: z.enum(AI_MODELS).optional(),
-  // `hour` (removed with the daily drafts): accepted from an older page (as it validated it) and ignored.
-  hour: z.number().int().min(0).max(23).optional(),
-  // `enabled` (removed): not listed, so zod strips it from an older page's body.
 });
 export type AiSettingsInput = z.infer<typeof AiSettingsInput>;
 
@@ -67,8 +60,6 @@ export async function saveAiSettings(input: AiSettingsInput): Promise<AiSettings
   if (input.workspaceId === null || input.workspaceId === '') delete next.workspaceId;
   else if (input.workspaceId !== undefined) next.workspaceId = input.workspaceId;
   if (input.model !== undefined) next.model = input.model;
-  delete next.hour;
-  delete next.enabled;
   await db.insert(schema.settings).values({ key: KEY, value: next })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value: next, updatedAt: new Date() } });
   return getAiSettings();

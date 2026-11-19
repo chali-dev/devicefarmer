@@ -134,8 +134,8 @@ try {
     && r.body.account.status === 'active' && r.body.account.dataMode === 'device_unconfigured' && r.body.account.instanceId === null && r.body.account.phone === null && r.body.account.followers === null
     && r.body.account.refreshIntervalHours === 24 && !!r.body.account.nextRefreshAt, r.text.slice(0, 160));
   const ig = r.body.account; accountIds.push(ig.id);
-  const igCat = async () => (await db.select({ c: schema.trackedAccounts.category }).from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, ig.id)))[0]?.c;
-  check('create: category in the body ignored (no category in the response, column stays null)', !('category' in ig) && await igCat() === null, r.text.slice(0, 160));
+  const igCat = async () => (await sqlClient`select count(*)::int as n from information_schema.columns where table_name = 'tracked_accounts' and column_name = 'category'`)[0]!.n;
+  check('create: category in the body ignored (no category in the response, the column is gone)', !('category' in ig) && await igCat() === 0, r.text.slice(0, 160));
   r = await http('POST', '/api/tracked-accounts', A.token, { input: '@NATGEO', platform: 'instagram' });
   check('duplicate (same user, platform, handle) refused 409 tracked.duplicate', r.status === 409 && r.body.code === 'tracked.duplicate');
   r = await http('POST', '/api/tracked-accounts', B.token, { input: 'natgeo', platform: 'instagram', tags: ['b-only'] });
@@ -151,8 +151,8 @@ try {
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { displayName: 'National Geographic', bio: 'bio', avatarUrl: 'https://example.org/a.jpg' });
   check('update profile fields', r.status === 200 && r.body.account.displayName === 'National Geographic' && r.body.account.avatarUrl === 'https://example.org/a.jpg');
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { notes: 'nat geo 2', category: 'Media' });
-  check('update: category ignored (200, no category in the response, column stays null)', r.status === 200 && r.body.account.notes === 'nat geo 2'
-    && !('category' in r.body.account) && await igCat() === null, r.text.slice(0, 160));
+  check('update: category ignored (200, no category in the response, column is gone)', r.status === 200 && r.body.account.notes === 'nat geo 2'
+    && !('category' in r.body.account) && await igCat() === 0, r.text.slice(0, 160));
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, { avatarUrl: 'javascript:alert(1)' });
   check('non-http avatar URL rejected 400', r.status === 400);
   r = await http('PATCH', `/api/tracked-accounts/${ig.id}`, A.token, {});
