@@ -8,7 +8,7 @@ import { connectionPanel, deviceHistory, deviceLogs } from './connections.js';
 import { LEVELS, listLogFiles, readLogs, type LevelName } from './logs.js';
 import { getRules, LIMITS as ALERT_LIMITS, saveRules } from '../notify/rules.js';
 import { DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention } from '../tasks/retention.js';
-import { runAllPurges } from './maintenance.js';
+import { PURGE_KINDS, purgeOne, runAllPurges } from './maintenance.js';
 import { getSystemSettings, saveSystemSettings, SYSTEM_DEFAULTS, SystemSettings } from './settings.js';
 
 /**
@@ -49,6 +49,8 @@ export const systemRoutes: FastifyPluginAsyncZod = async (app) => {
 
   /** 立即清理: every retention purge now + the hourly maintenance (crashed backups, daily backup schedule). */
   app.post('/api/system/maintenance', admin, async () => ({ result: await runAllPurges() }));
+  /** One row's 立即清理 (系统配置 → 日志): that kind only, with its stored retention. */
+  app.post('/api/system/purge/:kind', { ...admin, schema: { params: z.object({ kind: z.enum(PURGE_KINDS) }) } }, async (req) => ({ result: await purgeOne(req.params.kind) }));
 
   // ------------------------------------------------------------ backups
   app.get('/api/system/backups', admin, async () => ({ backups: await listBackups(), pgDumpCmd: config.PG_DUMP_CMD }));

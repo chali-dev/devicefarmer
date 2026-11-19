@@ -160,6 +160,17 @@ try {
     && mKeep.body.result.auditDeleted >= 1 && mKeep.body.result.riskEventsDeleted >= 1 && mKeep.body.result.notificationsDeleted >= 1
     && ['logFilesDeleted', 'historyDeleted', 'tasksDeleted', 'taskLogsDeleted'].every((k) => k in mKeep.body.result), JSON.stringify(mKeep.body.result));
   check('立即清理: task logs 永久保留 keeps the old finished task', await exists(schema.tasks, tOld!.id) && mKeep.body.result.tasksDeleted === 0);
+  // one row's 立即清理: only that kind
+  const [rOnly] = await db.insert(schema.riskEvents).values({ source: 'collector', code: `test.ret1_${tag}`, at: ago(7) }).returning();
+  const one = await http('POST', '/api/system/purge/risk', T);
+  check('row 立即清理 (purge/risk): only 风控记录 past retention deleted, the old audit row untouched, count returned',
+    one.status === 200 && one.body.result.deleted >= 1 && !(await exists(schema.riskEvents, rOnly!.id)) && await exists(schema.auditLogs, aNew!.id), JSON.stringify(one.body));
+  const [pBad, pUser] = await Promise.all([http('POST', '/api/system/purge/nope', T), http('POST', '/api/system/purge/audit', U)]);
+  check('row 立即清理: unknown kind 400, user 403', pBad.status === 400 && pUser.status === 403, `${pBad.status} ${pUser.status}`);
+  const pTasks = await http('POST', '/api/system/purge/tasks', T);
+  check('row 立即清理 (purge/tasks) under 永久保留: nothing deleted, deleted + logs counts', pTasks.status === 200 && pTasks.body.result.deleted === 0 && 'logs' in pTasks.body.result && await exists(schema.tasks, tOld!.id), JSON.stringify(pTasks.body));
+  const pFiles = await http('POST', '/api/system/purge/logs', T);
+  check('row 立即清理 (purge/logs): a number of files', pFiles.status === 200 && typeof pFiles.body.result.deleted === 'number', JSON.stringify(pFiles.body));
   await http('PUT', '/api/system/settings', T, { taskRetentionDays: 1, auditRetentionDays: 10 });
   const mTasks = await http('POST', '/api/system/maintenance', T);
   check('立即清理: task logs past 1 day deleted; audit row now past 10 days deleted', !(await exists(schema.tasks, tOld!.id)) && mTasks.body.result.tasksDeleted >= 1
@@ -169,6 +180,8 @@ try {
     .orderBy(schema.auditLogs.at).then((rows) => rows.filter((x) => (x.detail as any)?.riskEventsRetentionDays === 5));
   check('audit: system.settings records the retention values', !!retAudit && (retAudit.detail as any).auditRetentionDays === 30 && (retAudit.detail as any).taskRetentionDays === 1, JSON.stringify(retAudit?.detail));
   const riskView = (await http('GET', '/api/risk/settings', T)).body;
+  const purgeAudit = await db.select().from(schema.auditLogs).where(and(gte(schema.auditLogs.at, t0), eq(schema.auditLogs.action, 'system.purge')));
+  check('audit: system.purge with the kind', purgeAudit.some((a) => (a.detail as any)?.kind === 'risk' && a.status === 200), JSON.stringify(purgeAudit.map((a) => [a.status, a.detail])));
   check('风控 settings report the 风控记录 retention from the setting', riskView.eventRetentionDays === 5, String(riskView.eventRetentionDays));
 
   // ---------------------------------------------------------------- backup now ×3 (keep 2)

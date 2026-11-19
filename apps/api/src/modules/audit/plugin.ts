@@ -473,6 +473,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     }),
   },
   'POST /api/system/maintenance': { action: 'system.maintenance' },
+  'POST /api/system/purge/:kind': { action: 'system.purge', detail: ({ params }) => ({ kind: params.kind }) },
   'POST /api/system/backups': { action: 'system.backup_create' },
   'DELETE /api/system/backups/:id': { action: 'system.backup_delete' },
 };

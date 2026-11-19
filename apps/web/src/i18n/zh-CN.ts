@@ -2058,7 +2058,9 @@ const zhCN = {
       },
       keepForever: '永久保留',
       cleanNow: '立即清理',
-      cleaned: '已清理：日志文件 {files}、设备日志 {history}、操作日志 {audit}、任务 {tasks}、风控记录 {risk}、通知 {notes}',
+      cleanedRows: '已清理 {n} 条',
+      cleanedFiles: '已清理 {n} 个日志文件',
+      cleanedTasks: '已清理 {n} 个任务、{logs} 条任务日志',
       empty: '没有匹配的日志',
     },
     conn: {

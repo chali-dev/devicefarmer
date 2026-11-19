@@ -5,12 +5,17 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 
 /**
- * 系统配置 → 日志: every log / history retention in one form, one row each, one 保存 (PUT /api/system/settings, which
- * also writes the task retention `tasks.retention` and the notification retention `alerts.rules`). 立即清理 runs every purge.
+ * 系统配置 → 日志 (owner 2026-11-19 「每一行都能独立配置和清理」): every log / history retention, one row each with its
+ * own 保存 (PUT /api/system/settings with that field only; tasks / notifications are stored in `tasks.retention` /
+ * `alerts.rules`) and 立即清理 (POST /api/system/purge/:kind, that kind only, with the stored retention).
  */
 type Field = 'logRetentionDays' | 'historyRetentionDays' | 'auditRetentionDays' | 'taskRetentionDays' | 'riskEventsRetentionDays' | 'notificationRetentionDays'
 interface View { settings: Record<Field, number | null>; max: Record<Field, number> }
-const FIELDS: Field[] = ['logRetentionDays', 'historyRetentionDays', 'auditRetentionDays', 'taskRetentionDays', 'riskEventsRetentionDays', 'notificationRetentionDays']
+const KIND: Record<Field, string> = {
+  logRetentionDays: 'logs', historyRetentionDays: 'history', auditRetentionDays: 'audit',
+  taskRetentionDays: 'tasks', riskEventsRetentionDays: 'risk', notificationRetentionDays: 'notifications',
+}
+const FIELDS = Object.keys(KIND) as Field[]
 
 const { t } = useI18n()
 const values = reactive<Record<Field, number | null>>({
@@ -20,7 +25,7 @@ const max = ref<Partial<Record<Field, number>>>({})
 /** 任务日志 永久保留 (stored as null); the input keeps its last number. */
 const keepTasks = ref(false)
 const loaded = ref(false)
-const saving = ref(false)
+const busy = reactive<Record<string, boolean>>({})
 
 onMounted(async () => {
   try {
@@ -33,51 +38,47 @@ onMounted(async () => {
   } catch (e) { message.error(errorText(e)) }
 })
 
-async function save() {
-  saving.value = true
+async function save(f: Field) {
+  busy[`save:${f}`] = true
   try {
-    const body: Record<string, number | null> = {}
-    for (const f of FIELDS) body[f] = values[f] ?? 1
-    body.taskRetentionDays = keepTasks.value ? null : (values.taskRetentionDays ?? 1)
-    await api('PUT', '/api/system/settings', body)
+    const value = f === 'taskRetentionDays' && keepTasks.value ? null : (values[f] ?? 1)
+    await api('PUT', '/api/system/settings', { [f]: value })
     message.success(t('common.saved'))
   } catch (e) { message.error(errorText(e)) }
-  finally { saving.value = false }
+  finally { busy[`save:${f}`] = false }
 }
 
-/** 立即清理 = every retention purge now (POST /api/system/maintenance). */
-interface PurgeResult { logFilesDeleted: string[]; historyDeleted: number; auditDeleted: number; tasksDeleted: number; riskEventsDeleted: number; notificationsDeleted: number }
-const cleaning = ref(false)
-async function cleanNow() {
-  cleaning.value = true
+async function clean(f: Field) {
+  busy[`clean:${f}`] = true
   try {
-    const { result: r } = await api<{ result: PurgeResult }>('POST', '/api/system/maintenance')
-    message.success(t('sysadmin.logs.cleaned', {
-      files: r.logFilesDeleted.length, history: r.historyDeleted, audit: r.auditDeleted, tasks: r.tasksDeleted, risk: r.riskEventsDeleted, notes: r.notificationsDeleted,
-    }))
+    const { result: r } = await api<{ result: { deleted: number; logs?: number } }>('POST', `/api/system/purge/${KIND[f]}`)
+    message.success(f === 'taskRetentionDays' ? t('sysadmin.logs.cleanedTasks', { n: r.deleted, logs: r.logs ?? 0 })
+      : f === 'logRetentionDays' ? t('sysadmin.logs.cleanedFiles', { n: r.deleted }) : t('sysadmin.logs.cleanedRows', { n: r.deleted }))
   } catch (e) { message.error(errorText(e)) }
-  finally { cleaning.value = false }
+  finally { busy[`clean:${f}`] = false }
 }
 </script>
 
 <template>
-  <a-form layout="vertical" class="retention">
-    <a-form-item v-for="f in FIELDS" :key="f" :label="t(`sysadmin.logs.fields.${f}`)">
-      <a-space>
-        <a-input-number
-          v-model:value="values[f]" :min="1" :max="max[f] ?? 3650" :precision="0" :addon-after="t('sysadmin.dayUnit')"
-          :disabled="f === 'taskRetentionDays' && keepTasks" style="width: 200px"
-        />
-        <a-checkbox v-if="f === 'taskRetentionDays'" v-model:checked="keepTasks">{{ t('sysadmin.logs.keepForever') }}</a-checkbox>
-      </a-space>
-    </a-form-item>
-    <a-space wrap>
-      <a-button type="primary" :loading="saving" :disabled="!loaded" @click="save">{{ t('common.save') }}</a-button>
-      <a-button :loading="cleaning" @click="cleanNow">{{ t('sysadmin.logs.cleanNow') }}</a-button>
-    </a-space>
-  </a-form>
+  <div class="retention">
+    <div v-for="f in FIELDS" :key="f" class="row">
+      <span class="label">{{ t(`sysadmin.logs.fields.${f}`) }}</span>
+      <a-input-number
+        v-model:value="values[f]" :min="1" :max="max[f] ?? 3650" :precision="0" :addon-after="t('sysadmin.dayUnit')"
+        :disabled="f === 'taskRetentionDays' && keepTasks" style="width: 160px"
+      />
+      <a-checkbox v-if="f === 'taskRetentionDays'" v-model:checked="keepTasks">{{ t('sysadmin.logs.keepForever') }}</a-checkbox>
+      <span class="actions">
+        <a-button type="primary" size="small" :loading="busy[`save:${f}`]" :disabled="!loaded" @click="save(f)">{{ t('common.save') }}</a-button>
+        <a-button size="small" :loading="busy[`clean:${f}`]" :disabled="!loaded" @click="clean(f)">{{ t('sysadmin.logs.cleanNow') }}</a-button>
+      </span>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.retention { row-gap: 8px; }
+.retention { display: flex; flex-direction: column; gap: 12px; }
+.row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.label { width: 80px; flex: none; color: var(--cp-text); }
+.actions { display: inline-flex; gap: 8px; }
 </style>

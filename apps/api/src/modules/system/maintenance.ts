@@ -35,3 +35,18 @@ export async function runAllPurges() {
   const [tasks, notes] = await Promise.all([purgeTasks(retention.days), purgeNotifications(rules.retentionDays)]);
   return { ...sys, tasksDeleted: tasks.tasks, taskLogsDeleted: tasks.logs, notificationsDeleted: notes.read + notes.unread };
 }
+
+/** 系统配置 → 日志: one kind cleaned now with its stored retention (the row's own 立即清理). */
+export const PURGE_KINDS = ['logs', 'history', 'audit', 'tasks', 'risk', 'notifications'] as const;
+export type PurgeKind = (typeof PURGE_KINDS)[number];
+export async function purgeOne(kind: PurgeKind): Promise<{ deleted: number; logs?: number }> {
+  const s = await getSystemSettings();
+  switch (kind) {
+    case 'logs': return { deleted: (await purgeLogFiles(s.logRetentionDays)).length };
+    case 'history': return { deleted: await purgeStatusEvents(s.historyRetentionDays) };
+    case 'audit': return { deleted: await purgeAuditLog(s.auditRetentionDays) };
+    case 'risk': return { deleted: await purgeRiskEvents(s.riskEventsRetentionDays) };
+    case 'tasks': { const r = await purgeTasks((await getRetention()).days); return { deleted: r.tasks, logs: r.logs }; }
+    case 'notifications': { const r = await purgeNotifications((await getRules()).retentionDays); return { deleted: r.read + r.unread }; }
+  }
+}

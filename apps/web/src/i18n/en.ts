@@ -2047,7 +2047,9 @@ const en: Messages = {
       },
       keepForever: 'Keep forever',
       cleanNow: 'Clean up now',
-      cleaned: 'Cleaned up: log files {files}, device logs {history}, audit {audit}, tasks {tasks}, risk events {risk}, notifications {notes}',
+      cleanedRows: '{n} rows deleted',
+      cleanedFiles: '{n} log files deleted',
+      cleanedTasks: '{n} tasks and {logs} task log lines deleted',
       empty: 'No matching log lines',
     },
     conn: {
