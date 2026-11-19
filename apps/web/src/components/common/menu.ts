@@ -1,4 +1,4 @@
-import { computed, type Component } from 'vue'
+import { computed, onBeforeUnmount, ref, watchEffect, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ClusterOutlined, ControlOutlined,
@@ -61,4 +61,15 @@ export function useMenuLocation() {
   /** Default page title: the menu label of the current item. */
   const title = computed(() => navLabel(itemKey.value))
   return { itemKey, group, title }
+}
+
+/**
+ * Last breadcrumb level of a page below a menu item (e.g. a media account's page → 我的媒体 / @handle): the page sets it
+ * with `usePageCrumb`, the app header shows it after the menu item, whose crumb then links to `parentTo`
+ * (default `/<item>`). Cleared when the page unmounts.
+ */
+export const pageCrumb = ref<{ label: string; parentTo?: string } | null>(null)
+export function usePageCrumb(get: () => { label: string; parentTo?: string } | null) {
+  watchEffect(() => { pageCrumb.value = get() })
+  onBeforeUnmount(() => { pageCrumb.value = null })
 }

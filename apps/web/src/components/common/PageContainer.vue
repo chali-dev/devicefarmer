@@ -5,7 +5,8 @@ import { useMenuLocation } from './menu'
 /**
  * Page frame (Ant Design Pro PageContainer): title row (title from the menu by default, optional
  * subtitle, title suffix and right-side actions), then the content blocks stacked with the standard gap.
- * Put each block in an <a-card :bordered="false">; the breadcrumb lives in the app header.
+ * Put each block in an <a-card :bordered="false">; the breadcrumb lives in the app header. `title=""` without title / extra
+ * slots drops the title row (a page whose header breadcrumb already names it, e.g. a media account's page).
  */
 const props = defineProps<{ title?: string; subtitle?: string }>()
 const loc = useMenuLocation()
@@ -14,7 +15,7 @@ const shownTitle = computed(() => props.title ?? loc.title.value)
 
 <template>
   <div class="cp-page">
-    <div class="cp-page-head">
+    <div v-if="shownTitle || $slots.title || $slots.extra" class="cp-page-head">
       <div class="cp-page-heading">
         <div class="cp-page-title-row">
           <h1 class="cp-page-title"><slot name="title">{{ shownTitle }}</slot></h1>
