@@ -601,7 +601,7 @@ export interface ScopedItem extends PersonaRef {
 }
 /** GET /api/personas/:id/prompt: what AI测试 / 「AI生成草稿」 send (custom or generated), no model call. */
 export interface PersonaPrompt {
-  prompt: { system: string; user: string; custom: boolean; examples: number; recent: number }
+  prompt: { system: string; user: string; custom: boolean; examples: number; recent: number; vars: Record<string, string> }
   customPrompt: { system: string; user: string } | null
   /** The generated prompt with placeholders: the starting point of 自定义. */
   template: { system: string; user: string }

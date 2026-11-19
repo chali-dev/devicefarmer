@@ -19,7 +19,7 @@
  *   with no content, rate limit PREVIEW_LIMIT per persona per 10 min (429 ai.rate_limited {seconds, limit}), the former
  *   save endpoint POST …/drafts/save is gone (404), audit persona.draft_preview with requested model / ok / error code /
  *   topic given (boolean) and no texts.
- * - The prompt (Chinese since 2026-11-19) with a topic names it ("本次主题（…）：…"), without one it doesn't.
+ * - The prompt (Chinese since 2026-11-19) = the 自定义 template filled in: 「本次主题：<topic>」 (empty without one).
  * - 「AI生成草稿」 preview → edit → save (→ publish): POST …/ai-drafts/preview {topic?} (RBAC 404, ai.not_configured,
  *   ai.account_no_persona, platform.disabled, topic ≤ 200 + banned word, REAL invalid-key call → 502 ai.key_invalid and
  *   nothing written, PREVIEW_LIMIT per account → 429); POST …/ai-drafts/save (refusals: RBAC, persona, platform, banned
@@ -40,7 +40,7 @@ import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import {
-  buildUserMessage, closeAiRedis, composeDraft, DRAFT_TAG, loadExamples, mapApiError, PREVIEW_LIMIT, SYSTEM_PROMPT,
+  buildPromptTemplate, buildUserMessage, closeAiRedis, composeDraft, renderPrompt, DRAFT_TAG, loadExamples, mapApiError, PREVIEW_LIMIT, SYSTEM_PROMPT,
 } from '../src/modules/ai/drafts.js';
 import * as draftsModule from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
@@ -139,10 +139,15 @@ try {
     const legacy = { ...row!, style: { ...row!.style, opening: '今晚吃什么？', closing: '你们最爱哪道？' } as any };
     const cd = composeDraft({ title: 't', body: '正文', hashtags: ['#a'], mediaTags: [] }, legacy);
     check('composeDraft adds no fixed lines (also for a row with a stored opening/closing)', cd.body === '正文' && cd.text === '正文\n\n#a' && !buildUserMessage({ persona: legacy, count: 1, day: '2026-11-18', examples: [], recent: [] }).includes('今晚吃什么'), JSON.stringify(cd));
-    check('prompt without a topic: no 本次主题 line', !has('本次主题'));
+    check('prompt without a topic: 【本次主题】 with an empty 本次主题： + the choose-yourself hint', has('【本次主题】\n本次主题：\n（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）'));
     const withTopic = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: ex, recent: [], topic: '咖啡豆保存' });
     check('prompt with a topic: 【本次主题】 本次主题：咖啡豆保存 + the different-angle line',
-      withTopic.includes('【本次主题】\n本次主题：咖啡豆保存\n（每篇都围绕这个主题写，每篇换个角度）') && SYSTEM_PROMPT.includes('如果给了本次主题'));
+      withTopic.includes('【本次主题】\n本次主题：咖啡豆保存\n（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）') && SYSTEM_PROMPT.includes('如果给了本次主题'));
+    const tplVars = { topic: '咖啡豆保存', date: '2026-11-18', count: '2', examples: '', recent_posts: '' };
+    const exVars = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: [], recent: [], topic: '咖啡豆保存' });
+    check('generated 人设提示词 = the 自定义 template with its placeholders filled (what the 提示词 tab previews client-side)',
+      renderPrompt(buildPromptTemplate(row!).user, { ...tplVars, examples: '（无）', recent_posts: '（无）' }) === exVars
+        && renderPrompt(buildPromptTemplate(row!).user, { ...tplVars, topic: '', examples: '（无）', recent_posts: '（无）' }) === buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: [], recent: [] }));
     check('system prompt in Chinese: Chinese only, draft-only role, never published, banned words, no invented facts, JSON field names kept', ['【你的任务】', '【必须遵守】', '【输出格式】', '用简体中文写', '只是草稿', '不要说帖子已经发了', '禁用词一个都不能用', '不编造事实', '联系方式'].every((x) => SYSTEM_PROMPT.includes(x)) && ['title：', 'body：', 'hashtags：', 'mediaTags：'].every((x) => SYSTEM_PROMPT.includes(x)) && !/[A-Za-z]{4,} [a-z]{3,} [a-z]{3,}/.test(SYSTEM_PROMPT) && !has('(none)'));
     const [pubRow] = await db.select().from(schema.personas).where(eq(schema.personas.id, pP.id));
     const exP = await loadExamples(pubRow!);

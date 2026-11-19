@@ -140,15 +140,16 @@ const formatRecent = (recent: PromptInput['recent']) => (recent.length
   ? recent.map((r) => `- ${clip(r.title, 80)}：${clip(r.body.replace(/\s+/g, ' '), 160)}`).join('\n')
   : NONE);
 
-/** Hint under 本次主题 (generated prompt / the 自定义 template). */
-export const TOPIC_HINT = '（每篇都围绕这个主题写，每篇换个角度）';
-const TOPIC_HINT_TEMPLATE = '（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）';
+/** Hint under 本次主题 (the section is always there: empty when no topic was given). */
+const TOPIC_HINT = '（每篇都围绕这个主题写，每篇换个角度；主题空着就从常聊话题里自己选）';
 
 /**
- * 人设提示词 = the user message around the per-request parts (`topic` null = no 【本次主题】 section). Plain Chinese with
- * 【】 headings since 2026-11-19 (owner: 「白话文让用户好自定义」).
+ * 人设提示词 = the user message around the per-request parts. Plain Chinese with 【】 headings since 2026-11-19 (owner:
+ * 「白话文让用户好自定义」). The generated message is exactly the 自定义 template with its placeholders filled (the
+ * 【本次主题】 section is always present, empty without a topic), so the 提示词 tab's live preview (client-side, with the
+ * `vars` of GET …/prompt) shows the same text for an unedited template as what is really sent.
  */
-function userLines(persona: PromptInput['persona'], v: { date: string; count: string; topic: string | null; topicHint: string; examples: string; recent: string }): string {
+function userLines(persona: PromptInput['persona'], v: { date: string; count: string; topic: string; examples: string; recent: string }): string {
   const ps = styleOf(persona);
   const [min, max] = PERSONA_LENGTHS.post[ps.length];
   return [
@@ -156,7 +157,10 @@ function userLines(persona: PromptInput['persona'], v: { date: string; count: st
     `日期：${v.date}`,
     `写几篇：${v.count}`,
     `语言：简体中文（${SOURCE_LANG}）`,
-    ...(v.topic !== null ? ['', '【本次主题】', `本次主题：${v.topic}`, v.topicHint] : []),
+    '',
+    '【本次主题】',
+    `本次主题：${v.topic}`,
+    TOPIC_HINT,
     '',
     '【人设】',
     `名称：${persona.name}`,
@@ -183,7 +187,7 @@ function userLines(persona: PromptInput['persona'], v: { date: string; count: st
 /** The user message: persona settings, examples and recent posts as tagged reference data (always Chinese). */
 export function buildUserMessage(i: PromptInput): string {
   return userLines(i.persona, {
-    date: i.day, count: String(i.count), topic: i.topic || null, topicHint: TOPIC_HINT,
+    date: i.day, count: String(i.count), topic: i.topic || '',
     examples: formatExamples(i.examples), recent: formatRecent(i.recent),
   });
 }
@@ -213,7 +217,7 @@ export function buildPromptTemplate(persona: PromptInput['persona']): { system: 
   return {
     system: SYSTEM_PROMPT,
     user: userLines(persona, {
-      date: '{{date}}', count: '{{count}}', topic: '{{主题}}', topicHint: TOPIC_HINT_TEMPLATE,
+      date: '{{date}}', count: '{{count}}', topic: '{{主题}}',
       examples: '{{examples}}', recent: '{{recent_posts}}',
     }),
   };
@@ -224,7 +228,8 @@ export const CUSTOM_PROMPT_MAX = 20_000;
 const PromptPart = z.string().max(CUSTOM_PROMPT_MAX).refine((x) => x.trim().length > 0, { message: 'empty' });
 export const CustomPromptInput = z.object({ system: PromptPart, user: PromptPart }).strict();
 
-export interface BuiltPrompt { system: string; user: string; custom: boolean; examples: number; recent: number }
+/** `vars` = the placeholder values of this request (the 提示词 tab fills its unsaved boxes with them client-side). */
+export interface BuiltPrompt { system: string; user: string; custom: boolean; examples: number; recent: number; vars: PromptVars }
 
 /**
  * Exactly what generateDrafts sends for this persona: its custom prompt with the placeholders filled, else SYSTEM_PROMPT
@@ -232,11 +237,11 @@ export interface BuiltPrompt { system: string; user: string; custom: boolean; ex
  */
 export async function buildPrompt(p: Persona, ownerId: string, o: { count: number; day: string; topic?: string | null; now?: Date }): Promise<BuiltPrompt> {
   const [examples, recent] = await Promise.all([loadExamples(p), loadRecent(p.id, ownerId, o.now ?? new Date())]);
-  const base = { examples: examples.length, recent: recent.length };
+  const vars: PromptVars = {
+    topic: o.topic ?? '', date: o.day, count: String(o.count), examples: formatExamples(examples), recent_posts: formatRecent(recent),
+  };
+  const base = { examples: examples.length, recent: recent.length, vars };
   if (p.customPrompt) {
-    const vars: PromptVars = {
-      topic: o.topic ?? '', date: o.day, count: String(o.count), examples: formatExamples(examples), recent_posts: formatRecent(recent),
-    };
     return { system: renderPrompt(p.customPrompt.system, vars), user: renderPrompt(p.customPrompt.user, vars), custom: true, ...base };
   }
   return { system: SYSTEM_PROMPT, user: buildUserMessage({ persona: p, count: o.count, day: o.day, examples, recent, topic: o.topic }), custom: false, ...base };
