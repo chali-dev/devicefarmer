@@ -117,7 +117,7 @@ export const sourceRoutes: FastifyPluginAsyncZod = async (app) => {
     if (!src) throw notFound('来源不存在', 'sources.not_found');
     const driver = driverFor(src.type);
     const [phones, rows] = await Promise.all([
-      driver.listPhones(driver.config.parse(src.config)),
+      driver.listPhones(driver.config.parse(openConfig(driver, src.config))),
       db.select({ id: schema.instances.id, name: schema.instances.name, externalId: schema.instances.externalId })
         .from(schema.instances).where(eq(schema.instances.sourceId, src.id)),
     ]);
@@ -135,7 +135,7 @@ export const sourceRoutes: FastifyPluginAsyncZod = async (app) => {
     const src = await getSource(req.body.sourceId);
     if (!src) throw notFound('来源不存在', 'sources.not_found');
     const driver = driverFor(src.type);
-    const phones = new Map((await driver.listPhones(driver.config.parse(src.config))).map((p) => [p.id, p]));
+    const phones = new Map((await driver.listPhones(driver.config.parse(openConfig(driver, src.config)))).map((p) => [p.id, p]));
     const wanted = [...new Set(req.body.phoneIds)];
     const missing = wanted.filter((id) => !phones.has(id));
     if (missing.length) throw notFound('来源中没有这台手机', 'sources.phone_not_found', { ids: missing.join(', ') });
