@@ -6,10 +6,11 @@ import { visibleAccount } from './social.js';
 import { listFollowing, requestFollowingSync } from './following.js';
 
 /**
- * 我的媒体号 → row expansion (owner 2026-11-18): 粉丝 (followers count and its changes, from the automatic account
- * check / sync readings in social_account_stats; no follower list is read) and 追踪中 (the account's real following
- * list, read from its cloud phone). RBAC = social accounts: owner + admins, others 404. Both live under
- * /api/social/accounts/:id/…, the 媒体管理 (social) menu's rule in role-menus.ts.
+ * 我的媒体号 → the account's 关注 / 粉丝 page (/social/accounts/:id, owner 2026-11-19): 粉丝 = the followers count and
+ * its changes (readings of the automatic account check / sync in social_account_stats) + the newest ≤ 20 followers
+ * read from the cloud phone (…/followers/list); 关注 = the account's real following list read from its cloud phone.
+ * RBAC = social accounts: owner + admins, others 404. All under /api/social/accounts/:id/…, the 我的媒体 (social)
+ * menu's rule in role-menus.ts.
  */
 const Id = z.object({ id: z.string().uuid() });
 const DAY = 86_400_000;
@@ -38,6 +39,18 @@ export function followerSummary(readings: { day: string; followers: number; appr
   };
 }
 
+const ListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  q: z.string().max(100).optional(),
+  /** current (default) | gone (取消关注 history) | all */
+  state: z.enum(['all', 'current', 'gone']).optional(),
+  /** older pages: gone=true = every entry (state all) */
+  gone: z.enum(['true', 'false']).optional(),
+});
+type ListQ = z.infer<typeof ListQuery>;
+const listArgs = (q: ListQ) => ({ limit: q.limit, offset: q.offset, q: q.q, state: q.state ?? (q.gone === 'true' ? 'all' as const : 'current' as const) });
+
 export const followingRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -54,20 +67,15 @@ export const followingRoutes: FastifyPluginAsyncZod = async (app) => {
     };
   });
 
-  app.get('/api/social/accounts/:id/following', {
-    schema: {
-      params: Id,
-      querystring: z.object({
-        limit: z.coerce.number().int().min(1).max(200).default(50),
-        offset: z.coerce.number().int().min(0).default(0),
-        q: z.string().max(100).optional(),
-        /** include accounts no longer followed (取消追踪 history) */
-        gone: z.enum(['true', 'false']).optional(),
-      }),
-    },
-  }, async (req) => {
+  app.get('/api/social/accounts/:id/following', { schema: { params: Id, querystring: ListQuery } }, async (req) => {
     const acc = await visibleAccount(req.user, req.params.id);
-    return listFollowing(acc, { limit: req.query.limit, offset: req.query.offset, q: req.query.q, gone: req.query.gone === 'true' });
+    return listFollowing(acc, listArgs(req.query));
+  });
+
+  /** 粉丝 list: the newest ≤ 20 followers per run (read with the following list, same task). */
+  app.get('/api/social/accounts/:id/followers/list', { schema: { params: Id, querystring: ListQuery } }, async (req) => {
+    const acc = await visibleAccount(req.user, req.params.id);
+    return listFollowing(acc, listArgs(req.query), 'followers');
   });
 
   app.post('/api/social/accounts/:id/following/sync', { schema: { params: Id } }, async (req, reply) => {

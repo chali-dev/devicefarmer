@@ -16,6 +16,8 @@ const router = createRouter({
         { path: 'library', name: 'library', component: () => import('../views/LibraryView.vue'), meta: { admin: true } },
         { path: 'media', name: 'media', component: () => import('../views/MediaView.vue') },
         { path: 'social', name: 'social', component: () => import('../views/SocialAccountsView.vue') },
+        // a media account's 关注 / 粉丝 page (owner 2026-11-19; menu = social by its first path segment)
+        { path: 'social/accounts/:id', name: 'social-account', component: () => import('../views/SocialAccountView.vue') },
         // 媒体管理 (owner's menu list, 2026-11-18): 追踪号 and 回文日志 are tabs of /social; old links keep their filters.
         { path: 'tracked', redirect: (to) => ({ path: '/social', query: { ...to.query, tab: 'tracked' } }) },
         { path: 'analytics', name: 'analytics', component: () => import('../views/AnalyticsView.vue') },

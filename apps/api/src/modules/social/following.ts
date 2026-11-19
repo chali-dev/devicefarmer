@@ -13,7 +13,7 @@ import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { classifyIgDump, dumpExcerpt, igDeviceAccounts, requireApp, screenProblem, type UiNode } from '../tracked/instagram-device.js';
 import { autoCheckUnsupported } from './check.js';
-import { followingCounter, isFollowList, listSwipe, parseFollowingScreen } from './following-ui.js';
+import { followingCounter, isFollowList, listSwipe, listTab, parseFollowingScreen, type FollowListKind } from './following-ui.js';
 
 /**
  * 追踪中 (owner decision 2026-11-18): the REAL following list of an own Instagram account, read in the app on the
@@ -38,6 +38,8 @@ const QUEUE = 'account-following';
 const REF = 'social_account';
 /** Entries read per run at most (owner: low risk). A capped run never marks entries as gone. */
 export const FOLLOWING_MAX = 200;
+/** 粉丝: the newest followers read per run at most (owner 2026-11-19 「读名单最多20个」); only the count is complete. */
+export const FOLLOWERS_MAX = 20;
 /** Instagram loads the list in pages of about this many entries; one page load counts as a screen in the pace. */
 const PAGE = 20;
 const MAX_DEFERRALS = 30;
@@ -92,7 +94,11 @@ export async function queueFollowingAfter(accountId: string, userId: string | nu
 
 // ---------------------------------------------------------------- the device part
 
-export interface FollowingRead { entries: { handle: string; displayName: string | null }[]; tabCount: number | null; complete: boolean; capped: boolean; screens: number; swipes: number }
+/** One list as read: entries in app order; complete = reached its end (only then may unseen rows be marked gone). */
+export interface ListRead { entries: { handle: string; displayName: string | null }[]; tabCount: number | null; complete: boolean; capped: boolean }
+/** The followers part never fails the run: it either read (≤ FOLLOWERS_MAX) or ended with a code. */
+export type FollowersPart = ListRead | { code: string; detail?: string; challenge?: boolean };
+export interface FollowingRead extends ListRead { screens: number; swipes: number; followers: FollowersPart }
 
 /** Coded failure of a run (kind decides halt / risk record). */
 export class FollowingError extends Error {
@@ -107,69 +113,126 @@ const problemError = (nodes: UiNode[], fallback: string) => {
   const [code, kind] = p ? PROBLEM[p] : [fallback, 'timeout' as const];
   return new FollowingError(code, `following list: ${code}`, kind, dumpExcerpt(nodes));
 };
+const isProfile = (n: UiNode[]) => { const k = classifyIgDump(n, null).kind; return k === 'profile' || k === 'challenge' || k === 'login'; };
 
-export async function readFollowingList(dev: CollectorDevice, acc: Pick<SocialAccount, 'handle' | 'externalId'>, ctx: Pick<TaskContext, 'log' | 'signal'>, max = FOLLOWING_MAX): Promise<FollowingRead> {
+/**
+ * Reads the list whose tab is selected on the current screen, scrolling with swipes left of the row buttons, until its
+ * end (suggestions header, or as many rows as an exact tab count) or `max` entries (capped) or two swipes without new
+ * rows (incomplete). Never taps anything.
+ */
+async function readOpenList(s: IgScreenSession, firstNodes: UiNode[], kind: FollowListKind, max: number, fallbackCount: number | null,
+  ctx: Pick<TaskContext, 'log' | 'signal'>, counter: { swipes: number }): Promise<ListRead> {
+  let cur = parseFollowingScreen(firstNodes, kind);
+  if (!cur.onFollowingTab) throw new FollowingError('following.screen_unexpected', `the ${kind} tab is not the selected one`, 'screen', dumpExcerpt(firstNodes));
+  const tabCount = cur.tabCount ?? fallbackCount;
+  const seen = new Map<string, { handle: string; displayName: string | null }>();
+  let stalls = 0;
+  let swipes = 0;
+  const maxSwipes = Math.ceil(max / 3) + 5;
+  for (;;) {
+    const before = seen.size;
+    for (const r of cur.rows) if (!seen.has(r.handle) && seen.size < max) seen.set(r.handle, { handle: r.handle, displayName: r.displayName });
+    // the tab count only proves completeness while it is exact (≤ max; larger ones may be abbreviated, "1.2万")
+    const full = tabCount !== null && tabCount <= max && seen.size >= tabCount;
+    if (cur.end || full) return { entries: [...seen.values()], tabCount, complete: true, capped: false };
+    if (seen.size >= max) return { entries: [...seen.values()], tabCount, complete: false, capped: true };
+    stalls = seen.size === before ? stalls + 1 : 0;
+    // nothing new after two swipes and no end marker: stop without claiming the list is complete
+    if (stalls >= 2 || swipes >= maxSwipes) {
+      await ctx.log('warn', `${kind}: list stopped growing before its end`, { seen: seen.size, tabCount, swipes });
+      return { entries: [...seen.values()], tabCount, complete: false, capped: false };
+    }
+    const sw = listSwipe(cur);
+    if (!sw) throw new FollowingError('following.parse_failed', 'list bounds not found', 'screen', dumpExcerpt(firstNodes));
+    await s.sh(`input swipe ${sw.x} ${sw.y1} ${sw.x} ${sw.y2} 450`);
+    swipes++; counter.swipes++;
+    await sleep(1500, undefined, { signal: ctx.signal });
+    let nodes = await s.dump();
+    if (!isFollowList(nodes)) {
+      if (screenProblem(nodes)) throw problemError(nodes, 'following.screen_unexpected');
+      throw new FollowingError('following.screen_unexpected', `left the ${kind} list`, 'screen', dumpExcerpt(nodes));
+    }
+    cur = parseFollowingScreen(nodes, kind);
+    if (!cur.onFollowingTab) throw new FollowingError('following.screen_unexpected', `the ${kind} tab is no longer selected`, 'screen', dumpExcerpt(nodes));
+    if (!cur.end && !cur.rows.some((r) => !seen.has(r.handle))) {
+      // the next page may still be loading
+      await sleep(2000, undefined, { signal: ctx.signal });
+      nodes = await s.dump();
+      if (isFollowList(nodes)) cur = parseFollowingScreen(nodes, kind);
+    }
+  }
+}
+
+/**
+ * 粉丝 part of a run (owner 2026-11-19 「读名单最多20个」, NOT probed live): from the following list, one tap on the 粉丝
+ * tab title of the same screen; without a tab bar (following 0: still on the profile) one tap on the profile's 粉丝
+ * counter. The selected tab must be 粉丝 before anything is read; ≤ `max` rows, swipes only, never a row button (移除 /
+ * 回关 / 发消息), never a profile. Any problem ends this part with `followers.<code>` and leaves the following result.
+ */
+async function readFollowersPart(s: IgScreenSession, onList: boolean, profileCount: number | null, max: number,
+  ctx: Pick<TaskContext, 'log' | 'signal'>, counter: { swipes: number }): Promise<FollowersPart> {
+  if (profileCount === 0) return { entries: [], tabCount: 0, complete: true, capped: false };
+  try {
+    let nodes = onList ? await s.dump() : [];
+    const tab = onList && isFollowList(nodes) ? listTab(nodes, 'followers') : null;
+    if (tab) {
+      if (!tab.selected) { await s.tap(tab); s.screens++; }
+    } else {
+      if (onList) await s.keys(4);
+      const prof = await s.waitFor(isProfile, 10_000, onList ? 1500 : 0);
+      if (classifyIgDump(prof.nodes, null).kind !== 'profile') throw problemError(prof.nodes, 'following.screen_unexpected');
+      const target = followingCounter(prof.nodes, 'followers');
+      if (!target) throw new FollowingError('following.parse_failed', 'followers counter not found', 'screen', dumpExcerpt(prof.nodes));
+      await s.tap(target);
+      s.screens++;
+    }
+    const first = await s.waitFor((n) => (isFollowList(n) && parseFollowingScreen(n, 'followers').onFollowingTab) || !!screenProblem(n), 12_000, 2000);
+    nodes = first.nodes;
+    if (!isFollowList(nodes)) throw problemError(nodes, 'following.screen_unexpected');
+    return await readOpenList(s, nodes, 'followers', max, profileCount, ctx, counter);
+  } catch (err) {
+    if (ctx.signal.aborted) throw err;
+    const e = err instanceof FollowingError ? err : null;
+    const code = `followers.${(e?.code ?? 'following.screen_unexpected').replace(/^following\./, '')}`;
+    const detail = e?.detail ?? (err as Error).message;
+    await ctx.log('warn', `followers list skipped: ${code}`, { code, excerpt: detail.slice(0, 300) });
+    return { code, detail, ...(e?.kind === 'challenge' ? { challenge: true } : {}) };
+  }
+}
+
+export async function readFollowingList(dev: CollectorDevice, acc: Pick<SocialAccount, 'handle' | 'externalId'>, ctx: Pick<TaskContext, 'log' | 'signal'>,
+  max = FOLLOWING_MAX, followersMax = FOLLOWERS_MAX): Promise<FollowingRead> {
   await requireApp(dev, 'following.app_missing');
   const ids = await igDeviceAccounts(dev);
   if (!ids.length) throw new FollowingError('following.logged_out', 'no Instagram account on the device', 'logged_out', 'no Instagram account on the device');
   if (acc.externalId && !ids.includes(acc.externalId)) throw new FollowingError('following.wrong_account', 'another Instagram account is on the device', 'wrong_account', `account ids on device: ${ids.join(', ')}`);
   const s = new IgScreenSession(dev, ctx.signal);
-  let swipes = 0;
+  const counter = { swipes: 0 };
   try {
     await s.restartApp();
     await s.open('instagram://profile');
-    const prof = await s.waitFor((n) => { const k = classifyIgDump(n, null).kind; return k === 'profile' || k === 'challenge' || k === 'login'; }, 20_000, 2500);
+    const prof = await s.waitFor(isProfile, 20_000, 2500);
     const screen = classifyIgDump(prof.nodes, null);
     if (screen.kind !== 'profile') throw problemError(prof.nodes, 'following.timeout');
     if (!screen.handle || screen.handle.toLowerCase() !== acc.handle.toLowerCase()) {
       throw new FollowingError('following.wrong_account', 'own profile shows another username', 'wrong_account', `@${screen.handle ?? '?'}`);
     }
     const profileCount = screen.counts.following?.value ?? null;
-    await ctx.log('info', 'following: own profile read', { following: profileCount });
-    if (profileCount === 0) return { entries: [], tabCount: 0, complete: true, capped: false, screens: s.screens, swipes };
-    const target = followingCounter(prof.nodes);
-    if (!target) throw new FollowingError('following.parse_failed', 'following counter not found', 'screen', dumpExcerpt(prof.nodes));
-    await s.tap(target);
-    s.screens++;
-    const first = await s.waitFor((n) => isFollowList(n) || !!screenProblem(n), 15_000, 2500);
-    if (!first.ok || !isFollowList(first.nodes)) throw problemError(first.nodes, 'following.timeout');
-    let cur = parseFollowingScreen(first.nodes);
-    if (!cur.onFollowingTab) throw new FollowingError('following.screen_unexpected', 'the following tab is not the selected one', 'screen', dumpExcerpt(first.nodes));
-    const tabCount = cur.tabCount ?? profileCount;
-    const seen = new Map<string, { handle: string; displayName: string | null }>();
-    let stalls = 0;
-    const maxSwipes = Math.ceil(max / 3) + 5;
-    for (;;) {
-      const before = seen.size;
-      for (const r of cur.rows) if (!seen.has(r.handle) && seen.size < max) seen.set(r.handle, { handle: r.handle, displayName: r.displayName });
-      // the tab count only proves completeness while it is exact (≤ max; larger ones may be abbreviated, "1.2万")
-      const full = tabCount !== null && tabCount <= max && seen.size >= tabCount;
-      if (cur.end || full) return { entries: [...seen.values()], tabCount, complete: true, capped: false, screens: s.screens, swipes };
-      if (seen.size >= max) return { entries: [...seen.values()], tabCount, complete: false, capped: true, screens: s.screens, swipes };
-      stalls = seen.size === before ? stalls + 1 : 0;
-      // nothing new after two swipes and no end marker: stop without claiming the list is complete
-      if (stalls >= 2 || swipes >= maxSwipes) {
-        await ctx.log('warn', 'following: list stopped growing before its end', { seen: seen.size, tabCount, swipes });
-        return { entries: [...seen.values()], tabCount, complete: false, capped: false, screens: s.screens, swipes };
-      }
-      const sw = listSwipe(cur);
-      if (!sw) throw new FollowingError('following.parse_failed', 'list bounds not found', 'screen', dumpExcerpt(first.nodes));
-      await s.sh(`input swipe ${sw.x} ${sw.y1} ${sw.x} ${sw.y2} 450`);
-      swipes++;
-      await sleep(1500, undefined, { signal: ctx.signal });
-      let nodes = await s.dump();
-      if (!isFollowList(nodes)) {
-        if (screenProblem(nodes)) throw problemError(nodes, 'following.screen_unexpected');
-        throw new FollowingError('following.screen_unexpected', 'left the following list', 'screen', dumpExcerpt(nodes));
-      }
-      cur = parseFollowingScreen(nodes);
-      if (!cur.end && !cur.rows.some((r) => !seen.has(r.handle))) {
-        // the next page may still be loading
-        await sleep(2000, undefined, { signal: ctx.signal });
-        nodes = await s.dump();
-        if (isFollowList(nodes)) cur = parseFollowingScreen(nodes);
-      }
+    const followersCount = screen.counts.followers?.value ?? null;
+    await ctx.log('info', 'following: own profile read', { following: profileCount, followers: followersCount });
+    let following: ListRead;
+    if (profileCount === 0) following = { entries: [], tabCount: 0, complete: true, capped: false };
+    else {
+      const target = followingCounter(prof.nodes);
+      if (!target) throw new FollowingError('following.parse_failed', 'following counter not found', 'screen', dumpExcerpt(prof.nodes));
+      await s.tap(target);
+      s.screens++;
+      const first = await s.waitFor((n) => isFollowList(n) || !!screenProblem(n), 15_000, 2500);
+      if (!first.ok || !isFollowList(first.nodes)) throw problemError(first.nodes, 'following.timeout');
+      following = await readOpenList(s, first.nodes, 'following', max, profileCount, ctx, counter);
     }
+    const followers = followersMax > 0 ? await readFollowersPart(s, profileCount !== 0, followersCount, followersMax, ctx, counter) : { code: 'followers.off' };
+    return { ...following, followers, screens: s.screens, swipes: counter.swipes };
   } finally {
     await s.keys(4).catch(() => undefined);
     await s.close();
@@ -178,16 +241,16 @@ export async function readFollowingList(dev: CollectorDevice, acc: Pick<SocialAc
 
 // ---------------------------------------------------------------- writes
 
-/** Upserts what a run saw; a complete run marks the others gone. Returns counts. */
-export async function writeFollowing(accountId: string, r: Pick<FollowingRead, 'entries' | 'complete'>, now = new Date()): Promise<{ seen: number; added: number; returned: number; gone: number }> {
+/** Upserts what a run saw of one list (`kind`); a complete read marks the others of that list gone. Returns counts. */
+export async function writeFollowing(accountId: string, r: Pick<ListRead, 'entries' | 'complete'>, now = new Date(), kind: FollowListKind = 'following'): Promise<{ seen: number; added: number; returned: number; gone: number }> {
   let added = 0; let returned = 0; let gone = 0;
   await db.transaction(async (tx) => {
-    const wasGone = new Set((await tx.select({ handle: F.handle }).from(F).where(and(eq(F.socialAccountId, accountId), isNotNull(F.goneAt)))).map((x) => x.handle));
+    const wasGone = new Set((await tx.select({ handle: F.handle }).from(F).where(and(eq(F.socialAccountId, accountId), eq(F.kind, kind), isNotNull(F.goneAt)))).map((x) => x.handle));
     for (const [i, e] of r.entries.entries()) {
       const handle = e.handle.toLowerCase();
-      const [row] = await tx.insert(F).values({ socialAccountId: accountId, handle, displayName: e.displayName, position: i, firstSeenAt: now, lastSeenAt: now })
+      const [row] = await tx.insert(F).values({ socialAccountId: accountId, kind, handle, displayName: e.displayName, position: i, firstSeenAt: now, lastSeenAt: now })
         .onConflictDoUpdate({
-          target: [F.socialAccountId, F.handle],
+          target: [F.socialAccountId, F.kind, F.handle],
           set: { displayName: sql`coalesce(excluded.display_name, ${F.displayName})`, position: i, lastSeenAt: now, goneAt: null },
         })
         .returning({ inserted: sql<boolean>`(xmax = 0)` });
@@ -195,7 +258,7 @@ export async function writeFollowing(accountId: string, r: Pick<FollowingRead, '
       else if (wasGone.has(handle)) returned++;
     }
     if (r.complete) {
-      const g = await tx.update(F).set({ goneAt: now }).where(and(eq(F.socialAccountId, accountId), isNull(F.goneAt), lt(F.lastSeenAt, now))).returning({ id: F.id });
+      const g = await tx.update(F).set({ goneAt: now }).where(and(eq(F.socialAccountId, accountId), eq(F.kind, kind), isNull(F.goneAt), lt(F.lastSeenAt, now))).returning({ id: F.id });
       gone = g.length;
     }
   });
@@ -221,7 +284,8 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   const [last] = await db.select({ following: schema.socialAccountStats.following }).from(schema.socialAccountStats)
     .where(and(eq(schema.socialAccountStats.socialAccountId, acc.id), isNotNull(schema.socialAccountStats.following)))
     .orderBy(desc(schema.socialAccountStats.day)).limit(1);
-  const weight = 2 + Math.ceil(Math.min(last?.following ?? PAGE, FOLLOWING_MAX) / PAGE);
+  // + 2 for the followers part (tab switch + ≤ 20 rows = about one more page)
+  const weight = 4 + Math.ceil(Math.min(last?.following ?? PAGE, FOLLOWING_MAX) / PAGE);
   let r: FollowingRead;
   try {
     r = await withDevice(inst, ctx.log, offline, (dev) => readFollowingList(dev, acc, ctx), { lockMs: 10 * 60_000, weight, what: 'following' });
@@ -245,10 +309,22 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
     if ((err as { code?: string }).code === 'following.app_missing') await risk('following.app_missing');
     throw err;
   }
-  const w = await writeFollowing(acc.id, r);
-  const result = { outcome: 'synced', ...w, tabCount: r.tabCount, complete: r.complete, capped: r.capped, screens: r.screens, swipes: r.swipes };
-  await ctx.log('info', `following list read: ${w.seen} accounts (${w.added} new, ${w.gone} gone)`, result);
-  return result;
+  const now = new Date();
+  const w = await writeFollowing(acc.id, r, now);
+  await ctx.log('info', `following list read: ${w.seen} accounts (${w.added} new, ${w.gone} gone)`, { ...w, tabCount: r.tabCount, complete: r.complete, capped: r.capped });
+  const fr = r.followers;
+  let followers: Record<string, unknown>;
+  if ('code' in fr) {
+    // already logged by the reader; a challenge still halts the phone, every code is a 风控记录
+    if (fr.challenge) await haltDevice(inst, { code: fr.code, source: 'following', platform: acc.platform, socialAccountId: acc.id });
+    if (fr.code !== 'followers.off') await risk(fr.code, fr.detail);
+    followers = { code: fr.code };
+  } else {
+    const fw = await writeFollowing(acc.id, fr, now, 'followers');
+    followers = { ...fw, tabCount: fr.tabCount, complete: fr.complete, capped: fr.capped };
+    await ctx.log('info', `followers list read: ${fw.seen} accounts (${fw.added} new, ${fw.gone} gone)`, followers);
+  }
+  return { outcome: 'synced', ...w, tabCount: r.tabCount, complete: r.complete, capped: r.capped, screens: r.screens, swipes: r.swipes, followers };
 }
 
 // New type on its own queue (a draining old leader never sees it). One attempt: the next slot or 同步 runs again.
@@ -290,18 +366,27 @@ const runView = (t: Task | undefined) => (t ? {
   result: (t.result ?? null) as Record<string, unknown> | null,
 } : null);
 
-/** GET …/following: the list (current first, then gone), total, last run + pending run. */
-export async function listFollowing(acc: SocialAccount, q: { limit: number; offset: number; q?: string; gone?: boolean }) {
+export type ListState = 'all' | 'current' | 'gone';
+const esc = (x: string) => x.replace(/[%_\\]/g, '\\$&');
+
+/**
+ * GET …/following and …/followers/list: one list of the account (current first, then gone), `state` all | current |
+ * gone (default current), search on handle / name, counts, the last run + pending run (both lists are read by the
+ * same task).
+ */
+export async function listFollowing(acc: SocialAccount, q: { limit: number; offset: number; q?: string; state?: ListState }, kind: FollowListKind = 'following') {
+  const state = q.state ?? 'current';
+  const mine = and(eq(F.socialAccountId, acc.id), eq(F.kind, kind));
   const where = and(
-    eq(F.socialAccountId, acc.id),
-    q.gone ? undefined : isNull(F.goneAt),
-    q.q?.trim() ? or(ilike(F.handle, `%${q.q.trim().replace(/[%_\\]/g, '\\$&')}%`), ilike(F.displayName, `%${q.q.trim().replace(/[%_\\]/g, '\\$&')}%`)) : undefined,
+    mine,
+    state === 'current' ? isNull(F.goneAt) : state === 'gone' ? isNotNull(F.goneAt) : undefined,
+    q.q?.trim() ? or(ilike(F.handle, `%${esc(q.q.trim())}%`), ilike(F.displayName, `%${esc(q.q.trim())}%`)) : undefined,
   );
   const [items, [tot], [cur], [goneN], runs] = await Promise.all([
     db.select().from(F).where(where).orderBy(sql`${F.goneAt} is not null`, asc(F.position), asc(F.handle)).limit(q.limit).offset(q.offset),
     db.select({ n: count() }).from(F).where(where),
-    db.select({ n: count() }).from(F).where(and(eq(F.socialAccountId, acc.id), isNull(F.goneAt))),
-    db.select({ n: count() }).from(F).where(and(eq(F.socialAccountId, acc.id), isNotNull(F.goneAt))),
+    db.select({ n: count() }).from(F).where(and(mine, isNull(F.goneAt))),
+    db.select({ n: count() }).from(F).where(and(mine, isNotNull(F.goneAt))),
     db.select().from(schema.tasks).where(and(eq(schema.tasks.type, FOLLOWING_TYPE), eq(schema.tasks.refType, REF), eq(schema.tasks.refId, acc.id)))
       .orderBy(desc(schema.tasks.createdAt)).limit(20),
   ]);
@@ -310,16 +395,18 @@ export async function listFollowing(acc: SocialAccount, q: { limit: number; offs
   const lastSynced = runs.find((t) => t.status === 'success' && (t.result as { outcome?: string } | null)?.outcome === 'synced');
   const s = await getRiskSettings();
   return {
+    kind,
     items: items.map((r) => ({ id: r.id, handle: r.handle, displayName: r.displayName, verified: r.verified, position: r.position, firstSeenAt: r.firstSeenAt, lastSeenAt: r.lastSeenAt, goneAt: r.goneAt })),
     total: tot?.n ?? 0,
-    following: cur?.n ?? 0,
+    /** current entries of this list (also as `following` for the following list, the older field name) */
+    current: cur?.n ?? 0,
+    ...(kind === 'following' ? { following: cur?.n ?? 0 } : {}),
     gone: goneN?.n ?? 0,
     unsupported: followingUnsupported(acc),
     halted: acc.instanceId ? !!(await deviceHalt(acc.instanceId)) : false,
-    settings: { hours: s.followingSyncHours, max: FOLLOWING_MAX },
+    settings: { hours: s.followingSyncHours, max: kind === 'following' ? FOLLOWING_MAX : FOLLOWERS_MAX },
     last: runView(last),
     lastSynced: runView(lastSynced),
     pending: open ? { taskId: open.id, status: open.status, runAt: open.runAt } : null,
   };
 }
-

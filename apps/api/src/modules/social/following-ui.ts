@@ -16,13 +16,19 @@ import { ID, type UiNode } from '../tracked/instagram-device.js';
  *   header `#row_header_textview` "为你推荐" and `#row_recommended_user_*` rows (not part of the list).
  * - the verified badge is drawn inside the username text (not a node), so `verified` is not readable here (null).
  * English strings are matched too but were not seen live.
+ *
+ * 粉丝 (followers list, owner 2026-11-19, ≤ 20 newest per run): the same UnifiedFollowFragment, tab "粉丝 (N)". It was
+ * NOT probed live: the rows are assumed to carry the same ids as the following tab (a 移除 / 回关 button may sit in
+ * the row; any clickable node inside a row other than the avatar counts as a button, swipes stay left of them). The
+ * reader checks the selected tab title before reading and gives up with a code when anything differs.
  */
 
+export type FollowListKind = 'following' | 'followers';
 export interface FollowingRow { handle: string; displayName: string | null; top: number }
 export interface FollowingScreen {
-  /** The following tab is the selected one. */
+  /** The tab of the requested list (关注 / 粉丝) is the selected one. */
   onFollowingTab: boolean;
-  /** Count in the tab title ("关注 (6)"), null when absent. */
+  /** Count in that tab's title ("关注 (6)"), null when absent. */
   tabCount: number | null;
   rows: FollowingRow[];
   /** The suggestions header below the list is visible = the list ended. */
@@ -33,7 +39,11 @@ export interface FollowingScreen {
   buttonsLeft: number | null;
 }
 
-const FOLLOWING_TAB = /^(?:关注|正在关注|追踪中|追蹤中|Following)\s*(?:[(（]\s*([\d,.]+\s*[万萬千KkMm]?)\s*[)）])?$/;
+const COUNT = String.raw`\s*(?:[(（]\s*([\d,.]+\s*[万萬千KkMm]?)\s*[)）])?$`;
+const TAB: Record<FollowListKind, RegExp> = {
+  following: new RegExp(String.raw`^(?:关注|正在关注|追踪中|追蹤中|Following)` + COUNT),
+  followers: new RegExp(String.raw`^(?:粉丝|粉絲|Followers)` + COUNT),
+};
 const END_HEADER = /^(为你推荐|為你推薦|推荐用户|Suggested for you|Suggestions for you)$/i;
 
 const tabCountOf = (raw: string | undefined): number | null => {
@@ -48,10 +58,11 @@ const tabCountOf = (raw: string | undefined): number | null => {
 /** Is this the follow-list screen (tab bar present)? */
 export const isFollowList = (nodes: UiNode[]) => nodes.some((n) => n.rid === `${ID}unified_follow_list_tab_layout`);
 
-export function parseFollowingScreen(nodes: UiNode[]): FollowingScreen {
-  const tabs = nodes.filter((n) => n.rid === `${ID}title` && FOLLOWING_TAB.test(n.text.trim()));
+export function parseFollowingScreen(nodes: UiNode[], kind: FollowListKind = 'following'): FollowingScreen {
+  const re = TAB[kind];
+  const tabs = nodes.filter((n) => n.rid === `${ID}title` && re.test(n.text.trim()));
   const tab = tabs.find((n) => n.selected) ?? null;
-  const tabCount = tabCountOf(FOLLOWING_TAB.exec((tab ?? tabs[0])?.text.trim() ?? '')?.[1]);
+  const tabCount = tabCountOf(re.exec((tab ?? tabs[0])?.text.trim() ?? '')?.[1]);
   const rows: FollowingRow[] = [];
   let buttonsLeft: number | null = null;
   for (let i = 0; i < nodes.length; i++) {
@@ -62,6 +73,8 @@ export function parseFollowingScreen(nodes: UiNode[]): FollowingScreen {
     let displayName: string | null = null;
     for (let j = i + 1; j < nodes.length && nodes[j]!.depth > n.depth; j++) {
       const c = nodes[j]!;
+      // any other clickable node in the row (发消息 / 关注 / 移除 / 更多…) is a button: swipes stay left of it
+      if (c.clickable && c.bounds && c.rid !== `${ID}follow_list_user_imageview` && c.bounds[0] > (n.bounds?.[0] ?? 0) + 200) buttonsLeft = Math.min(buttonsLeft ?? c.bounds[0], c.bounds[0]);
       if (c.rid === `${ID}follow_list_username`) handle = c.text.trim();
       else if (c.rid === `${ID}follow_list_subtitle`) displayName = c.text.trim() || null;
     }
@@ -74,10 +87,10 @@ export function parseFollowingScreen(nodes: UiNode[]): FollowingScreen {
   return { onFollowingTab: !!tab, tabCount, rows, end, list: listNode?.bounds ?? null, buttonsLeft };
 }
 
-/** The 关注 counter on the own profile (tap target), null when not on screen. */
-export function followingCounter(nodes: UiNode[]): { x: number; y: number } | null {
-  const n = nodes.find((x) => x.rid === `${ID}profile_header_following_stacked_familiar` && x.bounds)
-    ?? nodes.find((x) => x.rid === `${ID}profile_header_familiar_following_value` && x.bounds);
+/** The 关注 (or 粉丝) counter on the own profile (tap target), null when not on screen. */
+export function followingCounter(nodes: UiNode[], kind: FollowListKind = 'following'): { x: number; y: number } | null {
+  const n = nodes.find((x) => x.rid === `${ID}profile_header_${kind}_stacked_familiar` && x.bounds)
+    ?? nodes.find((x) => x.rid === `${ID}profile_header_familiar_${kind}_value` && x.bounds);
   if (!n?.bounds) return null;
   return { x: Math.round((n.bounds[0] + n.bounds[2]) / 2), y: Math.round((n.bounds[1] + n.bounds[3]) / 2) };
 }
@@ -93,4 +106,11 @@ export function listSwipe(s: Pick<FollowingScreen, 'list' | 'buttonsLeft'>): { x
   if (h < 400) return null;
   const x = Math.round(Math.min(l + (r - l) * 0.4, (s.buttonsLeft ?? r) - 60));
   return { x, y1: Math.round(b - h * 0.2), y2: Math.round(b - h * 0.75) };
+}
+
+/** The title of a list's tab in the tab bar (tap target to switch tabs on the same screen), null when not shown. */
+export function listTab(nodes: UiNode[], kind: FollowListKind): { x: number; y: number; selected: boolean } | null {
+  const n = nodes.find((x) => x.rid === `${ID}title` && x.bounds && TAB[kind].test(x.text.trim()));
+  if (!n?.bounds) return null;
+  return { x: Math.round((n.bounds[0] + n.bounds[2]) / 2), y: Math.round((n.bounds[1] + n.bounds[3]) / 2), selected: n.selected };
 }

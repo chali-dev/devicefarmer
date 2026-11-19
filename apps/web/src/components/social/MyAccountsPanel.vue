@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { countryName } from '../../api/lang'
 import { dateLocale } from '../../i18n'
-import { ExclamationCircleOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, EditOutlined, ExclamationCircleOutlined, HistoryOutlined, PictureOutlined, PlusOutlined, RobotOutlined, SyncOutlined, TeamOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { FormInstance } from 'ant-design-vue'
 import type { Rule } from 'ant-design-vue/es/form'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../../api/query'
-import { api, codeText, errorText } from '../../api/client'
+import { api, errorText } from '../../api/client'
 import {
   SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
-  type ManagedUser, type Persona, type SocialAccount, type Task, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
+  type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../../api/types'
 import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
 import BatchFormModal from '../common/BatchFormModal.vue'
@@ -25,13 +25,15 @@ import PlatformTag from './PlatformTag.vue'
 import AccountAiGenerateModal from './AccountAiGenerateModal.vue'
 import SocialAccountFeedDrawer from '../feed/SocialAccountFeedDrawer.vue'
 import SyncFromDeviceModal from './SyncFromDeviceModal.vue'
-import AccountAudience from './AccountAudience.vue'
+import InitialAvatar from './InitialAvatar.vue'
+import { useAccountSync } from './useAccountSync'
 import { useAuthStore } from '../../stores/auth'
 import { useInstancesStore } from '../../stores/instances'
 
 /**
- * 我的媒体 → 我的媒体号: the operator's own accounts (人设, status, 配置语系, 从云手机同步, detail drawer). Each row expands into
- * 粉丝 / 追踪中 (AccountAudience.vue, owner 2026-11-18: 「移到媒体号下展开」). The page's header
+ * 我的媒体 → 我的媒体号: the operator's own accounts (人设, status, 配置语系, 从云手机同步, detail drawer). The row actions are
+ * icon buttons (owner 2026-11-19 「这些可以展开吗」); 关注 / 粉丝 open the account's own page /social/accounts/:id
+ * (SocialAccountView.vue; formerly a row expansion). The page's header
  * actions are teleported into `extraTo` (the page header of SocialAccountsView) while this tab is shown.
  */
 defineProps<{ extraTo?: string }>()
@@ -120,17 +122,13 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 }
 
 const columns = computed(() => [
-  { title: t('social.colPlatform'), key: 'platform', width: 130 },
-  { title: t('social.colHandle'), key: 'handle', width: 200 },
-  ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 110 }] : []),
-  { title: t('social.colPersona'), key: 'persona', width: 120 },
-  { title: t('social.colLang'), key: 'lang', width: 110 },
-  { title: t('social.colDevice'), key: 'device', width: 140 },
-  { title: t('social.colCountry'), key: 'proxy', width: 140 },
-  { title: t('social.colLogin'), key: 'login', width: 120 },
-  { title: t('social.colAccount'), key: 'account', width: 120 },
-  { title: t('social.colChecked'), key: 'checked', width: 160 },
-  actionColumn(210),
+  { title: t('social.colHandle'), key: 'handle', ellipsis: true },
+  ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 100, ellipsis: true }] : []),
+  { title: t('social.colPersona'), key: 'persona', width: 110, ellipsis: true },
+  { title: t('social.colLang'), key: 'lang', width: 90 },
+  { title: t('social.colDevice'), key: 'device', width: 150, ellipsis: true },
+  { title: t('social.colStatus'), key: 'status', width: 190 },
+  actionColumn(206),
 ])
 
 /** Persona label: personal ones are marked (admins also see the owner). */
@@ -143,10 +141,22 @@ const langFilterOptions = computed(() => [
   { value: 'none', label: t('social.noLang') },
   ...[...new Set(['zh-CN', ...accountLangs.value])].map((l) => ({ value: l, label: `${langName(l)} (${l})` })),
 ])
-const personaFilterOptions = computed(() => [
-  { value: 'none', label: t('social.noPersona') },
-  ...personas.value.map((p) => ({ value: p.id, label: personaLabel(p) })),
-])
+/**
+ * 人设 / 仅异常 have no control in the toolbar any more (owner 2026-11-19 「红框移除」); links from elsewhere
+ * (/social?personaId= from the 人设 page, ?exception=1 from the dashboard) still filter and show a closable tag.
+ */
+const personaFilterName = computed(() => {
+  if (!filters.personaId) return ''
+  if (filters.personaId === 'none') return t('social.noPersona')
+  const p = personas.value.find((x) => x.id === filters.personaId)
+  return p ? personaLabel(p) : filters.personaId.slice(0, 8)
+})
+function clearQueryFilter(key: 'personaId' | 'exception') {
+  if (key === 'personaId') filters.personaId = undefined
+  else filters.exception = false
+  if (route.query[key] !== undefined) { const { [key]: _drop, ...rest } = route.query; void router.replace({ query: rest }) }
+  search()
+}
 const deviceName = computed(() => (filters.instanceId ? store.byId.get(filters.instanceId)?.name ?? filters.instanceId.slice(0, 8) : ''))
 
 // ---------------------------------------------------------------- create / edit
@@ -168,7 +178,6 @@ const rules = computed<Record<string, Rule[]>>(() => ({
 /** Personas that may be set on the account: public ones and its owner's. */
 const formOwner = computed(() => editing.value?.userId ?? form.ownerId ?? auth.user?.id)
 const formPersonas = computed(() => personasFor(formOwner.value))
-const formLimit = computed(() => platforms.value.find((p) => p.id === (editing.value?.platform ?? form.platform))?.limit)
 
 function openAdd() {
   editing.value = null
@@ -222,69 +231,11 @@ function remove(a: SocialAccount) {
 }
 
 // ---------------------------------------------------------------- 自动检测 (system-run) + 同步 (row action, replaces 立即检测)
-/** Account id → the 同步 task being followed: step 1 account (account-device-sync), step 2 feed (feed-collect). */
-const syncing = ref<Record<string, { taskId: string; step: 'account' | 'feed' }>>({})
-const syncLabel = (id: string) => (syncing.value[id]?.step === 'feed' ? t('feed.syncStepFeedShort') : syncing.value[id] ? t('feed.syncStepAccount') : t('social.syncNow'))
 /** Translated result code of the last automatic check. */
 const checkText = (code: string | null) => (code ? (te(`social.checkResult.${code}`) ? t(`social.checkResult.${code}`) : code) : '')
 const CHECK_COLOR: Record<string, string> = { ok: 'success', logged_out: 'error', wrong_account: 'error', challenge: 'error', offline: 'default', timeout: 'warning', app_missing: 'warning' }
-/**
- * 同步 (owner 2026-11-18: replaces 立即检测): 从云手机同步 on the account's linked phone (the owner follows the phone's
- * assignment, derived by the API), followed through the task events (pace deferrals continue as a new task); the sync
- * also writes the check result on the account, so the row is reloaded when it ends.
- */
-const syncDisabled = (a: SocialAccount) => !a.instanceId || a.platform !== 'instagram'
-async function syncNow(a: SocialAccount) {
-  if (syncDisabled(a) || syncing.value[a.id]) return
-  try {
-    const r = await api<{ task: { id: string } }>('POST', `/api/social/accounts/${a.id}/sync`)
-    syncing.value = { ...syncing.value, [a.id]: { taskId: r.task.id, step: 'account' } }
-    message.info(t('social.syncQueued'))
-  } catch (e) { message.error(errorText(e)) }
-}
-type SyncTaskResult = { outcome?: string; result?: string; code?: string; taskId?: string; handle?: string; feed?: { taskId?: string; code?: string }
-  posts?: number; newPosts?: number; comments?: number; newComments?: number }
-/**
- * One followed task ended. Step 1 (account): message as before, row reloaded at once; when it queued step 2 the
- * feed task is followed next ("账号已更新 → 正在读取帖子…"). Step 2 (feed): its own result; a failure there never
- * changes what step 1 wrote. Pace deferrals of either step continue with the new task.
- */
-async function syncFinished(accountId: string, cur: { taskId: string; step: 'account' | 'feed' }) {
-  const done = () => { const { [accountId]: _d, ...rest } = syncing.value; syncing.value = rest }
-  try {
-    const { task } = await api<{ task: Task & { result: SyncTaskResult | null } }>('GET', `/api/tasks/${cur.taskId}`)
-    const res = task.result ?? {}
-    if (task.status === 'success' && res.outcome === 'deferred' && res.taskId) { syncing.value = { ...syncing.value, [accountId]: { ...cur, taskId: res.taskId } }; return }
-    if (cur.step === 'feed') {
-      done()
-      if (task.status !== 'success') message.warning(t('feed.syncFeedFailed', { msg: codeText(task.errorCode ?? undefined, {}, task.error ?? task.status) }))
-      else if (res.outcome === 'skipped') message.info(t('feed.syncFeedNotQueued', { msg: codeText(res.code, {}, res.code ?? '') }))
-      else message.success(t('feed.syncFeedDone', { msg: t('feed.activity.collect', { posts: res.posts ?? 0, newPosts: res.newPosts ?? 0, comments: res.comments ?? 0, newComments: res.newComments ?? 0 }) }))
-      return
-    }
-    if (task.status === 'success' && res.feed?.taskId) {
-      syncing.value = { ...syncing.value, [accountId]: { taskId: res.feed.taskId, step: 'feed' } }
-      message.info(t('feed.syncStepFeed'))
-      return
-    }
-    done()
-    if (task.status !== 'success') message.error(t('social.sync.failed', { msg: codeText(task.errorCode ?? undefined, {}, task.error ?? task.status) }))
-    else if (res.outcome === 'skipped') message.info(t('social.sync.skipped', { msg: codeText(res.code, {}, res.code ?? '') }))
-    else {
-      const text = res.result && te(`social.sync.result.${res.result}`) ? t(`social.sync.result.${res.result}`) : res.result ?? ''
-      if (res.feed?.code) message.warning(`${text} · ${t('feed.syncFeedNotQueued', { msg: codeText(res.feed.code, {}, res.feed.code) })}`)
-      else if (res.result === 'created' || res.result === 'updated') message.success(text)
-      else message.warning(text)
-    }
-  } catch (e) { done(); message.error(errorText(e)) }
-  finally { if (cur.step === 'account') void load() }
-}
-const offSync = store.onTaskEvent((ev) => {
-  if (ev.type !== 'task.updated' || !['success', 'failed', 'cancelled'].includes(ev.task.status)) return
-  const hit = Object.entries(syncing.value).find(([, s]) => s.taskId === ev.task.id)
-  if (hit) void syncFinished(hit[0], hit[1])
-})
-onBeforeUnmount(offSync)
+/** The one 同步 button (shared with the account page): step 1 reloads the list as soon as it ends. */
+const { syncing, syncLabel, syncDisabled, syncNow } = useAccountSync(() => { void load() })
 
 // ---------------------------------------------------------------- 从云手机同步 + empty-state guide
 const syncOpen = ref(false)
@@ -315,8 +266,8 @@ const rowProps = (record: SocialAccount) => ({
   onClick: (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('a, button, input, label, .ant-dropdown, .ant-checkbox-wrapper, .ant-typography')) openFeed(record) },
 })
 
-/** Rows expanded into 粉丝 / 追踪中 (the expand icon; a row click still opens the detail drawer). */
-const expandedKeys = ref<string[]>([])
+/** 关注 / 粉丝 page of an account (formerly the row expansion). */
+const audienceLink = (a: SocialAccount) => ({ path: `/social/accounts/${a.id}` })
 
 // ---------------------------------------------------------------- logs
 const logOpen = ref(false)
@@ -448,13 +399,11 @@ async function submitBatchForm() {
     </a-card>
 
     <div>
-      <SearchBar :loading="loading" @reset="reset" @refresh="load">
+      <SearchBar :loading="loading" @reset="reset">
         <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
         <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
           <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.name" /></a-select-option>
         </a-select>
-        <a-select v-model:value="filters.personaId" :placeholder="t('social.colPersona')" allow-clear show-search option-filter-prop="label" style="width: 150px"
-          :options="personaFilterOptions" @change="search" />
         <a-select v-model:value="filters.lang" :placeholder="t('social.colLang')" allow-clear show-search option-filter-prop="label" style="width: 130px"
           :options="langFilterOptions" @change="search" />
         <a-select v-model:value="filters.loginStatus" :placeholder="t('social.colLogin')" allow-clear style="width: 130px" @change="search">
@@ -467,9 +416,10 @@ async function submitBatchForm() {
           v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('social.colOwner')" allow-clear show-search option-filter-prop="label" style="width: 140px"
           :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="search"
         />
-        <a-checkbox v-model:checked="filters.exception" @change="search">
-          <a-tooltip :title="t('social.exceptionHint')">{{ t('social.exceptionOnly') }}</a-tooltip>
-        </a-checkbox>
+        <a-tag v-if="filters.personaId" closable color="processing" @close.prevent="clearQueryFilter('personaId')">{{ t('social.onlyPersona', { name: personaFilterName }) }}</a-tag>
+        <a-tooltip v-if="filters.exception" :title="t('social.exceptionHint')">
+          <a-tag closable color="processing" @close.prevent="clearQueryFilter('exception')">{{ t('social.onlyException') }}</a-tag>
+        </a-tooltip>
         <template #actions>
           <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>
@@ -488,21 +438,25 @@ async function submitBatchForm() {
       </BatchFormModal>
 
       <a-table
-        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: 1910 }"
+        :data-source="items" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :scroll="{ x: auth.isAdmin ? 1060 : 960 }"
         :pagination="pagination({ current: page.current, pageSize: page.pageSize, total, totalText: (n) => t('social.total', { n }) })"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
         :custom-row="(r: any) => rowProps(r as SocialAccount)"
-        :expanded-row-keys="expandedKeys" @expanded-rows-change="(k: any[]) => (expandedKeys = k as string[])"
         @change="onTableChange"
       >
-        <template #expandedRowRender="{ record }"><AccountAudience :account="record as SocialAccount" /></template>
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'platform'"><PlatformTag :platform="record.platform" :name="platformName(record.platform)" /></template>
-          <template v-else-if="column.key === 'handle'">
-            <a v-if="record.profileUrl" :href="record.profileUrl" target="_blank" rel="noopener noreferrer">@{{ record.handle }}</a>
-            <span v-else>@{{ record.handle }}</span>
-            <div v-if="record.displayName" class="muted small">{{ record.displayName }}</div>
-            <div v-if="record.notes" class="muted small"><a-typography-text :ellipsis="{ tooltip: record.notes }" :content="record.notes" style="max-width: 180px" class="muted" /></div>
+          <template v-if="column.key === 'handle'">
+            <div class="acct">
+              <InitialAvatar :name="record.displayName" :handle="record.handle" :size="32" />
+              <div class="acct-text">
+                <div class="acct-line">
+                  <PlatformTag :platform="record.platform" :name="platformName(record.platform)" icon-only :size="16" />
+                  <a v-if="record.profileUrl" :href="record.profileUrl" target="_blank" rel="noopener noreferrer" class="ellipsis">@{{ record.handle }}</a>
+                  <span v-else class="ellipsis">@{{ record.handle }}</span>
+                </div>
+                <div v-if="record.displayName || record.notes" class="muted small ellipsis" :title="record.notes ?? undefined">{{ record.displayName || record.notes }}</div>
+              </div>
+            </div>
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
           <template v-else-if="column.key === 'persona'"><span v-if="record.personaName">{{ record.personaName }}</span><span v-else class="muted">—</span></template>
@@ -511,54 +465,63 @@ async function submitBatchForm() {
             <span v-else class="muted">—</span>
           </template>
           <template v-else-if="column.key === 'device'">
-            <template v-if="record.instance">
-              <router-link v-if="record.instance.accessible" :to="deviceListLink(record.instance.id)">{{ record.instance.name }}</router-link>
-              <a-tooltip v-else :title="t('social.noDeviceAccess')"><span class="muted">{{ record.instance.name }}</span></a-tooltip>
-            </template>
-            <span v-else class="muted">{{ t('social.notLinked') }}</span>
-          </template>
-          <template v-else-if="column.key === 'proxy'">
+            <div class="ellipsis">
+              <template v-if="record.instance">
+                <router-link v-if="record.instance.accessible" :to="deviceListLink(record.instance.id)">{{ record.instance.name }}</router-link>
+                <a-tooltip v-else :title="t('social.noDeviceAccess')"><span class="muted">{{ record.instance.name }}</span></a-tooltip>
+              </template>
+              <span v-else class="muted">{{ t('social.notLinked') }}</span>
+            </div>
             <!-- Country of the linked device's measured egress; before a measurement, the proxy's configured country (marked). -->
-            <a-tooltip v-if="record.egress?.country"
-              :title="[[record.egress.region, record.egress.city].filter(Boolean).join(' · '), record.egress.ip].filter(Boolean).join(' · ')">
-              <span>{{ countryName(record.egress.country) }} <span class="muted">({{ record.egress.country }})</span></span>
-            </a-tooltip>
-            <span v-else-if="record.proxy?.country">{{ countryName(record.proxy.country) }} <span class="muted small">{{ t('social.countryConfigured') }}</span></span>
-            <span v-else class="muted">—</span>
+            <div class="muted small ellipsis">
+              <a-tooltip v-if="record.egress?.country"
+                :title="[[record.egress.region, record.egress.city].filter(Boolean).join(' · '), record.egress.ip].filter(Boolean).join(' · ')">
+                <span>{{ countryName(record.egress.country) }} ({{ record.egress.country }})</span>
+              </a-tooltip>
+              <span v-else-if="record.proxy?.country">{{ countryName(record.proxy.country) }} {{ t('social.countryConfigured') }}</span>
+            </div>
           </template>
-          <template v-else-if="column.key === 'login'">
-            <StatusTag kind="socialLogin" :status="record.loginStatus" />
-          </template>
-          <template v-else-if="column.key === 'account'">
-            <StatusTag kind="socialAccount" :status="record.accountStatus" />
-            <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
-          </template>
-          <template v-else-if="column.key === 'checked'">
-            <!-- time only; the result (正常 / 已退出登录 …) is in the tooltip and in the status column / drawer -->
-            <a-tooltip v-if="record.lastCheckCode" :title="[checkText(record.lastCheckCode), record.lastCheckDetail].filter(Boolean).join(' · ')">
-              <span class="nowrap">{{ fmt(record.lastCheckedAt) }}</span>
-            </a-tooltip>
-            <span v-else-if="record.autoCheckUnsupported" class="muted small">{{ t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) }}</span>
-            <span v-else class="muted small">{{ record.lastCheckedAt ? fmt(record.lastCheckedAt) : t('social.notChecked') }}</span>
+          <template v-else-if="column.key === 'status'">
+            <div class="status-tags">
+              <StatusTag kind="socialLogin" :status="record.loginStatus" />
+              <StatusTag kind="socialAccount" :status="record.accountStatus" />
+              <a-tooltip v-if="record.lastError" :title="record.lastError"><ExclamationCircleOutlined class="err-icon" /></a-tooltip>
+            </div>
+            <!-- last automatic check / sync: time; the result (正常 / 已退出登录 …) is in the tooltip and in the drawer -->
+            <div class="muted small">
+              <a-tooltip v-if="record.lastCheckCode" :title="[checkText(record.lastCheckCode), record.lastCheckDetail].filter(Boolean).join(' · ')">
+                <span class="nowrap">{{ t('social.colChecked') }} {{ fmt(record.lastCheckedAt) }}</span>
+              </a-tooltip>
+              <span v-else-if="record.autoCheckUnsupported">{{ t(`social.autoCheckUnsupported.${record.autoCheckUnsupported.replace('account_check.', '')}`) }}</span>
+              <span v-else>{{ record.lastCheckedAt ? `${t('social.colChecked')} ${fmt(record.lastCheckedAt)}` : t('social.notChecked') }}</span>
+            </div>
           </template>
           <template v-else-if="column.key === 'ops'">
-            <a-space :size="0">
-              <a-tooltip :title="syncDisabled(record as SocialAccount) ? t('social.syncNoDevice') : t('social.syncNowHint')">
-                <a-button type="link" size="small" :disabled="syncDisabled(record as SocialAccount)" :loading="!!syncing[record.id]" @click="syncNow(record as SocialAccount)">{{ syncLabel(record.id) }}</a-button>
+            <div class="ops">
+              <a-tooltip :title="syncDisabled(record as SocialAccount) ? t('social.syncNoDevice') : syncing[record.id] ? syncLabel(record.id) : `${t('social.syncNow')} · ${t('social.syncNowHint')}`">
+                <a-button type="text" size="small" :aria-label="t('social.syncNow')" :disabled="syncDisabled(record as SocialAccount)" :loading="!!syncing[record.id]" @click="syncNow(record as SocialAccount)">
+                  <template #icon><SyncOutlined /></template>
+                </a-button>
               </a-tooltip>
-              <a-dropdown>
-                <a-button type="link" size="small">{{ t('social.more') }}</a-button>
-                <template #overlay>
-                  <a-menu>
-                    <a-menu-item key="feed" @click="openFeed(record as SocialAccount)">{{ t('feed.tabs.posts') }}</a-menu-item>
-                    <a-menu-item key="ai" :disabled="!record.personaId" :title="record.personaId ? undefined : t('social.aiDrafts.noPersonaGenerate')" @click="openAiGenerate(record as SocialAccount)">{{ t('social.aiDrafts.generateNow') }}</a-menu-item>
-                    <a-menu-item key="edit" @click="openEdit(record as SocialAccount)">{{ t('common.edit') }}</a-menu-item>
-                    <a-menu-item key="logs" @click="openLogs(record as SocialAccount)">{{ t('social.logs') }}</a-menu-item>
-                    <a-menu-item key="delete" danger @click="remove(record as SocialAccount)">{{ t('common.delete') }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-            </a-space>
+              <a-tooltip :title="t('social.audience.page.openHint')">
+                <router-link :to="audienceLink(record as SocialAccount)" class="ops-link" :aria-label="t('social.audience.page.open')"><TeamOutlined /></router-link>
+              </a-tooltip>
+              <a-tooltip :title="t('feed.tabs.posts')">
+                <a-button type="text" size="small" :aria-label="t('feed.tabs.posts')" @click="openFeed(record as SocialAccount)"><template #icon><PictureOutlined /></template></a-button>
+              </a-tooltip>
+              <a-tooltip :title="record.personaId ? t('social.aiDrafts.generateNow') : t('social.aiDrafts.noPersonaGenerate')">
+                <a-button type="text" size="small" :aria-label="t('social.aiDrafts.generateNow')" :disabled="!record.personaId" @click="openAiGenerate(record as SocialAccount)"><template #icon><RobotOutlined /></template></a-button>
+              </a-tooltip>
+              <a-tooltip :title="t('common.edit')">
+                <a-button type="text" size="small" :aria-label="t('common.edit')" @click="openEdit(record as SocialAccount)"><template #icon><EditOutlined /></template></a-button>
+              </a-tooltip>
+              <a-tooltip :title="t('social.logs')">
+                <a-button type="text" size="small" :aria-label="t('social.logs')" @click="openLogs(record as SocialAccount)"><template #icon><HistoryOutlined /></template></a-button>
+              </a-tooltip>
+              <a-tooltip :title="t('common.delete')">
+                <a-button type="text" size="small" danger :aria-label="t('common.delete')" @click="remove(record as SocialAccount)"><template #icon><DeleteOutlined /></template></a-button>
+              </a-tooltip>
+            </div>
           </template>
         </template>
       </a-table>
@@ -607,7 +570,7 @@ async function submitBatchForm() {
         <LangSelect v-model="form.lang" :extra="accountLangs" :placeholder="t('social.noLang')" />
       </a-form-item>
       <!-- read only: the link is made by 从云手机同步 and removed by the batch 解除设备关联 -->
-      <a-form-item :label="t('social.colDevice')" :extra="formLimit ? t('social.deviceHint', { n: formLimit }) : undefined">
+      <a-form-item :label="t('social.colDevice')">
         <template v-if="editing?.instance">
           <router-link v-if="editing.instance.accessible" :to="deviceListLink(editing.instance.id)">{{ editing.instance.name }}</router-link>
           <span v-else class="muted">{{ editing.instance.name }}</span>
@@ -618,16 +581,9 @@ async function submitBatchForm() {
         <a-space wrap>
           <StatusTag kind="socialLogin" :status="editing.loginStatus" />
           <a-tag v-if="editing.lastCheckCode" :color="CHECK_COLOR[editing.lastCheckCode]">{{ checkText(editing.lastCheckCode) }}</a-tag>
-          <span class="muted small">{{ editing.lastCheckedAt ? fmt(editing.lastCheckedAt) : t('social.notChecked') }}</span>
-          <span v-if="editing.lastCheckDetail" class="muted small">{{ editing.lastCheckDetail }}</span>
-          <a-tooltip :title="syncDisabled(editing) ? t('social.syncNoDevice') : t('social.syncNowHint')">
-            <a-button size="small" :disabled="syncDisabled(editing)" :loading="!!syncing[editing.id]" @click="syncNow(editing!)">{{ syncLabel(editing.id) }}</a-button>
-          </a-tooltip>
         </a-space>
-        <div class="muted small">{{ editing.autoCheckUnsupported ? t(`social.autoCheckUnsupported.${editing.autoCheckUnsupported.replace('account_check.', '')}`) : t('social.autoCheckHint') }}</div>
       </a-form-item>
       <a-form-item :label="t('social.notes')" name="notes"><a-textarea v-model:value="form.notes" :rows="3" :maxlength="2000" /></a-form-item>
-      <div class="muted small">{{ t('social.noPasswords') }}</div>
     </a-form>
     <template #footer>
       <a-button @click="editOpen = false">{{ t('common.cancel') }}</a-button>
@@ -662,5 +618,14 @@ async function submitBatchForm() {
 .batch-hint { margin-top: 6px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
 .guide-title { font-weight: 600; margin-bottom: 12px; }
+.acct { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.acct-text { min-width: 0; flex: 1; }
+.acct-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.status-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.status-tags :deep(.ant-tag) { margin-inline-end: 0; }
+.ops { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; }
+.ops-link { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 4px; color: var(--cp-text); }
+.ops-link:hover { background: var(--cp-fill-alter); color: var(--cp-primary); }
 :deep(.row-synced) > td { background: var(--cp-primary-bg) !important; transition: background 0.6s; }
 </style>

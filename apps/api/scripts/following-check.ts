@@ -13,8 +13,12 @@
  * - parser on the trimmed probe dumps (scripts/fixtures/ig-following-*.xml): rows, tab count, end marker, swipe left
  *   of the row buttons; the profile's following counter;
  * - schedule: key following:<id>:<slot>, idempotent, halted / stopped phones skipped, off = nothing;
- * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); migration 0044 shape + db:migrate
- *   twice; audit social.following_sync.
+ * - 粉丝 list (owner 2026-11-19, ≤ 20 newest per run, read in the same task): parser on a CONSTRUCTED followers-tab dump
+ *   (derived from the real following fixture: tab selection / count swapped, a 移除 button added to the rows; no real
+ *   followers-tab dump exists, the screen was never probed), tab tap target, storage by kind (capped never marks gone,
+ *   complete marks gone only in its own list), GET …/followers/list (paging, search, state, RBAC), …/following state;
+ * - 风控 setting followingSyncHours (default 24, 1–168 | null); role menu rule (social); migrations 0044 + 0046 shape +
+ *   db:migrate twice; audit social.following_sync.
  *
  *   E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/following-check.ts
  */
@@ -24,8 +28,8 @@ import { readFileSync } from 'node:fs';
 import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { menuRuleFor } from '../src/modules/auth/role-menus.js';
-import { followingCounter, listSwipe, parseFollowingScreen } from '../src/modules/social/following-ui.js';
-import { scheduleFollowingSyncs, writeFollowing } from '../src/modules/social/following.js';
+import { followingCounter, listSwipe, listTab, parseFollowingScreen } from '../src/modules/social/following-ui.js';
+import { FOLLOWERS_MAX, scheduleFollowingSyncs, writeFollowing } from '../src/modules/social/following.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
@@ -178,6 +182,26 @@ try {
   check('swipe stays in the list, left of the row buttons, moves up', !!sw && sw.x < (top.buttonsLeft ?? 0) - 40 && sw.y1 > sw.y2 && sw.y2 > top.list![1] && sw.y1 < top.list![3], JSON.stringify(sw));
   const prof = parseUiDump(`<hierarchy><node resource-id="com.instagram.android:id/profile_header_following_stacked_familiar" content-desc="6关注" clickable="true" package="com.instagram.android" bounds="[814,363][1032,534]"><node resource-id="com.instagram.android:id/profile_header_familiar_following_value" text="6" bounds="[900,380][950,420]"/></node></hierarchy>`);
   check('profile: following counter tap target = the counter\'s centre', JSON.stringify(followingCounter(prof)) === JSON.stringify({ x: 923, y: 449 }), JSON.stringify(followingCounter(prof)));
+  // CONSTRUCTED followers-tab dump (no real one exists): the real following fixture with the tab selection / count swapped
+  // (粉丝 (25) selected) and a 移除 button (clickable, x 640) added to each row; the rows keep the following ids (assumed).
+  const rawList = readFileSync(new URL('./fixtures/ig-following-list.xml', import.meta.url), 'utf8');
+  const constructed = rawList
+    .replace(/text="粉丝 \(0\)"([^>]*?)selected="false"/, 'text="粉丝 (25)"$1selected="true"')
+    .replace(/text="关注 \(6\)"([^>]*?)selected="true"/, 'text="关注 (6)"$1selected="false"')
+    .replace(/(<node text="[^"]*" resource-id="com\.instagram\.android:id\/follow_list_row_large_follow_button"[^>]*bounds="\[612,(\d+)\]\[948,(\d+)\]"\/>)/g,
+      '<node text="移除" resource-id="com.instagram.android:id/follow_list_row_remove_button" class="android.widget.Button" package="com.instagram.android" content-desc="" clickable="true" selected="false" bounds="[560,$2][700,$3]"/>$1');
+  const fan = parseFollowingScreen(parseUiDump(constructed), 'followers');
+  check('followers parser (constructed dump): 粉丝 tab selected, tab count 25, 6 rows; as following it is NOT the selected tab',
+    fan.onFollowingTab && fan.tabCount === 25 && fan.rows.length === 6 && fan.rows[0]!.handle === 'gigi.cassyy15' && !parseFollowingScreen(parseUiDump(constructed), 'following').onFollowingTab,
+    JSON.stringify({ on: fan.onFollowingTab, n: fan.tabCount, rows: fan.rows.length }));
+  const fsw = listSwipe(fan);
+  check('followers: row buttons (移除 at x 560) found, swipe stays left of them', fan.buttonsLeft === 560 && !!fsw && fsw.x < 500, JSON.stringify({ b: fan.buttonsLeft, fsw }));
+  check('following fixture seen as followers: not the selected tab; 粉丝 tab tap target = its title centre (not selected)',
+    !parseFollowingScreen(fx('ig-following-list.xml'), 'followers').onFollowingTab
+    && JSON.stringify(listTab(fx('ig-following-list.xml'), 'followers')) === JSON.stringify({ x: 135, y: 312, selected: false })
+    && listTab(fx('ig-following-list.xml'), 'following')?.selected === true, JSON.stringify(listTab(fx('ig-following-list.xml'), 'followers')));
+  const profF = parseUiDump(`<hierarchy><node resource-id="com.instagram.android:id/profile_header_followers_stacked_familiar" content-desc="3粉丝" clickable="true" package="com.instagram.android" bounds="[500,363][700,534]"/></hierarchy>`);
+  check('profile: followers counter tap target (fallback without a tab bar)', JSON.stringify(followingCounter(profF, 'followers')) === JSON.stringify({ x: 600, y: 449 }) && followingCounter(profF) === null);
   check('parser on an unrelated screen: no rows, not the following tab, no end', (() => { const x = parseFollowingScreen(prof); return !x.onFollowingTab && !x.rows.length && !x.end; })());
 
   // ---------------------------------------------------------------- storage rules
@@ -204,18 +228,55 @@ try {
   check('GET search (case-insensitive, handle or name)', r.body.total === 1 && r.body.items[0].handle === 'delta', r.text);
   r = await http('GET', `/api/social/accounts/${accA.id}/following`, T);
   check('admin sees it too', r.status === 200 && r.body.following === 1);
+  r = await http('GET', `/api/social/accounts/${accA.id}/following?state=gone`, A);
+  check('GET state=gone: only the 3 gone, current count still 1', r.body.total === 3 && r.body.current === 1 && r.body.items.every((x: any) => x.goneAt !== null), r.text);
+  r = await http('GET', `/api/social/accounts/${accA.id}/following?state=all`, A);
+  const r400 = await http('GET', `/api/social/accounts/${accA.id}/following?state=x`, A);
+  check('GET state=all = 4 (same as the older gone=true); bad state → 400', r.body.total === 4 && r400.status === 400, `${r.text} ${r400.status}`);
+
+  // ---------------------------------------------------------------- 粉丝 list: storage by kind + API
+  const fol = (h: string) => ({ handle: h, displayName: `F ${h}` });
+  w = await writeFollowing(accA.id, { entries: [fol('fan1'), fol('fan2'), fol('Alpha')], complete: true }, new Date(Date.now() - 900), 'followers');
+  const kinds = await db.select().from(FW).where(eq(FW.socialAccountId, accA.id));
+  check('followers stored as kind followers (same handle may be in both lists), following rows untouched',
+    w.added === 3 && w.gone === 0 && kinds.filter((x) => x.kind === 'followers').length === 3 && kinds.filter((x) => x.kind === 'following').length === 4
+    && kinds.filter((x) => x.handle === 'alpha').length === 2 && kinds.find((x) => x.kind === 'following' && x.handle === 'alpha')?.goneAt === null, JSON.stringify(w));
+  w = await writeFollowing(accA.id, { entries: [fol('fan3')], complete: false }, new Date(Date.now() - 800), 'followers');
+  check('followers capped read (only the newest 20): nothing marked gone', w.added === 1 && w.gone === 0
+    && (await db.select().from(FW).where(and(eq(FW.socialAccountId, accA.id), eq(FW.kind, 'followers'), sql`${FW.goneAt} is not null`))).length === 0, JSON.stringify(w));
+  w = await writeFollowing(accA.id, { entries: [fol('fan3'), fol('fan1')], complete: true }, new Date(Date.now() - 700), 'followers');
+  const fk2 = await db.select().from(FW).where(eq(FW.socialAccountId, accA.id));
+  check('followers complete read: fan2 + alpha gone in the followers list only (following alpha still current)', w.gone === 2
+    && fk2.find((x) => x.kind === 'followers' && x.handle === 'alpha')?.goneAt !== null && fk2.find((x) => x.kind === 'following' && x.handle === 'alpha')?.goneAt === null, JSON.stringify(w));
+  r = await http('GET', `/api/social/accounts/${accA.id}/followers/list?limit=1`, A);
+  check('GET …/followers/list: kind followers, current 2, gone 2, total 2, paged (1 item), max 20', r.status === 200 && r.body.kind === 'followers' && r.body.current === 2
+    && r.body.gone === 2 && r.body.total === 2 && r.body.items.length === 1 && r.body.settings.max === FOLLOWERS_MAX && FOLLOWERS_MAX === 20 && r.body.following === undefined, r.text);
+  r = await http('GET', `/api/social/accounts/${accA.id}/followers/list?state=all&q=FAN`, A);
+  check('…followers/list state=all + search (case-insensitive): fan1, fan2, fan3; current first', r.body.total === 3 && r.body.items[r.body.items.length - 1].goneAt !== null
+    && r.body.items.slice(0, 2).every((x: any) => x.goneAt === null), r.text);
+  r = await http('GET', `/api/social/accounts/${accA.id}/followers/list?state=gone`, A);
+  check('…followers/list state=gone: fan2 + alpha', r.body.total === 2 && r.body.items.map((x: any) => x.handle).sort().join(',') === 'alpha,fan2', r.text);
+  r = await http('GET', `/api/social/accounts/${accA.id}/following`, A);
+  check('…the following list is unchanged by the followers writes', r.body.total === 1 && r.body.current === 1 && r.body.gone === 3, r.text);
+  const fr2 = await Promise.all([http('GET', `/api/social/accounts/${accA.id}/followers/list`, B), http('GET', `/api/social/accounts/${accA.id}/followers/list`, T)]);
+  check('…followers/list RBAC: another user 404, admin 200', fr2[0].status === 404 && fr2[1].status === 200 && fr2[1].body.current === 2, fr2.map((x) => x.status).join(','));
 
   // ---------------------------------------------------------------- role menu rule
   const rule = menuRuleFor('GET', `/api/social/accounts/${accA.id}/following`);
   const rule2 = menuRuleFor('GET', `/api/social/accounts/${accA.id}/followers`);
-  check('权限管理: …/following and …/followers belong to the social menu', JSON.stringify(rule?.menus) === '["social"]' && JSON.stringify(rule2?.menus) === '["social"]', JSON.stringify([rule, rule2]));
+  const rule3 = menuRuleFor('GET', `/api/social/accounts/${accA.id}/followers/list`);
+  check('权限管理: …/following, …/followers and …/followers/list belong to the social menu', [rule, rule2, rule3].every((x) => JSON.stringify(x?.menus) === '["social"]'), JSON.stringify([rule, rule2, rule3]));
 
   // ---------------------------------------------------------------- migration 0044 shape, run twice
   const cols = await sqlClient`select column_name, is_nullable from information_schema.columns where table_name = 'social_account_following' order by ordinal_position`;
   const [fk] = await sqlClient`select confdeltype from pg_constraint where conname = 'social_account_following_social_account_id_social_accounts_id_fk'`;
-  const [uq] = await sqlClient`select 1 as ok from pg_constraint where conname = 'social_account_following_account_handle' and contype = 'u'`;
-  check('migration 0044: table with gone_at nullable, FK cascade, unique (account, handle)', cols.map((c) => c.column_name).join(',') === 'id,social_account_id,handle,display_name,verified,position,first_seen_at,last_seen_at,gone_at'
-    && cols.find((c) => c.column_name === 'gone_at')?.is_nullable === 'YES' && fk?.confdeltype === 'c' && !!uq, `${cols.map((c) => c.column_name)} ${fk?.confdeltype}`);
+  const [uq] = await sqlClient`select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'social_account_following_account_kind_handle' and contype = 'u'`;
+  const [olduq] = await sqlClient`select 1 as ok from pg_constraint where conname = 'social_account_following_account_handle'`;
+  const [kindCol] = await sqlClient`select column_default, is_nullable from information_schema.columns where table_name = 'social_account_following' and column_name = 'kind'`;
+  check('migrations 0044 + 0046: gone_at nullable, FK cascade, kind not null default following, unique (account, kind, handle), old unique gone',
+    cols.map((c) => c.column_name).join(',') === 'id,social_account_id,handle,display_name,verified,position,first_seen_at,last_seen_at,gone_at,kind'
+    && cols.find((c) => c.column_name === 'gone_at')?.is_nullable === 'YES' && fk?.confdeltype === 'c' && /\(social_account_id, kind, handle\)/.test(String(uq?.def))
+    && !olduq && kindCol?.is_nullable === 'NO' && /'following'/.test(String(kindCol?.column_default)), `${cols.map((c) => c.column_name)} ${fk?.confdeltype} ${uq?.def} ${JSON.stringify(kindCol)}`);
   const mig = () => execFileSync('npx', ['tsx', '--env-file=../../.env', 'src/db/migrate.ts'], { env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const out1 = mig();
   const out2 = mig();

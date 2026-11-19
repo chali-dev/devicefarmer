@@ -323,6 +323,13 @@
       "when": 1795064059414,
       "tag": "0045_tracked_own_phone",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1795065717154,
+      "tag": "0046_account_followers",
+      "breakpoints": true
     }
   ]
 }
