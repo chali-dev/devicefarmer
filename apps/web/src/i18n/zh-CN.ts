@@ -1409,7 +1409,6 @@ const zhCN = {
     sendTarget: '对象',
     replyNeedsSocial: '评论发送在「我的媒体」里查看',
     postType: '类型',
-    allTypes: '全部类型',
     asType: '发布为{type}',
     operatorType: '请发布为「{type}」',
     todayOf: '{date} 的发布',

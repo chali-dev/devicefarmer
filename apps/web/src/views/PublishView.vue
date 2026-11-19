@@ -273,7 +273,8 @@ const countOf = (s: PublishStatus) => (showPosts.value ? byStatus.value[s] ?? 0 
   + (showReplies.value ? (REPLY_OF[s] ?? []).reduce((n, x) => n + (replyByStatus.value[x] ?? 0), 0) : 0)
 /** Today: counts per type (byPostType ignores the type filter; the comment sends of the day except cancelled). */
 const todayComments = computed(() => replyStatusesOf(statusesOf('today')).reduce((n, x) => n + (replyByStatus.value[x] ?? 0), 0))
-const todayTotal = computed(() => postTypes.value.reduce((s, x) => s + (byPostType.value[x] ?? 0), 0) + todayComments.value)
+/** 今日 type buttons: pick a type, or clear it by clicking it again. */
+function toggleType(x: PlanType) { pickType(filters.postType === x ? undefined : x) }
 function pickType(x: PlanType | undefined) { filters.postType = x; search() }
 
 function load() { return tab.value === 'calendar' ? loadCalendar() : loadList() }
@@ -404,10 +405,10 @@ onMounted(async () => {
         <a-tab-pane v-for="k in (['today', 'queue', 'history'] as const)" :key="k" :tab="t(`publish.tabs.${k}`)">
           <div v-if="k === 'today'" class="today-bar">
             <span class="week-label">{{ t('publish.todayOf', { date: today.format('YYYY-MM-DD ddd') }) }}</span>
-            <a-radio-group :value="filters.postType ?? ''" button-style="solid" size="small" @update:value="(v: string) => pickType((v || undefined) as PlanType | undefined)">
-              <a-radio-button value="">{{ t('publish.allTypes') }} {{ todayTotal }}</a-radio-button>
-              <a-radio-button v-for="x in postTypes" :key="x" :value="x">{{ typeText(x) }} {{ byPostType[x] ?? 0 }}</a-radio-button>
-              <a-radio-button value="comment">{{ typeText('comment') }} {{ todayComments }}</a-radio-button>
+            <!-- no 「全部类型」 button (owner 2026-11-19): nothing picked = every type; clicking the picked type again clears it -->
+            <a-radio-group :value="filters.postType ?? ''" button-style="solid" size="small">
+              <a-radio-button v-for="x in postTypes" :key="x" :value="x" @click="toggleType(x)">{{ typeText(x) }} {{ byPostType[x] ?? 0 }}</a-radio-button>
+              <a-radio-button value="comment" @click="toggleType('comment')">{{ typeText('comment') }} {{ todayComments }}</a-radio-button>
             </a-radio-group>
           </div>
           <PublishTaskTable v-if="showPosts" :items="items" :total="total" :loading="loading" :current="page.current" :page-size="page.pageSize"

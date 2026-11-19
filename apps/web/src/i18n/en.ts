@@ -1408,7 +1408,6 @@ const en: Messages = {
     sendTarget: 'On',
     replyNeedsSocial: 'Comment sends are opened in My media',
     postType: 'Type',
-    allTypes: 'All types',
     asType: 'Publish as {type}',
     operatorType: 'Publish it as a “{type}”',
     todayOf: 'Publishing on {date}',
