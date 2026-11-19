@@ -91,18 +91,20 @@ export interface KindSize { bytes: number; rows?: number; files?: number; unfini
 
 /**
  * Current size per kind (GET /api/system/log-sizes): the daily files of LOG_DIR (bytes + count), else
- * pg_total_relation_size (table + indexes + TOAST) of the tables involved with their row counts; tasks = tasks +
+ * the table data (heap + TOAST heap, no indexes: owner 2026-11-19 「显示表的 SIZE」, so an emptied table reads 0 KB)
+ * of the tables involved with their row counts; tasks = tasks +
  * task_logs, `unfinished` = the rows a 清除 keeps (pending / scheduled / running).
  */
 export async function logSizes(): Promise<Record<PurgeKind, KindSize>> {
   const files = await listLogFiles();
   const final = sql.join(TASK_FINAL.map((s) => sql`${s}`), sql`, `);
+  const size = (t: string) => sql.raw(`(select pg_relation_size(c.oid) + coalesce(pg_relation_size(nullif(c.reltoastrelid, 0)), 0) from pg_class c where c.oid = '${t}'::regclass)`);
   const [r] = await db.execute<Record<string, string | number>>(sql`select
-    pg_total_relation_size('instance_status_events') as history_b, (select count(*) from instance_status_events)::int as history_n,
-    pg_total_relation_size('audit_logs') as audit_b, (select count(*) from audit_logs)::int as audit_n,
-    pg_total_relation_size('risk_events') as risk_b, (select count(*) from risk_events)::int as risk_n,
-    pg_total_relation_size('notifications') as notifications_b, (select count(*) from notifications)::int as notifications_n,
-    pg_total_relation_size('tasks') + pg_total_relation_size('task_logs') as tasks_b, (select count(*) from tasks)::int as tasks_n,
+    ${size('instance_status_events')} as history_b, (select count(*) from instance_status_events)::int as history_n,
+    ${size('audit_logs')} as audit_b, (select count(*) from audit_logs)::int as audit_n,
+    ${size('risk_events')} as risk_b, (select count(*) from risk_events)::int as risk_n,
+    ${size('notifications')} as notifications_b, (select count(*) from notifications)::int as notifications_n,
+    ${size('tasks')} + ${size('task_logs')} as tasks_b, (select count(*) from tasks)::int as tasks_n,
     (select count(*) from tasks where status not in (${final}))::int as tasks_u`);
   const n = (k: string) => Number(r?.[k] ?? 0);
   const row = (k: string): KindSize => ({ bytes: n(`${k}_b`), rows: n(`${k}_n`) });

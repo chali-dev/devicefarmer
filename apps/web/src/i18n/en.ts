@@ -1999,7 +1999,7 @@ const en: Messages = {
       sizeTasks: '{size} · {n} tasks ({u} unfinished)',
       tasksSizeTip: 'Tasks table + task logs. Clearing deletes finished tasks only; what remains afterwards is used by unfinished tasks.',
       auditSizeTip: 'The clear itself is written to the audit log, so a few KB remain afterwards.',
-      dbSizeTip: 'Size of the table including its indexes. An emptied table still keeps a few dozen KB of empty pages; the row count is what matters.',
+      dbSizeTip: 'Space used by the table\'s rows (indexes not counted).',
       empty: 'No matching log lines',
     },
     conn: {
