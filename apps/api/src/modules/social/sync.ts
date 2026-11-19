@@ -15,6 +15,7 @@ import { createTask, registerTaskHandler, type TaskContext } from '../tasks/core
 import { CollectorDefer, deviceHalt, deviceHalts, haltDevice, withDevice, type CollectorDevice } from '../tracked/collector.js';
 import { approxOf, dumpExcerpt, igDeviceAccounts, readOwnIgProfile } from '../tracked/instagram-device.js';
 import { queueFeedAfter } from '../feed/collect.js';
+import { queueFollowingAfter } from './following.js';
 import { recordCheckResult } from './check.js';
 import { platformById } from './platforms.js';
 import { assertDeviceRoom, linkLogs, platformAllowed, writeLogs, type LogEntry } from './social.js';
@@ -305,12 +306,27 @@ async function run(ctx: TaskContext<Payload>): Promise<Record<string, unknown>> 
   await ctx.log(ok ? 'info' : 'warn', `account sync result: ${o.result}`, { result: o.result, handle: read.handle, ...(o.changed ? { changed: o.changed } : {}) });
   if (o.result === 'updated' && o.accountId) await recordSyncCheck(inst, { result: 'ok', accountId: o.accountId }, ctx.task.createdBy);
   const feed = p.feed ? await syncFeedStep(o, { id: ctx.task.id, createdBy: ctx.task.createdBy }, ctx.log) : undefined;
+  const following = p.feed ? await syncFollowingStep(o, { id: ctx.task.id, createdBy: ctx.task.createdBy }, ctx.log) : undefined;
   // `taken`: the handle only (the caller saw it on their own phone), never whose account it is.
   return {
     outcome: 'synced', result: o.result, handle: read.handle, ...(ok ? { accountId: o.accountId, displayName: read.displayName, externalId: o.externalId ?? null, counts: read.counts } : {}),
     ...(o.changed ? { changed: o.changed } : {}), ...(o.linkedElsewhere ? { linkedElsewhere: true } : {}),
-    ...(feed ? { feed } : {}),
+    ...(feed ? { feed } : {}), ...(following ? { following } : {}),
   };
+}
+
+/**
+ * Step 3 of the 同步 button (payload.feed, owner 2026-11-19 「同步时关注的号没同步进去」): same condition as step 2,
+ * the account's 追踪中 list is read as its own task (social/following.ts queueFollowingAfter); the phone runs it and the
+ * feed collection one after the other (one operation per phone at a time). Exported for the no-phone check script.
+ */
+export async function syncFollowingStep(o: Pick<SyncOutcome, 'result' | 'accountId' | 'linkedElsewhere'>, task: { id: string; createdBy: string | null }, log: TaskContext['log']): Promise<{ taskId: string } | { code: string } | undefined> {
+  if ((o.result !== 'created' && o.result !== 'updated') || !o.accountId) return undefined;
+  if (o.linkedElsewhere) {
+    await log('info', 'following sync not queued: following.linked_elsewhere', { code: 'following.linked_elsewhere' });
+    return { code: 'following.linked_elsewhere' };
+  }
+  return queueFollowingAfter(o.accountId, task.createdBy, task.id, log);
 }
 
 /**

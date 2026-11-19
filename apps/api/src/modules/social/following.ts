@@ -69,6 +69,27 @@ export async function requestFollowingSync(user: AuthUser, acc: SocialAccount) {
   return task;
 }
 
+/**
+ * Step 3 of the account's 同步 button (social/sync.ts syncFeedStep): after step 1 created / updated the account,
+ * its 追踪中 list is read as its own task (key `after:<step 1 task>`); refusals (no phone, halted, already queued…)
+ * are logged with their code instead. Its failure never touches what step 1 wrote.
+ */
+export async function queueFollowingAfter(accountId: string, userId: string | null, parentTaskId: string, log: TaskContext['log']): Promise<{ taskId: string } | { code: string }> {
+  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
+  const code = !acc ? 'following.account_gone'
+    : followingUnsupported(acc) ?? ((await deviceHalt(acc.instanceId!)) ? 'following.device_halted' : (await unfinished(acc.id)) ? 'following.in_progress' : null);
+  if (code || !acc) {
+    await log('info', `following sync not queued: ${code}`, { code });
+    return { code: code ?? 'following.account_gone' };
+  }
+  const { task } = await createTask({
+    type: FOLLOWING_TYPE, userId, label: `${acc.platform} @${acc.handle}`, refType: REF, refId: acc.id,
+    payload: { socialAccountId: acc.id } satisfies Payload, idempotencyKey: `after:${parentTaskId}`,
+  });
+  await log('info', 'following sync queued', { taskId: task.id });
+  return { taskId: task.id };
+}
+
 // ---------------------------------------------------------------- the device part
 
 export interface FollowingRead { entries: { handle: string; displayName: string | null }[]; tabCount: number | null; complete: boolean; capped: boolean; screens: number; swipes: number }

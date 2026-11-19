@@ -91,6 +91,7 @@ const EXACT: Record<string, string> = {
   'account sync: profile did not show in time': 'acctTimeout',
   // 同步 button: step 2 (feed-collect) queued by step 1 (account-device-sync / tracked-refresh)
   'feed collection queued': 'feedQueued',
+  'following sync queued': 'followingQueued',
   // 帖子与评论采集 (task feed-collect) / 云手机发评论 (comment-reply on the device)
   'feed: profile opened': 'feedOpened',
   'feed: no posts on the profile': 'feedNoPosts',
@@ -163,6 +164,7 @@ const RULES: Rule[] = [
   [/^feed collection skipped: (\S+)$/, 'feedSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^feed collection failed: (\S+)$/, 'feedFailed', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   [/^feed collection not queued: (\S+)$/, 'feedNotQueued', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
+  [/^following sync not queued: (\S+)$/, 'followingNotQueued', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],
   // 追踪中 (task account-following)
   [/^following: own profile read$/, 'followingProfileRead', (_m, d) => ({ n: String(d?.following ?? '?') })],
   [/^following: list stopped growing before its end$/, 'followingStalled', () => ({})],

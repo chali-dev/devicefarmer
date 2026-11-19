@@ -24,7 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { queueFeedAfter } from '../src/modules/feed/collect.js';
-import { recordSyncCheck, syncFeedStep } from '../src/modules/social/sync.js';
+import { recordSyncCheck, syncFeedStep, syncFollowingStep } from '../src/modules/social/sync.js';
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
@@ -60,6 +60,7 @@ async function waitTask(id: string, ms = 60_000) {
   }
 }
 const afterTasks = (parent: string) => db.select().from(T).where(and(eq(T.type, 'feed-collect'), eq(T.idempotencyKey, `after:${parent}`)));
+const afterFollowing = (parent: string) => db.select().from(T).where(and(eq(T.type, 'account-following'), eq(T.idempotencyKey, `after:${parent}`)));
 const lines: string[] = [];
 const log = async (_level: string, message: string) => { lines.push(message); };
 
@@ -118,6 +119,7 @@ try {
   check('step 1 on the offline placeholder → result offline, no feed in the result', s1row.status === 'success' && (s1row.result as any)?.result === 'offline' && !(s1row.result as any)?.feed, JSON.stringify(s1row.result));
   await sleep(1500);
   check('step 1 failed → step 2 not run (no feed-collect task after it)', (await afterTasks(s1)).length === 0);
+  check('step 1 failed → step 3 not run (no account-following task after it)', (await afterFollowing(s1)).length === 0 && !(s1row.result as any)?.following);
   const adminSync = await http('POST', `/api/social/accounts/${acc}/sync`, admin);
   check('admin may 同步 a user\'s account → 202', adminSync.status === 202, adminSync.text);
   if (adminSync.body?.task?.id) await waitTask(adminSync.body.task.id);
@@ -147,6 +149,27 @@ try {
   check('step 2 fails on the offline phone (feed.offline)', f.status === 'failed' && f.errorCode === 'feed.offline', `${f.status} ${f.errorCode}`);
   const [accRow] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, acc));
   check('step 2 failure keeps step 1\'s result (logged_in, last check ok)', accRow!.loginStatus === 'logged_in' && accRow!.lastCheckCode === 'ok', `${accRow!.loginStatus} ${accRow!.lastCheckCode}`);
+  r = await http('GET', `/api/social/accounts/${acc}/feed`, A);
+  // ---------------------------------------------------------------- social: step 3 (追踪中) after a successful step 1
+  lines.length = 0;
+  check('step 1 taken → no step 3', (await syncFollowingStep({ result: 'taken' }, step1, log)) === undefined && (await afterFollowing(s1)).length === 0);
+  const fle = await syncFollowingStep({ result: 'updated', accountId: acc, linkedElsewhere: true }, step1, log);
+  check('step 3: linked to another phone → following.linked_elsewhere + log line', (fle as any)?.code === 'following.linked_elsewhere' && lines.includes('following sync not queued: following.linked_elsewhere'), JSON.stringify(fle));
+  await haltDevice(D1, { code: 'feed.challenge', source: 'feed', platform: 'instagram' });
+  const fhl = await syncFollowingStep({ result: 'updated', accountId: acc }, step1, log);
+  check('step 3: phone halted → following.device_halted, no task', (fhl as any)?.code === 'following.device_halted' && (await afterFollowing(s1)).length === 0, JSON.stringify(fhl));
+  await http('POST', `/api/risk/devices/${D1.id}/resume`, admin);
+  lines.length = 0;
+  const fq = await syncFollowingStep({ result: 'updated', accountId: acc }, step1, log);
+  const fq2 = await syncFollowingStep({ result: 'created', accountId: acc }, step1, log);
+  const fAfter = await afterFollowing(s1);
+  check('step 1 updated → step 3 account-following queued (key after:<step 1>, creator kept, log line)', !!(fq as any)?.taskId && fAfter.length === 1 && fAfter[0]!.refId === acc
+    && fAfter[0]!.createdBy === uA && (fAfter[0]!.payload as any).socialAccountId === acc && lines.includes('following sync queued'), JSON.stringify(fq));
+  check('step 3 queued once (second call → following.in_progress)', (fq2 as any)?.code === 'following.in_progress' && fAfter.length === 1, JSON.stringify(fq2));
+  const ft = await waitTask((fq as any).taskId);
+  check('step 3 fails on the offline phone (following.offline), step 1 result kept', ft.status === 'failed' && ft.errorCode === 'following.offline', `${ft.status} ${ft.errorCode}`);
+  r = await http('GET', `/api/social/accounts/${acc}/following`, A);
+  check('追踪中 tab shows step 3 as the last run (failed following.offline)', r.status === 200 && r.body.last?.errorCode === 'following.offline', JSON.stringify(r.body?.last));
   r = await http('GET', `/api/social/accounts/${acc}/feed`, A);
   check('feed drawer shows step 2 as the last collection (failed feed.offline)', r.status === 200 && r.body.collect?.last?.errorCode === 'feed.offline', JSON.stringify(r.body?.collect?.last));
 
