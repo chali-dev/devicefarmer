@@ -97,9 +97,10 @@ function postFor(content: Content, texts: AccountTexts, platform: string, t: Dis
 /**
  * Creates one publish task per target (all validated first; all or nothing). A target whose
  * (content, account) already has an unfinished publish task returns that task (idempotent);
- * one that was already published needs `republish`.
+ * one that was already published is refused (1 个内容只发布一次: never again on the same account; a failed or
+ * cancelled pair is not published, so it can be published again).
  */
-export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[], opts: { republish?: boolean } = {}): Promise<DistributeResult> {
+export async function distribute(user: AuthUser, content: Content, targets: DistributeTarget[]): Promise<DistributeResult> {
   if (content.stage === 'archived') throw conflict('已归档的内容不能发布', 'content.archived');
   if (new Set(targets.map((t) => t.accountId)).size !== targets.length) throw badRequest('目标账号重复', 'publish.duplicate_target');
   // 已发布的内容不能编辑: the remaining accounts get the content's own texts, no per-account text overrides.
@@ -137,16 +138,14 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       const prior = await tx.select().from(pt).where(and(eq(pt.contentId, content.id), eq(pt.accountId, acc.id), inArray(pt.status, [...PUBLISH_UNFINISHED, 'published'])));
       const unfinished = prior.find((p) => p.status !== 'published');
       if (unfinished) { out.existing.push(unfinished); continue; }
-      if (prior.length && !opts.republish) {
-        throw conflict(`内容已发布到 @${acc.handle}，如需再次发布请选择“重新发布”`, 'publish.already_published', { account: acc.handle });
-      }
+      if (prior.length) throw conflict(`内容已发布到 @${acc.handle}，同一内容在一个账号上只发布一次`, 'publish.already_published', { account: acc.handle });
       const scheduledAt = t.scheduledAt && t.scheduledAt > now ? t.scheduledAt : now;
       const [row] = await tx.insert(pt).values({
         userId: acc.userId, contentId: content.id, accountId: acc.id, platform: acc.platform,
         title: post.title, caption: post.caption, hashtags: post.hashtags, options: post.options, mediaIds: media.map((m) => m.id), postType: post.postType, lang: texts.lang,
-        scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts: 1, republish: prior.length > 0, createdBy: user.id,
+        scheduledAt, status: scheduledAt > now ? 'scheduled' : 'pending', maxAttempts: 1, createdBy: user.id,
       }).returning();
-      await publishLog(row!, 'info', prior.length ? 'distributed (re-publish)' : 'distributed', {
+      await publishLog(row!, 'info', 'distributed', {
         account: acc.handle, platform: acc.platform, postType: post.postType, scheduledAt: scheduledAt.toISOString(), media: media.length,
         lang: texts.lang, accountLang: acc.lang, langFallback: texts.fallback,
       }, user, tx);
@@ -436,10 +435,9 @@ async function preflight(row: PublishTask, log: Log): Promise<PublishInput> {
   if (bad) throw new PublishCheckError(bad.code, bad.message, bad.params);
   await log('info', 'check: media ready and valid for the platform', { count: ready.length, postType: row.postType });
   // 4. duplicates
-  if (!row.republish) {
-    const [dup] = await db.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, row.contentId), eq(pt.accountId, row.accountId), eq(pt.status, 'published'), ne(pt.id, row.id)));
-    if (dup) throw new PublishCheckError('publish.duplicate', 'this content was already published on this account', { publishTaskId: dup.id });
-  }
+  // 1 个内容只发布一次: also a legacy row flagged `republish` is refused once the pair is published.
+  const [dup] = await db.select({ id: pt.id }).from(pt).where(and(eq(pt.contentId, row.contentId), eq(pt.accountId, row.accountId), eq(pt.status, 'published'), ne(pt.id, row.id)));
+  if (dup) throw new PublishCheckError('publish.duplicate', 'this content was already published on this account', { publishTaskId: dup.id });
   await log('info', 'check: not published before on this account');
   // 5. device + login (the operator publishes on the phone)
   if (!acc.instanceId) throw new PublishCheckError('publish.no_device', 'the account is not linked to a device');

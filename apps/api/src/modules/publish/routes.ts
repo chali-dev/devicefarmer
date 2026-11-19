@@ -38,7 +38,7 @@ const ListQuery = z.object({
   sort: z.enum(['scheduled_asc', 'scheduled_desc', 'updated_desc']).default('scheduled_desc'),
   /**
    * `content`: one row per content + account = its newest task (编辑后重新发布 leaves the failed one + a new one),
-   * the older ones in `previous`. Filters, counts and paging apply to the newest tasks only. Without it: every task.
+   * the older ones in `previous` (≤ 20, newest first; `previousTotal` = all of them). Filters, counts and paging apply to the newest tasks only. Without it: every task.
    */
   group: z.enum(['content']).optional(),
   limit: z.coerce.number().int().min(1).max(500).default(50),
@@ -160,7 +160,10 @@ export const publishRoutes: FastifyPluginAsyncZod = async (app) => {
     const items = await toPublishItems(rows, req.user);
     if (q.group === 'content') {
       const all = await attemptsOf(rows);
-      for (const it of items) (it as typeof it & { previous: unknown }).previous = (all.get(pairKey(it)) ?? []).filter((a) => a.id !== it.id).slice(0, 20);
+      for (const it of items) {
+        const prev = (all.get(pairKey(it)) ?? []).filter((a) => a.id !== it.id);
+        Object.assign(it, { previous: prev.slice(0, 20), previousTotal: prev.length });
+      }
     }
     return {
       items, total,

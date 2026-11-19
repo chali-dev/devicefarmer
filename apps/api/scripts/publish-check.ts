@@ -11,8 +11,11 @@
  * - No automatic publish retries (2026-11-18): every round is one attempt; distribute's maxAttempts
  *   is stripped (1 attempt); the POST …/retry endpoint is gone (404); the TikTok round on the offline phone fails once with publish.device_offline (1 attempt, no "will
  *   retry", no new round queued); 编辑后重新发布 = the content edited + distributed again to that account → a NEW
- *   publish task with the edited text (the failed one stays, no `republish` needed), the content status follows the
+ *   publish task with the edited text (the failed one stays; a failed / cancelled pair is not published), the content status follows the
  *   newest task per account; a new round takes a changed timeout (5 min). The previous timeout rows are restored.
+ * - 1 个内容只发布一次 (2026-11-19): a published pair is always 409 publish.already_published (an older page's
+ *   `republish: true` is ignored, also for admins), a legacy row flagged republish fails its run as publish.duplicate,
+ *   a cancelled / failed pair can be published again.
  * - group=content (发文日志 / 排程发布, 2026-11-18): one row per content + account = its newest task with the older
  *   ones in `previous`; filters / total / paging / byStatus on the newest only; detail `history`; no param = every task.
  * Usage (from apps/api, API running): npx tsx --env-file=../../.env scripts/publish-check.ts
@@ -27,6 +30,7 @@ import { and, eq, gte, inArray, like } from 'drizzle-orm';
 import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { cancelTask, closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
+import { refreshContentStatus } from '../src/modules/content/content.js';
 import '../src/modules/publish/publish.js'; // registers the 'publish' task type (for the idempotency checks below)
 import '../src/modules/media/media.js'; // registers media-process (任务超时 check)
 import { migrateTaskTimeouts } from '../src/db/task-timeouts-migration.js';
@@ -441,18 +445,56 @@ try {
     }
   }
 
-  // ---------------------------------------------------------------- duplicate protection + re-publish
+  // ---------------------------------------------------------------- 1 个内容只发布一次 (owner 2026-11-19): no re-publish
+  const pairCount = async () => (await db.select({ id: schema.publishTasks.id }).from(schema.publishTasks)
+    .where(and(eq(schema.publishTasks.contentId, cImg.id), eq(schema.publishTasks.accountId, igA)))).length;
+  const pairsBefore = await pairCount();
   r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }] });
-  check('publishing the same content to the same account again refused (409 publish.already_published)', r.status === 409 && r.body.code === 'publish.already_published');
+  check('publishing the same content to the same account again refused (409 publish.already_published, account param)',
+    r.status === 409 && r.body.code === 'publish.already_published' && !!r.body.params?.account, r.text.slice(0, 160));
   r = await http('POST', `/api/contents/${cImg.id}/distribute`, A, { targets: [{ accountId: igA }], republish: true });
-  const rep = r.body.created?.[0];
-  if (rep) ptIds.add(rep.id);
-  check('explicit re-publish creates a new task flagged republish', r.status === 201 && rep.republish === true);
-  d = await waitStatus(A, rep.id, ['awaiting_operator', 'failed']);
-  check('re-publish runs (duplicate check passes for republish)', d.task.status === 'awaiting_operator', d.task.errorCode ?? '');
-  r = await http('POST', `/api/publish/tasks/${rep.id}/cancel`, A);
-  check('cancel while awaiting operator → cancelled', r.status === 200 && r.body.task.status === 'cancelled');
-  check('cancelled tasks do not count in the content status', await contentStatus(A, cImg.id) === 'published');
+  check('an older page\'s `republish: true` is ignored: still 409 publish.already_published', r.status === 409 && r.body.code === 'publish.already_published', r.text.slice(0, 160));
+  r = await http('POST', `/api/contents/${cImg.id}/distribute`, T, { targets: [{ accountId: igA }], republish: true });
+  check('an admin is refused too (409)', r.status === 409 && r.body.code === 'publish.already_published', r.text.slice(0, 160));
+  check('no publish task was created for the published pair', await pairCount() === pairsBefore);
+  // a LEGACY row flagged republish (written by an older release) fails its run as a duplicate instead of publishing again
+  {
+    const [legacy] = await db.insert(schema.publishTasks).values({
+      userId: uA, contentId: cImg.id, accountId: igA, platform: 'instagram', title: null, caption: 'IG caption', hashtags: [], options: {},
+      mediaIds: [imgA2, imgA1], postType: 'feed', scheduledAt: new Date(), status: 'pending', maxAttempts: 1, republish: true, createdBy: uA,
+    }).returning();
+    ptIds.add(legacy!.id);
+    const { task } = await createTask({ type: 'publish', userId: uA, refType: 'publish', refId: legacy!.id, payload: { publishTaskId: legacy!.id, attemptNo: 1 },
+      idempotencyKey: `publish:${legacy!.id}:1`, maxAttempts: 1 });
+    await db.update(schema.publishTasks).set({ taskId: task.id }).where(eq(schema.publishTasks.id, legacy!.id));
+    d = await waitStatus(A, legacy!.id, ['failed', 'awaiting_operator', 'published']);
+    check('legacy republish row: the run refuses it (failed publish.duplicate), never handed to an operator', d.task.status === 'failed' && d.task.errorCode === 'publish.duplicate', `${d.task.status} ${d.task.errorCode}`);
+    // only an older release writes such rows: the fixture is removed again (the content status counts the newest task per pair)
+    await db.delete(schema.publishTasks).where(eq(schema.publishTasks.id, legacy!.id));
+    await refreshContentStatus(cImg.id);
+    check('legacy row removed again: the content is published', await contentStatus(A, cImg.id) === 'published');
+  }
+  // a cancelled pair is not published: it can be published again
+  {
+    r = await http('POST', '/api/contents', A, { title: `pc-${tag} once`, mediaIds: [imgA2], platformHints: { instagram: { caption: 'once' } } });
+    const cOnce = r.body.content;
+    r = await http('POST', `/api/contents/${cOnce.id}/distribute`, A, { targets: [{ accountId: igA }] });
+    const first = r.body.created?.[0];
+    if (first) ptIds.add(first.id);
+    d = await waitStatus(A, first.id, ['awaiting_operator', 'failed']);
+    check('a new content on the same account runs (handed to the operator)', d.task.status === 'awaiting_operator', d.task.errorCode ?? '');
+    r = await http('POST', `/api/publish/tasks/${first.id}/cancel`, A);
+    check('cancel while awaiting operator → cancelled', r.status === 200 && r.body.task.status === 'cancelled');
+    r = await http('POST', `/api/contents/${cOnce.id}/distribute`, A, { targets: [{ accountId: igA }] });
+    const again = r.body.created?.[0];
+    if (again) ptIds.add(again.id);
+    check('a cancelled pair can be published again (201, a new task)', r.status === 201 && !!again && again.id !== first.id, r.text.slice(0, 160));
+    if (again) {
+      await waitStatus(A, again.id, ['awaiting_operator', 'failed']);
+      await http('POST', `/api/publish/tasks/${again.id}/cancel`, A);
+    }
+    await http('DELETE', `/api/contents/${cOnce.id}`, A);
+  }
 
   // ---------------------------------------------------------------- cancel + reschedule
   r = await http('POST', '/api/contents', A, { title: `pc-${tag} later`, mediaIds: [imgA2] });
@@ -579,8 +621,8 @@ try {
     r = await http('POST', `/api/contents/${cVid.id}/distribute`, A, { targets: [{ accountId: ttA }] });
     const nt = r.body.created?.[0];
     if (nt) ptIds.add(nt.id);
-    check('distribute again to the failed pair (no republish flag): 201, a NEW publish task with the content\'s text, 1 attempt', r.status === 201 && !!nt && nt.id !== ttTask.id
-      && nt.caption === 'Video description' && nt.republish === false && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
+    check('distribute again to the failed pair: 201, a NEW publish task with the content\'s text, 1 attempt', r.status === 201 && !!nt && nt.id !== ttTask.id
+      && nt.caption === 'Video description' && nt.maxAttempts === 1 && nt.attemptNo === 1, r.text.slice(0, 200));
     const oldRow = (await ptask(A, ttTask.id)).task;
     check('the failed task stays as history (failed, its old text)', oldRow.status === 'failed' && oldRow.caption === 'TT caption');
     d = await waitStatus(A, nt.id, ['awaiting_operator', 'failed']);

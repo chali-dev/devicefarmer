@@ -33,6 +33,7 @@ import TemplateInsert from '../components/content/TemplateInsert.vue'
 import PersonaCard from '../components/comments/PersonaCard.vue'
 import { toContentMedia } from '../components/media/media'
 import PostTypeTag from '../components/publish/PostTypeTag.vue'
+import PublishAttemptRows from '../components/publish/PublishAttemptRows.vue'
 import PlatformTag from '../components/social/PlatformTag.vue'
 import { platformName, textField, textMax } from '../components/social/platformMeta'
 import { useAuthStore } from '../stores/auth'
@@ -192,14 +193,13 @@ const editorTasks = ref<PublishTaskItem[]>([])
 const locked = computed(() => Boolean(editing.value?.locked))
 const publishedIds = computed(() => new Set(editorTasks.value.filter((x) => x.status === 'published').map((x) => x.accountId)))
 const remainingTargets = computed(() => form.targets.filter((id) => !publishedIds.value.has(id)))
-/** 发布任务 in the editor: one entry per account = its newest task, older attempts (编辑后重新发布) folded under it. */
+/** 发布任务 in the editor: one block per account = its newest task, its older attempts (编辑后重新发布) always listed under it. */
 const editorTaskGroups = computed(() => {
   const by = new Map<string, PublishTaskItem[]>()
   for (const x of [...editorTasks.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) by.set(x.accountId, [...(by.get(x.accountId) ?? []), x])
   return [...by.values()].map(([latest, ...older]) => ({ ...latest!, older }))
 })
-const openOlder = ref(new Set<string>())
-function toggleOlder(accountId: string) { const n = new Set(openOlder.value); if (!n.delete(accountId)) n.add(accountId); openOlder.value = n }
+function openPublishTask(id: string) { void router.push({ path: '/publish', query: { tab: 'queue', task: id } }) }
 /** Platform hints as plain records; hints of platforms without a tab stay as loaded (and are saved again). */
 type Hints = Record<string, Record<string, string | undefined>>
 const form = reactive({
@@ -807,37 +807,25 @@ async function submitBatchForm() {
 
     <template v-if="editing && editorTasks.length && !currentTr">
       <a-divider orientation="left" plain>{{ t('content.tasksOf') }}</a-divider>
-      <a-list size="small" :data-source="editorTaskGroups">
-        <template #renderItem="{ item }">
-          <a-list-item>
-            <div>
-            <a-space wrap>
+      <div class="pt-groups">
+        <div v-for="item in editorTaskGroups" :key="item.id" class="pt-group">
+          <div class="pt-head">
+            <div class="pt-who">
               <PlatformTag :platform="item.platform" />
               <PostTypeTag :type="item.postType" />
-              <span>@{{ item.account?.handle ?? '—' }}</span>
+              <span class="pt-handle">@{{ item.account?.handle ?? '—' }}</span>
               <StatusTag kind="publish" :status="item.status" />
-              <span class="muted small">{{ fmtDateTime(item.scheduledAt) }}</span>
-              <a-typography-text v-if="item.errorCode" type="danger" class="small">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</a-typography-text>
+              <span class="muted small pt-time">{{ fmtDateTime(item.status === 'published' && item.publishedAt ? item.publishedAt : item.scheduledAt) }}</span>
+            </div>
+            <div class="pt-actions">
               <a v-if="item.url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ t('publish.viewPost') }}</a>
-              <a v-if="item.older.length" class="small" @click="toggleOlder(item.accountId)">{{ t('publish.previousCount', { n: item.older.length }) }}</a>
-            </a-space>
-            <div v-if="item.older.length && openOlder.has(item.accountId)" class="older">
-              <div v-for="o in item.older" :key="o.id">
-                <a-space wrap>
-                  <StatusTag kind="publish" :status="o.status" />
-                  <span class="muted small">{{ fmtDateTime(o.publishedAt ?? o.updatedAt) }}</span>
-                  <a-typography-text v-if="o.errorCode" type="danger" class="small">{{ codeText(o.errorCode, undefined, o.error ?? o.errorCode) }}</a-typography-text>
-                  <a class="small" @click="router.push({ path: '/publish', query: { tab: 'queue', task: o.id } })">{{ t('common.view') }}</a>
-                </a-space>
-              </div>
+              <a @click="openPublishTask(item.id)">{{ t('common.view') }}</a>
             </div>
-            </div>
-            <template #actions>
-              <a @click="router.push({ path: '/publish', query: { tab: 'queue', task: item.id } })">{{ t('common.view') }}</a>
-            </template>
-          </a-list-item>
-        </template>
-      </a-list>
+          </div>
+          <a-typography-text v-if="item.errorCode" type="danger" class="small pt-err">{{ codeText(item.errorCode, undefined, item.error ?? item.errorCode) }}</a-typography-text>
+          <PublishAttemptRows v-if="item.older.length" class="pt-older" :attempts="item.older" @open="openPublishTask" @more="openPublishTask(item.id)" />
+        </div>
+      </div>
     </template>
     </a-col>
     <a-col :xs="24" :lg="9">
@@ -873,7 +861,17 @@ async function submitBatchForm() {
 
 
 <style scoped>
-.older { margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--cp-border); }
+.pt-groups { display: flex; flex-direction: column; }
+.pt-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--cp-border-secondary); }
+.pt-group:first-child { padding-top: 0; }
+.pt-group:last-child { border-bottom: none; }
+.pt-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.pt-who { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; flex: 1; }
+.pt-who :deep(.ant-tag) { margin: 0; }
+.pt-handle { font-weight: 500; word-break: break-all; }
+.pt-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pt-actions { display: flex; gap: 16px; white-space: nowrap; line-height: 22px; }
+.pt-older { margin-left: 4px; }
 .ai-notice { margin-bottom: 16px; }
 .lock-icon { color: var(--cp-text-secondary); }
 .title-link { display: block; font-weight: 500; }

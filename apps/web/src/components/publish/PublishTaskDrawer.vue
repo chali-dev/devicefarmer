@@ -159,7 +159,6 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
           <a-descriptions-item :label="t('common.status')">
             <StatusTag kind="publish" :status="task.status" />
             <span v-if="task.method" class="muted small">{{ t(`publish.method.${task.method}`) }}</span>
-            <a-tag v-if="task.republish">{{ t('publish.republish') }}</a-tag>
           </a-descriptions-item>
           <a-descriptions-item :label="t('publish.postType')">
             <PostTypeTag :type="task.postType" /> <b v-if="task.postType !== 'feed'">{{ t('publish.asType', { type: t(`publish.type.${task.postType}`) }) }}</b>
@@ -203,11 +202,11 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
         <template v-if="history.length > 1">
           <a-divider orientation="left" plain>{{ t('publish.historyTitle', { n: history.length }) }}</a-divider>
           <div v-for="a in history" :key="a.id" class="attempt" :class="{ cur: a.id === task.id }">
-            <span class="small">{{ fmt(a.publishedAt ?? a.updatedAt) }}</span>
-            <StatusTag kind="publish" :status="a.status" />
-            <a-typography-text v-if="a.errorCode" type="danger" class="small">{{ codeText(a.errorCode, undefined, a.error ?? a.errorCode) }}</a-typography-text>
+            <span><StatusTag kind="publish" :status="a.status" /></span>
+            <span class="small muted nowrap">{{ fmt(a.publishedAt ?? a.updatedAt) }}</span>
+            <a-typography-text class="small" :type="a.errorCode ? 'danger' : 'secondary'">{{ a.errorCode ? codeText(a.errorCode, undefined, a.error ?? a.errorCode) : '—' }}</a-typography-text>
             <a-tag v-if="a.id === task.id" color="blue">{{ t('publish.historyShown') }}</a-tag>
-            <a-button v-else type="link" size="small" @click="showAttempt(a.id)">{{ t('common.view') }}</a-button>
+            <a v-else class="small nowrap" @click="showAttempt(a.id)">{{ t('common.view') }}</a>
           </div>
         </template>
 
@@ -275,5 +274,7 @@ const copy = async (text: string) => { try { await navigator.clipboard.writeText
 <style scoped>
 .text { white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: auto; }
 .data { word-break: break-all; }
-.attempt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 0; }
+.attempt { display: grid; grid-template-columns: 72px 150px minmax(0, 1fr) auto; align-items: center; column-gap: 12px; padding: 3px 0; }
+.attempt :deep(.ant-tag) { margin: 0; }
+.nowrap { white-space: nowrap; }
 </style>
