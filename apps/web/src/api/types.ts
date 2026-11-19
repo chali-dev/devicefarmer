@@ -299,6 +299,8 @@ export interface SocialAccount {
   lastCheckDetail: string | null
   /** Why 自动检测 can't run (account_check.unsupported_platform | account_check.no_device), null = it can. */
   autoCheckUnsupported: string | null
+  /** Latest counter reading of the account (automatic check / 同步), null = none yet. */
+  stats: { followers: number | null; following: number | null; posts: number | null; approx: string[]; at: string } | null
   exception: boolean
   createdAt: string
   updatedAt: string

@@ -11,7 +11,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../../api/query'
 import { api, errorText } from '../../api/client'
 import {
-  SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
+  compactNumber, SOCIAL_ACCOUNT_STATUSES, SOCIAL_LOGIN_STATUSES,
   type ManagedUser, type Persona, type SocialAccount, type SocialAccountLog, type SocialAccountStatus, type SocialLoginStatus, type SocialPlatform,
 } from '../../api/types'
 import BatchActions, { type BatchItem } from '../common/BatchActions.vue'
@@ -124,6 +124,8 @@ function onTableChange(p: { current?: number; pageSize?: number }) {
 const columns = computed(() => [
   { title: t('social.colHandle'), key: 'handle', ellipsis: true },
   ...(auth.isAdmin ? [{ title: t('social.colOwner'), key: 'owner', width: 100, ellipsis: true }] : []),
+  { title: t('social.colFollowers'), key: 'followers', width: 80, align: 'right' as const },
+  { title: t('social.colFollowing'), key: 'following', width: 80, align: 'right' as const },
   { title: t('social.colPersona'), key: 'persona', width: 110, ellipsis: true },
   { title: t('social.colLang'), key: 'lang', width: 90 },
   { title: t('social.colDevice'), key: 'device', width: 150, ellipsis: true },
@@ -459,6 +461,14 @@ async function submitBatchForm() {
             </div>
           </template>
           <template v-else-if="column.key === 'owner'">{{ record.ownerName ?? '—' }}</template>
+          <template v-else-if="column.key === 'followers' || column.key === 'following'">
+            <a-tooltip v-if="record.stats?.[column.key] != null" :title="t('social.countsAt', { time: new Date(record.stats.at).toLocaleString(dateLocale()) })">
+              <router-link :to="{ ...audienceLink(record as SocialAccount), query: { tab: column.key } }" class="count">
+                {{ (record.stats.approx.includes(column.key) ? '≈ ' : '') + compactNumber(record.stats[column.key]) }}
+              </router-link>
+            </a-tooltip>
+            <span v-else class="muted">—</span>
+          </template>
           <template v-else-if="column.key === 'persona'"><span v-if="record.personaName">{{ record.personaName }}</span><span v-else class="muted">—</span></template>
           <template v-else-if="column.key === 'lang'">
             <a-tooltip v-if="record.lang" :title="record.lang"><a-tag>{{ langName(record.lang) }}</a-tag></a-tooltip>
@@ -625,6 +635,7 @@ async function submitBatchForm() {
 .status-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .status-tags :deep(.ant-tag) { margin-inline-end: 0; }
 .ops { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; }
+.count { font-variant-numeric: tabular-nums; }
 .ops-link { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 4px; color: var(--cp-text); }
 .ops-link:hover { background: var(--cp-fill-alter); color: var(--cp-primary); }
 :deep(.row-synced) > td { background: var(--cp-primary-bg) !important; transition: background 0.6s; }

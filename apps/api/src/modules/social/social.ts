@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
@@ -182,6 +182,8 @@ export interface SocialAccountItem extends Omit<SocialAccount, 'groupId' | 'aiDr
   exception: boolean;
   /** Why 自动检测 can't run for this account (account_check.unsupported_platform | no_device), null = it can. */
   autoCheckUnsupported: string | null;
+  /** Latest counter reading of the account itself (automatic check / 同步 on its phone), null = none yet. */
+  stats: { followers: number | null; following: number | null; posts: number | null; approx: string[]; at: string } | null;
 }
 
 const NONE = '00000000-0000-0000-0000-000000000000';
@@ -189,13 +191,17 @@ const idsOf = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string 
 
 export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<SocialAccountItem[]> {
   if (!rows.length) return [];
-  const [tags, owners, insts, access, personas] = await Promise.all([
+  const S = schema.socialAccountStats;
+  const [tags, owners, insts, access, personas, stats] = await Promise.all([
     tagsOf(db, rows.map((r) => r.id)),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
     db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId, proxyStatus: schema.instances.proxyStatus })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(rows.map((r) => r.instanceId)))),
     accessibleInstanceIds(user),
     db.select({ id: schema.personas.id, name: schema.personas.name }).from(schema.personas).where(inArray(schema.personas.id, idsOf(rows.map((r) => r.personaId)))),
+    // One row per account: its newest reading with a follower count (unique account + day index).
+    db.selectDistinctOn([S.socialAccountId], { id: S.socialAccountId, followers: S.followers, following: S.following, posts: S.posts, approx: S.approx, at: S.capturedAt })
+      .from(S).where(and(inArray(S.socialAccountId, rows.map((r) => r.id)), isNotNull(S.followers))).orderBy(S.socialAccountId, desc(S.day)),
   ]);
   const canSee = (id: string) => access === 'all' || access.has(id);
   const proxies = await proxyViews(insts.filter((i) => i.proxyId && canSee(i.id)).map((i) => i.proxyId!));
@@ -212,6 +218,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
         ? { ip: inst.proxyStatus.egressIp, country: inst.proxyStatus.country ?? null, region: inst.proxyStatus.region ?? null, city: inst.proxyStatus.city ?? null, checkedAt: inst.proxyStatus.checkedAt }
         : null,
       exception: isException(r),
+      stats: ((st) => (st ? { followers: st.followers, following: st.following, posts: st.posts, approx: st.approx ?? [], at: st.at.toISOString() } : null))(stats.find((x) => x.id === r.id)),
       autoCheckUnsupported: !platformById(r.platform)?.deviceCheck || !isPlatformEnabled(r.platform) ? 'account_check.unsupported_platform' : !r.instanceId ? 'account_check.no_device' : null,
     };
   });
