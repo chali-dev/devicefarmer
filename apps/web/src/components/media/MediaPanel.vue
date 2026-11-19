@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
@@ -323,7 +323,6 @@ const rowSelection = computed(() => ({
   selectedRowKeys: selected.value,
   onChange: (keys: (string | number)[]) => { selected.value = keys.map(String) },
 }))
-const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
 </script>
 
 <template>
@@ -379,7 +378,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
             <div class="muted small ellipsis">
               {{ m.fileType === 'video' ? t('media.video') : t('media.image') }} · {{ fmtSize(m.fileSize) }}<template v-if="m.width"> · {{ m.width }}×{{ m.height }}</template>
             </div>
-            <div class="muted small ellipsis">{{ fmtTime(m.createdAt) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
+            <div class="muted small ellipsis">{{ fmtDateTime(m.createdAt) }}<template v-if="apiScope === 'all-users' && m.ownerName"> · {{ m.ownerName }}</template></div>
             <div v-if="m.categoryName" class="tags">
               <a-tag color="blue"><FolderOutlined /> {{ m.categoryName }}</a-tag>
             </div>
@@ -430,7 +429,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
               <StatusTag kind="media" :status="record.status" />
             </a-tooltip>
           </template>
-          <template v-else-if="column.key === 'createdAt'">{{ fmtTime(record.createdAt) }}</template>
+          <template v-else-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openPreview(record)">{{ t('media.preview') }}</a-button>
@@ -471,7 +470,7 @@ const fmtTime = (s: string) => new Date(s).toLocaleString(dateLocale())
           <a-descriptions-item v-if="previewItem.width" :label="t('media.resolution')">{{ previewItem.width }}×{{ previewItem.height }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.processing?.result" :label="t('media.processed')" :span="2">{{ processedText(previewItem) }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.duration" :label="t('media.duration')">{{ fmtDuration(previewItem.duration) }}</a-descriptions-item>
-          <a-descriptions-item :label="t('media.uploadedAt')">{{ fmtTime(previewItem.createdAt) }}</a-descriptions-item>
+          <a-descriptions-item :label="t('media.uploadedAt')">{{ fmtDateTime(previewItem.createdAt) }}</a-descriptions-item>
           <a-descriptions-item v-if="previewItem.ownerName" :label="t('media.owner')">{{ previewItem.ownerName }}</a-descriptions-item>
         </a-descriptions>
       </template>

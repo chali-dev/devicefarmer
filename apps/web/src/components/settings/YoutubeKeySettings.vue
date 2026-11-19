@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -34,7 +34,7 @@ async function saveKey(clear = false) {
         <a-form-item :label="t('tracked.youtubeKeyState')">
           <a-space wrap>
             <a-tag :color="keyState?.apiKeySet ? 'success' : 'default'">{{ keyState?.apiKeySet ? t('tracked.keySet') : t('tracked.keyNotSet') }}</a-tag>
-            <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(keyState.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+            <span v-if="keyState?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(keyState.updatedAt) }) }}</span>
           </a-space>
         </a-form-item>
         <a-form-item label="API Key">

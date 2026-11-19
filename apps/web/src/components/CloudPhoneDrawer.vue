@@ -10,7 +10,7 @@ import { useRouter } from 'vue-router'
 import { api, errorText } from '../api/client'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
 import { canPower, egressGeo, proxyLabel, type Instance } from '../api/types'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import DevicePlayer from './DevicePlayer.vue'
@@ -110,7 +110,7 @@ const basic = computed(() => {
     [t('devices.colResolution'), `${i.spec.width}×${i.spec.height} @ ${i.spec.dpi}dpi`],
     [t('cloud.memory'), i.spec.memoryMb ? `${i.spec.memoryMb} MB` : t('devices.form.unlimited')],
     [t('devices.colAdbPort'), i.adbPort],
-    [t('cloud.created'), new Date(i.createdAt).toLocaleString(dateLocale())],
+    [t('cloud.created'), fmtDateTime(i.createdAt)],
   ] as [string, string | number | null][]
 })
 /** WLAN MAC read from the device (wlan0, else eth0 on redroid). */
@@ -146,7 +146,7 @@ const network = computed<Row[]>(() => {
     [t('cloud.egressIp'), dash(s?.egressIp)],
     [t('cloud.latency'), s?.latencyMs != null ? `${s.latencyMs} ms` : '—'],
     [t('cloud.proxyState'), s ? (s.ok ? t('cloud.proxyOk') : t('cloud.proxyFailed', { error: s.error ?? '' })) : t('cloud.proxyUnchecked')],
-    [t('cloud.checkedAt'), s ? new Date(s.checkedAt).toLocaleString(dateLocale()) : '—'],
+    [t('cloud.checkedAt'), s ? fmtDateTime(s.checkedAt) : '—'],
   ]
 })
 const other = computed(() => [

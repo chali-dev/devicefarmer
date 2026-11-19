@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { CheckCircleFilled, DownOutlined, ExclamationCircleOutlined, FacebookFilled, InboxOutlined, InstagramFilled, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, SearchOutlined, YoutubeFilled } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
-import { computed, h, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue'
+import { computed, defineAsyncComponent, h, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../api/client'
 import { useRoute, useRouter } from 'vue-router'
 import { deviceListLink, queryParam } from '../api/query'
 import { BUSY_STATUSES, canPower, egressGeo, profileLabel, proxyLabel, taskText, type DeviceAutomation, type DeviceSource, type Instance, type InstanceOwner, type LibraryApp, type PoolProxy, type Profile, type SourcePhone, type Task } from '../api/types'
-import CloudPhoneDrawer from '../components/CloudPhoneDrawer.vue'
 import DeviceAssignModal from '../components/DeviceAssignModal.vue'
 import DeviceLogDrawer from '../components/DeviceLogDrawer.vue'
 import DeviceState from '../components/DeviceState.vue'
@@ -123,7 +122,10 @@ const showSearch = computed(() => auth.isAdmin || store.list.length > 6)
 // ---- slide-in remote control
 const phoneOpen = ref(false)
 const phoneId = ref<string | null>(null)
-function openPhone(id: string) { phoneId.value = id; phoneOpen.value = true }
+/** The remote-control drawer (with the player) is its own chunk, rendered from the first time a phone is opened. */
+const CloudPhoneDrawer = defineAsyncComponent(() => import('../components/CloudPhoneDrawer.vue'))
+const phoneUsed = ref(false)
+function openPhone(id: string) { phoneId.value = id; phoneOpen.value = true; phoneUsed.value = true }
 function filterByOwner(o: InstanceOwner) {
   ownerFilter.value = o
   const visible = new Set(rows.value.map((i) => i.id))
@@ -554,7 +556,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <span v-else class="muted">{{ t('devices.direct') }}</span>
           </template>
           <template v-else-if="column.key === 'egress'">
-            <a-tooltip v-if="record.proxyStatus" :title="[egressGeo(record.proxyStatus), record.proxyStatus.error, new Date(record.proxyStatus.checkedAt).toLocaleString(dateLocale())].filter(Boolean).join(' · ')">
+            <a-tooltip v-if="record.proxyStatus" :title="[egressGeo(record.proxyStatus), record.proxyStatus.error, fmtDateTime(record.proxyStatus.checkedAt)].filter(Boolean).join(' · ')">
               <a-space :size="4">
                 <a-tag v-if="record.proxyStatus.country" :color="record.proxyStatus.ok ? 'blue' : 'red'" style="margin: 0">{{ record.proxyStatus.country }}</a-tag>
                 <span :class="{ faint: !record.proxyStatus.ok }">{{ record.proxyStatus.egressIp ?? t('devices.egressNone') }}</span>
@@ -684,7 +686,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
             <a-button v-if="sourceId" @click="editSource(kindSources.find((s) => s.id === sourceId))">{{ t('common.edit') }}</a-button>
             <a-button type="dashed" @click="editSource()"><template #icon><PlusOutlined /></template>{{ t('devices.ext.newSource') }}</a-button>
             <a-tooltip v-if="selectedSource?.health && selectedSource.health.ok !== null"
-              :title="selectedSource.health.ok ? t('devices.ext.healthOkTip', { at: selectedSource.health.lastOkAt ? new Date(selectedSource.health.lastOkAt).toLocaleString(dateLocale()) : '—' }) : t('devices.ext.healthDownTip', { since: selectedSource.health.failingSince ? new Date(selectedSource.health.failingSince).toLocaleString(dateLocale()) : '—', error: selectedSource.health.lastError ?? '' })">
+              :title="selectedSource.health.ok ? t('devices.ext.healthOkTip', { at: fmtDateTime(selectedSource.health.lastOkAt) }) : t('devices.ext.healthDownTip', { since: fmtDateTime(selectedSource.health.failingSince), error: selectedSource.health.lastError ?? '' })">
               <a-tag :color="selectedSource.health.ok ? 'success' : 'error'">{{ selectedSource.health.ok ? t('devices.ext.healthOk') : t('devices.ext.healthDown') }}</a-tag>
             </a-tooltip>
           </a-space>
@@ -821,7 +823,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
   <a-modal v-model:open="failedOpen" :title="t('devices.failedTitle')" :footer="null" :width="MODAL_WIDTH.lg">
     <a-table :data-source="failedTasks" :columns="failedColumns" row-key="id" size="small" :scroll="{ x: 640 }" :pagination="pagination({ defaultPageSize: 10, hideOnSinglePage: true })">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
+        <template v-if="column.key === 'time'">{{ fmtDateTime(record.createdAt) }}</template>
         <template v-else-if="column.key === 'device'">
           <a @click="failedOpen = false; router.push(deviceListLink(record.instanceId))">{{ store.byId.get(record.instanceId)?.name ?? record.instanceName }}</a>
         </template>
@@ -836,7 +838,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
   <DeviceLogDrawer v-model:open="logOpen" :instance="logInstance" />
   <DeviceAssignModal v-model:open="assignOpen" :mode="assignMode" :instance-ids="assignIds" />
   <SyncFromDeviceModal v-model:open="syncOpen" :instance-id="syncId" @synced="onSynced" />
-  <CloudPhoneDrawer v-model:open="phoneOpen" :instance-id="phoneId" :profile-name="profileName" @menu="onMenu" @log="openLog" />
+  <CloudPhoneDrawer v-if="phoneUsed" v-model:open="phoneOpen" :instance-id="phoneId" :profile-name="profileName" @menu="onMenu" @log="openLog" />
 </template>
 
 <style scoped>

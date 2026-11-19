@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import PageContainer from '../components/common/PageContainer.vue'
-import CommentsPanel from '../components/comments/CommentsPanel.vue'
-import PublishLogPanel from '../components/publish/PublishLogPanel.vue'
-import MyAccountsPanel from '../components/social/MyAccountsPanel.vue'
-import TrackedAccountsPanel from '../components/tracked/TrackedAccountsPanel.vue'
+
+// Each tab is its own chunk, loaded when the tab is first shown.
+const CommentsPanel = defineAsyncComponent(() => import('../components/comments/CommentsPanel.vue'))
+const PublishLogPanel = defineAsyncComponent(() => import('../components/publish/PublishLogPanel.vue'))
+const MyAccountsPanel = defineAsyncComponent(() => import('../components/social/MyAccountsPanel.vue'))
+const TrackedAccountsPanel = defineAsyncComponent(() => import('../components/tracked/TrackedAccountsPanel.vue'))
 
 /**
  * 媒体管理 (owner's menu list, 2026-11-18): 我的媒体号 / 追踪号 / 发文日志 / 回文日志 in one page, the tab in `?tab=`.

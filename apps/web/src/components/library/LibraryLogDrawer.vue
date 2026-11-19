@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import type { LibraryApp, LibraryInstallLog } from '../../api/types'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import StatusTag from '../common/StatusTag.vue'
 import { DRAWER_WIDTH, pagination } from '../common/ui'
@@ -44,7 +44,6 @@ const off = store.onTaskEvent((ev) => {
 })
 onBeforeUnmount(() => { off(); clearTimeout(timer) })
 
-const fmt = (s: string | null) => (s ? new Date(s).toLocaleString(dateLocale()) : '—')
 const version = (r: LibraryInstallLog) => (r.versionName ? `${r.versionName} (${r.versionCode})` : r.versionCode ?? '—')
 const columns = computed(() => [
   { title: t('common.time'), key: 'time', width: 150 },
@@ -63,7 +62,7 @@ const columns = computed(() => [
       :locale="{ emptyText: t('library.logsEmpty') }"
       :pagination="pagination({ current: page, pageSize: PAGE, total, showSizeChanger: false, onChange: (p: number) => { page = p; void load() } })">
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'time'">{{ fmt(record.createdAt) }}</template>
+        <template v-if="column.key === 'time'">{{ fmtDateTime(record.createdAt) }}</template>
         <template v-else-if="column.key === 'device'">
           <router-link v-if="record.instanceId && record.deviceExists" :to="`/instances/${record.instanceId}`">{{ record.instanceName }}</router-link>
           <span v-else>{{ record.instanceName || '—' }}</span>

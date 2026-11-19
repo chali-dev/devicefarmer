@@ -5,7 +5,7 @@ import { DeleteOutlined, EditOutlined, MoreOutlined, PlusOutlined } from '@ant-d
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import type { CustomRole } from '../api/types'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import PageContainer from '../components/common/PageContainer.vue'
 import { MENU_GROUPS, navLabel } from '../components/common/menu'
 import { confirmDanger, MODAL_WIDTH } from '../components/common/ui'
@@ -185,7 +185,7 @@ function remove(r: CustomRole) {
           <a-button :disabled="!changedKeys.length || saving" @click="discard">{{ t('common.cancel') }}</a-button>
           <a-button :disabled="!state || isDefault" @click="picked[USER] = [...(state?.defaults ?? [])]">{{ t('roleMenus.restoreDefault') }}</a-button>
           <span v-if="changedKeys.length" class="warn small">{{ t('roleMenus.unsaved') }}</span>
-          <span v-else-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(state.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+          <span v-else-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(state.updatedAt) }) }}</span>
         </a-space>
       </a-spin>
     </a-card>

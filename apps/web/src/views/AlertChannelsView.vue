@@ -13,7 +13,7 @@ import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import StatusTag from '../components/common/StatusTag.vue'
 import { actionColumn, confirmDanger, DRAWER_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 
 /**
  * 告警通道 (风控管理, admin): tab 告警通道 = external alert destinations; tab 告警类型 = the alert rules (in-app kinds,
@@ -62,7 +62,7 @@ const kindName = (k: string) => t(`alerts.kindNames.${kindKey(k)}`)
 const replace = (row: Channel) => { channels.value = channels.value.map((c) => (c.id === row.id ? row : c)) }
 const resultStatus = (c: Channel) => (c.lastResult ? (c.lastResult.ok ? 'ok' : 'failed') : 'never')
 const resultTip = (c: Channel) => c.lastResult
-  ? [new Date(c.lastResult.at).toLocaleString(dateLocale()), c.lastResult.test ? t('alertChannels.resultTest') : null,
+  ? [fmtDateTime(c.lastResult.at), c.lastResult.test ? t('alertChannels.resultTest') : null,
       c.lastResult.code ? codeText(c.lastResult.code, { error: '', status: '', type: '' }, c.lastResult.code) : null].filter(Boolean).join(' · ')
   : null
 

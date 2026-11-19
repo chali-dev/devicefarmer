@@ -5,7 +5,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, codeText, errorText } from '../../api/client'
 import { compactNumber, type AccountFollowing, type FollowingEntry, type Task } from '../../api/types'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { useInstancesStore } from '../../stores/instances'
 import { pagination } from '../common/ui'
 import InitialAvatar from './InitialAvatar.vue'
@@ -24,7 +24,6 @@ const props = defineProps<{ accountId: string; kind: 'following' | 'followers'; 
 const emit = defineEmits<{ loaded: [data: AccountFollowing] }>()
 const { t } = useI18n()
 const store = useInstancesStore()
-const fmt = (d: string | null | undefined) => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
 const isFollowers = computed(() => props.kind === 'followers')
 
 const data = ref<AccountFollowing | null>(null)
@@ -66,22 +65,22 @@ const columns = computed(() => [
 ])
 /** A listed account's counter as read from its profile: ≈ when the app abbreviated it, — when unknown. */
 const countText = (r: FollowingEntry, k: 'followers' | 'following') => (r[k] === null ? '—' : `${r.approx.includes(k) ? '≈' : ''}${compactNumber(r[k])}`)
-const countTip = (r: FollowingEntry) => (r.profileCode === 'not_found' ? t('social.audience.profileNotFound', { time: fmt(r.profileCheckedAt) })
-  : r.profileCheckedAt ? t('social.audience.profileReadAt', { time: fmt(r.profileCheckedAt) }) : t('social.audience.profileNotRead'))
+const countTip = (r: FollowingEntry) => (r.profileCode === 'not_found' ? t('social.audience.profileNotFound', { time: fmtDateTime(r.profileCheckedAt) })
+  : r.profileCheckedAt ? t('social.audience.profileReadAt', { time: fmtDateTime(r.profileCheckedAt) }) : t('social.audience.profileNotRead'))
 const max = computed(() => data.value?.settings.max ?? (isFollowers.value ? 20 : 200))
 const unsupportedText = computed(() => (data.value?.unsupported ? codeText(data.value.unsupported, {}, data.value.unsupported) : ''))
 /** Last run of the device task, as this list saw it (the followers part has its own result inside it). */
 const lastRunText = computed(() => {
   const r = data.value?.last
   if (!r) return t('social.audience.neverSynced')
-  if (r.status === 'failed') return t('social.audience.lastFailed', { time: fmt(r.at), msg: codeText(r.errorCode ?? undefined, {}, r.errorCode ?? r.status) })
+  if (r.status === 'failed') return t('social.audience.lastFailed', { time: fmtDateTime(r.at), msg: codeText(r.errorCode ?? undefined, {}, r.errorCode ?? r.status) })
   const all = r.result ?? {}
-  if (all.outcome === 'skipped') return t('social.audience.lastSkipped', { time: fmt(r.at), msg: codeText(String(all.code ?? ''), {}, String(all.code ?? '')) })
-  if (!isFollowers.value) return t(all.complete ? 'social.audience.lastComplete' : all.capped ? 'social.audience.lastCapped' : 'social.audience.lastPartial', { time: fmt(r.at), n: Number(all.seen ?? 0) })
+  if (all.outcome === 'skipped') return t('social.audience.lastSkipped', { time: fmtDateTime(r.at), msg: codeText(String(all.code ?? ''), {}, String(all.code ?? '')) })
+  if (!isFollowers.value) return t(all.complete ? 'social.audience.lastComplete' : all.capped ? 'social.audience.lastCapped' : 'social.audience.lastPartial', { time: fmtDateTime(r.at), n: Number(all.seen ?? 0) })
   const res = (all.followers ?? null) as Record<string, unknown> | null
   if (!res) return t('social.audience.neverSynced')
-  if (typeof res.code === 'string') return t('social.audience.followersLastSkipped', { time: fmt(r.at), msg: codeText(res.code, {}, res.code) })
-  return t(res.complete ? 'social.audience.followersLastComplete' : res.capped ? 'social.audience.followersLastCapped' : 'social.audience.followersLastPartial', { time: fmt(r.at), n: Number(res.seen ?? 0) })
+  if (typeof res.code === 'string') return t('social.audience.followersLastSkipped', { time: fmtDateTime(r.at), msg: codeText(res.code, {}, res.code) })
+  return t(res.complete ? 'social.audience.followersLastComplete' : res.capped ? 'social.audience.followersLastCapped' : 'social.audience.followersLastPartial', { time: fmtDateTime(r.at), n: Number(res.seen ?? 0) })
 })
 
 /** 同步更新: queues a read on the account's phone (both lists), followed through task events. */
@@ -178,10 +177,10 @@ onMounted(() => { void load() })
           </a-tooltip>
         </template>
         <template v-else-if="column.key === 'displayName'"><span v-if="record.displayName">{{ record.displayName }}</span><span v-else class="muted">—</span></template>
-        <template v-else-if="column.key === 'lastSeenAt'">{{ fmt(record.lastSeenAt) }}</template>
-        <template v-else-if="column.key === 'firstSeenAt'">{{ fmt(record.firstSeenAt) }}</template>
+        <template v-else-if="column.key === 'lastSeenAt'">{{ fmtDateTime(record.lastSeenAt) }}</template>
+        <template v-else-if="column.key === 'firstSeenAt'">{{ fmtDateTime(record.firstSeenAt) }}</template>
         <template v-else-if="column.key === 'status'">
-          <a-tag v-if="record.goneAt">{{ t('social.audience.gone', { time: fmt(record.goneAt) }) }}</a-tag>
+          <a-tag v-if="record.goneAt">{{ t('social.audience.gone', { time: fmtDateTime(record.goneAt) }) }}</a-tag>
           <a-tag v-else color="success">{{ t(isFollowers ? 'social.audience.stateCurrentFollowers' : 'social.audience.stateCurrentFollowing') }}</a-tag>
         </template>
         <template v-else-if="column.key === 'open'">

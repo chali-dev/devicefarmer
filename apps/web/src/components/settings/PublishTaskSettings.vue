@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 
 /**
  * 系统配置 → 发布任务 (admin): the timeout of a publish round's single attempt (GET/PUT /api/settings/publish-retry,
@@ -46,7 +46,7 @@ async function save() {
         </a-row>
         <a-space wrap>
           <a-button type="primary" :loading="saving" :disabled="!state" @click="save">{{ t('common.save') }}</a-button>
-          <span v-if="state?.retry.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(state.retry.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+          <span v-if="state?.retry.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(state.retry.updatedAt) }) }}</span>
         </a-space>
       </a-form>
     </a-spin>

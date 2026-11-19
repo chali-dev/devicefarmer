@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import { alertDetail, alertLink, alertText } from '../api/alerts'
 import type { AppNotification } from '../api/types'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import BatchActions, { type BatchItem } from '../components/common/BatchActions.vue'
@@ -188,7 +188,7 @@ const rowSelection = computed(() => ({ selectedRowKeys: selectedKeys.value, onCh
           <template v-else-if="column.key === 'kind'">
             {{ kindName(record.kind) }}
           </template>
-          <template v-else-if="column.key === 'createdAt'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
+          <template v-else-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
           <template v-else-if="column.key === 'state'">
             <a-badge v-if="!record.readAt" status="processing" :text="t('notifications.unread')" />
             <a-badge v-else status="default" :text="t('notifications.read')" />

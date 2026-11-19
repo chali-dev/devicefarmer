@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import { dateLocale } from '../i18n'
+import { fmtDateTime } from '../i18n'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
@@ -127,7 +127,7 @@ watch(tab, (t) => {
         <a-table :data-source="taskRows" :columns="taskColumns" row-key="id" size="small" :loading="tasksLoading" :scroll="{ x: 640 }"
           :pagination="pagination({ defaultPageSize: 20, hideOnSinglePage: true })" :locale="{ emptyText: t('logs.noTasks') }">
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'time'">{{ new Date(record.createdAt).toLocaleString(dateLocale()) }}</template>
+            <template v-if="column.key === 'time'">{{ fmtDateTime(record.createdAt) }}</template>
             <template v-else-if="column.key === 'type'">{{ taskText(record.type) }}</template>
             <template v-else-if="column.key === 'status'">
               <StatusTag kind="task" :status="record.status" />
@@ -152,7 +152,7 @@ watch(tab, (t) => {
           <a-empty v-if="connLoaded && !connEvents.length" :description="t('logs.noConn')" />
           <a-timeline v-else class="conn">
             <a-timeline-item v-for="e in connEvents" :key="e.id" :color="e.offline ? 'red' : 'blue'">
-              <div class="muted small">{{ new Date(e.at).toLocaleString(dateLocale()) }}</div>
+              <div class="muted small">{{ fmtDateTime(e.at) }}</div>
               {{ t(`logs.connField.${e.field}`) }}: {{ stateText(e.field, e.from) }} → {{ stateText(e.field, e.to) }}
               <a-tag v-if="e.offline" color="red" class="tag">{{ t('logs.offlineTag') }}</a-tag>
             </a-timeline-item>

@@ -7,7 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import { alertDetail, alertLink, alertText } from '../../api/alerts'
 import type { AppNotification } from '../../api/types'
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { useNotificationsStore } from '../../stores/notifications'
 
 /**
@@ -94,7 +94,7 @@ const label = computed(() => (unread.value ? t('alerts.bellUnread', { n: unread.
               <template #title><span class="text">{{ alertText(item) }}</span></template>
               <template #description>
                 <div v-if="alertDetail(item)" class="detail">{{ alertDetail(item) }}</div>
-                <span class="time">{{ new Date(item.createdAt).toLocaleString(dateLocale()) }}</span>
+                <span class="time">{{ fmtDateTime(item.createdAt) }}</span>
               </template>
             </a-list-item-meta>
             <template #actions>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { dateLocale } from '../../i18n'
+import { fmtDateTime } from '../../i18n'
 import { onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { useI18n } from 'vue-i18n'
@@ -45,7 +45,7 @@ const modelLabel = (m: string) => (te(`settings.ai.models.${m}`) ? t(`settings.a
         <a-form-item :label="t('settings.ai.keyState')">
           <a-space wrap>
             <a-tag :color="state?.keySet ? 'success' : 'default'">{{ state?.keySet ? t('settings.ai.keySet') : t('settings.ai.keyNotSet') }}</a-tag>
-            <span v-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: new Date(state.updatedAt).toLocaleString(dateLocale()) }) }}</span>
+            <span v-if="state?.updatedAt" class="muted small">{{ t('settings.updatedAt', { at: fmtDateTime(state.updatedAt) }) }}</span>
           </a-space>
         </a-form-item>
         <a-form-item :label="t('settings.ai.key')">

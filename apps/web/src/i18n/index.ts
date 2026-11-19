@@ -5,7 +5,6 @@ import 'dayjs/locale/zh-cn'
 import antdZhCN from 'ant-design-vue/es/locale/zh_CN'
 import antdEnUS from 'ant-design-vue/es/locale/en_US'
 import zhCN, { type Messages } from './zh-CN'
-import en from './en'
 
 export type Locale = 'zh-CN' | 'en'
 export const LOCALES: { value: Locale; label: string }[] = [
@@ -24,11 +23,12 @@ function initialLocale(): Locale {
   return nav.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
 }
 
+// Chinese (the fallback) is bundled; English is a separate chunk loaded before it is shown (loadLocale).
 export const i18n = createI18n<[Messages], Locale, false>({
   legacy: false,
-  locale: initialLocale(),
+  locale: 'zh-CN',
   fallbackLocale: 'zh-CN',
-  messages: { 'zh-CN': zhCN, en },
+  messages: { 'zh-CN': zhCN } as Record<Locale, Messages>,
   // Some texts show URL templates such as https://<host>; they are rendered as text, not HTML.
   warnHtmlMessage: false,
 })
@@ -42,10 +42,19 @@ export const locale = computed<Locale>({
   set: (l) => { i18n.global.locale.value = l },
 })
 
-export function setLocale(l: Locale) {
+/** Loads a locale's messages once (English is lazy) and switches to it. */
+async function loadLocale(l: Locale) {
+  if (!i18n.global.availableLocales.includes(l)) i18n.global.setLocaleMessage(l, (await import('./en')).default)
   locale.value = l
+}
+
+export async function setLocale(l: Locale) {
+  await loadLocale(l)
   try { localStorage.setItem(STORAGE_KEY, l) } catch { /* storage unavailable */ }
 }
+
+/** Resolves once the initial UI language is loaded; main.ts mounts the app after it. */
+export const i18nReady: Promise<void> = loadLocale(initialLocale()).catch(() => undefined)
 
 /** Ant Design locale for <a-config-provider>. */
 export const antdLocale = computed(() => (locale.value === 'en' ? antdEnUS : antdZhCN))
@@ -61,3 +70,6 @@ watch(locale, (l) => {
 
 /** BCP 47 tag for Date/Number toLocale*String(): follows the UI language, not the browser's. */
 export const dateLocale = (): string => i18n.global.locale.value
+
+/** Date and time in the UI language; '—' when there is none. */
+export const fmtDateTime = (d: string | number | Date | null | undefined): string => (d ? new Date(d).toLocaleString(dateLocale()) : '—')
