@@ -409,6 +409,80 @@ try {
   const [fk36] = await sqlClient`select confdeltype from pg_constraint where conname = 'comment_tasks_tracked_post_id_tracked_posts_id_fk'`;
   check('migration 0036: one active reply per tracked comment (dry_run ignored), tracked post FK on delete set null', /dry_run/.test(String(idx36?.indexdef)) && fk36?.confdeltype === 'n', `${idx36?.indexdef} ${fk36?.confdeltype}`);
 
+  // ---------------------------------------------------------------- 排程发布: scheduled comment sends by time (list + 改期)
+  {
+    const at1 = new Date(Date.now() + 2 * 86_400_000);
+    at1.setUTCMinutes(0, 0, 0);
+    const plus = (min: number) => new Date(at1.getTime() + min * 60_000).toISOString();
+    const win = `from=${encodeURIComponent(plus(-60))}&to=${encodeURIComponent(plus(180))}`;
+    const SENDS = 'status=scheduled,sending,awaiting_operator,sent,failed,cancelled';
+    const sReply = (await sch(await http('POST', `/api/comments/${comments[8]!.id}/replies`, A, { text: `Cal reply ${tag}` }), A, plus(0))).body.reply;
+    const sPost = (await sch(await http('POST', `/api/social/accounts/${accA.id}/posts/${posts[4]!.id}/comments`, A, { text: `Cal post ${tag}` }), A, plus(10))).body.reply;
+    const sTrk = (await sch(await http('POST', tpath, A, { accountId: accA.id, text: `Cal tracked ${tag}` }), A, plus(20))).body.reply;
+    const sTrkR = (await sch(await http('POST', `${tpath}/${tc('t2').id}/replies`, A, { accountId: accA.id, text: `Cal tracked reply ${tag}` }), A, plus(30))).body.reply;
+    const sB = (await sch(await http('POST', tpath, T, { accountId: accB.id, text: `Cal B ${tag}` }), T, plus(40))).body.reply;
+    const calDraft = (await http('POST', `/api/comments/${comments[9]!.id}/replies`, A, { text: `Cal draft ${tag}`, scheduledAt: plus(50) })).body.reply;
+    const mineIds = [sReply.id, sPost.id, sTrk.id, sTrkR.id];
+    r = await http('GET', `/api/comment-replies?${SENDS}&${win}&sort=time_asc&limit=500`, A);
+    const cal = (r.body.items ?? []) as any[];
+    const byId = (id: string) => cal.find((x) => x.id === id);
+    check('排程发布 list (user): the 4 scheduled sends of the window in time order (reply, post comment, tracked comment, tracked reply); no draft, no other user\'s',
+      r.status === 200 && cal.map((x) => x.id).join() === mineIds.join() && r.body.byStatus?.scheduled === 4 && r.body.byStatus?.draft === 1, JSON.stringify({ ids: cal.map((x) => x.id), bs: r.body.byStatus }));
+    check('…with the fields the page shows: account (handle, platform), target (comment / post / tracked post / tracked comment), text, status, time',
+      byId(sReply.id)?.account?.handle === `fd_a_${tag}` && byId(sReply.id).platform === 'instagram' && byId(sReply.id).comment?.authorHandle === 'fan8' && byId(sReply.id).text === `Cal reply ${tag}`
+      && byId(sReply.id).status === 'scheduled' && new Date(byId(sReply.id).scheduledAt).getTime() === at1.getTime() && !!byId(sReply.id).taskId
+      && byId(sPost.id)?.post?.caption === `post 4 ${tag}` && byId(sTrk.id)?.trackedPost?.handle === `fd_t_${tag}` && byId(sTrk.id).trackedComment === null
+      && byId(sTrkR.id)?.trackedComment?.authorHandle === 't2', JSON.stringify(cal).slice(0, 600));
+    r = await http('GET', `/api/comment-replies?${SENDS}&from=${encodeURIComponent(plus(240))}&to=${encodeURIComponent(plus(600))}`, A);
+    const r2 = await http('GET', `/api/comment-replies?${SENDS}&${win}&platform=youtube`, A);
+    check('…another window / another platform → none of them', r.status === 200 && !r.body.items.some((x: any) => mineIds.includes(x.id)) && r2.status === 200 && r2.body.total === 0, `${r.text.slice(0, 120)} ${r2.text.slice(0, 120)}`);
+    r = await http('GET', `/api/comment-replies?${SENDS}&${win}&sort=time_asc`, T);
+    const rb2 = await http('GET', `/api/comment-replies?${SENDS}&${win}&ownerId=${uB}`, T);
+    check('…admin sees every user\'s (B\'s with its owner name); ownerId filters', r.body.items.some((x: any) => x.id === sB.id && x.ownerName === `fdb${tag}`) && mineIds.every((id) => r.body.items.some((x: any) => x.id === id))
+      && rb2.body.items.map((x: any) => x.id).join() === sB.id, `${r.body.total} ${rb2.text.slice(0, 200)}`);
+    r = await http('GET', `/api/comment-replies?${SENDS}&${win}`, B);
+    const rbo = await http('GET', `/api/comment-replies?${SENDS}&${win}&ownerId=${uA}`, B);
+    check('…user B sees only its own account\'s send; ownerId of another user → 403', r.body.items.map((x: any) => x.id).join() === sB.id && rbo.status === 403, `${r.text.slice(0, 200)} ${rbo.status}`);
+
+    // 改期 (calendar drag)
+    const before = await reply(sReply.id);
+    const moved = new Date(at1.getTime() + 86_400_000);
+    const rOther = await http('POST', `/api/comment-replies/${sReply.id}/reschedule`, B, { scheduledAt: moved.toISOString() });
+    const rBad = await http('POST', `/api/comment-replies/${sReply.id}/reschedule`, A, {});
+    r = await http('POST', `/api/comment-replies/${sReply.id}/reschedule`, A, { scheduledAt: moved.toISOString() });
+    const after = await reply(sReply.id);
+    const [oldT, newT] = [await taskOf(before.taskId), await taskOf(after.taskId)];
+    const rl = await db.select().from(schema.commentLogs).where(and(eq(schema.commentLogs.commentTaskId, sReply.id), eq(schema.commentLogs.action, 'rescheduled')));
+    check('改期: another user 404, no time 400; owner → 200 still scheduled, new round, old task cancelled, new task runAt = the new time, logged',
+      rOther.status === 404 && rBad.status === 400 && r.status === 200 && r.body.reply.status === 'scheduled' && after.round === before.round + 1 && after.taskId !== before.taskId
+      && oldT?.status === 'cancelled' && newT?.status === 'scheduled' && newT.runAt?.getTime() === moved.getTime() && after.scheduledAt?.getTime() === moved.getTime() && rl.length === 1
+      && (await reply(sReply.id)).status === 'scheduled',
+      JSON.stringify({ o: rOther.status, b: rBad.status, s: r.status, oldT: oldT?.status, newT: newT?.status, runAt: newT?.runAt, round: after.round }));
+    r = await http('GET', `/api/comment-replies?${SENDS}&${win}`, A);
+    check('…it left the old window', r.status === 200 && !r.body.items.some((x: any) => x.id === sReply.id) && r.body.items.some((x: any) => x.id === sPost.id));
+    r = await http('POST', `/api/comment-replies/${calDraft.id}/reschedule`, A, { scheduledAt: moved.toISOString() });
+    check('改期 a draft → 409 comment.bad_status', r.status === 409 && r.body.code === 'comment.bad_status', r.text);
+    // running send (its task picked up by a worker) → 409; fixture on the task row, put back afterwards
+    const trkRow = await reply(sTrk.id);
+    await db.update(schema.tasks).set({ status: 'running' }).where(eq(schema.tasks.id, trkRow.taskId!));
+    r = await http('POST', `/api/comment-replies/${sTrk.id}/reschedule`, A, { scheduledAt: moved.toISOString() });
+    await db.update(schema.tasks).set({ status: 'scheduled' }).where(eq(schema.tasks.id, trkRow.taskId!));
+    check('改期 while its task runs → 409 comment.bad_status (sending), nothing changed', r.status === 409 && r.body.params?.status === 'sending' && (await reply(sTrk.id)).taskId === trkRow.taskId, r.text);
+    // parked on a halted phone (as park() leaves it: scheduled, no task, comment.device_halted): listed with the reason, 改期 refused
+    const postRow = await reply(sPost.id);
+    await db.update(schema.tasks).set({ status: 'cancelled', finishedAt: new Date() }).where(eq(schema.tasks.id, postRow.taskId!));
+    await db.update(R).set({ taskId: null, errorCode: 'comment.device_halted' }).where(eq(R.id, sPost.id));
+    r = await http('GET', `/api/comment-replies?${SENDS}&${win}`, A);
+    const pk = r.body.items.find((x: any) => x.id === sPost.id);
+    const rp = await http('POST', `/api/comment-replies/${sPost.id}/reschedule`, A, { scheduledAt: moved.toISOString() });
+    check('parked send: listed (scheduled, no task, reason comment.device_halted); 改期 → 409 comment.device_halted',
+      pk?.status === 'scheduled' && pk.taskId === null && pk.errorCode === 'comment.device_halted' && rp.status === 409 && rp.body.code === 'comment.device_halted', `${JSON.stringify(pk).slice(0, 200)} ${rp.text}`);
+    // done: cancel them all (a later 恢复 must not re-queue the parked fixture)
+    for (const [id, tok] of [[sReply.id, A], [sPost.id, A], [sTrk.id, A], [sTrkR.id, A], [sB.id, T]] as const) await http('POST', `/api/comment-replies/${id}/cancel`, tok);
+    await http('DELETE', `/api/comment-replies/${calDraft.id}`, A);
+    check('…cleanup: every send of this section cancelled', (await db.select().from(R).where(inArray(R.id, [...mineIds, sB.id]))).every((x) => x.status === 'cancelled'));
+  }
+
   // ---------------------------------------------------------------- 风控: halted phone parks replies, 恢复 re-queues
   await haltDevice(d1, { code: 'comment.device_challenge', source: 'reply', platform: 'instagram', socialAccountId: accA.id });
   r = await http('GET', `/api/social/accounts/${accA.id}/feed?limit=1`, A);
@@ -515,7 +589,9 @@ try {
     && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 201 && !!(a.detail as any)?.accountId && !JSON.stringify(a.detail ?? {}).includes('Tracked note'))
     && audits.some((a) => a.action === 'comment.tracked_comment_create' && a.status === 404)
     && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 201 && !!(a.detail as any)?.commentId && !JSON.stringify(a.detail ?? {}).includes('Tracked reply'))
-    && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 409),
+    && audits.some((a) => a.action === 'comment.tracked_reply_create' && a.status === 409)
+    && audits.some((a) => a.action === 'comment.reply_reschedule' && a.status === 200 && !!(a.detail as any)?.scheduledAt && !!(a.detail as any)?.taskId)
+    && audits.some((a) => a.action === 'comment.reply_reschedule' && a.status === 409),
     audits.filter((a) => /feed|comment/.test(a.action)).map((a) => `${a.action}:${a.status}`).join(','));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);

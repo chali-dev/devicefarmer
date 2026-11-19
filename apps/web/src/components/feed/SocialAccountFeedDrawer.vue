@@ -17,7 +17,7 @@ import { useAccountFeed } from './useAccountFeed'
  * 「回复」 → saved as a draft) / 回复记录 (drafts: 编辑 / 排程 → sent by the account's cloud phone; state, time, result).
  */
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null; personaId?: string | null } | null }>()
+const props = defineProps<{ account: { id: string; platform: string; handle: string; displayName?: string | null; personaId?: string | null } | null; initialTab?: 'activity' | 'posts' | 'replies' }>()
 const { t } = useI18n()
 const tab = ref<'activity' | 'posts' | 'replies'>('posts')
 const { feed, page, pageSize, loading, load, reset } = useAccountFeed('social')
@@ -27,7 +27,7 @@ const replyTable = ref<InstanceType<typeof FeedReplyTable> | null>(null)
 const replyFilter = computed(() => (open.value && props.account ? `accountId=${props.account.id}` : null))
 watch(() => [open.value, props.account?.id] as const, ([o, id]) => {
   if (!o || !id) return
-  reset(); tab.value = 'posts'; rTotal.value = 0
+  reset(); tab.value = props.initialTab ?? 'posts'; rTotal.value = 0
   void load(id, 1)
 }, { immediate: true })
 const reload = () => { if (props.account) { void load(props.account.id); void replyTable.value?.reload() } }

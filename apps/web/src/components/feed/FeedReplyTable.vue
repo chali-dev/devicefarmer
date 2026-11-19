@@ -9,6 +9,7 @@ import StatusTag from '../common/StatusTag.vue'
 import { confirmDanger, pagination } from '../common/ui'
 import FeedReplyModal from './FeedReplyModal.vue'
 import ReplyScheduleModal from './ReplyScheduleModal.vue'
+import ReplyTarget from './ReplyTarget.vue'
 
 /**
  * 回复记录 of one account feed, shared by both detail drawers: social accounts (`filter` accountId=…: everything the
@@ -80,24 +81,7 @@ const columns = computed(() => [
   <a-table :data-source="rows" :columns="columns" row-key="id" size="small" :loading="loading" :scroll="{ x: 760 }"
     :pagination="pagination({ current: page, pageSize: 20, total, showSizeChanger: false, hideOnSinglePage: true, onChange: (n: number) => load(n) })">
     <template #bodyCell="{ column, record }">
-      <template v-if="column.key === 'target'">
-        <template v-if="record.comment">
-          <div class="muted small">@{{ record.comment.authorHandle ?? record.comment.authorName }}</div>
-          <div class="ellipsis2">{{ record.comment.text }}</div>
-        </template>
-        <template v-else-if="record.post">
-          <div class="muted small">{{ t('feed.onPost') }}</div>
-          <div class="ellipsis2">{{ record.post.caption ?? record.post.permalink }}</div>
-        </template>
-        <template v-else-if="record.trackedCommentId">
-          <div class="muted small">{{ t('feed.onTrackedComment', { handle: record.trackedPost?.handle ?? '?', author: record.trackedComment?.authorHandle ?? '?' }) }}</div>
-          <div class="ellipsis2">{{ record.trackedComment?.text ?? t('errors.comment.comment_gone') }}</div>
-        </template>
-        <template v-else-if="record.trackedPostId || record.trackedPost">
-          <div class="muted small">{{ t('feed.onTrackedPost', { handle: record.trackedPost?.handle ?? '?' }) }}</div>
-          <div class="ellipsis2">{{ record.trackedPost ? (record.trackedPost.caption ?? record.trackedPost.permalink) : t('errors.comment.post_gone') }}</div>
-        </template>
-      </template>
+      <template v-if="column.key === 'target'"><ReplyTarget :reply="record as CommentReplyItem" /></template>
       <template v-else-if="column.key === 'account'">
         <div>@{{ record.account?.handle ?? '?' }}</div>
         <div v-if="record.instance" class="muted small">{{ record.instance.name }}</div>
