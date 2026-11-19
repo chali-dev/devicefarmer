@@ -35,7 +35,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { events } from '../src/lib/events.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
@@ -228,6 +228,9 @@ try {
   for (const u of users) u.token = await login(u.name, pw);
   const ts = Date.now();
   seed = await seedLoad(tag, SCALE, adminRow!.id, users.map((u) => u.id));
+  // A bulk seed leaves the planner without statistics until autovacuum runs (minutes); production tables have them, so
+  // measure with fresh statistics, as a long-running DB would have (else every list plans like an empty table).
+  await db.execute(sql`analyze`);
   console.log(`seeded in ${((Date.now() - ts) / 1000).toFixed(1)} s: ${Object.entries(seed.counts).map(([k, v]) => `${k} ${v}`).join(', ')}`);
   const S = seed;
   const tokenFor = (vu: number) => (vu % 10 < 3 ? { token: ADMIN, user: null } : { token: users[vu % USERS]!.token, user: users[vu % USERS]! });
