@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Instance, SocialAccount, TrackedAccount } from '../../db/schema.js';
 import { conflict, HttpError } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { getInstance } from '../instances/repo.js';
@@ -73,10 +74,14 @@ const feedTask = (kind: FeedKind, acc: SocialAccount | TrackedAccount, userId: s
 
 /** 立即采集 (API only since the merged 同步 button): queues a collection now (coded refusals). */
 export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: SocialAccount | TrackedAccount) {
-  const no = await feedRefusal(kind, acc);
-  if (no) throw no;
-  return (await feedTask(kind, acc, user.id)).task;
+  // 防并发: refusal check (incl. feed.in_progress) and creation alone per account
+  return withMutex(feedMutex(kind, acc.id), async () => {
+    const no = await feedRefusal(kind, acc);
+    if (no) throw no;
+    return (await feedTask(kind, acc, user.id)).task;
+  });
 }
+const feedMutex = (kind: FeedKind, accountId: string) => `task:${FEED_TYPE}:${kind}:${accountId}`;
 
 /**
  * 同步 = step 1 (social: 从云手机同步 sync.ts, tracked: the profile refresh) then step 2 (this collection). Called by
@@ -85,17 +90,19 @@ export async function requestFeedCollect(user: AuthUser, kind: FeedKind, acc: So
  * runs as its own task: its failure never undoes step 1.
  */
 export async function queueFeedAfter(kind: FeedKind, accountId: string, userId: string | null, parentTaskId: string, log: TaskContext['log']): Promise<{ taskId: string } | { code: string }> {
-  const [acc]: (SocialAccount | TrackedAccount)[] = kind === 'social'
-    ? await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId))
-    : await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, accountId));
-  const code = !acc ? 'feed.account_gone' : (await feedRefusal(kind, acc))?.code;
-  if (code || !acc) {
-    await log('info', `feed collection not queued: ${code}`, { code });
-    return { code: code ?? 'feed.account_gone' };
-  }
-  const { task } = await feedTask(kind, acc, userId, `after:${parentTaskId}`);
-  await log('info', 'feed collection queued', { taskId: task.id });
-  return { taskId: task.id };
+  return withMutex(feedMutex(kind, accountId), async () => {
+    const [acc]: (SocialAccount | TrackedAccount)[] = kind === 'social'
+      ? await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId))
+      : await db.select().from(schema.trackedAccounts).where(eq(schema.trackedAccounts.id, accountId));
+    const code = !acc ? 'feed.account_gone' : (await feedRefusal(kind, acc))?.code;
+    if (code || !acc) {
+      await log('info', `feed collection not queued: ${code}`, { code });
+      return { code: code ?? 'feed.account_gone' };
+    }
+    const { task } = await feedTask(kind, acc, userId, `after:${parentTaskId}`);
+    await log('info', 'feed collection queued', { taskId: task.id });
+    return { taskId: task.id };
+  });
 }
 
 // ---------------------------------------------------------------- writes

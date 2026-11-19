@@ -4,6 +4,7 @@ import { and, asc, count, desc, eq, ilike, inArray, isNotNull, isNull, lt, or, s
 import { db, schema } from '../../db/index.js';
 import type { SocialAccount, Task } from '../../db/schema.js';
 import { conflict, HttpError } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { IgScreenSession } from '../feed/ig-ui.js';
 import { getInstance } from '../instances/repo.js';
@@ -76,18 +77,23 @@ const unfinished = async (accountId: string) => {
   return t ?? null;
 };
 
+const mutexKey = (accountId: string) => `task:${FOLLOWING_TYPE}:${accountId}`;
+
 /** 同步 (追踪中): queues a run now (coded refusals). */
 export async function requestFollowingSync(user: AuthUser, acc: SocialAccount) {
   const why = followingUnsupported(acc);
   if (why === 'following.no_device') throw new HttpError(400, '账号未绑定云手机，不能读取追踪列表', why);
   if (why) throw new HttpError(400, '该平台不支持从云手机读取追踪列表', why, { platform: acc.platform });
   if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'following.device_halted');
-  if (await unfinished(acc.id)) throw conflict('该账号的追踪列表已在排队或读取中', 'following.in_progress');
-  const { task } = await createTask({
-    type: FOLLOWING_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: REF, refId: acc.id,
-    payload: { socialAccountId: acc.id } satisfies Payload,
+  // 防并发: checked and created alone per account (also against step 3 of 同步, queueFollowingAfter)
+  return withMutex(mutexKey(acc.id), async () => {
+    if (await unfinished(acc.id)) throw conflict('该账号的追踪列表已在排队或读取中', 'following.in_progress');
+    const { task } = await createTask({
+      type: FOLLOWING_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: REF, refId: acc.id,
+      payload: { socialAccountId: acc.id } satisfies Payload,
+    });
+    return task;
   });
-  return task;
 }
 
 /**
@@ -96,19 +102,21 @@ export async function requestFollowingSync(user: AuthUser, acc: SocialAccount) {
  * are logged with their code instead. Its failure never touches what step 1 wrote.
  */
 export async function queueFollowingAfter(accountId: string, userId: string | null, parentTaskId: string, log: TaskContext['log']): Promise<{ taskId: string } | { code: string }> {
-  const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
-  const code = !acc ? 'following.account_gone'
-    : followingUnsupported(acc) ?? ((await deviceHalt(acc.instanceId!)) ? 'following.device_halted' : (await unfinished(acc.id)) ? 'following.in_progress' : null);
-  if (code || !acc) {
-    await log('info', `following sync not queued: ${code}`, { code });
-    return { code: code ?? 'following.account_gone' };
-  }
-  const { task } = await createTask({
-    type: FOLLOWING_TYPE, userId, label: `${acc.platform} @${acc.handle}`, refType: REF, refId: acc.id,
-    payload: { socialAccountId: acc.id } satisfies Payload, idempotencyKey: `after:${parentTaskId}`,
+  return withMutex(mutexKey(accountId), async () => {
+    const [acc] = await db.select().from(schema.socialAccounts).where(eq(schema.socialAccounts.id, accountId));
+    const code = !acc ? 'following.account_gone'
+      : followingUnsupported(acc) ?? ((await deviceHalt(acc.instanceId!)) ? 'following.device_halted' : (await unfinished(acc.id)) ? 'following.in_progress' : null);
+    if (code || !acc) {
+      await log('info', `following sync not queued: ${code}`, { code });
+      return { code: code ?? 'following.account_gone' };
+    }
+    const { task } = await createTask({
+      type: FOLLOWING_TYPE, userId, label: `${acc.platform} @${acc.handle}`, refType: REF, refId: acc.id,
+      payload: { socialAccountId: acc.id } satisfies Payload, idempotencyKey: `after:${parentTaskId}`,
+    });
+    await log('info', 'following sync queued', { taskId: task.id });
+    return { taskId: task.id };
   });
-  await log('info', 'following sync queued', { taskId: task.id });
-  return { taskId: task.id };
 }
 
 // ---------------------------------------------------------------- the device part

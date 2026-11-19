@@ -2660,6 +2660,7 @@ const en: Messages = {
     },
     common: {
       nothing_to_update: 'Nothing to update',
+      busy: 'The same operation is in progress, try again in a moment',
     },
     rbac: {
       menu_disabled: 'This menu is not available to your role; ask an administrator',

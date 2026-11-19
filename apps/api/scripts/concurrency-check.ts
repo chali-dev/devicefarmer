@@ -9,10 +9,11 @@
  * stopped, no containers, adb ports 5561–5569) only; nothing touches a phone. Settings rows it changes are restored.
  */
 import { randomBytes } from 'node:crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { deviceHalts, haltDevice, resumeDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
+import { linkAccount } from './lib/social-link.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
@@ -304,6 +305,74 @@ try {
     check('media delete racing distribute ×8 → no unfinished publish task with a deleted asset, no 5xx', gone === 0 && mr.every((x) => x.status < 500),
       `${gone} tasks with a deleted asset; ${mr.filter((x) => x.status >= 500).map((x) => x.text.slice(0, 100)).join(' | ')}`);
   }
+
+  // ================================================================ C. "one queued / running task per …" requests
+  // Double click / two tabs on 同步, 立即检测, 追踪中 同步, 立即采集, 刷新, 导入: the route refuses with `…in_progress` while
+  // one is unfinished. The tasks may finish fast here (placeholder phone → offline), so the invariant is: the created
+  // tasks never overlap in time (each one starts after the previous one ended), judged by the DB clock of task_logs.
+  if (want('tasks')) {
+    const U = await newUser('ta');
+    const [dev] = await placeholderDevices(1, 'tasks');
+    await http('PUT', `/api/instances/${dev!.id}/grants`, admin, { userIds: [U.id] });
+    const acc = (await http('POST', '/api/social/accounts', U.token, { platform: 'instagram', handle: `cc_${tag}_tk` })).body.account.id as string;
+    await linkAccount(acc, dev!.id);
+    const tracked = (await http('POST', '/api/tracked-accounts', U.token, { input: `https://www.tiktok.com/@cc_${tag}_tt` })).body;
+    const trackedId = (tracked.account ?? tracked.item ?? tracked).id as string;
+
+    const dbNow = async () => new Date((await sqlClient`select now() as now`)[0]!.now as Date);
+    // created_at comes from Postgres, finished_at from the API host: measure the offset once (Docker Desktop VM drift)
+    const drift = (await dbNow()).getTime() - Date.now();
+    /**
+     * Tasks of `type` on `refId` created since `since`; ok when each one was created after the previous one finished
+     * (a duplicate created by the race shares the first one's lifetime).
+     */
+    const nonOverlapping = async (type: string, refId: string, since: Date) => {
+      const ts = await db.select().from(TK).where(and(eq(TK.type, type), eq(TK.refId, refId), gte(TK.createdAt, since)));
+      const span = ts.map((t) => ({ start: t.createdAt.getTime(), end: t.finishedAt ? t.finishedAt.getTime() + drift - 20 : Infinity })).sort((a, b) => a.start - b.start);
+      const ok = span.every((s, i) => i === 0 || s.start >= span[i - 1]!.end);
+      return { n: ts.length, ok };
+    };
+    const burst = async (name: string, n: number, type: string, refId: string, req: () => Promise<{ status: number; body: any }>, okStatus = 202) => {
+      const since = await dbNow();
+      const rs = await Promise.all(Array.from({ length: n }, req));
+      await sleep(300);
+      const o = await nonOverlapping(type, refId, since);
+      check(`${name} ×${n} at once → tasks never overlap (${o.n} created), ${okStatus} or coded 409`, o.ok && o.n >= 1 && o.n === count(rs, okStatus)
+        && rs.every((x) => x.status === okStatus || x.status === 409), `${o.n} tasks, overlap ${!o.ok}, ${statuses(rs)} ${codes(rs)}`);
+    };
+    await burst('立即检测 account check', 12, 'account-device-check', acc, () => http('POST', `/api/social/accounts/${acc}/check`, U.token));
+    await burst('追踪中 同步 following sync', 12, 'account-following', acc, () => http('POST', `/api/social/accounts/${acc}/following/sync`, U.token));
+    await burst('立即采集 feed collect', 12, 'feed-collect', acc, () => http('POST', `/api/social/accounts/${acc}/collect`, U.token));
+    await burst('同步 (row button)', 12, 'account-device-sync', dev!.id, () => http('POST', `/api/social/accounts/${acc}/sync`, U.token));
+    await burst('从云手机同步 (dialog)', 12, 'account-device-sync', dev!.id, () => http('POST', '/api/social/sync-from-device', U.token, { instanceId: dev!.id }));
+    await burst('追踪号 刷新', 12, 'tracked-refresh', trackedId, () => http('POST', `/api/tracked-accounts/${trackedId}/refresh`, U.token));
+    await burst('追踪号 同步', 12, 'tracked-refresh', trackedId, () => http('POST', `/api/tracked-accounts/${trackedId}/sync`, U.token));
+    {
+      const since = await dbNow();
+      const rs = await Promise.all(Array.from({ length: 8 }, () => http('POST', '/api/tracked-accounts/refresh', U.token, { ids: [trackedId] })));
+      await sleep(300);
+      const o = await nonOverlapping('tracked-refresh', trackedId, since);
+      const queued = rs.reduce((n, x) => n + (x.body?.queued?.length ?? 0), 0);
+      check(`追踪号 批量刷新 ×8 at once → tasks never overlap (${o.n} created)`, o.ok && o.n === queued && rs.every((x) => x.status === 202), `${o.n} tasks, queued ${queued}, overlap ${!o.ok}`);
+    }
+
+    // 导入 (restore) ×6 at once on a backup row whose file does not exist: one restore at a time (each runs a safety
+    // backup first, then fails on the missing file; nothing is restored)
+    const [fake] = await db.insert(schema.dbBackups).values({ status: 'ok', trigger: 'manual', storage: 'local', key: `backups/cc-missing-${tag}.dump` }).returning();
+    const since = await dbNow();
+    const rs = await Promise.all(Array.from({ length: 6 }, () => http('POST', `/api/system/backups/${fake!.id}/restore`, admin)));
+    const restores = await db.select().from(TK).where(and(eq(TK.type, 'db-restore'), gte(TK.createdAt, since)));
+    check('导入 ×6 at once → exactly one restore task, the rest 409 system.restore_running', restores.length === 1 && count(rs, 202) === 1
+      && rs.every((x) => x.status === 202 || (x.status === 409 && x.body.code === 'system.restore_running')), `${restores.length} tasks, ${statuses(rs)} ${codes(rs)}`);
+    await waitFor('restores finished', async () => (await db.select().from(TK).where(and(eq(TK.type, 'db-restore'), inArray(TK.status, ['pending', 'scheduled', 'running'])))).length === 0, 300_000).catch(() => undefined);
+    cleanup.push(async () => {
+      const made = await db.select().from(schema.dbBackups).where(and(gte(schema.dbBackups.createdAt, since), eq(schema.dbBackups.trigger, 'pre-restore')));
+      for (const b of made) await http('DELETE', `/api/system/backups/${b.id}`, admin);
+      await db.delete(schema.dbBackups).where(eq(schema.dbBackups.id, fake!.id));
+    });
+  }
+} catch (err) {
+  check('script ran to the end', false, (err as Error).stack ?? String(err));
 } finally {
   for (const fn of cleanup.reverse()) await fn().catch((e) => console.log('cleanup:', (e as Error).message));
   await db.delete(schema.settings).where(inArray(schema.settings.key, SETTING_KEYS));

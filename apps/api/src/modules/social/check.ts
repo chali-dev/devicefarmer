@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Instance, SocialAccount } from '../../db/schema.js';
 import { conflict, HttpError } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import type { AuthUser } from '../auth/rbac.js';
 import { getInstance } from '../instances/repo.js';
@@ -66,12 +67,15 @@ export async function requestAccountCheck(user: AuthUser, acc: SocialAccount) {
   if (why === 'account_check.no_device') throw new HttpError(400, '账号未绑定云手机，不能自动检测', why);
   if (why) throw new HttpError(400, '该平台不支持自动检测', why, { platform: acc.platform });
   if (await deviceHalt(acc.instanceId!)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在云机管理的设备卡片上恢复', 'account_check.device_halted');
-  if (await unfinishedCheck(acc.id)) throw conflict('该账号已有检测在排队或进行中', 'account_check.in_progress');
-  const { task } = await createTask({
-    type: ACCOUNT_CHECK_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: ACCOUNT_CHECK_REF, refId: acc.id,
-    payload: { socialAccountId: acc.id },
+  // 防并发: checked and created alone per account (double click, two tabs, two API processes)
+  return withMutex(`task:${ACCOUNT_CHECK_TYPE}:${acc.id}`, async () => {
+    if (await unfinishedCheck(acc.id)) throw conflict('该账号已有检测在排队或进行中', 'account_check.in_progress');
+    const { task } = await createTask({
+      type: ACCOUNT_CHECK_TYPE, userId: user.id, label: `${acc.platform} @${acc.handle}`, refType: ACCOUNT_CHECK_REF, refId: acc.id,
+      payload: { socialAccountId: acc.id },
+    });
+    return task;
   });
-  return task;
 }
 
 const utcDay = (d: Date) => d.toISOString().slice(0, 10);

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import type { TrackedAccount } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
 import { enqueueTask } from '../instances/queue.js';
@@ -324,11 +325,19 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     refType: REF_TYPE, refId: acc.id, label: display(acc),
   });
 
-  app.post('/api/tracked-accounts/:id/refresh', { schema: { params: Id } }, async (req, reply) => {
-    const acc = await getVisibleAccount(req.user, req.params.id);
+  /**
+   * 防并发: refusal check (incl. tracked.refresh_in_progress) and creation alone per account; `queue` returns the task
+   * id or throws the refusal.
+   */
+  const refreshAlone = (acc: TrackedAccount, queue: () => Promise<string>) => withMutex(`task:tracked-refresh:${acc.id}`, async () => {
     const no = await refreshRefusal(acc, await pendingRefreshes([acc.id]));
     if (no) throw new HttpError(no.status, no.message, no.code, no.params);
-    const taskId = await enqueueRefresh(acc, req.user.id);
+    return queue();
+  });
+
+  app.post('/api/tracked-accounts/:id/refresh', { schema: { params: Id } }, async (req, reply) => {
+    const acc = await getVisibleAccount(req.user, req.params.id);
+    const taskId = await refreshAlone(acc, () => enqueueRefresh(acc, req.user.id));
     reply.code(202);
     return { taskId, manualOnly: !platformDef(acc.platform).source };
   });
@@ -340,12 +349,10 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
    */
   app.post('/api/tracked-accounts/:id/sync', { schema: { params: Id } }, async (req, reply) => {
     const acc = await getVisibleAccount(req.user, req.params.id);
-    const no = await refreshRefusal(acc, await pendingRefreshes([acc.id]));
-    if (no) throw new HttpError(no.status, no.message, no.code, no.params);
     const feed = !trackedFeedUnsupported(acc) && !!platformDef(acc.platform).source;
-    const taskId = await enqueueTask('tracked-refresh', { trackedAccountId: acc.id, ...(feed ? { feed: true } : {}) }, req.user.id, {
+    const taskId = await refreshAlone(acc, () => enqueueTask('tracked-refresh', { trackedAccountId: acc.id, ...(feed ? { feed: true } : {}) }, req.user.id, {
       refType: REF_TYPE, refId: acc.id, label: display(acc),
-    });
+    }));
     if (req.audit) req.audit.extra = { taskId, feed };
     reply.code(202);
     return { taskId, feed, manualOnly: !platformDef(acc.platform).source };
@@ -358,13 +365,15 @@ export const trackedRoutes: FastifyPluginAsyncZod = async (app) => {
     const ids = [...new Set(req.body.ids)];
     const vis = ownerWhere(req.user);
     const rows = await db.select().from(ta).where(and(inArray(ta.id, ids), vis));
-    const busy = await pendingRefreshes(rows.map((r) => r.id));
     const queued: { id: string; taskId: string; manualOnly: boolean }[] = [];
     const skipped: { id: string; code: string }[] = ids.filter((id) => !rows.some((r) => r.id === id)).map((id) => ({ id, code: 'tracked.not_found' }));
     for (const acc of rows) {
-      const no = await refreshRefusal(acc, busy);
-      if (no) { skipped.push({ id: acc.id, code: no.code }); continue; }
-      queued.push({ id: acc.id, taskId: await enqueueRefresh(acc, req.user.id), manualOnly: !platformDef(acc.platform).source });
+      try {
+        queued.push({ id: acc.id, taskId: await refreshAlone(acc, () => enqueueRefresh(acc, req.user.id)), manualOnly: !platformDef(acc.platform).source });
+      } catch (err) {
+        if (!(err instanceof HttpError) || !err.code) throw err;
+        skipped.push({ id: acc.id, code: err.code });
+      }
     }
     reply.code(202);
     return { queued, skipped };

@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import type { Instance, SocialAccount } from '../../db/schema.js';
 import { badRequest, conflict, forbidden, HttpError, notFound } from '../../lib/errors.js';
+import { withMutex } from '../../lib/locks.js';
 import { assertPlatformEnabled, isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { adb } from '../../services.js';
 import { assertInstanceAccess, isAdmin, type AuthUser } from '../auth/rbac.js';
@@ -106,12 +107,15 @@ export async function requestAccountSync(user: AuthUser, instanceId: string, own
     throw conflict(`设备 ${inst.name} 未开启 Instagram`, 'social.platform_disabled', { device: inst.name, platform: 'Instagram' });
   }
   if (await deviceHalt(inst.id)) throw conflict('设备遇到验证/限制页面已暂停自动操作，需管理员在风控页恢复', 'account_sync.device_halted');
-  if (await unfinishedSync(inst.id)) throw conflict('该云手机已有同步在排队或进行中', 'account_sync.in_progress');
-  const { task } = await createTask({
-    type: ACCOUNT_SYNC_TYPE, userId: user.id, label: inst.name, refType: ACCOUNT_SYNC_REF, refId: inst.id,
-    payload: { instanceId: inst.id, ownerId: owner, ...(opts.feed ? { feed: true } : {}) },
+  // 防并发: one sync per phone, checked and created alone (同步 button + dialog, two tabs, two API processes)
+  return withMutex(`task:${ACCOUNT_SYNC_TYPE}:${inst.id}`, async () => {
+    if (await unfinishedSync(inst.id)) throw conflict('该云手机已有同步在排队或进行中', 'account_sync.in_progress');
+    const { task } = await createTask({
+      type: ACCOUNT_SYNC_TYPE, userId: user.id, label: inst.name, refType: ACCOUNT_SYNC_REF, refId: inst.id,
+      payload: { instanceId: inst.id, ownerId: owner, ...(opts.feed ? { feed: true } : {}) },
+    });
+    return task;
   });
-  return task;
 }
 
 // ---------------------------------------------------------------- writing the result (DB only)
