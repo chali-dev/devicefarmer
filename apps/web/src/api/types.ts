@@ -586,7 +586,6 @@ export interface CommentLog {
   id: string; at: string; level: 'debug' | 'info' | 'warn' | 'error'; action: string; code: string | null; message: string | null
   data: Record<string, unknown> | null; taskId: string | null; actorName: string | null; commentTaskId: string | null
 }
-export type TemplateKind = 'comment' | 'post'
 /** 人设 as embedded in a template. Public ones are usable by every template, personal ones only by their owner's. */
 export interface PersonaRef { id: string; name: string; description: string | null; ownerType: 'public' | 'user'; ownerId: string | null }
 /** A row of a scoped name list (人设, 内容分类, 素材分类): public (admin-managed) or personal; `count` = uses the viewer can see. */
@@ -601,7 +600,7 @@ export interface ScopedItem extends PersonaRef {
 /** POST /api/personas/:id/drafts/preview {topic?} (AI测试): one draft, a style test, nothing stored. */
 export interface DraftPreview {
   preview: {
-    title: string; text: string; body: string; hashtags: string[]; mediaTags: string[]; opening: string | null; closing: string | null
+    title: string; text: string; body: string; hashtags: string[]; mediaTags: string[]
     banned: string[]; model: string; requestedModel: string; fallback: boolean; usage: { input: number; output: number; cacheRead: number }
     topic: string | null
   }
@@ -611,26 +610,24 @@ export const PERSONA_TONES = ['casual', 'pro', 'funny', 'cool', 'warm'] as const
 export type PersonaTone = (typeof PERSONA_TONES)[number]
 export const PERSONA_LEVELS = ['low', 'medium', 'high'] as const
 export type PersonaLevel = (typeof PERSONA_LEVELS)[number]
-/** Tone, emoji and length of one kind (API fills them with defaults). */
+/** Tone, emoji and length (API fills them with defaults). */
 export interface PersonaVoice { tone: PersonaTone; toneNote?: string; emoji: PersonaLevel; length: PersonaLevel }
 /**
- * 人设风格 (split 2026-11-18): shared topics + banned words (checked on posts and comments), 发文风格 `post` and 评论风格
- * `comment`. The API reads older single-style personas as both.
+ * 人设风格: ONE style for posts and comments (merged again 2026-11-19). The length level maps to a post range and a
+ * comment range (`PersonaLengths`); hashtags are for posts; topics + banned words are checked on posts and comments.
  */
-export interface PersonaStyle {
-  topics: string[]; bannedWords: string[]
-  post: PersonaVoice & { hashtags: string[]; audience?: string; opening?: string; closing?: string; notes?: string }
-  comment: PersonaVoice
+export interface PersonaStyle extends PersonaVoice {
+  topics: string[]; bannedWords: string[]; hashtags: string[]; audience?: string; notes?: string
 }
 /** Character ranges per length level: posts and comments (GET /api/personas[/:id] `lengths`). */
 export type PersonaLengths = Record<'post' | 'comment', Record<PersonaLevel, [number, number]>>
-export interface PersonaExample { id: string; kind: TemplateKind; name: string; text: string }
-/** GET /api/personas/:id: the persona, its 范例 per kind and the length table. */
+export interface PersonaExample { id: string; name: string; text: string }
+/** GET /api/personas/:id: the persona, its 范例 (one list for posts and comments, oldest first) and the length table. */
 export interface PersonaDetail {
   persona: PersonaRef & { sort: number; style: PersonaStyle; writable: boolean }
-  examples: { post: PersonaExample[]; comment: PersonaExample[] }
+  examples: PersonaExample[]
   lengths: PersonaLengths
-  /** 范例 per kind (20). */
+  /** 范例 per persona (20). */
   maxExamples: number
 }
 export interface AiSettingsState { keySet: boolean; workspaceId: string | null; model: string; updatedAt: string | null }
@@ -641,8 +638,8 @@ export type ContentCategory = ScopedItem
 export interface ContentCategoryRef { id: string; name: string; ownerType: 'public' | 'user'; ownerId: string | null }
 export interface CommentTemplate {
   id: string; userId: string | null; name: string; text: string; shared: boolean; ownerName: string | null; writable: boolean; updatedAt: string
-  /** 范例 of a persona (required since 2026-11-18): comment or post template, lowercase tags. */
-  kind: TemplateKind; personaId: string | null; persona: PersonaRef | null; tags: string[]
+  /** 范例 of a persona (required since 2026-11-18), lowercase tags. */
+  personaId: string | null; persona: PersonaRef | null; tags: string[]
 }
 
 /** Intervals offered for 定时采集 (hours; the API accepts exactly these). */

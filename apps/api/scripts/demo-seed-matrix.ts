@@ -258,7 +258,7 @@ if (CLEAN) {
   const tracked = (await listAll('/api/tracked-accounts?platform=instagram', ADMIN)).filter((t) => TRACKED.some((s) => s.handle === t.handle && ownerIdOf(s.owner) === t.userId));
   for (const t of tracked) await must('DELETE', `/api/tracked-accounts/${t.id}`, ADMIN);
   console.log(`deleted ${tracked.length} tracked accounts (with snapshots and posts)`);
-  const tpls = ((await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]).filter((t) => TEMPLATES.some((s) => s.name === t.name) || t.name.startsWith('demotmp'));
+  const tpls = ((await must('GET', '/api/comment-templates', ADMIN)).templates as any[]).filter((t) => TEMPLATES.some((s) => s.name === t.name) || t.name.startsWith('demotmp'));
   for (const t of tpls) await must('DELETE', `/api/comment-templates/${t.id}`, ADMIN);
   console.log(`deleted ${tpls.length} comment templates`);
   const pers = [...(await must('GET', '/api/personas?scope=public', ADMIN)).personas, ...(await must('GET', '/api/personas?scope=all-users', ADMIN)).personas]
@@ -387,7 +387,7 @@ for (const t of TRACKED) {
 
 // ---------------------------------------------------------------- seed: templates
 const tplByName = new Map<string, any>();
-for (const t of (await must('GET', '/api/comment-templates?kind=comment', ADMIN)).templates as any[]) tplByName.set(t.name, t);
+for (const t of (await must('GET', '/api/comment-templates', ADMIN)).templates as any[]) tplByName.set(t.name, t);
 for (const t of TEMPLATES) {
   const tok = t.shared ? ADMIN : DU.token;
   const pid = personaId.get(t.persona)!;
@@ -396,7 +396,7 @@ for (const t of TEMPLATES) {
     if (have.persona?.id !== pid) tplByName.set(t.name, (await must('PUT', `/api/comment-templates/${have.id}`, tok, { personaId: pid })).template);
     continue;
   }
-  tplByName.set(t.name, (await must('POST', '/api/comment-templates', tok, { name: t.name, text: t.text, kind: 'comment', tags: t.tags, personaId: pid, ...(t.shared ? { shared: true } : {}) })).template);
+  tplByName.set(t.name, (await must('POST', '/api/comment-templates', tok, { name: t.name, text: t.text, tags: t.tags, personaId: pid, ...(t.shared ? { shared: true } : {}) })).template);
   counts.templates++;
 }
 

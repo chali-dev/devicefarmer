@@ -7,6 +7,7 @@ import { migrateTelegramSettings } from './alert-channel-migration.js';
 import { migrateTrackedIgSchedule } from './tracked-schedule-migration.js';
 import { migrateTrackedPhones } from './tracked-phone-migration.js';
 import { migrateTaskTimeouts } from './task-timeouts-migration.js';
+import { migratePersonaStyles } from './persona-style-merge-migration.js';
 
 /**
  * Schema migrations plus the idempotent TS data migrations around them (`npm run db:migrate`). Also run by
@@ -24,4 +25,6 @@ export async function runMigrations(log: (msg: string) => void = console.log): P
   await migrateTrackedIgSchedule(sqlClient);
   await migrateTrackedPhones(sqlClient);
   if (await migrateTaskTimeouts(sqlClient)) log('task timeouts: publish.timeout moved to tasks.timeouts');
+  const styles = await migratePersonaStyles(sqlClient);
+  if (styles) log(`personas: ${styles} styles merged into one (post style kept, comment style and fixed opening/closing dropped)`);
 }

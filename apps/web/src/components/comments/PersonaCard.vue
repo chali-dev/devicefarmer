@@ -5,10 +5,10 @@ import type { PersonaDetail } from '../../api/types'
 import { bannedHits, charCount, loadPersona } from './persona'
 
 /**
- * Persona card next to a post editor (`kind` post: 发文风格) or a comment composer (`kind` comment: 评论风格): 定位,
- * the style of this kind (语气, 表情, length range) and the shared 禁用词. Live hints on the text being written: banned
- * words (the API refuses them on save/schedule with persona.banned_word) and, for comments, a gentle note when the text
- * is outside the comment length range (never blocking). With `insertable` it lists the persona's 范例 of this kind;
+ * Persona card next to a post editor (`kind` post) or a comment composer (`kind` comment): 定位, the persona's one style
+ * (语气, 表情, the length range of this kind) and its 禁用词. Live hints on the text being written: banned words (the API
+ * refuses them on save/schedule with persona.banned_word) and, for comments, a gentle note when the text is outside the
+ * comment length range (never blocking). With `insertable` it lists the persona's 范例 (one list for posts and comments);
  * 插入 hands the text to the composer (the person edits it). Without a persona an insertable card says to set one on
  * the account first (link to 社交号).
  */
@@ -24,8 +24,7 @@ watch(() => props.personaId, async (id) => {
 }, { immediate: true })
 
 const style = computed(() => d.value?.persona.style)
-const voice = computed(() => style.value?.[props.kind])
-const range = computed(() => (d.value && voice.value ? d.value.lengths[props.kind][voice.value.length] : null))
+const range = computed(() => (d.value && style.value ? d.value.lengths[props.kind][style.value.length] : null))
 const hits = computed(() => bannedHits(style.value?.bannedWords, props.text ?? ''))
 const n = computed(() => charCount(props.text ?? ''))
 const lengthNote = computed(() => {
@@ -33,24 +32,24 @@ const lengthNote = computed(() => {
   const [min, max] = range.value
   return n.value < min || n.value > max ? t('personas.card.lengthOff', { min, max, n: n.value }) : null
 })
-const examples = computed(() => (props.insertable && d.value ? d.value.examples[props.kind] : []))
+const examples = computed(() => (props.insertable && d.value ? d.value.examples : []))
 const showExamples = ref(false)
 </script>
 
 <template>
-  <div v-if="d && style && voice" class="persona-card">
+  <div v-if="d && style" class="persona-card">
     <div class="head">
-      <span class="muted small">{{ t(`personas.card.title_${kind}`) }}</span>
+      <span class="muted small">{{ t('personas.card.title') }}</span>
       <b>{{ d.persona.name }}</b>
       <a-tag v-if="d.persona.ownerType === 'public'" color="blue" class="chip">{{ t('scopedList.public') }}</a-tag>
     </div>
     <div v-if="d.persona.description" class="line">{{ d.persona.description }}</div>
     <div class="line small">
-      <span class="muted">{{ t('personas.form.tone') }}</span> {{ t(`personas.tones.${voice.tone}`) }}
-      <span class="muted"> · {{ t('personas.form.emoji') }}</span> {{ t(`personas.levels.emoji.${voice.emoji}`) }}
+      <span class="muted">{{ t('personas.form.tone') }}</span> {{ t(`personas.tones.${style.tone}`) }}
+      <span class="muted"> · {{ t('personas.form.emoji') }}</span> {{ t(`personas.levels.emoji.${style.emoji}`) }}
       <span v-if="range" class="muted"> · {{ t(`personas.card.length.${kind}`, { min: range[0], max: range[1] }) }}</span>
     </div>
-    <div v-if="voice.toneNote" class="line small muted">{{ voice.toneNote }}</div>
+    <div v-if="style.toneNote" class="line small muted">{{ style.toneNote }}</div>
     <div v-if="style.bannedWords.length" class="line small">
       <span class="muted">{{ t('personas.form.banned') }}</span>
       <a-tag v-for="w in style.bannedWords" :key="w" :color="hits.includes(w) ? 'red' : undefined" class="chip">{{ w }}</a-tag>
@@ -58,7 +57,7 @@ const showExamples = ref(false)
     <a-alert v-if="hits.length" type="error" show-icon class="note" :message="t('personas.card.bannedHit', { words: hits.join('、') })" />
     <a-alert v-if="lengthNote" type="info" show-icon class="note" :message="lengthNote" />
     <template v-if="examples.length">
-      <a class="small" @click="showExamples = !showExamples">{{ t(`personas.card.examples.${kind}`, { n: examples.length }) }}</a>
+      <a class="small" @click="showExamples = !showExamples">{{ t('personas.card.examples', { n: examples.length }) }}</a>
       <div v-if="showExamples" class="examples">
         <div v-for="e in examples" :key="e.id" class="example">
           <div class="ex-text">{{ e.text }}</div>

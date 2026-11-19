@@ -264,7 +264,7 @@ try {
   await deny('manual comment on B\'s account', 'POST', '/api/comments', { accountId: b.account, text: 'x', authorName: 'x' });
   await deny('reply to B\'s comment', 'POST', `/api/comments/${commentB}/replies`, { text: 'x' });
   await deny('cancel B\'s reply', 'POST', `/api/comment-replies/${replyB}/cancel`);
-  await clean('/api/comment-templates', '/api/comment-templates?kind=all');
+  await clean('/api/comment-templates', '/api/comment-templates');
 
   // personas / categories
   r = await clean('/api/personas?scope=mine', '/api/personas?scope=mine');

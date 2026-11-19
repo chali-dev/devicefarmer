@@ -2,10 +2,10 @@
  * AI 草稿 against the real API, DB, Redis and the real Anthropic API. No mocks.
  * - Personas carry no daily AI settings (owner decision 2026-11-18): draftEnabled/draftsPerDay/draftOwnerId in POST/PATCH
  *   are stripped, not returned, and the columns are gone (migration drop_legacy).
- * - The prompt (buildUserMessage + loadExamples, no model call): 定位, the 发文风格 (tone preset + note, emoji, post
- *   length range, hashtags, audience, fixed opening/closing, notes; nothing of the 评论风格), shared topics + banned
- *   words, Language zh-CN, the persona's oldest 5 post examples (in its own scope; not comment examples, not other
- *   users' templates).
+ * - The prompt (buildUserMessage + loadExamples, no model call): 定位, the persona's one style (tone preset + note,
+ *   emoji, post length range, hashtags, audience, notes, topics, banned words; no fixed opening/closing since
+ *   2026-11-19), Language zh-CN, the persona's oldest 5 范例 of its one list (in its own scope; not other users'
+ *   templates). composeDraft adds no fixed lines.
  * - AI settings (admin): key write-only (never echoed, sealed in the DB, not in audit), model/workspace validation;
  *   no global on/off and no daily hour any more (removed 2026-11-18): GET returns neither `enabled` nor `hour`, a PUT
  *   with them is stripped (nothing stored); the settings.ai audit has no hour; mapApiError turns the documented workspace errors into ai.workspace_required/_invalid/_not_found.
@@ -40,7 +40,7 @@ import { Redis } from 'ioredis';
 import { config } from '../src/config.js';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import {
-  buildUserMessage, closeAiRedis, DRAFT_TAG, loadExamples, mapApiError, PREVIEW_LIMIT, SYSTEM_PROMPT,
+  buildUserMessage, closeAiRedis, composeDraft, DRAFT_TAG, loadExamples, mapApiError, PREVIEW_LIMIT, SYSTEM_PROMPT,
 } from '../src/modules/ai/drafts.js';
 import * as draftsModule from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
@@ -101,8 +101,7 @@ try {
   // ================================================================ personas: no daily AI settings any more
   const STYLE = {
     topics: ['家常菜', 'weeknight dinners'], bannedWords: ['forbiddenword', '最便宜'],
-    post: { tone: 'warm', toneNote: '像邻家厨师一样温柔', emoji: 'low', length: 'high', hashtags: ['#homecooking', 'dinner'], audience: '上班族', opening: '今晚吃什么？', closing: '你们最爱哪道？', notes: '不要推荐品牌' },
-    comment: { tone: 'funny', toneNote: '评论区抖机灵', emoji: 'high', length: 'low' },
+    tone: 'warm', toneNote: '像邻家厨师一样温柔', emoji: 'low', length: 'high', hashtags: ['#homecooking', 'dinner'], audience: '上班族', notes: '不要推荐品牌',
   };
   const pA = (await http('POST', '/api/personas', A.token, { scope: 'mine', name: `Chef ${tag}`, description: '下班后 20 分钟的家常菜', style: STYLE, draftEnabled: true, draftsPerDay: 9 })).body.persona;
   const pA2 = (await http('POST', '/api/personas', A.token, { scope: 'mine', name: `Other ${tag}` })).body.persona;
@@ -117,10 +116,11 @@ try {
   check('old "generate now" endpoint is gone (404)', r.status === 404, `${r.status}`);
 
   const tpl = async (token: string, body: Record<string, unknown>) => (await http('POST', '/api/comment-templates', token, { text: 'Example caption text', ...body })).body.template;
-  const sharedPost = await tpl(T, { kind: 'post', name: `shared ${tag}`, shared: true, personaId: pP.id, text: 'Shared brand example' }); sharedTemplateIds.push(sharedPost.id);
-  for (let k = 1; k <= 6; k++) await tpl(A.token, { kind: 'post', name: `a-post${k} ${tag}`, personaId: pA.id, text: `示例发文 ${k} ${tag}` });
-  await tpl(A.token, { kind: 'comment', name: `a-reply ${tag}`, personaId: pA.id, text: `回复范例 ${tag}` });
-  await tpl(A.token, { kind: 'post', name: `a-pub ${tag}`, personaId: pP.id, text: `A 的私有发文用公共人设 ${tag}` });
+  const sharedPost = await tpl(T, { name: `shared ${tag}`, shared: true, personaId: pP.id, text: 'Shared brand example' }); sharedTemplateIds.push(sharedPost.id);
+  // one list of 范例 (2026-11-19): the oldest one is a reply, then 6 post texts
+  await tpl(A.token, { name: `a-reply ${tag}`, personaId: pA.id, text: `回复范例 ${tag}` });
+  for (let k = 1; k <= 6; k++) await tpl(A.token, { name: `a-post${k} ${tag}`, personaId: pA.id, text: `示例发文 ${k} ${tag}` });
+  await tpl(A.token, { name: `a-pub ${tag}`, personaId: pP.id, text: `A 的私有发文用公共人设 ${tag}` });
 
   // ================================================================ prompt construction (no model call)
   {
@@ -128,14 +128,17 @@ try {
     const ex = await loadExamples(row!);
     const msg = buildUserMessage({ persona: row!, count: 3, day: '2026-11-18', examples: ex, recent: [{ title: '上周的汤', body: '番茄蛋汤做法' }] });
     const has = (x: string) => msg.includes(x);
-    check('prompt: examples = the oldest 5 post examples of the persona (no comment example)',
-      ex.length === 5 && ex.every((e, k) => e.text === `示例发文 ${k + 1} ${tag}`) && !has(`回复范例 ${tag}`) && !has(`示例发文 6 ${tag}`), ex.map((e) => e.text).join(' | '));
-    check('prompt: 定位 + the 发文风格 (tone preset + note, emoji, post length range high = 500–1500), Language zh-CN',
+    check('prompt: examples = the oldest 5 范例 of the persona\'s one list (the reply included, the 5th and 6th post text not)',
+      ex.length === 5 && ex[0]!.text === `回复范例 ${tag}` && ex.slice(1).every((e, k) => e.text === `示例发文 ${k + 1} ${tag}`) && has(`回复范例 ${tag}`) && !has(`示例发文 5 ${tag}`), ex.map((e) => e.text).join(' | '));
+    check('prompt: 定位 + the style (tone preset + note, emoji, post length range high = 500–1500), Language zh-CN',
       has('Positioning: 下班后 20 分钟的家常菜') && has('Tone: warm — 像邻家厨师一样温柔') && has('Emoji: at most 1 emoji') && has('Length: 500 to 1500 characters') && has('Language: zh-CN'), msg.slice(0, 600));
-    check('prompt: nothing of the 评论风格', !has('funny') && !has('评论区抖机灵') && !has('plenty of emoji') && !has('4 to 30'));
-    check('prompt: topics, banned words, hashtags (# stripped), audience, fixed opening/closing, notes, recent posts',
+    check('prompt: topics, banned words, hashtags (# stripped), audience, notes, recent posts; no fixed opening/closing lines',
       has('- 家常菜') && has('- weeknight dinners') && has('- forbiddenword') && has('- 最便宜') && has('- homecooking') && has('Audience: 上班族')
-        && has('Fixed opening line (added by the system): 今晚吃什么？') && has('Fixed closing line (added by the system): 你们最爱哪道？') && has('Notes: 不要推荐品牌') && has('上周的汤'));
+        && has('Notes: 不要推荐品牌') && has('上周的汤') && !has('Fixed opening') && !has('Fixed closing') && !SYSTEM_PROMPT.includes('opening'));
+    // a row still holding the removed opening/closing (written before 2026-11-19, never migrated): nothing added to a draft
+    const legacy = { ...row!, style: { ...row!.style, opening: '今晚吃什么？', closing: '你们最爱哪道？' } as any };
+    const cd = composeDraft({ title: 't', body: '正文', hashtags: ['#a'], mediaTags: [] }, legacy);
+    check('composeDraft adds no fixed lines (also for a row with a stored opening/closing)', cd.body === '正文' && cd.text === '正文\n\n#a' && !buildUserMessage({ persona: legacy, count: 1, day: '2026-11-18', examples: [], recent: [] }).includes('今晚吃什么'), JSON.stringify(cd));
     check('prompt without a topic: no "Requested topic" line', !has('Requested topic'));
     const withTopic = buildUserMessage({ persona: row!, count: 2, day: '2026-11-18', examples: ex, recent: [], topic: '咖啡豆保存' });
     check('prompt with a topic: "Requested topic (every draft is about it, each from a different angle): 咖啡豆保存"',

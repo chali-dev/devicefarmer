@@ -371,13 +371,13 @@ async function seed() {
   saveState(st);
 
   // templates
-  const tplLists = { admin: must(await http('GET', '/api/comment-templates?kind=all&q=demo', T), 'templates').templates as any[], user: must(await http('GET', '/api/comment-templates?kind=all&scope=own&q=demo', U.token), 'templates').templates as any[] };
+  const tplLists = { admin: must(await http('GET', '/api/comment-templates?q=demo', T), 'templates').templates as any[], user: must(await http('GET', '/api/comment-templates?scope=own&q=demo', U.token), 'templates').templates as any[] };
   for (const t of TEMPLATES) {
     const pool = t.owner === 'user' ? tplLists.user : tplLists.admin;
     let row = pool.find((x) => x.name === t.name && (t.owner === 'shared' ? x.shared : t.owner === 'admin' ? !x.shared && x.userId !== U.id : x.userId === U.id));
     note(!row);
     const personaId = personaIds.get(t.persona)!;
-    if (!row) row = must(await http('POST', '/api/comment-templates', tok(t.owner), { name: t.name, text: t.text, kind: t.kind, personaId, tags: t.tags, shared: t.owner === 'shared' || undefined }), `template ${t.name}`).template;
+    if (!row) row = must(await http('POST', '/api/comment-templates', tok(t.owner), { name: t.name, text: t.text, personaId, tags: t.tags, shared: t.owner === 'shared' || undefined }), `template ${t.name}`).template;
     else if ((row.persona?.id ?? null) !== personaId) must(await http('PUT', `/api/comment-templates/${row.id}`, tok(t.owner), { personaId }), `template persona ${t.name}`);
     addId(st.templates, row.id);
   }
@@ -523,7 +523,7 @@ async function clean() {
     if (r.status === 200 && titles.has(r.body.content.title)) await del(`/api/contents/${id}`, `content ${id}`);
   }
   for (const id of st.templates) {
-    const all = must(await http('GET', '/api/comment-templates?kind=all&q=demo', T), 'templates').templates as any[];
+    const all = must(await http('GET', '/api/comment-templates?q=demo', T), 'templates').templates as any[];
     const t = all.find((x) => x.id === id);
     if (t && tnames.has(t.name)) await del(`/api/comment-templates/${id}`, `template ${id}`);
   }

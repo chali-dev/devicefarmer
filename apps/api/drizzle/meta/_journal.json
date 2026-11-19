@@ -351,6 +351,13 @@
       "when": 1795075505030,
       "tag": "0049_perf_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795079587650,
+      "tag": "0050_template_kind_drop",
+      "breakpoints": true
     }
   ]
 }

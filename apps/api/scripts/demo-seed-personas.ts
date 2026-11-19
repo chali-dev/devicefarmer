@@ -1,12 +1,12 @@
 /**
- * Two test personas (人设) for the persona form (owner decision 2026-11-18: persona + 发文风格 / 评论风格 in one
- * place; migration 0037 wiped every persona), through the real HTTP API (no DB writes):
+ * Two test personas (人设) for the persona form (one 风格 + one list of 范例, 2026-11-19), through the real HTTP API
+ * (no DB writes):
  * - 「咖啡师小林」 public persona (admin-managed), 「健身教练 Max」 personal persona of `demo-user`;
- * - each with 定位, shared topics + banned words, a 发文风格 (tone + note, emoji, length, hashtags, audience, opening/
- *   closing) and a different 评论风格 (tone + note, emoji, length), and 2 post examples + 2 comment examples (templates
- *   with the persona: shared for the public one, demo-user's private ones for Max, created by the admin with `ownerId`).
+ * - each with 定位 and one 风格 (tone + note, emoji, length, topics, banned words, hashtags, audience), and 4 范例
+ *   (2 post texts + 2 replies; templates with the persona: shared for the public one, demo-user's private ones for Max,
+ *   created by the admin with `ownerId`).
  *   AI drafts stay off.
- * Idempotent: personas are found by exact name and scope, examples by persona + kind + exact text; a second run creates
+ * Idempotent: personas are found by exact name and scope, examples by persona + exact text; a second run creates
  * nothing and resets the style to the spec. `--clean` removes exactly these personas and their example templates.
  * demo-user must exist (scripts/demo-seed-content.ts creates it); without it only the public persona is seeded.
  * Logs in as ADMIN_USERNAME / ADMIN_PASSWORD (never printed). Not run automatically.
@@ -21,24 +21,19 @@ const DEMO_USER = 'demo-user';
 
 interface PersonaSpec {
   name: string; owner: 'public' | 'user'; description: string; style: Record<string, unknown>;
-  posts: { name: string; text: string }[]; replies: { name: string; text: string }[];
+  examples: { name: string; text: string }[];
 }
 export const PERSONAS: PersonaSpec[] = [
   {
     name: '咖啡师小林', owner: 'public', description: '社区咖啡馆的咖啡师，分享手冲和咖啡馆的日常',
     style: {
       topics: ['手冲咖啡', '咖啡豆', '拉花', '咖啡馆日常'], bannedWords: ['最便宜', '包治', '加微信'],
-      post: {
-        tone: 'casual', toneNote: '像熟客聊天一样轻松，多用「你」，偶尔分享自己的小失误', emoji: 'medium', length: 'medium',
-        hashtags: ['咖啡', '手冲', 'coffeetime'], audience: '喜欢咖啡的城市上班族', closing: '今天你喝了什么？☕',
-      },
-      comment: { tone: 'warm', toneNote: '像店员招呼熟客，一两句就好，先道谢', emoji: 'medium', length: 'low' },
+      tone: 'casual', toneNote: '像熟客聊天一样轻松，多用「你」，偶尔分享自己的小失误', emoji: 'medium', length: 'medium',
+      hashtags: ['咖啡', '手冲', 'coffeetime'], audience: '喜欢咖啡的城市上班族', notes: '回复评论时一两句就好，先道谢',
     },
-    posts: [
+    examples: [
       { name: '小林 · 手冲入门', text: '第一次在家手冲，最容易忽略的是水温 🌡️\n我一般用 90–92℃，浅烘的豆子可以再高一点。\n磨豆比冲煮更重要：粗细不对，怎么冲都会苦或者酸。' },
       { name: '小林 · 店里的早晨', text: '早上七点半，店里第一杯是给自己的。\n今天试了新到的埃塞俄比亚豆，柑橘香很明显 🍊\n你们早上会喝咖啡吗，还是先喝水？' },
-    ],
-    replies: [
       { name: '小林 · 回复谢谢', text: '谢谢你喜欢！下次来店里记得跟我说一声 ☕' },
       { name: '小林 · 回复豆子', text: '这款是浅烘的，酸感明亮，喜欢果香的话会很适合～' },
     ],
@@ -47,17 +42,12 @@ export const PERSONAS: PersonaSpec[] = [
     name: '健身教练 Max', owner: 'user', description: '健身教练，讲科学训练和不折腾的饮食',
     style: {
       topics: ['力量训练', '减脂饮食', '拉伸恢复'], bannedWords: ['速成', '包瘦', '减肥药'],
-      post: {
-        tone: 'pro', toneNote: '直接给方法和理由，少形容词', emoji: 'low', length: 'low',
-        hashtags: ['健身', 'fitness'], audience: '刚开始健身的新手', opening: 'Max 教练小课堂：',
-      },
-      comment: { tone: 'pro', toneNote: '先肯定，再给一个具体建议', emoji: 'low', length: 'medium' },
+      tone: 'pro', toneNote: '直接给方法和理由，少形容词', emoji: 'low', length: 'low',
+      hashtags: ['健身', 'fitness'], audience: '刚开始健身的新手', notes: '回复评论时先肯定，再给一个具体建议',
     },
-    posts: [
+    examples: [
       { name: 'Max · 深蹲要点', text: '深蹲三个要点：脚掌踩稳、膝盖跟脚尖同向、下蹲时保持核心收紧。先把动作做对，再加重量。' },
       { name: 'Max · 训练后吃什么', text: '训练后一小时内吃一份蛋白质加碳水，比如鸡蛋配全麦面包。不用追求完美，稳定最重要。' },
-    ],
-    replies: [
       { name: 'Max · 回复坚持', text: '坚持得很好！下次可以试着把组间休息控制在 90 秒。' },
       { name: 'Max · 回复动作', text: '动作视频可以发我看看，先别急着加重量。' },
     ],
@@ -102,7 +92,7 @@ export async function seedPersonas(clean = false): Promise<{ personas: string[];
     if (clean) {
       if (!p) { console.log(`= ${spec.name}: not there`); continue; }
       const d = must(await http('GET', `/api/personas/${p.id}`, T), 'persona detail');
-      const ex = [...d.examples.post, ...d.examples.comment] as any[];
+      const ex = d.examples as any[];
       for (const e of ex) must(await http('DELETE', `/api/comment-templates/${e.id}`, T), `delete example ${e.name}`);
       must(await http('DELETE', `/api/personas/${p.id}`, T), `delete ${spec.name}`);
       console.log(`- ${spec.name}: removed with ${ex.length} examples`);
@@ -119,15 +109,13 @@ export async function seedPersonas(clean = false): Promise<{ personas: string[];
     }
     out.personas.push(p.id);
     const d = must(await http('GET', `/api/personas/${p.id}`, T), 'persona detail');
-    for (const [kind, list] of [['post', spec.posts], ['comment', spec.replies]] as const) {
-      const have = d.examples[kind] as any[];
-      for (const e of list) {
-        if (have.some((x) => x.text === e.text)) continue;
-        must(await http('POST', '/api/comment-templates', T, {
-          kind, name: e.name, text: e.text, personaId: p.id, ...(userId ? { ownerId: userId } : { shared: true }),
-        }), `example ${e.name}`);
-        out.examples++;
-      }
+    const have = d.examples as any[];
+    for (const e of spec.examples) {
+      if (have.some((x) => x.text === e.text)) continue;
+      must(await http('POST', '/api/comment-templates', T, {
+        name: e.name, text: e.text, personaId: p.id, ...(userId ? { ownerId: userId } : { shared: true }),
+      }), `example ${e.name}`);
+      out.examples++;
     }
   }
   console.log(clean ? 'demo personas removed' : `demo personas ready: ${out.personas.length} (new ${out.created}), examples added ${out.examples}`);

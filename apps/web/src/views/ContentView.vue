@@ -395,7 +395,7 @@ function moveMedia(i: number, d: number) {
   m.splice(i + d, 0, x!)
   form.media = m
 }
-/** 插入话术: puts a 发文范例 of a target account's persona into the current text tab; the person edits it before saving. */
+/** 插入话术: puts a 范例 of a target account's persona into the current text tab; the person edits it before saving. */
 function insertTemplate(text: string, replace: boolean) {
   const texts = currentTr.value?.texts ?? form.texts
   const cur = texts[textTab.value] ?? ''

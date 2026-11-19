@@ -31,5 +31,5 @@ export function bannedHits(words: string[] | undefined, text: string): string[] 
 /** Characters as people count them (emoji and CJK = 1). */
 export const charCount = (s: string) => [...s.trim()].length
 
-/** 语气 / 表情 / 长度 of one kind in the persona form (发文风格 or 评论风格). */
+/** 语气 / 表情 / 长度 in the persona form's 风格. */
 export interface VoiceForm { tone: PersonaTone; toneNote: string; emoji: PersonaLevel; length: PersonaLevel }

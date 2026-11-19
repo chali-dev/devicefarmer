@@ -22,7 +22,7 @@ import { useAuthStore } from '../stores/auth'
  * `?edit=<id>` opens the form of that persona (插入话术 links here). 复制到我的人设 on every row (any visible persona → a
  * personal copy with all 范例; admins pick the owner in the 全部用户 tab), then the copy's form opens.
  * Daily AI drafts are set per social account (社交号 → AI 草稿), not on personas. Public personas are managed by admins; personal ones by their owner (admins: all).
- * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 发文风格 + 发文范例, 评论风格 + 评论范例, AI测试). No merge for personas
+ * Create/edit = the one persona form (`PersonaFormDrawer`: 基本, 风格, 选填, 范例). No merge for personas
  * (owner decision 2026-11-18; the shared `useScopedList` merge stays for 内容分类/素材分类).
  * Tabs: 公共 / 我的 (+ admin 全部用户 with an owner filter); `?tab=` keeps the tab in the URL.
  */
@@ -165,7 +165,7 @@ async function doCopy() {
           <template v-if="column.key === 'name'"><span class="strong">{{ record.name }}</span></template>
           <template v-else-if="column.key === 'description'">
             <span v-if="record.description" class="clamp">{{ record.description }}</span><span v-else class="muted">—</span>
-            <div v-if="record.style" class="muted small">{{ t('personas.toneLine', { post: t(`personas.tones.${record.style.post.tone}`), comment: t(`personas.tones.${record.style.comment.tone}`) }) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
+            <div v-if="record.style" class="muted small">{{ t(`personas.tones.${record.style.tone}`) }}<template v-if="record.style.bannedWords.length"> · {{ t('personas.bannedCount', { n: record.style.bannedWords.length }) }}</template></div>
           </template>
           <template v-else-if="column.key === 'scope'">
             <a-tag v-if="record.ownerType === 'public'" color="blue">{{ t('scopedList.public') }}</a-tag>

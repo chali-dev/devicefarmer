@@ -49,7 +49,7 @@ async function loadAccounts() {
 }
 const chosen = computed(() => accounts.value.find((a) => a.id === accountId.value) ?? null)
 const accountLabel = (a: ReplyAccountOption) => `@${a.handle} · ${a.instance.name}${a.own ? '' : ` · ${t('feed.accountOwner', { name: a.ownerName ?? '?' })}`}`
-/** 评论风格 of the sending account: given by the caller, else the picked own account (tracked posts) or the draft's account. */
+/** Persona (风格 + 范例) of the sending account: given by the caller, else the picked own account (tracked posts) or the draft's account. */
 const persona = computed(() => props.personaId ?? chosen.value?.personaId ?? props.draft?.account?.personaId ?? null)
 const isHalted = computed(() => (tracked.value ? !!chosen.value?.instance.halted : !!props.halted))
 
