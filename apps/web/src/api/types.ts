@@ -60,7 +60,8 @@ export interface LibraryInstallLog {
   versionCode: string | null; versionName: string | null
 }
 /** 必装应用 (GET /api/library/required): packages every phone must have; missing ones are installed from BitBrowser's app store. */
-export interface RequiredApp { id: string; package: string; name: string; bitbrowserAppId: string; createdAt: string; updatedAt: string }
+/** 必装应用 per device source type (`sourceType` = device_sources.type with an app store). */
+export interface RequiredApp { id: string; sourceType: string; package: string; name: string; storeAppId: string; createdAt: string; updatedAt: string }
 
 /** Measured egress location: "IN · Maharashtra · Mumbai" (repeated parts dropped), or '' before a check with geo. */
 export const egressGeo = (s: Instance['proxyStatus'] | undefined) =>

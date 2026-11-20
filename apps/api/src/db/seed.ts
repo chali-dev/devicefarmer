@@ -201,8 +201,8 @@ if (requiredSeeded) {
   log('required apps: seeded before (unchanged)');
 } else {
   const rows = await db.insert(schema.requiredApps).values([
-    { package: 'com.instagram.android', name: 'Instagram', bitbrowserAppId: '1760185069' },
-    { package: 'com.google.android.youtube', name: 'YouTube', bitbrowserAppId: '437836727' },
+    { sourceType: 'bitbrowser', package: 'com.instagram.android', name: 'Instagram', storeAppId: '1760185069' },
+    { sourceType: 'bitbrowser', package: 'com.google.android.youtube', name: 'YouTube', storeAppId: '437836727' },
   ]).onConflictDoNothing().returning();
   await db.insert(schema.settings).values({ key: REQUIRED_KEY, value: { at: new Date().toISOString() } }).onConflictDoNothing();
   log(`required apps: ${rows.length} created`);

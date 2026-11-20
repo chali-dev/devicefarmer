@@ -14,6 +14,9 @@ const DRIVERS: Record<SourceType, SourceDriver<any>> = {
 };
 export const SOURCE_TYPES = Object.keys(DRIVERS) as [SourceType, ...SourceType[]];
 
+/** Source types whose driver has an app store (必装应用). */
+export const appStoreTypes = () => SOURCE_TYPES.filter((t) => DRIVERS[t].appStore);
+
 export function driverFor(type: SourceType): SourceDriver<any> {
   return DRIVERS[type];
 }

@@ -176,8 +176,8 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'DELETE /api/library/:id': { action: 'library.delete' },
   // 必装应用 (library/required.ts); the route sets the target (package)
-  'POST /api/library/required': { action: 'library.required_create', detail: ({ body }) => ({ package: body.package, appId: body.bitbrowserAppId }) },
-  'PUT /api/library/required/:id': { action: 'library.required_update', detail: ({ body }) => ({ package: body.package, appId: body.bitbrowserAppId }) },
+  'POST /api/library/required': { action: 'library.required_create', detail: ({ body }) => ({ sourceType: body.sourceType, package: body.package, appId: body.storeAppId }) },
+  'PUT /api/library/required/:id': { action: 'library.required_update', detail: ({ body }) => ({ sourceType: body.sourceType, package: body.package, appId: body.storeAppId }) },
   'DELETE /api/library/required/:id': { action: 'library.required_delete' },
   'POST /api/library/required/check': { action: 'library.required_check' },
   // media library (素材库)

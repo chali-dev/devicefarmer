@@ -508,10 +508,13 @@ const zhCN = {
     listTitle: 'APK 应用库',
     required: {
       title: '必装应用',
-      hint: '手机开机或新增时自动检查，缺少的应用通过比特云应用市场安装。',
+      hint: '按设备来源分别设置。该来源的手机开机或新增时自动检查，缺少的应用通过它的应用市场安装。',
       name: '名称',
-      appId: '比特云应用 ID',
-      appIdHint: '比特云应用市场中该应用的 ID（纯数字）',
+      appId: '应用 ID',
+      /** One entry per device source type with an app store (API `sourceTypes`). */
+      stores: {
+        bitbrowser: { label: '比特云', appId: '比特云应用 ID', appIdHint: '比特云应用市场中该应用的 ID（纯数字）' },
+      },
       add: '新增',
       addTitle: '新增必装应用',
       editTitle: '编辑必装应用',
@@ -525,8 +528,8 @@ const zhCN = {
       nameRequired: '请输入名称',
       packageRequired: '请输入包名',
       packageInvalid: '包名格式不正确，例如 com.instagram.android',
-      appIdRequired: '请输入比特云应用 ID',
-      appIdInvalid: '只能是数字',
+      appIdRequired: '请输入应用 ID',
+      appIdInvalid: '应用 ID 格式不正确',
     },
     package: '包名',
     version: '版本',

@@ -172,19 +172,20 @@ export const libraryApps = pgTable('library_apps', {
 }, (t) => [unique('library_pkg_version').on(t.package, t.versionCode)]);
 
 /**
- * 必装应用 (modules/library/required.ts, owner 2026-11-20): apps every phone must have. When a phone is added or
- * powered on, adb checks `package`; a missing one is installed from the source's own app store (BitBrowser:
- * `bitbrowser_app_id`, the store's id of that app). Package unique.
+ * 必装应用 (modules/library/required.ts, owner 2026-11-20): apps every phone of a device source type must have, per
+ * `source_type` (= device_sources.type; only 'bitbrowser' today, another vendor = its own rows). When a phone is
+ * added or powered on, adb checks `package`; a missing one is installed from that source's app store by
+ * `store_app_id` (BitBrowser: the app's id in its app store). Unique per source type + package.
  */
-
 export const requiredApps = pgTable('required_apps', {
   id: uuid('id').primaryKey().defaultRandom(),
-  package: text('package').notNull().unique(),
+  sourceType: text('source_type', { enum: ['bitbrowser'] }).notNull(),
+  package: text('package').notNull(),
   name: text('name').notNull(),
-  bitbrowserAppId: text('bitbrowser_app_id').notNull(),
+  storeAppId: text('store_app_id').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-});
+}, (t) => [unique('required_apps_source_package_unique').on(t.sourceType, t.package)]);
 export type RequiredApp = typeof requiredApps.$inferSelect;
 
 /** Platform settings (admin). Secrets inside values are encrypted (lib/secret-box.ts). */

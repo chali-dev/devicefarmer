@@ -22,6 +22,20 @@
       "when": 1795187810474,
       "tag": "0002_required_apps",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795189583535,
+      "tag": "0003_required_apps_per_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795189587706,
+      "tag": "0004_required_apps_store_id",
+      "breakpoints": true
     }
   ]
 }

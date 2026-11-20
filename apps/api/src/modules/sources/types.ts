@@ -47,10 +47,13 @@ export interface SourceDriver<C = Record<string, unknown>> {
     off(cfg: C, phoneId: string): Promise<void>;
   };
   /**
-   * Installs an app from the source's own app store (必装应用, modules/library/required.ts); null = the source has
-   * none. May return before the app is installed: callers check with adb.
+   * The source's own app store (必装应用, modules/library/required.ts); null = none. `idPattern` validates the store's
+   * app id entered in the UI; `install` may return before the app is installed (callers check with adb).
    */
-  installApp: null | ((cfg: C, phoneId: string, appId: string) => Promise<void>);
+  appStore: null | {
+    idPattern: RegExp;
+    install(cfg: C, phoneId: string, appId: string): Promise<void>;
+  };
   /** Opens (or keeps) the adb connection; idempotent and cheap when already up. */
   openAdb(cfg: C, target: AdbTarget): Promise<void>;
   closeAdb(instanceId: string): void;

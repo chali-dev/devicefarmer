@@ -60,8 +60,8 @@ try {
   const U = await login(`req${tag}`, pw);
   const someId = saved[0]?.id ?? randomUUID();
   const userRes = await Promise.all(([
-    ['GET', '/api/library/required'], ['POST', '/api/library/required', { package: `com.req${tag}.x`, name: 'x', bitbrowserAppId: '1' }],
-    ['PUT', `/api/library/required/${someId}`, { package: `com.req${tag}.x`, name: 'x', bitbrowserAppId: '1' }], ['DELETE', `/api/library/required/${someId}`],
+    ['GET', '/api/library/required'], ['POST', '/api/library/required', { sourceType: 'bitbrowser', package: `com.req${tag}.x`, name: 'x', storeAppId: '1' }],
+    ['PUT', `/api/library/required/${someId}`, { sourceType: 'bitbrowser', package: `com.req${tag}.x`, name: 'x', storeAppId: '1' }], ['DELETE', `/api/library/required/${someId}`],
     ['POST', '/api/library/required/check', {}],
   ] as [string, string, unknown?][]).map(([m, p, b]) => http(m, p, U, b).then((x) => [`${m} ${p}`, x] as const)));
   const bad = userRes.filter(([, x]) => x.status !== 403 || x.body?.code !== 'auth.admin_only');
@@ -73,37 +73,42 @@ try {
   check('admin GET lists the current rows (sorted by name)', r.status === 200 && r.body.apps.length === saved.length
     && r.body.apps.map((a: any) => a.name).join() === [...saved].map((a) => a.name).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join(), r.text.slice(0, 300));
   const pkgA = `com.reqchk${tag}.alpha`; const pkgB = `com.reqchk${tag}.beta`;
-  r = await http('POST', '/api/library/required', T, { package: ` ${pkgA} `, name: ' Alpha ', bitbrowserAppId: '123' });
+  r = await http('POST', '/api/library/required', T, { sourceType: 'bitbrowser', package: ` ${pkgA} `, name: ' Alpha ', storeAppId: '123' });
   const A = r.body?.app;
-  check('POST → 201, trimmed fields', r.status === 201 && A?.package === pkgA && A.name === 'Alpha' && A.bitbrowserAppId === '123' && !!A.id, r.text);
-  r = await http('POST', '/api/library/required', T, { package: pkgB, name: 'Beta', bitbrowserAppId: '456' });
+  check('POST → 201, trimmed fields', r.status === 201 && A?.package === pkgA && A.name === 'Alpha' && A.storeAppId === '123' && !!A.id, r.text);
+  r = await http('POST', '/api/library/required', T, { sourceType: 'bitbrowser', package: pkgB, name: 'Beta', storeAppId: '456' });
   const B = r.body?.app;
   check('second POST → 201', r.status === 201 && B?.package === pkgB, r.text);
+  r = await http('GET', '/api/library/required', T);
+  check('GET lists sourceTypes (source types with an app store) = [bitbrowser], rows carry sourceType',
+    r.status === 200 && JSON.stringify(r.body.sourceTypes) === '["bitbrowser"]' && r.body.apps.every((x: any) => x.sourceType === 'bitbrowser'), JSON.stringify(r.body.sourceTypes));
 
   // ---------------------------------------------------------------- validation
   const invalid = await Promise.all([
-    { package: 'no spaces allowed', name: 'x', bitbrowserAppId: '1' },
-    { package: 'ab', name: 'x', bitbrowserAppId: '1' },
-    { package: 'com.x/evil', name: 'x', bitbrowserAppId: '1' },
-    { package: `com.reqchk${tag}.c`, name: 'x', bitbrowserAppId: '12a' },
-    { package: `com.reqchk${tag}.c`, name: 'x', bitbrowserAppId: '' },
-    { package: `com.reqchk${tag}.c`, name: '', bitbrowserAppId: '1' },
-    { package: `com.reqchk${tag}.c`, bitbrowserAppId: '1' },
-    { package: `com.reqchk${tag}.c`, name: 'x', bitbrowserAppId: '1', extra: true },
+    { sourceType: 'bitbrowser', package: 'no spaces allowed', name: 'x', storeAppId: '1' },
+    { sourceType: 'bitbrowser', package: 'ab', name: 'x', storeAppId: '1' },
+    { sourceType: 'bitbrowser', package: 'com.x/evil', name: 'x', storeAppId: '1' },
+    { sourceType: 'bitbrowser', package: `com.reqchk${tag}.c`, name: 'x', storeAppId: '12a' },
+    { sourceType: 'bitbrowser', package: `com.reqchk${tag}.c`, name: 'x', storeAppId: '' },
+    { sourceType: 'bitbrowser', package: `com.reqchk${tag}.c`, name: '', storeAppId: '1' },
+    { sourceType: 'bitbrowser', package: `com.reqchk${tag}.c`, storeAppId: '1' },
+    { sourceType: 'bitbrowser', package: `com.reqchk${tag}.c`, name: 'x', storeAppId: '1', extra: true },
+    { package: `com.reqchk${tag}.c`, name: 'x', storeAppId: '1' },
+    { sourceType: 'nosuchvendor', package: `com.reqchk${tag}.c`, name: 'x', storeAppId: '1' },
   ].map((b) => http('POST', '/api/library/required', T, b)));
   check('bad package / non-digit or empty app id / empty or missing name / extra field → 400', invalid.every((x) => x.status === 400), invalid.map((x) => x.status).join(','));
-  r = await http('POST', '/api/library/required', T, { package: pkgA, name: 'Dup', bitbrowserAppId: '9' });
+  r = await http('POST', '/api/library/required', T, { sourceType: 'bitbrowser', package: pkgA, name: 'Dup', storeAppId: '9' });
   check('duplicate package → 409 library.required_taken', r.status === 409 && r.body?.code === 'library.required_taken', r.text);
   check('refused writes left only the two new rows', (await db.select().from(R)).length === saved.length + 2);
 
   // ---------------------------------------------------------------- update / delete
-  r = await http('PUT', `/api/library/required/${B.id}`, T, { package: pkgB, name: 'Beta 2', bitbrowserAppId: '789' });
-  check('PUT → 200 with the new values', r.status === 200 && r.body.app.name === 'Beta 2' && r.body.app.bitbrowserAppId === '789', r.text);
-  r = await http('PUT', `/api/library/required/${B.id}`, T, { package: pkgA, name: 'Beta', bitbrowserAppId: '789' });
+  r = await http('PUT', `/api/library/required/${B.id}`, T, { sourceType: 'bitbrowser', package: pkgB, name: 'Beta 2', storeAppId: '789' });
+  check('PUT → 200 with the new values', r.status === 200 && r.body.app.name === 'Beta 2' && r.body.app.storeAppId === '789', r.text);
+  r = await http('PUT', `/api/library/required/${B.id}`, T, { sourceType: 'bitbrowser', package: pkgA, name: 'Beta', storeAppId: '789' });
   check('PUT onto another row\'s package → 409 library.required_taken', r.status === 409 && r.body?.code === 'library.required_taken', r.text);
-  r = await http('PUT', `/api/library/required/${randomUUID()}`, T, { package: `com.reqchk${tag}.z`, name: 'Z', bitbrowserAppId: '1' });
+  r = await http('PUT', `/api/library/required/${randomUUID()}`, T, { sourceType: 'bitbrowser', package: `com.reqchk${tag}.z`, name: 'Z', storeAppId: '1' });
   check('PUT unknown id → 404 library.required_not_found', r.status === 404 && r.body?.code === 'library.required_not_found', r.text);
-  r = await http('PUT', `/api/library/required/${B.id}`, T, { package: pkgB, name: 'Beta', bitbrowserAppId: 'x1' });
+  r = await http('PUT', `/api/library/required/${B.id}`, T, { sourceType: 'bitbrowser', package: pkgB, name: 'Beta', storeAppId: 'x1' });
   check('PUT with a non-digit app id → 400', r.status === 400);
   r = await http('DELETE', `/api/library/required/${randomUUID()}`, T);
   check('DELETE unknown id → 404 library.required_not_found', r.status === 404 && r.body?.code === 'library.required_not_found', r.text);
@@ -129,7 +134,7 @@ try {
   check('no required apps: running phone → 202 with taskIds [] (nothing to check), stopped one skipped', r.status === 202 && r.body.taskIds.length === 0 && r.body.skipped === 1 && none.length === 0, r.text);
   // the list back + the test row (restored exactly at the end anyway)
   if (saved.length) await db.insert(R).values(saved);
-  const [A2] = await db.insert(R).values({ package: pkgA, name: 'Alpha', bitbrowserAppId: '123' }).onConflictDoNothing().returning();
+  const [A2] = await db.insert(R).values({ sourceType: 'bitbrowser', package: pkgA, name: 'Alpha', storeAppId: '123' }).onConflictDoNothing().returning();
   void A2;
 
   // an unfinished check of the phone (DB fixture) is returned instead of a second task
@@ -182,7 +187,7 @@ try {
     if (saved.length) await tx.insert(R).values(saved);
   });
   const after = await db.select().from(R);
-  const key = (rows: typeof saved) => JSON.stringify(rows.map((x) => [x.id, x.package, x.name, x.bitbrowserAppId]).sort());
+  const key = (rows: typeof saved) => JSON.stringify(rows.map((x) => [x.id, x.package, x.name, x.storeAppId]).sort());
   check('cleanup: required_apps restored to its previous rows', key(after) === key(saved), `${key(after)} vs ${key(saved)}`);
   await sqlClient.end();
   const failed = results.filter(([, ok]) => !ok).length;
