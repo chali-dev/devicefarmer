@@ -3,7 +3,7 @@ import type { Messages } from './zh-CN'
 /** English UI messages; typed as Messages so the key set must equal zh-CN's exactly. */
 const en: Messages = {
   app: {
-    title: 'Cloud Phone Platform',
+    title: 'Social Media Management Platform',
   },
   common: {
     required: 'Please fill in the required fields',
