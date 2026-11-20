@@ -327,10 +327,11 @@ const wantedLangs = computed(() => {
   const fromTargets = [...new Set(targetAccounts.value.flatMap((a) => (a.lang ? [a.lang] : [])))]
   return (form.targets.length ? fromTargets : editorLangs.value).filter((l) => l !== sourceLang.value)
 })
-const emptyTr = (f: TrForm) => !f.title.trim() && !Object.values(f.texts).some((x) => x.trim()) && !Object.values(cleanHints(f.hints)).length
+const hasText = (texts: Record<string, string>) => Object.values(texts).some((x) => x.trim())
+const emptyTr = (f: TrForm) => !f.title.trim() && !hasText(f.texts) && !Object.values(cleanHints(f.hints)).length
 /** 已填 = some text (the title is optional: Instagram publishes none); otherwise 缺少译文 (that language then uses the Chinese original). */
-const trFilled = (f: TrForm) => Object.values(f.texts).some((x) => x.trim())
-const sourceFilled = () => Object.values(form.texts).some((x) => x.trim())
+const trFilled = (f: TrForm) => hasText(f.texts)
+const sourceFilled = () => hasText(form.texts)
 const isSaved = (lang: string) => lang in trOrig.value
 function syncLangs() {
   const want = wantedLangs.value

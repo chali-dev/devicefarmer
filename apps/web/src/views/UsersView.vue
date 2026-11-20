@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { fmtDateTime } from '../i18n'
 import { PlusOutlined } from '@ant-design/icons-vue'
-import { message } from 'ant-design-vue'
+import { message, type FormInstance } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
 import type { CustomRole, ManagedUser, Role } from '../api/types'
 import PageContainer from '../components/common/PageContainer.vue'
+import ProfileFields from '../components/common/ProfileFields.vue'
 import { actionColumn, confirmAction, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 
@@ -90,21 +91,16 @@ function remove(u: ManagedUser) {
 const createOpen = ref(false)
 const creating = ref(false)
 const form = reactive({ username: '', password: '', role: 'user' as RoleKey, displayName: '', email: '' })
-/** 显示名称 ≤ 40, 邮箱 format (the API checks the same; '' clears). Returns the error text or null. */
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const profileError = (f: { displayName: string; email: string }) => (f.displayName.trim().length > 40 ? t('profile.max40')
-  : f.email.trim() && !EMAIL.test(f.email.trim()) ? t('profile.badEmail') : null)
+const createFormRef = ref<FormInstance>()
+/** 显示名称 / 邮箱 trimmed ('' clears, also on create). */
+const profileBody = (f: { displayName: string; email: string }) => ({ displayName: f.displayName.trim(), email: f.email.trim() })
 async function create() {
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(form.username)) return message.error(t('users.badUsername'))
   if (form.password.length < 8) return message.error(t('users.initialPasswordShort'))
-  const bad = profileError(form)
-  if (bad) return message.error(bad)
+  try { await createFormRef.value?.validate() } catch { return }
   creating.value = true
   try {
-    await api('POST', '/api/users', {
-      username: form.username, password: form.password, ...roleBody(form.role),
-      ...(form.displayName.trim() ? { displayName: form.displayName.trim() } : {}), ...(form.email.trim() ? { email: form.email.trim() } : {}),
-    })
+    await api('POST', '/api/users', { username: form.username, password: form.password, ...roleBody(form.role), ...profileBody(form) })
     message.success(t('common.created'))
     createOpen.value = false
     Object.assign(form, { username: '', password: '', role: 'user', displayName: '', email: '' })
@@ -119,16 +115,16 @@ async function create() {
  */
 const infoUser = ref<ManagedUser | null>(null)
 const info = reactive({ displayName: '', email: '', role: 'user' as RoleKey })
+const infoFormRef = ref<FormInstance>()
 function openInfo(u: ManagedUser) { infoUser.value = u; Object.assign(info, { displayName: u.displayName ?? '', email: u.email ?? '', role: roleKey(u) }) }
-function saveInfo() {
+async function saveInfo() {
   const u = infoUser.value
   if (!u) return
-  const bad = profileError(info)
-  if (bad) return message.error(bad)
+  try { await infoFormRef.value?.validate() } catch { return }
   const k = info.role
   const roleChanged = k !== roleKey(u)
   const run = async () => {
-    if (await patch(u, { displayName: info.displayName.trim(), email: info.email.trim(), ...(roleChanged ? roleBody(k) : {}) })) infoUser.value = null
+    if (await patch(u, { ...profileBody(info), ...(roleChanged ? roleBody(k) : {}) })) infoUser.value = null
   }
   if (!roleChanged) return run()
   confirmAction({
@@ -207,7 +203,7 @@ async function savePw() {
     v-model:open="createOpen" :title="t('users.newUser')" :width="MODAL_WIDTH.sm" :ok-text="t('common.create')" :cancel-text="t('common.cancel')"
     :confirm-loading="creating" @ok="create"
   >
-    <a-form layout="vertical">
+    <a-form ref="createFormRef" :model="form" layout="vertical">
       <a-form-item :label="t('common.username')" required>
         <a-input v-model:value="form.username" autocomplete="off" :placeholder="t('users.usernameHint')" />
       </a-form-item>
@@ -217,12 +213,7 @@ async function savePw() {
       <a-form-item :label="t('common.role')" :extra="roleHelp(form.role)">
         <a-select v-model:value="form.role" :options="roleOptions" />
       </a-form-item>
-      <a-form-item :label="t('profile.displayName')">
-        <a-input v-model:value="form.displayName" :maxlength="40" :placeholder="t('profile.displayNamePlaceholder')" />
-      </a-form-item>
-      <a-form-item :label="t('profile.email')">
-        <a-input v-model:value="form.email" :maxlength="254" autocomplete="off" />
-      </a-form-item>
+      <ProfileFields :model="form" />
     </a-form>
   </a-modal>
 
@@ -230,13 +221,8 @@ async function savePw() {
     :open="!!infoUser" :title="t('users.editTitle', { name: infoUser?.username ?? '' })" :width="MODAL_WIDTH.sm"
     :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="saveInfo" @cancel="infoUser = null"
   >
-    <a-form layout="vertical">
-      <a-form-item :label="t('profile.displayName')">
-        <a-input v-model:value="info.displayName" :maxlength="40" :placeholder="t('profile.displayNamePlaceholder')" />
-      </a-form-item>
-      <a-form-item :label="t('profile.email')">
-        <a-input v-model:value="info.email" :maxlength="254" autocomplete="off" />
-      </a-form-item>
+    <a-form ref="infoFormRef" :model="info" layout="vertical">
+      <ProfileFields :model="info" />
       <a-form-item :label="t('common.role')" :extra="infoUser && lockReason(infoUser) ? lockReason(infoUser) : roleHelp(info.role)">
         <a-select v-model:value="info.role" :options="roleOptions" :disabled="!!(infoUser && lockReason(infoUser))" />
       </a-form-item>

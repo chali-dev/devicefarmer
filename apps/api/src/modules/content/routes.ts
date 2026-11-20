@@ -14,7 +14,7 @@ import {
   toContentItems, visibleContent,
 } from './content.js';
 import { assertCategoryFor } from './categories.js';
-import { configuredLanguages, Lang, publicTranslation, SOURCE_LANG, translationsOf } from './languages.js';
+import { configuredLanguages, hasText, hintTexts, Lang, publicTranslation, SOURCE_LANG, translationsOf } from './languages.js';
 
 const c = schema.contents;
 const Id = z.object({ id: z.string().uuid() });
@@ -39,7 +39,7 @@ const TextHints = z.object({
  * empty = the content's 内部名称), but a translation must carry some text.
  */
 const TranslationBody = z.object({ title: z.string().trim().max(200).default(''), body: z.string().max(5000).optional(), platformHints: TextHints.optional() })
-  .refine((b) => Boolean(b.title || b.body?.trim() || hintTexts(b.platformHints).some((x) => x.trim())), { message: 'translation is empty' });
+  .refine((b) => Boolean(b.title) || hasText(b), { message: 'translation is empty' });
 const LangParams = z.object({ id: z.string().uuid(), lang: Lang });
 const ct = schema.contentTranslations;
 
@@ -66,10 +66,6 @@ const Editable = {
   stage: z.enum(['draft', 'ready', 'archived']).optional(),
 };
 const CreateBody = z.object({ ...Editable, ownerId: z.string().uuid().optional() });
-
-/** Text values of platform hints (titles, descriptions, captions; not options such as privacy). */
-const hintTexts = (h: ContentPlatformHints | undefined) =>
-  Object.values(h ?? {}).flatMap((v) => Object.entries(v ?? {}).flatMap(([k, x]) => (k !== 'privacy' && typeof x === 'string' ? [x] : [])));
 
 /**
  * 人设禁用词 (persona.banned_word): the personas of the content = its target accounts' 账号人设 (+ the persona of an AI

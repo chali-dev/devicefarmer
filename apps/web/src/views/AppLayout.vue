@@ -10,6 +10,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
 import NotificationBell from '../components/notify/NotificationBell.vue'
+import ProfileFields from '../components/common/ProfileFields.vue'
 import VisitedPages from '../components/common/VisitedPages.vue'
 import { roleText } from '../api/types'
 import { LOCALES, locale, setLocale, type Locale } from '../i18n'
@@ -78,10 +79,6 @@ const profileOpen = ref(false)
 const profileSaving = ref(false)
 const profileFormRef = ref<FormInstance>()
 const profileForm = reactive({ displayName: '', email: '' })
-const profileRules = computed<Record<string, Rule[]>>(() => ({
-  displayName: [{ max: 40, message: t('profile.max40') }],
-  email: [{ type: 'email', message: t('profile.badEmail'), trigger: 'blur' }],
-}))
 function openProfile() {
   profileForm.displayName = auth.user?.displayName ?? ''
   profileForm.email = auth.user?.email ?? ''
@@ -236,15 +233,10 @@ async function savePassword() {
   </a-layout>
 
   <a-modal v-model:open="profileOpen" :title="t('header.profile')" :ok-text="t('common.save')" :cancel-text="t('common.cancel')" :confirm-loading="profileSaving" @ok="saveProfile">
-    <a-form ref="profileFormRef" :model="profileForm" :rules="profileRules" layout="vertical">
+    <a-form ref="profileFormRef" :model="profileForm" layout="vertical">
       <a-form-item :label="t('common.username')"><a-input :value="auth.user?.username" disabled /></a-form-item>
       <a-form-item :label="t('common.role')">{{ auth.user ? roleText(auth.user.role) : '' }}</a-form-item>
-      <a-form-item :label="t('profile.displayName')" name="displayName">
-        <a-input v-model:value="profileForm.displayName" :maxlength="40" :placeholder="t('profile.displayNamePlaceholder')" autocomplete="nickname" />
-      </a-form-item>
-      <a-form-item :label="t('profile.email')" name="email">
-        <a-input v-model:value="profileForm.email" :placeholder="t('common.optional')" autocomplete="email" />
-      </a-form-item>
+      <ProfileFields :model="profileForm" />
     </a-form>
   </a-modal>
 

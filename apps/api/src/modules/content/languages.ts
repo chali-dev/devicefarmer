@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import type { Content, ContentTranslation, SocialAccount } from '../../db/schema.js';
+import type { Content, ContentPlatformHints, ContentTranslation, SocialAccount } from '../../db/schema.js';
 
 /**
  * 多语言内容 (simplified 2026-11-18, owner: 「社交号要能绑定语言；发文内容使用社交媒体配置语言，编辑器支持中文和配置的语系」):
@@ -12,6 +12,14 @@ import type { Content, ContentTranslation, SocialAccount } from '../../db/schema
  *   account's language, else the source text (`textsForAccount`).
  */
 export const SOURCE_LANG = 'zh-CN';
+
+/** Text values of platform hints (titles, descriptions, captions; not options such as privacy). */
+export const hintTexts = (h: ContentPlatformHints | undefined | null) =>
+  Object.values(h ?? {}).flatMap((v) => Object.entries(v ?? {}).flatMap(([k, x]) => (k !== 'privacy' && typeof x === 'string' ? [x] : [])));
+
+/** A content or translation with any text: its body or a platform text (the title doesn't count). */
+export const hasText = (x: { body?: string | null; platformHints?: ContentPlatformHints | null }) =>
+  [x.body ?? '', ...hintTexts(x.platformHints)].some((v) => v.trim());
 
 /** BCP-47 tag, canonicalised (zh-cn → zh-CN, EN → en). */
 export const Lang = z.string().trim().min(2).max(35).regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/, 'invalid language code')
