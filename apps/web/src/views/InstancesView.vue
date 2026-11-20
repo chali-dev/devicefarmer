@@ -339,7 +339,10 @@ async function submitCreate() {
 
 // ---- external phones (device sources) in the same create dialog: nothing is powered on here
 type DeviceKind = 'local' | DeviceSource['type']
-const kind = ref<DeviceKind>('local')
+// Local Android containers (redroid) are hidden from the create dialog for now (owner 2026-11-20): only external
+// phones are added. Existing local devices still show and work; flip to true to offer redroid again.
+const LOCAL_DEVICES_ENABLED = false
+const kind = ref<DeviceKind>(LOCAL_DEVICES_ENABLED ? 'local' : 'bitbrowser')
 const sources = ref<DeviceSource[]>([])
 const sourceId = ref<string | undefined>()
 const kindSources = computed(() => sources.value.filter((s) => s.type === kind.value))
@@ -367,6 +370,7 @@ async function loadPhones() {
   finally { phonesLoading.value = false }
 }
 watch(kind, (k) => { if (k !== 'local') void loadSources() })
+watch(createOpen, (open) => { if (open && kind.value !== 'local') void loadSources() })
 watch(sourceId, () => void loadPhones())
 
 // source editor: BitBrowser = the client's local API address (host + port), optional Local API Token
@@ -673,7 +677,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
 
   <a-modal v-model:open="createOpen" :title="t('devices.createDevice')" :width="MODAL_WIDTH.lg">
     <a-form layout="vertical">
-      <a-form-item :label="t('devices.ext.kind')">
+      <a-form-item v-if="LOCAL_DEVICES_ENABLED" :label="t('devices.ext.kind')">
         <a-radio-group v-model:value="kind" button-style="solid">
           <a-radio-button value="local">{{ t('devices.ext.kinds.local') }}</a-radio-button>
           <a-radio-button value="bitbrowser">{{ t('devices.ext.kinds.bitbrowser') }}</a-radio-button>

@@ -22,6 +22,10 @@ on:
         type: choice
         options: ["1", "2"]
         default: "1"
+      skip_tests:
+        description: Deploy only - skip the test job (typecheck + integration checks, ~10 min). For urgent fixes only.
+        type: boolean
+        default: false
       environment:
         description: GitHub Environment (holds the server secrets and the required reviewers)
         type: environment
@@ -67,11 +71,11 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
   # Typecheck + the integration checks that need no phone (apps/api/scripts/ci-checks.sh): the real API against
-  # real Postgres / Redis / Docker / an empty adb server, no STF, no redroid, no phones. A failure stops the run
-  # before any image is built or anything is deployed.
+  # real Postgres / Redis / Docker / an empty adb server, no STF, no redroid, no phones. Runs in parallel with
+  # build; deploy waits for both, so a failure means nothing is deployed (the pushed images are just unused).
   test:
     needs: prepare
-    if: inputs.action == 'deploy'
+    if: inputs.action == 'deploy' && !inputs.skip_tests
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -151,7 +155,7 @@ jobs:
           retention-days: 7
 
   build:
-    needs: [prepare, test]
+    needs: prepare
     if: inputs.action == 'deploy'
     runs-on: ubuntu-24.04
     permissions:
@@ -215,9 +219,9 @@ jobs:
 
   deploy:
     needs: [prepare, test, build]
-    # test + build are skipped for a rollback; a deploy needs both to have succeeded (a skipped build after a
-    # failed test must never deploy)
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (inputs.action == 'rollback' || (needs.test.result == 'success' && needs.build.result == 'success')) }}
+    # test + build are skipped for a rollback; a deploy needs build to have succeeded and test to have succeeded
+    # (or to have been skipped on purpose with skip_tests)
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (inputs.action == 'rollback' || (needs.build.result == 'success' && (needs.test.result == 'success' || (inputs.skip_tests && needs.test.result == 'skipped')))) }}
     runs-on: ubuntu-24.04
     environment: ${{ inputs.environment }}
     permissions:
