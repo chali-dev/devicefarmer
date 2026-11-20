@@ -9,6 +9,7 @@
 
 cloudphone.test {
 	tls /certs/cloudphone.test.pem /certs/cloudphone.test-key.pem
+	header X-Robots-Tag "noindex, nofollow, noarchive"
 	reverse_proxy host.docker.internal:5173
 }
 
