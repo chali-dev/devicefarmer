@@ -1,4 +1,4 @@
-# 云手机管理平台（MVP）
+# 自媒体管理平台（MVP）
 
 Node.js + TypeScript 控制平面，管理运行在 Linux 宿主上的 redroid Android 容器，复用 DeviceFarmer STF 的设备管理与远程控制能力。
 
