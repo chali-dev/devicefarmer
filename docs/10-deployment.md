@@ -85,7 +85,7 @@ GitHub → Actions → **Deploy** → Run workflow：
 
 - “Use workflow from” 选分支（就是要部署的代码）。
 - `action=deploy`，`version` 可留空（自动 `YYYYMMDD-HHMM-<短 sha>`），只允许字母数字和 `. _ -`；已存在的版本号会被拒绝（保证回滚拿到的就是当时部署的镜像）。
-- 流程：typecheck → 构建并推送两个镜像（buildx + gha 缓存）→（审批）→ SSH 复制 `deploy/` → `deploy.sh <version>` → Job Summary 显示结果和 `status.sh`。
+- 流程：**test**（typecheck + `apps/api/scripts/ci-checks.sh`：Postgres/Redis 服务容器、真实 API、39 个不需要手机的集成检查，约 10 分钟；失败就不构建、不部署，日志作为 artifact `ci-check-logs` 保留 7 天）→ 构建并推送两个镜像（buildx + gha 缓存）→（审批）→ SSH 复制 `deploy/` → `deploy.sh <version>` → Job Summary 显示结果和 `status.sh`。
 - `action=rollback`，`rollback_steps=1|2`：不构建，SSH 执行 `rollback.sh <steps>`。
 
 服务器上也可以直接执行：

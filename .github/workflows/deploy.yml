@@ -66,8 +66,92 @@ jobs:
             echo "web_image=ghcr.io/${repo}-web"
           } >>"$GITHUB_OUTPUT"
 
-  build:
+  # Typecheck + the integration checks that need no phone (apps/api/scripts/ci-checks.sh): the real API against
+  # real Postgres / Redis / Docker / an empty adb server, no STF, no redroid, no phones. A failure stops the run
+  # before any image is built or anything is deployed.
+  test:
     needs: prepare
+    if: inputs.action == 'deploy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.23   # same major as production (deploy/compose.shared.yml)
+        env:
+          POSTGRES_USER: cloudphone
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cloudphone" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4.12-alpine3.22
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Tools (ffmpeg, adb server)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          pkgs="ffmpeg"; command -v adb >/dev/null || [ -x "${ANDROID_HOME:-/nonexistent}/platform-tools/adb" ] || pkgs="$pkgs adb"
+          sudo apt-get install -y -qq $pkgs >/dev/null
+          ADB=$(command -v adb || echo "$ANDROID_HOME/platform-tools/adb")
+          "$ADB" start-server
+          ffmpeg -version | head -1; "$ADB" version | head -1
+      - name: Environment for the test API
+        run: |
+          set -euo pipefail
+          d=$RUNNER_TEMP/cp; mkdir -p "$d"/{logs,assets,uploads,library,instances,out}
+          cat >"$RUNNER_TEMP/ci.env" <<EOF
+          NODE_ENV=development
+          API_PORT=3170
+          E2E_API=http://127.0.0.1:3170
+          DATABASE_URL=postgres://cloudphone:ci-only-password@127.0.0.1:5432/ci
+          REDIS_URL=redis://127.0.0.1:6379/7
+          JWT_SECRET=$(openssl rand -hex 32)
+          ADMIN_USERNAME=admin
+          ADMIN_PASSWORD=$(openssl rand -hex 12)
+          STF_URL=http://127.0.0.1:1
+          STF_WS_URL=http://127.0.0.1:1
+          STF_ADB_HOST=127.0.0.1
+          STF_ADB_PORT=5037
+          STF_SERVICE_EMAIL=svc-cloudphone@cloudphone.local
+          BACKGROUND_WORK=always
+          LOG_DIR=$d/logs
+          ASSET_DIR=$d/assets
+          UPLOAD_DIR=$d/uploads
+          LIBRARY_DIR=$d/library
+          INSTANCE_DATA_ROOT=$d/instances
+          PG_DUMP_CMD=docker run --rm -i --network host -e PGPASSWORD postgres:17.11-alpine3.23 pg_dump
+          EOF
+          sed -i 's/^ *//' "$RUNNER_TEMP/ci.env"
+          docker pull -q postgres:17.11-alpine3.23 >/dev/null && docker pull -q alpine:3.22 >/dev/null
+      - name: Integration checks (no phone)
+        working-directory: apps/api
+        env:
+          CI_ENV_FILE: ${{ runner.temp }}/ci.env
+          CI_OUT_DIR: ${{ runner.temp }}/cp/out
+        run: scripts/ci-checks.sh
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-check-logs
+          path: ${{ runner.temp }}/cp/out
+          retention-days: 7
+
+  build:
+    needs: [prepare, test]
     if: inputs.action == 'deploy'
     runs-on: ubuntu-24.04
     permissions:
@@ -79,12 +163,6 @@ jobs:
       WEB_IMAGE: ${{ needs.prepare.outputs.web_image }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci --no-audit --no-fund
-      - run: npm run typecheck
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -136,9 +214,10 @@ jobs:
           cache-to: type=gha,scope=web,mode=max
 
   deploy:
-    needs: [prepare, build]
-    # build is skipped for a rollback
-    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    needs: [prepare, test, build]
+    # test + build are skipped for a rollback; a deploy needs both to have succeeded (a skipped build after a
+    # failed test must never deploy)
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (inputs.action == 'rollback' || (needs.test.result == 'success' && needs.build.result == 'success')) }}
     runs-on: ubuntu-24.04
     environment: ${{ inputs.environment }}
     permissions:
