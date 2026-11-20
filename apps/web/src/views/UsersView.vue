@@ -57,7 +57,7 @@ const columns = computed(() => [
   { title: t('common.role'), key: 'role', width: 140 },
   { title: t('users.enabled'), key: 'enabled', width: 80 },
   { title: t('users.createdAt'), key: 'createdAt', width: 180 },
-  actionColumn(370),
+  actionColumn(220),
 ])
 
 /** Why the dangerous controls of a row are locked (null = editable). */
@@ -74,14 +74,6 @@ async function patch(u: ManagedUser, body: Partial<{ role: Role; roleId: string 
   finally { await load() }
 }
 
-function changeRole(u: ManagedUser, k: RoleKey) {
-  if (k === roleKey(u)) return
-  confirmAction({
-    title: t('users.confirmRole', { name: u.username, role: roleLabel(k) }),
-    content: k === 'admin' ? t('users.toAdmin') : u.role === 'admin' ? t('users.toUser') : k === 'user' ? undefined : t('users.toCustom'),
-    onOk: () => patch(u, roleBody(k)),
-  })
-}
 
 function remove(u: ManagedUser) {
   confirmDanger({
@@ -121,15 +113,29 @@ async function create() {
   finally { creating.value = false }
 }
 
-// 编辑资料: 显示名称 / 邮箱 of any user (also the builtin admin)
+/**
+ * 编辑: 显示名称 / 邮箱 of any user (also the builtin admin) + the role (locked for the builtin admin and oneself).
+ * A role change is confirmed first (its consequences: menus, accounts moving on a demotion), then one PATCH saves all.
+ */
 const infoUser = ref<ManagedUser | null>(null)
-const info = reactive({ displayName: '', email: '' })
-function openInfo(u: ManagedUser) { infoUser.value = u; Object.assign(info, { displayName: u.displayName ?? '', email: u.email ?? '' }) }
-async function saveInfo() {
-  if (!infoUser.value) return
+const info = reactive({ displayName: '', email: '', role: 'user' as RoleKey })
+function openInfo(u: ManagedUser) { infoUser.value = u; Object.assign(info, { displayName: u.displayName ?? '', email: u.email ?? '', role: roleKey(u) }) }
+function saveInfo() {
+  const u = infoUser.value
+  if (!u) return
   const bad = profileError(info)
   if (bad) return message.error(bad)
-  if (await patch(infoUser.value, { displayName: info.displayName.trim(), email: info.email.trim() })) infoUser.value = null
+  const k = info.role
+  const roleChanged = k !== roleKey(u)
+  const run = async () => {
+    if (await patch(u, { displayName: info.displayName.trim(), email: info.email.trim(), ...(roleChanged ? roleBody(k) : {}) })) infoUser.value = null
+  }
+  if (!roleChanged) return run()
+  confirmAction({
+    title: t('users.confirmRole', { name: u.username, role: roleLabel(k) }),
+    content: k === 'admin' ? t('users.toAdmin') : u.role === 'admin' ? t('users.toUser') : k === 'user' ? undefined : t('users.toCustom'),
+    onOk: run,
+  })
 }
 
 // password reset
@@ -184,12 +190,6 @@ async function savePw() {
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="openInfo(record as ManagedUser)">{{ t('common.edit') }}</a-button>
-              <a-tooltip :title="lockReason(record)">
-                <a-select
-                  :value="roleKey(record as ManagedUser)" size="small" style="width: 136px; margin-inline-end: 4px" :disabled="!!lockReason(record)"
-                  :aria-label="t('common.role')" :options="roleOptions" @change="(v: any) => changeRole(record as ManagedUser, v)"
-                />
-              </a-tooltip>
               <a-tooltip :title="record.builtin ? builtinTip() : null">
                 <a-button type="link" size="small" :disabled="record.builtin" @click="pwUser = record; newPw = ''">{{ t('users.resetPassword') }}</a-button>
               </a-tooltip>
@@ -236,6 +236,9 @@ async function savePw() {
       </a-form-item>
       <a-form-item :label="t('profile.email')">
         <a-input v-model:value="info.email" :maxlength="254" autocomplete="off" />
+      </a-form-item>
+      <a-form-item :label="t('common.role')" :extra="infoUser && lockReason(infoUser) ? lockReason(infoUser) : roleHelp(info.role)">
+        <a-select v-model:value="info.role" :options="roleOptions" :disabled="!!(infoUser && lockReason(infoUser))" />
       </a-form-item>
     </a-form>
   </a-modal>

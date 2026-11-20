@@ -146,7 +146,7 @@ The API is the only thing browsers talk to. It enforces RBAC and relays STF; STF
   仪表板 stays on top. The admin part (owner's spec of 2026-11-18, replacing the single 系统管理 group) is three groups:
   | 组 | 菜单 | 内容 |
   |---|---|---|
-  | 账号管理 | 用户管理 `/users` · 操作日志 `/audit` · 权限管理 `/permissions` | users (role select 管理员 / 普通用户 / custom roles, role tag + filter; 编辑 = 显示名称 / 邮箱 of any user via `PATCH /api/users/:id {displayName, email}` ('' clears, same rules as 个人资料, audited as flags only), also on 新建用户); audit log; 角色菜单权限 (`views/PermissionsView.vue`, table menu × 管理员 (fixed) / 普通用户 / each 自定义角色, 新增角色, column menu 编辑 / 删除, one 保存 for every changed column, fixed rows greyed) |
+  | 账号管理 | 用户管理 `/users` · 操作日志 `/audit` · 权限管理 `/permissions` | users (role tag + filter; row action 编辑 = 显示名称 / 邮箱 + role 管理员 / 普通用户 / custom roles (role locked for the builtin admin and oneself, a role change confirmed first, one PATCH) of any user via `PATCH /api/users/:id {displayName, email}` ('' clears, same rules as 个人资料, audited as flags only), also on 新建用户); audit log; 角色菜单权限 (`views/PermissionsView.vue`, table menu × 管理员 (fixed) / 普通用户 / each 自定义角色, 新增角色, column menu 编辑 / 删除, one 保存 for every changed column, fixed rows greyed) |
   | 风控管理 | 风控记录 `/risk-events` · 风控配置 `/risk` · 告警通道 `/alert-channels` | 风控记录 page (`RiskEvents.vue`); 风控配置 tabs (see 风控); 告警通道 tabs `?tab=channels` (TG bot channels) / `rules` (配置告警类型 = `AlertSettings.vue`, `/api/settings/alerts`) |
   | 系统配置 | 系统日志 `/logs` · 系统配置 `/settings` · 任务中心 `/tasks` | 系统日志 tabs `?tab=system` (API logs) / `devices` (设备日志, aggregated); 系统配置 tabs (see Dashboard + Settings); task centre (users keep it by default, so for them the group shows 任务中心 only) |
 
