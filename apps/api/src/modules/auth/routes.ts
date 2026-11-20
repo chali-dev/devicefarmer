@@ -30,6 +30,9 @@ const DUMMY_HASH = bcrypt.hashSync(randomBytes(16).toString('hex'), 10);
 
 // '' (after trimming) clears the field.
 const emptyToNull = (v: string) => (v === '' ? null : v);
+/** 显示名称 / 邮箱: '' clears. Shared by 个人资料 (PATCH /api/auth/me) and the admin's 用户管理 (users/routes.ts). */
+export const DisplayName = z.string().trim().max(40).transform(emptyToNull);
+export const Email = z.union([z.literal(''), z.string().trim().max(254).pipe(z.email())]).transform(emptyToNull);
 
 export const authRoutes: FastifyPluginAsyncZod = async (app) => {
   // Slider puzzle captcha (captcha.ts). Unauthenticated; `{ enabled: false }` when LOGIN_CAPTCHA=off.
@@ -90,8 +93,8 @@ export const authRoutes: FastifyPluginAsyncZod = async (app) => {
     preHandler: app.authenticate,
     schema: {
       body: z.object({
-        displayName: z.string().trim().max(40).transform(emptyToNull).optional(),
-        email: z.union([z.literal(''), z.string().trim().max(254).pipe(z.email())]).transform(emptyToNull).optional(),
+        displayName: DisplayName.optional(),
+        email: Email.optional(),
       }),
     },
   }, async (req) => {

@@ -124,7 +124,10 @@ export const ACTIONS: Record<string, ActionSpec> = {
   },
   'PATCH /api/users/:id': {
     action: 'user.update',
-    detail: ({ body }) => ({ role: body.role, roleId: body.roleId, disabled: body.disabled, pwReset: body.password !== undefined ? true : undefined }),
+    detail: ({ body }) => ({
+      role: body.role, roleId: body.roleId, disabled: body.disabled, pwReset: body.password !== undefined ? true : undefined,
+      displayName: body.displayName !== undefined ? true : undefined, email: body.email !== undefined ? true : undefined,
+    }),
   },
   // 自定义角色 (auth/roles.ts)
   'POST /api/roles': { action: 'role.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ name: body.name, menus: body.menus ?? [] }) },

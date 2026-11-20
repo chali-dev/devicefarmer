@@ -57,13 +57,13 @@ const columns = computed(() => [
   { title: t('common.role'), key: 'role', width: 140 },
   { title: t('users.enabled'), key: 'enabled', width: 80 },
   { title: t('users.createdAt'), key: 'createdAt', width: 180 },
-  actionColumn(320),
+  actionColumn(370),
 ])
 
 /** Why the dangerous controls of a row are locked (null = editable). */
 const lockReason = (u: ManagedUser) => (u.builtin ? t('users.builtinTip') : u.id === auth.user?.id ? t('users.selfTip') : null)
 
-async function patch(u: ManagedUser, body: Partial<{ role: Role; roleId: string | null; disabled: boolean; password: string }>): Promise<boolean> {
+async function patch(u: ManagedUser, body: Partial<{ role: Role; roleId: string | null; disabled: boolean; password: string; displayName: string; email: string }>): Promise<boolean> {
   try {
     const r = await api<{ keptAccounts?: { instanceId: string }[] }>('PATCH', `/api/users/${u.id}`, body)
     if (r?.keptAccounts?.length) message.warning(t('users.accountsKept', { n: r.keptAccounts.length }), 8)
@@ -97,19 +97,39 @@ function remove(u: ManagedUser) {
 // create
 const createOpen = ref(false)
 const creating = ref(false)
-const form = reactive({ username: '', password: '', role: 'user' as RoleKey })
+const form = reactive({ username: '', password: '', role: 'user' as RoleKey, displayName: '', email: '' })
+/** 显示名称 ≤ 40, 邮箱 format (the API checks the same; '' clears). Returns the error text or null. */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const profileError = (f: { displayName: string; email: string }) => (f.displayName.trim().length > 40 ? t('profile.max40')
+  : f.email.trim() && !EMAIL.test(f.email.trim()) ? t('profile.badEmail') : null)
 async function create() {
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(form.username)) return message.error(t('users.badUsername'))
   if (form.password.length < 8) return message.error(t('users.initialPasswordShort'))
+  const bad = profileError(form)
+  if (bad) return message.error(bad)
   creating.value = true
   try {
-    await api('POST', '/api/users', { username: form.username, password: form.password, ...roleBody(form.role) })
+    await api('POST', '/api/users', {
+      username: form.username, password: form.password, ...roleBody(form.role),
+      ...(form.displayName.trim() ? { displayName: form.displayName.trim() } : {}), ...(form.email.trim() ? { email: form.email.trim() } : {}),
+    })
     message.success(t('common.created'))
     createOpen.value = false
-    Object.assign(form, { username: '', password: '', role: 'user' })
+    Object.assign(form, { username: '', password: '', role: 'user', displayName: '', email: '' })
     await load()
   } catch (e) { message.error(errorText(e)) }
   finally { creating.value = false }
+}
+
+// 编辑资料: 显示名称 / 邮箱 of any user (also the builtin admin)
+const infoUser = ref<ManagedUser | null>(null)
+const info = reactive({ displayName: '', email: '' })
+function openInfo(u: ManagedUser) { infoUser.value = u; Object.assign(info, { displayName: u.displayName ?? '', email: u.email ?? '' }) }
+async function saveInfo() {
+  if (!infoUser.value) return
+  const bad = profileError(info)
+  if (bad) return message.error(bad)
+  if (await patch(infoUser.value, { displayName: info.displayName.trim(), email: info.email.trim() })) infoUser.value = null
 }
 
 // password reset
@@ -163,6 +183,7 @@ async function savePw() {
           <template v-else-if="column.key === 'createdAt'">{{ fmtDateTime(record.createdAt) }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
+              <a-button type="link" size="small" @click="openInfo(record as ManagedUser)">{{ t('common.edit') }}</a-button>
               <a-tooltip :title="lockReason(record)">
                 <a-select
                   :value="roleKey(record as ManagedUser)" size="small" style="width: 136px; margin-inline-end: 4px" :disabled="!!lockReason(record)"
@@ -195,6 +216,26 @@ async function savePw() {
       </a-form-item>
       <a-form-item :label="t('common.role')" :extra="roleHelp(form.role)">
         <a-select v-model:value="form.role" :options="roleOptions" />
+      </a-form-item>
+      <a-form-item :label="t('profile.displayName')">
+        <a-input v-model:value="form.displayName" :maxlength="40" :placeholder="t('profile.displayNamePlaceholder')" />
+      </a-form-item>
+      <a-form-item :label="t('profile.email')">
+        <a-input v-model:value="form.email" :maxlength="254" autocomplete="off" />
+      </a-form-item>
+    </a-form>
+  </a-modal>
+
+  <a-modal
+    :open="!!infoUser" :title="t('users.editTitle', { name: infoUser?.username ?? '' })" :width="MODAL_WIDTH.sm"
+    :ok-text="t('common.save')" :cancel-text="t('common.cancel')" @ok="saveInfo" @cancel="infoUser = null"
+  >
+    <a-form layout="vertical">
+      <a-form-item :label="t('profile.displayName')">
+        <a-input v-model:value="info.displayName" :maxlength="40" :placeholder="t('profile.displayNamePlaceholder')" />
+      </a-form-item>
+      <a-form-item :label="t('profile.email')">
+        <a-input v-model:value="info.email" :maxlength="254" autocomplete="off" />
       </a-form-item>
     </a-form>
   </a-modal>

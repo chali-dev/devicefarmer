@@ -1588,6 +1588,7 @@ const zhCN = {
     enabled: '启用',
     createdAt: '创建时间',
     resetPassword: '重置密码',
+    editTitle: '编辑用户「{name}」',
     roleHelpAdmin: '全部设备；创建/删除设备、用户与权限管理、存储设置、删除应用库/素材库条目',
     roleHelpUser: '仅被授权的设备：远程控制、启停、安装应用、代理与设备设置、推送素材等',
     builtinTip: '内置管理员不可删除、禁用或修改角色，密码只能由其本人修改',

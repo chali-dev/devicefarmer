@@ -1587,6 +1587,7 @@ const en: Messages = {
     enabled: 'Enabled',
     createdAt: 'Created',
     resetPassword: 'Reset password',
+    editTitle: 'Edit user "{name}"',
     roleHelpAdmin: 'All devices; create/delete devices, manage users and permissions, storage settings, delete library/media items',
     roleHelpUser: 'Granted devices only: remote control, start/stop, install apps, proxy and device settings, push media, etc.',
     builtinTip: 'The built-in admin cannot be deleted, disabled or have its role changed; only they can change their password',

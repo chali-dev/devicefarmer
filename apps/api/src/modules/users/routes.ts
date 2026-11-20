@@ -6,6 +6,7 @@ import { db, schema } from '../../db/index.js';
 import type { User } from '../../db/schema.js';
 import { badRequest, conflict, HttpError, notFound, type ErrorParams } from '../../lib/errors.js';
 import type { AuthUser } from '../auth/rbac.js';
+import { DisplayName, Email } from '../auth/routes.js';
 import { purgeOwnerMedia } from '../media/media.js';
 import {
   builtinAdminId, moveDeviceAccounts, OWNER_DELETED_MESSAGE, OWNER_DISABLED_MESSAGE, releaseDeviceAccounts, UNASSIGN_MESSAGE, type AccountMove,
@@ -106,14 +107,21 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   app.post('/api/users', {
-    schema: { body: z.object({ username: z.string().regex(/^[a-zA-Z0-9_.-]{3,32}$/), password: z.string().min(8), role: Role, roleId: RoleId.optional() }) },
+    schema: {
+      body: z.object({
+        username: z.string().regex(/^[a-zA-Z0-9_.-]{3,32}$/), password: z.string().min(8), role: Role, roleId: RoleId.optional(),
+        displayName: DisplayName.optional(), email: Email.optional(),
+      }),
+    },
   }, async (req, reply) => {
     const roleId = req.body.roleId ?? null;
     if (roleId && req.body.role === 'admin') throw adminRoleId();
     const passwordHash = await bcrypt.hash(req.body.password, 10);
     const u = await db.transaction(async (tx) => {
       if (roleId) await assertRole(tx, roleId);
-      const [row] = await tx.insert(schema.users).values({ username: req.body.username, passwordHash, role: req.body.role, roleId })
+      const [row] = await tx.insert(schema.users).values({
+        username: req.body.username, passwordHash, role: req.body.role, roleId, displayName: req.body.displayName ?? null, email: req.body.email ?? null,
+      })
         .onConflictDoNothing().returning(publicUser);
       return row;
     });
@@ -125,11 +133,15 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
   app.patch('/api/users/:id', {
     schema: {
       params: Id,
-      body: z.object({ role: Role.optional(), roleId: RoleId.optional(), password: z.string().min(8).optional(), disabled: z.boolean().optional() }),
+      body: z.object({
+        role: Role.optional(), roleId: RoleId.optional(), password: z.string().min(8).optional(), disabled: z.boolean().optional(),
+        /** 显示名称 / 邮箱 (admins edit them in 用户管理, also on the builtin admin; '' clears) */
+        displayName: DisplayName.optional(), email: Email.optional(),
+      }),
     },
   }, async (req) => {
-    const { role, roleId, password, disabled } = req.body;
-    if (role === undefined && roleId === undefined && password === undefined && disabled === undefined) throw badRequest('nothing to update', 'common.nothing_to_update');
+    const { role, roleId, password, disabled, displayName, email } = req.body;
+    if ([role, roleId, password, disabled, displayName, email].every((v) => v === undefined)) throw badRequest('nothing to update', 'common.nothing_to_update');
     const passwordHash = password ? await bcrypt.hash(password, 10) : undefined;
     return db.transaction(async (tx) => {
       const target = await lockUser(tx, req.params.id);
@@ -152,6 +164,8 @@ export const userRoutes: FastifyPluginAsyncZod = async (app) => {
       if (finalRole === 'admin') { if (target.roleId) set.roleId = null; }
       else if (roleId !== undefined) set.roleId = roleId;
       if (disabled !== undefined) set.disabled = disabled;
+      if (displayName !== undefined) set.displayName = displayName;
+      if (email !== undefined) set.email = email;
       if (passwordHash) set.passwordHash = passwordHash;
       if (!Object.keys(set).length) {
         const [same] = await tx.select(publicUser).from(schema.users).where(eq(schema.users.id, target.id));
