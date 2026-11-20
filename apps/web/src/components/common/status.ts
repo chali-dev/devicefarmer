@@ -1,5 +1,5 @@
 import {
-  COMMENT_REPLY_STATUS_COLOR, COMMENT_STATUS_COLOR, CONTENT_STATUS_COLOR, PROXY_STATUS_COLOR, PUBLISH_STATUS_COLOR,
+  COMMENT_REPLY_STATUS_COLOR, COMMENT_STATUS_COLOR, CONTENT_STATUS_COLOR, PUBLISH_STATUS_COLOR,
   SOCIAL_ACCOUNT_COLOR, SOCIAL_LOGIN_COLOR, TASK_STATUS_COLOR, TRACKED_STATUS_COLOR, taskStatusText, type InstanceStatus,
 } from '../../api/types'
 import { t, te } from '../../i18n'
@@ -23,7 +23,6 @@ const prefixed = (prefix: string) => (s: string) => (te(`${prefix}.${s}`) ? t(`$
 export const STATUS_FAMILIES = {
   instance: { colors: INSTANCE_STATUS_COLOR, label: prefixed('status') },
   task: { colors: TASK_STATUS_COLOR, label: taskStatusText },
-  proxy: { colors: PROXY_STATUS_COLOR, label: prefixed('proxies.statusText') },
   socialLogin: { colors: SOCIAL_LOGIN_COLOR, label: prefixed('social.login') },
   socialAccount: { colors: SOCIAL_ACCOUNT_COLOR, label: prefixed('social.account') },
   tracked: { colors: TRACKED_STATUS_COLOR, label: prefixed('tracked.status') },

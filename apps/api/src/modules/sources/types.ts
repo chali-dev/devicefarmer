@@ -24,7 +24,7 @@ export interface AdbTarget { instanceId: string; phoneId: string; localPort: num
  * One kind of device source (设备来源). Device ops and the monitor only talk to this interface, so a
  * new kind of external phone (e.g. self-hosted adb over TCP) is one driver file plus its registration.
  * Everything past the adb connection (STF, remote control, apps, media, social) is shared. External
- * phones have no network sidecar (the proxy pool doesn't apply) and keep their own locale/time zone.
+ * phones keep their own proxy and locale/time zone (set in the source).
  */
 export interface SourceDriver<C = Record<string, unknown>> {
   type: SourceType;
@@ -46,6 +46,11 @@ export interface SourceDriver<C = Record<string, unknown>> {
     on(cfg: C, phoneId: string): Promise<void>;
     off(cfg: C, phoneId: string): Promise<void>;
   };
+  /**
+   * Installs an app from the source's own app store (必装应用, modules/library/required.ts); null = the source has
+   * none. May return before the app is installed: callers check with adb.
+   */
+  installApp: null | ((cfg: C, phoneId: string, appId: string) => Promise<void>);
   /** Opens (or keeps) the adb connection; idempotent and cheap when already up. */
   openAdb(cfg: C, target: AdbTarget): Promise<void>;
   closeAdb(instanceId: string): void;

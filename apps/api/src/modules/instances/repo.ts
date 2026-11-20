@@ -3,19 +3,14 @@ import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { db, schema } from '../../db/index.js';
 import type { Instance, Task } from '../../db/schema.js';
 import { events, type PublicTask } from '../../lib/events.js';
-import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
 import { unlinkInstanceAccounts } from '../social/social.js';
 import { recordTransitions } from '../system/history.js';
 
-/**
- * Instance as exposed to clients: the bound pool proxy's non-secret fields only
- * (no username/password; those stay in the admin-only pool API, where the password is write-only).
- */
-export type PublicInstance = Instance & { proxy: InstanceProxyView | null };
+/** Instance as exposed to clients (every column is safe to show; kept as one place to shape it). */
+export type PublicInstance = Instance;
 
 export async function publicInstances(rows: Instance[]): Promise<PublicInstance[]> {
-  const views = await proxyViews(rows.map((r) => r.proxyId).filter((x): x is string => !!x));
-  return rows.map((r) => ({ ...r, proxy: r.proxyId ? views.get(r.proxyId) ?? null : null }));
+  return rows;
 }
 
 export async function publicInstance(row: Instance): Promise<PublicInstance> {

@@ -9,7 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { api, errorText } from '../api/client'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
-import { canPower, egressGeo, proxyLabel, type Instance } from '../api/types'
+import { egressGeo, type Instance } from '../api/types'
 import { fmtDateTime } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -18,7 +18,7 @@ import StatusTag from './common/StatusTag.vue'
 
 /** Slide-in remote control for one cloud phone: screen + side tools on the left, info and actions on the right. */
 type MenuKey = 'start' | 'stop' | 'restart' | 'delete' | 'install' | 'uninstall'
-const props = defineProps<{ instanceId: string | null; profileName: (id: string) => string }>()
+const props = defineProps<{ instanceId: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ (e: 'menu', key: MenuKey, ids: string[]): void; (e: 'log', id: string): void }>()
 
@@ -81,48 +81,22 @@ function sendText() {
   text.value = ''
 }
 
-// ---- info read from the device (model, Android version, locale, time zone)
-const actual = ref<Record<string, string> | null>(null)
-async function loadInfo() {
-  actual.value = null
-  if (!inst.value || !running.value) return
-  try { actual.value = (await api<{ actual: Record<string, string> | null }>('GET', `/api/instances/${inst.value.id}/settings`)).actual }
-  catch { /* shown as — */ }
-}
-watch([() => props.instanceId, running, open], () => { if (open.value) void loadInfo() }, { immediate: true })
-
 const tab = ref<'info' | 'ops'>('info')
 const dash = (v: string | number | null | undefined) => (v === null || v === undefined || v === '' ? '—' : String(v))
-const kindText = computed(() => {
-  const i = inst.value
-  if (!i) return '—'
-  return i.sourceId ? t(`devices.ext.kinds.${i.engine}`) : props.profileName(i.profile)
-})
 const basic = computed(() => {
   const i = inst.value
   if (!i) return []
   return [
     [t('cloud.name'), i.name],
-    [t('cloud.id'), i.sourceId ? i.externalId : i.id],
-    [t('cloud.kind'), kindText.value],
-    [t('cloud.model'), dash(actual.value?.model)],
-    [t('cloud.android'), actual.value?.release ? `Android ${actual.value.release}` : '—'],
+    [t('cloud.id'), i.externalId],
+    [t('cloud.kind'), t(`devices.ext.kinds.${i.engine}`)],
     [t('devices.colResolution'), `${i.spec.width}×${i.spec.height} @ ${i.spec.dpi}dpi`],
-    [t('cloud.memory'), i.spec.memoryMb ? `${i.spec.memoryMb} MB` : t('devices.form.unlimited')],
     [t('devices.colAdbPort'), i.adbPort],
     [t('cloud.created'), fmtDateTime(i.createdAt)],
   ] as [string, string | number | null][]
 })
-/** WLAN MAC read from the device (wlan0, else eth0 on redroid). */
-const macText = computed(() => actual.value?.mac ? `${actual.value.mac}${actual.value.macIf && actual.value.macIf !== 'wlan0' ? ` (${actual.value.macIf})` : ''}` : '—')
-/** Geo of the measured egress IP; before the first such check, the location configured on the proxy (marked). */
-const geoText = computed(() => {
-  const i = inst.value
-  const measured = egressGeo(i?.proxyStatus)
-  if (measured) return measured
-  const conf = [i?.proxy?.country, i?.proxy?.city].filter(Boolean).join(' ')
-  return conf ? t('cloud.locationConfigured', { where: conf }) : '—'
-})
+/** Geo of the egress IP measured on the phone. */
+const geoText = computed(() => egressGeo(inst.value?.proxyStatus) || '—')
 const checking = ref(false)
 async function recheckEgress() {
   if (!inst.value || checking.value) return
@@ -135,13 +109,10 @@ type Row = [string, string, ('geo' | undefined)?]
 const network = computed<Row[]>(() => {
   const i = inst.value
   if (!i) return []
-  const mac: Row = [t('cloud.mac'), macText.value]
-  if (!i.proxy && !i.sourceId) return [[t('cloud.proxy'), t('devices.direct')], mac]
   const s = i.proxyStatus
   return [
-    // External phones: the proxy is set at their source; the egress below is measured on the phone itself.
-    [t('cloud.proxy'), i.proxy ? `${i.proxy.type.toUpperCase()} ${proxyLabel(i.proxy)}` : t('devices.ext.proxyShort')],
-    mac,
+    // The proxy is set at the phone's source; the egress below is measured on the phone itself.
+    [t('cloud.proxy'), t('devices.ext.proxyShort')],
     [t('cloud.location'), geoText.value, 'geo'],
     [t('cloud.egressIp'), dash(s?.egressIp)],
     [t('cloud.latency'), s?.latencyMs != null ? `${s.latencyMs} ms` : '—'],
@@ -149,12 +120,6 @@ const network = computed<Row[]>(() => {
     [t('cloud.checkedAt'), s ? fmtDateTime(s.checkedAt) : '—'],
   ]
 })
-const other = computed(() => [
-  [t('devices.form.locale'), dash(actual.value?.locale || inst.value?.spec.locale)],
-  [t('devices.form.timezone'), dash(actual.value?.timezone || inst.value?.spec.timezone)],
-  [t('devices.form.deviceName'), dash(actual.value?.deviceName && actual.value.deviceName !== 'null' ? actual.value.deviceName : inst.value?.spec.deviceName)],
-  [t('cloud.gms'), inst.value?.google ? (inst.value.google.gms.running ? t('cloud.gmsOk') : t('cloud.gmsDown')) : '—'],
-] as [string, string][])
 </script>
 
 <template>
@@ -181,9 +146,9 @@ const other = computed(() => [
           <div ref="stageEl" class="stage" :class="{ fs: fullscreen }">
             <a-button v-if="fullscreen" class="fs-exit" @click="toggleFullscreen"><CompressOutlined /> {{ t('cloud.exitFullscreen') }}</a-button>
             <DevicePlayer
-              v-if="screenReady" ref="player" :key="`${inst.id}-${inst.containerId}`"
+              v-if="screenReady" ref="player" :key="inst.id"
               :instance-id="inst.id" :width="inst.spec.width" :height="inst.spec.height" :size="size" :rotation="rotation"
-              :title="inst.name" :subtitle="inst.externalId ?? inst.id" @exit="open = false"
+              :title="inst.name" :subtitle="inst.externalId" @exit="open = false"
             >
               <template #side="{ latency, color, tip }">
                 <div class="tools">
@@ -200,14 +165,14 @@ const other = computed(() => [
                   <a-upload :multiple="true" :show-upload-list="false" :custom-request="upload as any" :disabled="uploading">
                     <a-tooltip :title="t('cloud.uploadTip')" placement="left"><button class="tool" :disabled="uploading"><UploadOutlined /><span>{{ t('cloud.upload') }}</span></button></a-tooltip>
                   </a-upload>
-                  <a-tooltip v-if="canPower(inst, auth.isAdmin)" :title="t('devices.restart')" placement="left"><button class="tool" @click="menu('restart')"><ReloadOutlined /><span>{{ t('devices.restart') }}</span></button></a-tooltip>
+                  <a-tooltip v-if="auth.isAdmin" :title="t('devices.restart')" placement="left"><button class="tool" @click="menu('restart')"><ReloadOutlined /><span>{{ t('devices.restart') }}</span></button></a-tooltip>
                   <a-tooltip :title="t('cloud.openDetail')" placement="left"><button class="tool" @click="router.push(`/instances/${inst.id}`)"><AppstoreOutlined /><span>{{ t('cloud.more') }}</span></button></a-tooltip>
                 </div>
               </template>
             </DevicePlayer>
             <div v-else-if="running" class="waiting"><a-spin /><span>{{ t('cloud.waitingScreen') }}</span></div>
-            <a-empty v-else :description="canPower(inst, auth.isAdmin) ? t('detail.notRunning', { status: t(`status.${inst.status}`) }) : t('devices.state.askAdmin')">
-              <a-button v-if="canPower(inst, auth.isAdmin) && (inst.status === 'stopped' || inst.status === 'error')" type="primary" @click="menu('start')">{{ t('devices.start') }}</a-button>
+            <a-empty v-else :description="auth.isAdmin ? t('detail.notRunning', { status: t(`status.${inst.status}`) }) : t('devices.state.askAdmin')">
+              <a-button v-if="auth.isAdmin && (inst.status === 'stopped' || inst.status === 'error')" type="primary" @click="menu('start')">{{ t('devices.start') }}</a-button>
             </a-empty>
           </div>
         </section>
@@ -234,14 +199,11 @@ const other = computed(() => [
                   </a-tooltip>
                 </a-descriptions-item>
               </a-descriptions>
-              <a-descriptions :title="t('cloud.other')" :column="1" size="small" bordered>
-                <a-descriptions-item v-for="[k, v] in other" :key="k" :label="k">{{ v }}</a-descriptions-item>
-              </a-descriptions>
             </template>
 
             <template v-else>
-              <h4 v-if="canPower(inst, auth.isAdmin)">{{ t('cloud.power') }}</h4>
-              <a-space v-if="canPower(inst, auth.isAdmin)" wrap>
+              <h4 v-if="auth.isAdmin">{{ t('cloud.power') }}</h4>
+              <a-space v-if="auth.isAdmin" wrap>
                 <a-button :disabled="running" @click="menu('start')">{{ t('devices.start') }}</a-button>
                 <a-button :disabled="inst.status === 'stopped'" @click="menu('stop')">{{ t('devices.stop') }}</a-button>
                 <a-button @click="menu('restart')">{{ t('devices.restart') }}</a-button>

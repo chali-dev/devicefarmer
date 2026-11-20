@@ -9,11 +9,10 @@ export interface AuthUser { id: string; username: string; role: Role; roleId?: s
 /**
  * view    – see status
  * control – remote control (screen/touch/keys/paste/secure input), screenshot, file upload to the phone
- * operate – lifecycle (start/stop/restart), app install/uninstall, device settings, pushes
- *           (binding a pool proxy is admin-only, see modules/proxies)
+ * operate – app install/uninstall, pushes (powering a phone on/off is admin only, see instances/routes.ts)
  *
  * Both roles may do all three on the devices they can see: `admin` sees every device,
- * `user` only devices granted in `instance_grants`. Creating/deleting devices, user/grant
+ * `user` only devices granted in `instance_grants`. Adding/deleting devices, user/grant
  * management, storage settings, library deletion and public media management are admin-only
  * (see isAdmin; media rules in modules/media/media.ts).
  */

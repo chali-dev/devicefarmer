@@ -14,11 +14,7 @@ import { accessibleInstanceIds, assertInstanceAccess, assertInstancesAccess, isA
 import { checkEgress } from './egress.js';
 import { enqueue, type DeviceOpName } from './queue.js';
 import { getInstance, publicInstance, publicInstances, publishInstance, updateInstance } from './repo.js';
-import { assignFreeProxies, countFreeUsable, isUniqueViolation, lockFreeProxies } from '../proxies/pool.js';
-import { getProfile, PROFILES } from '../../profiles.js';
-import { adb, dockerHost } from '../../services.js';
-import { checkGoogleHealth } from '../google/health.js';
-import { DeviceSettings, readDeviceSettings } from './device-settings.js';
+import { adb } from '../../services.js';
 import { prepareUpload } from '../apps/package.js';
 import { PLATFORM_IDS } from '../social/platforms.js';
 import { scrcpyActive } from '../control/scrcpy-hub.js';
@@ -29,17 +25,16 @@ const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restart
 /**
  * Grid thumbnails: one screencap per device per TTL, shared by every viewer (and by concurrent requests).
  * `screencap` is a full-resolution PNG (~1.1 MB on a 1080x2374 phone), which over an external phone's
- * tunnel takes 15-30 s and starves its remote-control stream; so external phones get a long TTL, and no
+ * tunnel takes 15-30 s and starves its remote-control stream; so thumbnails get a long TTL, and no
  * phone is screencapped while scrcpy streams it (the last thumbnail is served instead).
  */
-const THUMB_TTL_MS = 3000;
-const THUMB_TTL_EXTERNAL_MS = 60_000;
+const THUMB_TTL_MS = 60_000;
 const THUMB_WIDTH = 270;
 const thumbs = new Map<string, { at: number; jpeg: Promise<Buffer> }>();
 function thumbnail(inst: Instance): Promise<Buffer> | null {
   const { id: instanceId, adbPort } = inst;
   const hit = thumbs.get(instanceId);
-  const ttl = inst.sourceId ? THUMB_TTL_EXTERNAL_MS : THUMB_TTL_MS;
+  const ttl = THUMB_TTL_MS;
   if (hit && (Date.now() - hit.at < ttl || scrcpyActive(adbPort))) return hit.jpeg;
   if (scrcpyActive(adbPort)) return null;
   const jpeg = adb.screenshot(adbPort).then((png) => sharp(png).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer());
@@ -47,69 +42,8 @@ function thumbnail(inst: Instance): Promise<Buffer> | null {
   jpeg.catch(() => { if (thumbs.get(instanceId)?.jpeg === jpeg) thumbs.delete(instanceId); });
   return jpeg;
 }
-const MAX_BATCH = 20;
-
-const CreateBody = z.object({
-  /**
-   * Pool proxy per device (exclusive): `auto` assigns distinct free usable proxies (ok, then unchecked),
-   * `pick` binds `proxyIds` (one per device, in order), `none` = direct.
-   */
-  proxyMode: z.enum(['auto', 'none', 'pick']).default('none'),
-  proxyIds: z.array(z.string().uuid()).max(MAX_BATCH).optional(),
-  profile: z.string().default('redroid-12'),
-  count: z.number().int().min(1).max(MAX_BATCH).default(1),
-  namePrefix: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/, 'lowercase letters, digits and dashes').default('phone'),
-  width: z.number().int().min(320).max(2160).default(720),
-  height: z.number().int().min(480).max(3840).default(1280),
-  dpi: z.number().int().min(120).max(640).default(320),
-  memoryMb: z.number().int().min(1024).max(16384).optional(),
-  /**
-   * App library entries to install on the new devices. Omitted = the library's preinstall-flagged apps
-   * (as before); [] = none.
-   */
-  appIds: z.array(z.string().uuid()).max(50).optional(),
-  /** Skip the host memory check */
-  force: z.boolean().optional(),
-}).extend(DeviceSettings.shape);
-
-/** Profiles with availability on the current Android host (image configured, KVM if required). */
-async function profileAvailability() {
-  const kvm = await dockerHost.hasKvm().catch(() => false);
-  return PROFILES.map((p) => {
-    const reasons = [p.blockedReason, !p.image && '未配置镜像', p.requiresKvm && !kvm && '宿主机没有 /dev/kvm（需要 x86_64 Linux + KVM）'].filter(Boolean);
-    const reason = reasons.length ? reasons.join('；') : null;
-    return { id: p.id, label: p.label, engine: p.engine, android: p.android, gapps: p.gapps, available: !reason, reason };
-  });
-}
-
-/** Picks free names `<prefix>-<n>` and free host adb ports. */
-async function allocate(prefix: string, count: number) {
-  const existing = await db.select({ name: schema.instances.name, port: schema.instances.adbPort }).from(schema.instances);
-  const usedPorts = new Set(existing.map((e) => e.port));
-  const usedNames = new Set(existing.map((e) => e.name));
-  const out: { name: string; adbPort: number }[] = [];
-  let n = 1;
-  let port = config.ADB_PORT_MIN;
-  while (out.length < count) {
-    while (usedNames.has(`${prefix}-${n}`)) n++;
-    while (usedPorts.has(port)) port++;
-    if (port > config.ADB_PORT_MAX) throw conflict('no free adb ports left on the Android host', 'instances.no_free_ports');
-    out.push({ name: `${prefix}-${n}`, adbPort: port });
-    usedNames.add(`${prefix}-${n}`);
-    usedPorts.add(port);
-  }
-  return out;
-}
-
-/** External phones (device sources) keep their own proxy and locale/time zone. */
-const unsupportedOnExternal = (inst: Instance, what: string) => {
-  if (inst.sourceId) throw conflict(`外部手机的${what}由其来源设置`, 'instances.engine_unsupported', { engine: inst.engine });
-};
-
 export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
-
-  app.get('/api/profiles', async () => ({ profiles: await profileAvailability() }));
 
   app.get('/api/instances', async (req) => {
     const allowed = await accessibleInstanceIds(req.user);
@@ -158,76 +92,12 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instance: await publicInstance(inst) };
   });
 
-  /** Batch create (admin only). Instances are created by the queue. */
-  app.post('/api/instances', { schema: { body: CreateBody } }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以创建设备', 'instances.create_admin_only');
-    const b = req.body;
-    const profile = getProfile(b.profile);
-    const avail = (await profileAvailability()).find((p) => p.id === b.profile);
-    if (!profile || !avail) throw badRequest(`unknown profile "${b.profile}"`, 'instances.unknown_profile', { profile: b.profile });
-    if (!avail.available) throw conflict(`profile unavailable: ${avail.reason}`, 'instances.profile_unavailable', { reason: avail.reason ?? '' });
-    // Proxies first (cheap, no side effects); the binding itself is decided under row locks below.
-    if (b.proxyMode === 'pick') {
-      const ids = b.proxyIds ?? [];
-      if (ids.length !== b.count) throw badRequest(`proxyIds 数量（${ids.length}）必须等于创建数量（${b.count}）`, 'proxy.count_mismatch', { proxies: ids.length, count: b.count });
-      if (new Set(ids).size !== ids.length) throw conflict('同一批次中存在重复代理', 'proxy.duplicate_in_batch');
-      await db.transaction((tx) => lockFreeProxies(tx, ids));
-    } else if (b.proxyMode === 'auto') {
-      const free = await countFreeUsable();
-      if (free < b.count) throw conflict(`空闲可用代理不足：需要 ${b.count} 个，当前 ${free} 个`, 'proxy.not_enough_free', { need: b.count, free });
-    }
-    const appIds = b.appIds && [...new Set(b.appIds)];
-    if (appIds?.length) {
-      const [{ n } = { n: 0 }] = await db.select({ n: sql<number>`count(*)::int` }).from(schema.libraryApps).where(inArray(schema.libraryApps.id, appIds));
-      if (n !== appIds.length) throw badRequest('应用库中找不到所选应用', 'library.not_found');
-    }
-    // Capacity check: refuse to overcommit the Android host's memory (OOM kills every instance).
-    if (!b.force) {
-      const freeMb = await dockerHost.memAvailableMb();
-      const needMb = profile.memEstimateMb * b.count + 512; // keep headroom for the host
-      if (needMb > freeMb) {
-        throw conflict(`宿主机可用内存不足：需要约 ${needMb} MiB（${b.count} × ${profile.memEstimateMb} + 512 余量），当前可用 ${freeMb} MiB`,
-          'instances.insufficient_memory', { needMb, count: b.count, perMb: profile.memEstimateMb, freeMb });
-      }
-    }
-    const slots = await allocate(b.namePrefix, b.count);
-    const rows = await db.transaction(async (tx) => {
-      // Locked until commit: concurrent creations (SKIP LOCKED) and binds (FOR UPDATE) can't take the same proxy.
-      const proxyIds: (string | null)[] = b.proxyMode === 'auto' ? await assignFreeProxies(tx, b.count)
-        : b.proxyMode === 'pick' ? (await lockFreeProxies(tx, b.proxyIds!), b.proxyIds!)
-          : slots.map(() => null);
-      const inserted = await tx.insert(schema.instances).values(slots.map((s, i) => ({
-        proxyId: proxyIds[i],
-        name: s.name, adbPort: s.adbPort, image: profile.image!, engine: profile.engine, profile: profile.id,
-        status: 'creating' as const, createdBy: req.user.id,
-        spec: {
-          width: b.width, height: b.height, dpi: b.dpi,
-          ...(b.memoryMb ? { memoryMb: b.memoryMb } : {}),
-          ...(b.locale ? { locale: b.locale } : {}),
-          ...(b.timezone ? { timezone: b.timezone } : {}),
-          ...(b.deviceName ? { deviceName: b.deviceName } : {}),
-        },
-      }))).returning();
-      return inserted;
-    }).catch((err) => {
-      if (isUniqueViolation(err, 'instances_proxy_id_unique')) throw conflict('代理已被其他设备占用，请重试', 'proxy.bind_conflict');
-      throw err;
-    });
-    if (b.proxyMode !== 'none' && req.audit) req.audit.extra = { proxyIds: rows.map((r) => r.proxyId) };
-    const taskIds = [];
-    for (const r of rows) taskIds.push(await enqueue('create', r, req.user.id, appIds ? { appIds } : {}));
-    reply.code(202);
-    return { instances: await publicInstances(rows), taskIds };
-  });
-
   /**
-   * Power of external phones (BitBrowser etc., `source_id` set; power-on is billed) is admin only (owner decision
-   * 2026-11-18): start / stop / restart (= off + on) of such a device by a user → 403 for a single device, skipped with
-   * the code in a batch. Local containers are unchanged (users with `operate` may start / stop / restart them).
+   * Power of the phones (BitBrowser etc.; power-on is billed) is admin only (owner decision 2026-11-18): start / stop /
+   * restart (= off + on) by a user → 403 for a single device, skipped with the code in a batch.
    */
   const POWER_ACTIONS = new Set(['start', 'stop', 'restart']);
-  const externalPowerRefused = (user: AuthUser, inst: Pick<Instance, 'sourceId'>, action: string) =>
-    !isAdmin(user) && !!inst.sourceId && POWER_ACTIONS.has(action);
+  const externalPowerRefused = (user: AuthUser, action: string) => !isAdmin(user) && POWER_ACTIONS.has(action);
 
   /** Batch lifecycle actions. Each instance becomes one task; busy instances are skipped. */
   app.post('/api/instances/actions', {
@@ -242,13 +112,13 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const ids = [...new Set(req.body.ids)];
     await assertInstancesAccess(req.user, ids, 'operate');
     const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, ids));
-    if (rows.length === 1 && externalPowerRefused(req.user, rows[0]!, req.body.action)) {
+    if (rows.length === 1 && externalPowerRefused(req.user, req.body.action)) {
       throw forbidden('比特云手机的开机 / 关机只有管理员可以操作', 'instances.external_power_admin_only');
     }
     const accepted: { instanceId: string; taskId: string }[] = [];
     const skipped: { instanceId: string; reason: string; code?: string }[] = [];
     for (const r of rows) {
-      if (externalPowerRefused(req.user, r, req.body.action)) { skipped.push({ instanceId: r.id, reason: 'external power is admin only', code: 'instances.external_power_admin_only' }); continue; }
+      if (externalPowerRefused(req.user, req.body.action)) { skipped.push({ instanceId: r.id, reason: 'external power is admin only', code: 'instances.external_power_admin_only' }); continue; }
       if (BUSY.includes(r.status)) { skipped.push({ instanceId: r.id, reason: `busy (${r.status})` }); continue; }
       if (req.body.action === 'start' && r.status === 'running') { skipped.push({ instanceId: r.id, reason: 'already running' }); continue; }
       if (req.body.action === 'stop' && r.status === 'stopped') { skipped.push({ instanceId: r.id, reason: 'already stopped' }); continue; }
@@ -271,31 +141,6 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     const taskId = await enqueue('install-apk', inst, req.user.id, { apkPaths: prepared.apkPaths, sizes: prepared.sizes }, prepared.name);
     reply.code(202);
     return { taskId, filename: file.filename, apks: prepared.apkPaths.length };
-  });
-
-  /** Device settings that Android exposes (locale, timezone, device name). Applied by a task. */
-  app.get('/api/instances/:id/settings', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
-    await assertInstanceAccess(req.user, req.params.id, 'view');
-    const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found', 'instances.not_found');
-    const actual = inst.status === 'running' ? await readDeviceSettings(inst.adbPort).catch(() => null) : null;
-    return { configured: { locale: inst.spec.locale, timezone: inst.spec.timezone, deviceName: inst.spec.deviceName }, actual };
-  });
-
-  app.patch('/api/instances/:id/settings', {
-    schema: { params: z.object({ id: z.string().uuid() }), body: DeviceSettings },
-  }, async (req, reply) => {
-    await assertInstanceAccess(req.user, req.params.id, 'operate');
-    const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found', 'instances.not_found');
-    unsupportedOnExternal(inst, '语言/时区');
-    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
-    const spec = { ...inst.spec, ...Object.fromEntries(Object.entries(req.body).filter(([, v]) => v !== undefined)) };
-    await updateInstance(inst.id, { spec });
-    // Running: apply now. Stopped: applied automatically on next start.
-    const taskId = inst.status === 'running' ? await enqueue('apply-settings', inst, req.user.id) : null;
-    reply.code(202);
-    return { spec, taskId };
   });
 
   /**
@@ -348,46 +193,6 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { lines: rows };
   });
 
-  /** Run the Google services health check now (otherwise every 60 s by the monitor). */
-  app.post('/api/instances/:id/google/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
-    await assertInstanceAccess(req.user, req.params.id, 'view');
-    const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found', 'instances.not_found');
-    if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
-    const google = await checkGoogleHealth(inst.adbPort);
-    await updateInstance(inst.id, { google });
-    return { google };
-  });
-
-  /**
-   * Bind a pool proxy to the device, or unbind (null). Admin only: the pool is admin-managed and a proxy
-   * is an exclusive, paid resource; users see their devices' proxy (without credentials) but can't change it.
-   * Applied by a task (hot reload; legacy devices get a sidecar).
-   */
-  app.put('/api/instances/:id/proxy', {
-    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ proxyId: z.string().uuid().nullable() }) },
-  }, async (req, reply) => {
-    if (!isAdmin(req.user)) throw forbidden('仅管理员可以为设备绑定代理', 'proxy.bind_admin_only');
-    const inst = await getInstance(req.params.id);
-    if (!inst) throw notFound('instance not found', 'instances.not_found');
-    unsupportedOnExternal(inst, '代理');
-    if (BUSY.includes(inst.status)) throw conflict(`instance is busy (${inst.status})`, 'instances.busy', { status: inst.status });
-    const { proxyId } = req.body;
-    if (req.audit) req.audit.extra = { fromProxyId: inst.proxyId };
-    const updated = await db.transaction(async (tx) => {
-      const [p] = proxyId ? await lockFreeProxies(tx, [proxyId], inst.id) : [];
-      const [row] = await tx.update(schema.instances).set({ proxyId, proxyStatus: null }).where(eq(schema.instances.id, inst.id)).returning();
-      return { row: row!, label: p ? `${p.type}://${p.host}:${p.port}` : '直连' };
-    }).catch((err) => {
-      if (isUniqueViolation(err, 'instances_proxy_id_unique')) throw conflict('代理已被其他设备占用', 'proxy.bind_conflict');
-      throw err;
-    });
-    await publishInstance(updated.row);
-    const taskId = await enqueue('set-proxy', inst, req.user.id, {}, updated.label);
-    reply.code(202);
-    return { instance: await publicInstance(updated.row), taskId };
-  });
-
   /**
    * Social platforms allowed on the device (admin only). `null` = all platforms. Turning a platform off
    * keeps accounts already linked; new links are refused and their publish runs fail (platform_disabled).
@@ -405,12 +210,11 @@ export const instanceRoutes: FastifyPluginAsyncZod = async (app) => {
     return { instance: await publicInstance(row!) };
   });
 
-  /** Egress check: from the instance's network namespace, or on an external phone itself over adb (see egress.ts). */
+  /** Egress check on the phone itself over adb (see egress.ts). */
   app.post('/api/instances/:id/proxy/check', { schema: { params: z.object({ id: z.string().uuid() }) } }, async (req) => {
     await assertInstanceAccess(req.user, req.params.id, 'view');
     const inst = await getInstance(req.params.id);
     if (!inst) throw notFound('instance not found', 'instances.not_found');
-    if (!inst.sourceId && !inst.netContainerId) throw conflict('该设备没有网络组件（旧设备），设置代理后自动创建', 'proxy.no_net_container');
     if (inst.status !== 'running') throw conflict('instance is not running', 'instances.not_running');
     return { proxyStatus: await checkEgress(inst) };
   });

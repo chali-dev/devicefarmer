@@ -11,7 +11,7 @@ import { notify, recover } from './notify.js';
  */
 
 /** Why a device went down (shown translated; also in Telegram texts). */
-export type DownReason = 'container_missing' | 'container_exited' | 'sidecar_down' | 'powered_off' | 'op_failed';
+export type DownReason = 'powered_off' | 'op_failed';
 
 /** Device status transition observed by the monitor (or a failed lifecycle op: reason op_failed + op). */
 export async function deviceStatusChanged(inst: Pick<Instance, 'id' | 'name' | 'status'>, to: Instance['status'] | undefined, reason?: DownReason, op?: string): Promise<void> {
@@ -60,7 +60,7 @@ export async function publishFailed(row: Pick<PublishTask, 'id' | 'attemptNo' | 
  * device.down; alert channel deliveries → channel.failed, in-app only, so a broken channel never loops).
  * Keyed per type + device/object, so a repeating failure is reported once per cooldown.
  */
-const OWN_ALERT = new Set(['publish', 'create', 'start', 'stop', 'restart', 'delete', 'set-proxy']);
+const OWN_ALERT = new Set(['publish', 'create', 'start', 'stop', 'restart', 'delete']);
 onTaskFailed(async (task: Task) => {
   if (OWN_ALERT.has(task.type) || task.type.startsWith('notify-')) return;
   await notify({

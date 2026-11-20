@@ -39,8 +39,6 @@ set +a
 : "${SEED_ON_DEPLOY:=1}"
 : "${PRUNE_IMAGES:=1}"
 export PROJECT API_IMAGE WEB_IMAGE STATE_DIR DATA_DIR APP_ENV_FILE PROXY_HTTP_PORT
-if [ -z "${DOCKER_GID:-}" ]; then DOCKER_GID=$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0); fi
-export DOCKER_GID
 
 STATE_FILE=$STATE_DIR/state
 DEPLOY_LOG=$STATE_DIR/deploy.log

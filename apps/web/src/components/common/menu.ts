@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, ref, watchEffect, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ClusterOutlined, ControlOutlined,
+  AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ControlOutlined,
   FileSearchOutlined, FileTextOutlined, FireOutlined, IdcardOutlined, KeyOutlined, MobileOutlined, PictureOutlined, ProfileOutlined, ReadOutlined,
   RiseOutlined, SafetyOutlined, ScheduleOutlined, SecurityScanOutlined, SettingOutlined, ShareAltOutlined, SolutionOutlined, TeamOutlined,
   UserOutlined, WarningOutlined,
@@ -17,14 +17,14 @@ export interface MenuGroup { key: MenuGroupKey; icon: Component; items: MenuItem
 /**
  * Sidebar: dashboard on top, then the business modules (flat) and the three admin groups 账号管理 / 风控管理 / 系统配置
  * (owner's lists of 2026-11-18, see CLAUDE.md). An item key is also its route path and its `nav.<key>` label; admin-only
- * items (连线监控, 应用库, 代理IP池, the admin groups except 任务中心) follow the route's `meta.admin`, and for users the
+ * items (连线监控, 应用库, the admin groups except 任务中心) follow the route's `meta.admin`, and for users the
  * menus switched off in 权限管理 (auth store `menus`) are hidden too. 追踪号 / 回文日志 are tabs of 媒体管理 (/social).
  * The breadcrumb and the default page title (PageContainer) are derived from this list too.
  */
 export const MENU_GROUPS: MenuGroup[] = [
   { key: 'devices', flat: true, icon: CloudOutlined, items: [
     { key: 'instances', icon: MobileOutlined }, { key: 'connections', icon: ApiOutlined },
-    { key: 'library', icon: AppstoreOutlined }, { key: 'proxies', icon: ClusterOutlined },
+    { key: 'library', icon: AppstoreOutlined },
   ] },
   { key: 'matrix', flat: true, icon: ShareAltOutlined, items: [
     { key: 'personas', icon: IdcardOutlined }, { key: 'social', icon: TeamOutlined }, { key: 'analytics', icon: RiseOutlined },

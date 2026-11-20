@@ -482,13 +482,12 @@ async function submitBatchForm() {
               </template>
               <span v-else class="muted">{{ t('social.notLinked') }}</span>
             </div>
-            <!-- Country of the linked device's measured egress; before a measurement, the proxy's configured country (marked). -->
+            <!-- Country of the linked device's measured egress. -->
             <div class="muted small ellipsis">
               <a-tooltip v-if="record.egress?.country"
                 :title="[[record.egress.region, record.egress.city].filter(Boolean).join(' · '), record.egress.ip].filter(Boolean).join(' · ')">
                 <span>{{ countryName(record.egress.country) }} ({{ record.egress.country }})</span>
               </a-tooltip>
-              <span v-else-if="record.proxy?.country">{{ countryName(record.proxy.country) }} {{ t('social.countryConfigured') }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'status'">

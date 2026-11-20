@@ -69,7 +69,7 @@ const columns = computed(() => [
         </template>
         <template v-else-if="column.key === 'operator'">{{ record.operator ?? t('common.system') }}</template>
         <template v-else-if="column.key === 'version'">
-          {{ version(record) }} <a-tag v-if="record.preinstall">{{ t('library.preinstallTag') }}</a-tag>
+          {{ version(record) }}
         </template>
         <template v-else-if="column.key === 'result'">
           <StatusTag kind="task" :status="record.status" />

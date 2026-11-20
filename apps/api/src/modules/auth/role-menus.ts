@@ -30,7 +30,7 @@ export type GrantableMenu = (typeof GRANTABLE_MENUS)[number];
 /** Every other sidebar key: always on (dashboard) or admin only. Known so that a PUT can tell "not grantable" from "unknown". */
 export const FIXED_MENUS = {
   always: ['dashboard'],
-  adminOnly: ['connections', 'library', 'proxies', 'users', 'audit', 'permissions', 'risk-events', 'risk', 'alert-channels', 'logs', 'settings'],
+  adminOnly: ['connections', 'library', 'users', 'audit', 'permissions', 'risk-events', 'risk', 'alert-channels', 'logs', 'settings'],
 } as const;
 export const DEFAULT_USER_MENUS: GrantableMenu[] = [...GRANTABLE_MENUS];
 
@@ -68,7 +68,7 @@ export const MENU_API: MenuApiRule[] = [
   { methods: 'write', pattern: seg('/api/tasks'), menus: ['tasks'] },
   // 我的云机: device actions and per-device reads (the list, a device's row and /automation stay shared).
   { methods: 'all', pattern: seg('/api/instances/actions'), menus: ['instances'] },
-  { methods: 'all', pattern: /^\/api\/instances\/[^/]+\/(screenshot|files|apk|logcat|settings|apps|google|platforms|proxy\/check)(?:\/|$)/, menus: ['instances'] },
+  { methods: 'all', pattern: /^\/api\/instances\/[^/]+\/(screenshot|files|apk|logcat|apps|platforms|proxy\/check)(?:\/|$)/, menus: ['instances'] },
   { methods: 'all', pattern: seg('/api/apps'), menus: ['instances'] },
 ];
 

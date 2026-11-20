@@ -4,8 +4,7 @@ import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { DeviceSource } from '../../db/schema.js';
-import { badRequest, conflict, HttpError, notFound } from '../../lib/errors.js';
-import { isUniqueViolation } from '../proxies/pool.js';
+import { badRequest, conflict, HttpError, notFound, isUniqueViolation } from '../../lib/errors.js';
 import { enqueue } from '../instances/queue.js';
 import { publicInstances } from '../instances/repo.js';
 import { driverFor, getSource, mergeSecrets, openConfig, publicConfig, sealConfig, SOURCE_TYPES } from './index.js';
@@ -48,7 +47,7 @@ async function validConfig(type: DeviceSource['type'], raw: Record<string, unkno
   return sealConfig(driver, parsed.data as Record<string, unknown>);
 }
 
-/** Free local port for an external phone's adb connection (separate range from local containers). */
+/** Free local port for a phone's adb connection. */
 async function allocatePort(taken: Set<number>): Promise<number> {
   for (const r of await db.select({ port: schema.instances.adbPort }).from(schema.instances)) taken.add(r.port);
   for (let p = config.EXTERNAL_ADB_PORT_MIN; p <= config.EXTERNAL_ADB_PORT_MAX; p++) if (!taken.has(p)) { taken.add(p); return p; }
@@ -148,7 +147,7 @@ export const sourceRoutes: FastifyPluginAsyncZod = async (app) => {
     for (const id of wanted) {
       values.push({
         name: deviceName(NAME_PREFIX[src.type], phones.get(id)!.name, used), adbPort: await allocatePort(ports),
-        engine: src.type, profile: src.type, image: src.type, sourceId: src.id, externalId: id,
+        engine: src.type, sourceId: src.id, externalId: id,
         status: 'creating' as const, createdBy: req.user.id, spec: { width: 1080, height: 1920, dpi: 420 },
       });
     }

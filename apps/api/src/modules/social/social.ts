@@ -4,7 +4,6 @@ import { updateSetting } from '../../lib/locks.js';
 import type { SocialAccount } from '../../db/schema.js';
 import { conflict, notFound } from '../../lib/errors.js';
 import { accessibleInstanceIds, isAdmin, type AuthUser } from '../auth/rbac.js';
-import { proxyViews, type InstanceProxyView } from '../proxies/pool.js';
 import { isPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { enabledPlatforms, PLATFORMS, platformById } from './platforms.js';
 
@@ -171,10 +170,8 @@ export interface SocialAccountItem extends SocialAccount {
   /** 账号人设 name (personaId is on the row). */
   personaName: string | null;
   tags: string[];
-  /** Linked device. `accessible` = the viewer has a grant (otherwise no proxy is shown). */
+  /** Linked device. `accessible` = the viewer has a grant (otherwise no egress is shown). */
   instance: { id: string; name: string; status: string; accessible: boolean } | null;
-  /** Egress proxy, derived from the device's pool binding (non-secret fields only). */
-  proxy: InstanceProxyView | null;
   /** Measured egress of the linked device (country/region/city/IP from its proxy status); viewers with a grant only. */
   egress: { ip: string | null; country: string | null; region: string | null; city: string | null; checkedAt: string } | null;
   exception: boolean;
@@ -193,7 +190,7 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
   const [tags, owners, insts, access, personas, stats] = await Promise.all([
     tagsOf(db, rows.map((r) => r.id)),
     db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users).where(inArray(schema.users.id, idsOf(rows.map((r) => r.userId)))),
-    db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyId: schema.instances.proxyId, proxyStatus: schema.instances.proxyStatus })
+    db.select({ id: schema.instances.id, name: schema.instances.name, status: schema.instances.status, proxyStatus: schema.instances.proxyStatus })
       .from(schema.instances).where(inArray(schema.instances.id, idsOf(rows.map((r) => r.instanceId)))),
     accessibleInstanceIds(user),
     db.select({ id: schema.personas.id, name: schema.personas.name }).from(schema.personas).where(inArray(schema.personas.id, idsOf(rows.map((r) => r.personaId)))),
@@ -202,7 +199,6 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
       .from(S).where(and(inArray(S.socialAccountId, rows.map((r) => r.id)), isNotNull(S.followers))).orderBy(S.socialAccountId, desc(S.day)),
   ]);
   const canSee = (id: string) => access === 'all' || access.has(id);
-  const proxies = await proxyViews(insts.filter((i) => i.proxyId && canSee(i.id)).map((i) => i.proxyId!));
   return rows.map((r) => {
     const inst = insts.find((i) => i.id === r.instanceId);
     return {
@@ -211,7 +207,6 @@ export async function toItems(user: AuthUser, rows: SocialAccount[]): Promise<So
       personaName: personas.find((p) => p.id === r.personaId)?.name ?? null,
       tags: tags.get(r.id) ?? [],
       instance: inst ? { id: inst.id, name: inst.name, status: inst.status, accessible: canSee(inst.id) } : null,
-      proxy: inst?.proxyId && canSee(inst.id) ? proxies.get(inst.proxyId) ?? null : null,
       egress: inst?.proxyStatus && canSee(inst.id)
         ? { ip: inst.proxyStatus.egressIp, country: inst.proxyStatus.country ?? null, region: inst.proxyStatus.region ?? null, city: inst.proxyStatus.city ?? null, checkedAt: inst.proxyStatus.checkedAt }
         : null,

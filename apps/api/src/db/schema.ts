@@ -4,8 +4,8 @@ import { bigint, boolean, check, date, doublePrecision, index, integer, jsonb, p
 export const roleEnum = pgEnum('role', ['admin', 'user']);
 
 /**
- * Instance lifecycle (Docker) and device state (adb/STF) are tracked separately:
- * `status` is what the platform is doing/observed at container level,
+ * Phone lifecycle (power through its source) and device state (adb/STF) are tracked separately:
+ * `status` is what the platform is doing/observed at power level,
  * `adbState` / `bootCompleted` / `stfReady` are device-level observations.
  */
 export const instanceStatusEnum = pgEnum('instance_status', [
@@ -44,35 +44,22 @@ export const roles = pgTable('roles', {
 export const instances = pgTable('instances', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull().unique(),
-  engine: text('engine', { enum: ['redroid', 'emulator', 'bitbrowser'] }).notNull().default('redroid'),
+  /** Device source type (= the source's `type`); every device is an external phone since redroid was removed (2026-11-20). */
+  engine: text('engine', { enum: ['bitbrowser'] }).notNull(),
   /**
-   * External phone behind the device: its device source (e.g. a BitBrowser client) and the phone's id
-   * there; both null for local containers. For external phones `engine` is the source type and
-   * `adb_port` is the local end of the connection the API keeps to the phone's adbd.
+   * The phone's device source (e.g. a BitBrowser client) and its id there. `adb_port` is the local end of the
+   * connection the API keeps to the phone's adbd.
    */
-  sourceId: uuid('source_id').references((): AnyPgColumn => deviceSources.id, { onDelete: 'restrict' }),
-  externalId: text('external_id'),
-  /** Image profile id (see profiles.ts), e.g. redroid-13-gapps */
-  profile: text('profile').notNull().default('redroid-12'),
-  image: text('image').notNull(),
+  sourceId: uuid('source_id').notNull().references((): AnyPgColumn => deviceSources.id, { onDelete: 'restrict' }),
+  externalId: text('external_id').notNull(),
   adbPort: integer('adb_port').notNull().unique(),
-  containerId: text('container_id'),
-  /** Network sidecar (sing-box) owning the instance's network namespace; null = legacy direct networking */
-  netContainerId: text('net_container_id'),
-  /**
-   * Bound proxy from the pool (至多绑定一台设备: unique). The sidecar config is built from the pool entry,
-   * password decrypted only at apply time. Deleting a bound proxy is refused (restrict).
-   */
-  proxyId: uuid('proxy_id').unique('instances_proxy_id_unique').references((): AnyPgColumn => proxies.id, { onDelete: 'restrict' }),
-  /** Egress as seen from inside the device's netns (monitor / per-device check). */
+  /** Egress as the phone sees it (measured on the phone over adb: monitor / per-device check). */
   proxyStatus: jsonb('proxy_status').$type<ProxyStatus>(),
   status: instanceStatusEnum('status').notNull().default('creating'),
   adbState: text('adb_state'),
   bootCompleted: boolean('boot_completed').notNull().default(false),
   stfReady: boolean('stf_ready').notNull().default(false),
   lastError: text('last_error'),
-  /** Latest Google services health snapshot (no account identifiers stored). */
-  google: jsonb('google').$type<GoogleHealth>(),
   spec: jsonb('spec').$type<InstanceSpec>().notNull(),
   /**
    * Social platforms allowed on this device (ids from social/platforms.ts); null = all. Checked when an
@@ -100,39 +87,6 @@ export const deviceSources = pgTable('device_sources', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
 });
 export type DeviceSource = typeof deviceSources.$inferSelect;
-
-/**
- * Static residential proxy pool (代理管理, admin-managed). The password is AES-256-GCM encrypted
- * (lib/secret-box.ts) and write-only. `lastCheck` is the check from the API host through the proxy.
- */
-/** 'dynamic' (rotating) was removed; migration 0028 turned such rows into 'static'. */
-export const PROXY_KINDS = ['static', 'mobile'] as const;
-export type ProxyKind = (typeof PROXY_KINDS)[number];
-
-export const proxies = pgTable('proxies', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  label: text('label'),
-  type: text('type', { enum: ['socks5', 'http'] }).notNull(),
-  /** IP kind (static residential / rotating / mobile carrier); informational, used to group the pool page. */
-  kind: text('kind', { enum: PROXY_KINDS }).notNull().default('static'),
-  host: text('host').notNull(),
-  port: integer('port').notNull(),
-  username: text('username'),
-  passwordEnc: text('password_enc'),
-  country: text('country'),
-  region: text('region'),
-  city: text('city'),
-  provider: text('provider'),
-  notes: text('notes'),
-  status: text('status', { enum: ['unchecked', 'ok', 'failed'] }).notNull().default('unchecked'),
-  lastCheck: jsonb('last_check').$type<ProxyCheck>(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
-}, (t) => [
-  uniqueIndex('proxies_endpoint_unique').on(t.type, sql`lower(${t.host})`, t.port, sql`coalesce(${t.username}, '')`),
-  index('proxies_status_idx').on(t.status),
-  index('proxies_kind_idx').on(t.kind),
-]);
 
 export const instanceGrants = pgTable('instance_grants', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -205,7 +159,7 @@ export const taskLogs = pgTable('task_logs', {
 
 /**
  * App library: official packages imported from a device where they were installed
- * (e.g. from Google Play), reinstalled on other instances without Play.
+ * (e.g. from Google Play) or uploaded, installed on other devices by hand.
  */
 export const libraryApps = pgTable('library_apps', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -213,11 +167,25 @@ export const libraryApps = pgTable('library_apps', {
   versionName: text('version_name'),
   versionCode: text('version_code').notNull(),
   files: jsonb('files').$type<{ name: string; size: number; sha256: string }[]>().notNull(),
-  /** Install automatically on newly created instances */
-  preinstall: boolean('preinstall').notNull().default(false),
   sourceInstance: text('source_instance'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [unique('library_pkg_version').on(t.package, t.versionCode)]);
+
+/**
+ * 必装应用 (modules/library/required.ts, owner 2026-11-20): apps every phone must have. When a phone is added or
+ * powered on, adb checks `package`; a missing one is installed from the source's own app store (BitBrowser:
+ * `bitbrowser_app_id`, the store's id of that app). Package unique.
+ */
+
+export const requiredApps = pgTable('required_apps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  package: text('package').notNull().unique(),
+  name: text('name').notNull(),
+  bitbrowserAppId: text('bitbrowser_app_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => sql`now()`),
+});
+export type RequiredApp = typeof requiredApps.$inferSelect;
 
 /** Platform settings (admin). Secrets inside values are encrypted (lib/secret-box.ts). */
 export const settings = pgTable('settings', {
@@ -1119,25 +1087,11 @@ export interface ContentPlatformHints {
   [platform: string]: Record<string, unknown> | undefined;
 }
 
+/** The phone's screen as read over adb when it is attached (for the player). */
 export interface InstanceSpec {
   width: number;
   height: number;
   dpi: number;
-  /** MiB, applied as a container memory limit when set */
-  memoryMb?: number;
-  /** Android system settings (see device-settings.ts); persisted in /data */
-  locale?: string;
-  timezone?: string;
-  deviceName?: string;
-}
-
-/** Resolved upstream proxy handed to the sidecar (runtime only, never stored in this form). */
-export interface ProxyConfig {
-  type: 'socks5' | 'http';
-  host: string;
-  port: number;
-  username?: string;
-  password?: string;
 }
 
 export interface ProxyStatus {
@@ -1151,27 +1105,6 @@ export interface ProxyStatus {
   country?: string | null;
   region?: string | null;
   city?: string | null;
-}
-
-/** Result of checking a pool proxy from the API host (egress IP + geo through the proxy). */
-export interface ProxyCheck {
-  at: string;
-  ok: boolean;
-  egressIp: string | null;
-  latencyMs: number | null;
-  country: string | null;
-  city: string | null;
-  error: string | null;
-}
-
-export interface GoogleHealth {
-  checkedAt: string;
-  gms: { installed: boolean; version: string | null; running: boolean };
-  gsf: { installed: boolean; gsfId: string | null };
-  playStore: { installed: boolean; version: string | null };
-  youtube: { installed: boolean; version: string | null; playing: boolean };
-  /** Number of Google accounts on the device; emails are never read or stored. */
-  googleAccounts: number;
 }
 
 /**
@@ -1302,7 +1235,6 @@ export type TaskLog = typeof taskLogs.$inferSelect;
 export type LibraryApp = typeof libraryApps.$inferSelect;
 export type MediaAsset = typeof mediaAssets.$inferSelect;
 export type MediaCategory = typeof mediaCategories.$inferSelect;
-export type PoolProxy = typeof proxies.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type SocialAccountLog = typeof socialAccountLogs.$inferSelect;

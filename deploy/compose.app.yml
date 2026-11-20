@@ -20,9 +20,6 @@ services:
     volumes:
       # uploads, app library, local media, logs, BitBrowser known_hosts: shared by both colours
       - ${DATA_DIR:?}:/app/apps/api/var
-      - /var/run/docker.sock:/var/run/docker.sock
-    group_add:
-      - "${DOCKER_GID:-0}"
     # SIGTERM → finish in-flight requests, close WebSockets, wait for running tasks; then SIGKILL
     # (a task cut off there fails as task.interrupted on the next leader, it is never rerun).
     stop_grace_period: ${STOP_GRACE:-120s}

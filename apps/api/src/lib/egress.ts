@@ -2,26 +2,19 @@ import type { ProxyStatus } from '../db/schema.js';
 import { parseKv } from './kv.js';
 
 /**
- * Egress probe as a shell script, run where the device's traffic leaves: in the sidecar's netns
- * (`busybox`: helper container) or on the phone itself over adb (`android`: curl, toybox wget as a
- * fallback). Same steps and output either way: egress IP (ipify), latency of that fetch, DNS, and
- * ipinfo.io geo as one JSON line (best effort: rate limits must not fail the check).
+ * Egress probe as a shell script, run on the phone itself over adb (curl, toybox wget as a fallback):
+ * egress IP (ipify), latency of that fetch, DNS, and ipinfo.io geo as one JSON line (best effort:
+ * rate limits must not fail the check).
  */
-export function egressScript(env: 'busybox' | 'android'): string {
-  const fetch = env === 'busybox'
-    ? 'g() { wget -qO- -T "$2" "$1" 2>/dev/null; }'
-    : 'g() { if command -v curl >/dev/null; then curl -fs -m "$2" "$1" 2>/dev/null; else toybox wget -qO- "$1" 2>/dev/null; fi; }';
-  // busybox: nslookup; Android has none, ping exits 2 only when the name does not resolve (or on errors).
-  const dns = env === 'busybox'
-    ? 'nslookup -timeout=6 www.google.com >/dev/null 2>&1 && dns=1 || dns=0'
-    : 'ping -c1 -W3 www.google.com >/dev/null 2>&1; [ $? -ne 2 ] && dns=1 || dns=0';
+export function egressScript(): string {
   return [
-    fetch,
-    env === 'android' ? 'command -v curl >/dev/null || echo "nocurl=1"' : 'true',
+    'g() { if command -v curl >/dev/null; then curl -fs -m "$2" "$1" 2>/dev/null; else toybox wget -qO- "$1" 2>/dev/null; fi; }',
+    'command -v curl >/dev/null || echo "nocurl=1"',
     't0=$(cut -d" " -f1 /proc/uptime)',
     'ip=$(g https://api.ipify.org 12)',
     't1=$(cut -d" " -f1 /proc/uptime)',
-    dns,
+    // Android has no nslookup; ping exits 2 only when the name does not resolve (or on errors).
+    'ping -c1 -W3 www.google.com >/dev/null 2>&1; [ $? -ne 2 ] && dns=1 || dns=0',
     'echo "ip=$ip"; echo "t0=$t0"; echo "t1=$t1"; echo "dns=$dns"',
     'if [ -n "$ip" ]; then echo "geo=$(g https://ipinfo.io/json 8 | tr -d \'\\n\')"; fi',
   ].join('; ');

@@ -36,6 +36,7 @@ export const bitbrowserDriver: SourceDriver<Cfg> = {
     on: (cfg, id) => client(cfg).open(id),
     off: (cfg, id) => client(cfg).shutdown(id),
   },
+  installApp: (cfg, id, appId) => client(cfg).installApp(id, appId),
   openAdb: (cfg, t) => ensureTunnel(t.instanceId, client(cfg), t.phoneId, t.localPort),
   closeAdb: (instanceId) => closeTunnel(instanceId),
 };

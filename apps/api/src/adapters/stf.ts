@@ -201,7 +201,7 @@ export class StfAdapter {
   }
 
   /**
-   * Types characters as key events. Only suitable for short/slow input: on redroid,
+   * Types characters as key events. Only suitable for short/slow input: on some phones,
    * fast per-key injection races and characters get lost or reordered. Use paste() for text.
    */
   async type(channel: string, text: string): Promise<void> {

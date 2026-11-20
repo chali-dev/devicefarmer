@@ -8,6 +8,20 @@
       "when": 1795084027613,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795187796216,
+      "tag": "0001_remove_redroid",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795187810474,
+      "tag": "0002_required_apps",
+      "breakpoints": true
     }
   ]
 }

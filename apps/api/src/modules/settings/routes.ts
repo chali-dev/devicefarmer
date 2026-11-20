@@ -3,7 +3,7 @@ import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
-import { checkHealth, hostCapacity, systemInfo } from '../../health.js';
+import { checkHealth, systemInfo } from '../../health.js';
 import { HttpError } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { CLEANUP_TYPE, DEFAULT_RETENTION_DAYS, getRetention, MAX_RETENTION_DAYS, saveRetention, scheduleTaskCleanup } from '../tasks/retention.js';
@@ -129,15 +129,14 @@ export const settingsRoutes: FastifyPluginAsyncZod = async (app) => {
     return mediaLimitsView();
   });
 
-  /** Env-configured defaults (media limits, adb ports); the audit retention is a setting (系统配置 → 日志). Cheap. */
+  /** Env-configured defaults (media limits); the audit retention is a setting (系统配置 → 日志). Cheap. */
   app.get('/api/settings/config', async () => ({
     media: { imageMaxMb: config.MEDIA_IMAGE_MAX_MB, videoMaxMb: config.MEDIA_VIDEO_MAX_MB, allowedTypes: config.MEDIA_ALLOWED_TYPES.split(',').map((s) => s.trim()).filter(Boolean) },
-    adbPorts: { min: config.ADB_PORT_MIN, max: config.ADB_PORT_MAX },
   }));
 
-  /** Read-only system information: dependency health (real calls), versions, Android host capacity, STF devices. */
+  /** Read-only system information: dependency health (real calls), versions, STF devices. */
   app.get('/api/settings/system', async () => {
-    const [health, capacity, info] = await Promise.all([checkHealth(), hostCapacity(), systemInfo()]);
-    return { health, capacity, ...info };
+    const [health, info] = await Promise.all([checkHealth(), systemInfo()]);
+    return { health, ...info };
   });
 };

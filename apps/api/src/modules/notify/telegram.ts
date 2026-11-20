@@ -49,7 +49,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'channel.failed': { problem: '告警通道 {name} 发送失败', recovered: '告警通道 {name} 已恢复' },
     },
     words: {
-      error: '错误', stopped: '已停止', container_missing: '容器不存在', container_exited: '容器意外退出', sidecar_down: '网络边车未运行',
+      error: '错误', stopped: '已停止',
       powered_off: '手机在平台外关机', op_failed: '操作失败', logged_out: '已登出', wrong_account: '云手机上登录的是其他账号', needs_verification: '需要验证', limited: '受限',
       suspended: '封禁', disabled: '停用',
     },
@@ -68,7 +68,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       'channel.failed': { problem: 'Alert channel {name} failed to deliver', recovered: 'Alert channel {name} works again' },
     },
     words: {
-      error: 'error', stopped: 'stopped', container_missing: 'container missing', container_exited: 'container exited unexpectedly', sidecar_down: 'network sidecar not running',
+      error: 'error', stopped: 'stopped',
       powered_off: 'phone powered off outside the platform', op_failed: 'operation failed', logged_out: 'logged out', wrong_account: 'another account is logged in on the phone', needs_verification: 'needs verification', limited: 'limited',
       suspended: 'suspended', disabled: 'disabled',
     },

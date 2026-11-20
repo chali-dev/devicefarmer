@@ -1,6 +1,6 @@
 # DeviceFarmer STF as an independent service. The Node API talks to it through
-# its REST API (via StfAdapter). Android devices (redroid) are attached by
-# running `adb connect <host>:<port>` against the shared adb server.
+# its REST API (via StfAdapter). Phones (BitBrowser cloud phones, reached through the API's adb tunnels) are
+# attached by running `adb connect <host>:<port>` against the shared adb server.
 name: cloudphone-stf
 
 services:

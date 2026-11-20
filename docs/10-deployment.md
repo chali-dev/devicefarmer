@@ -27,7 +27,7 @@
 | 任务 worker（BullMQ）、monitor（含比特隧道 5700–5799 的打开/续期）、审计/任务保留、每小时调度 | 只在 **leader** 进程运行：`BACKGROUND_WORK=leader` 时 API 用 Redis 租约 `cloudphone:leader:<db>`（SET NX PX 15 s，每 5 s 续期）竞选。新颜色启动后是 standby（只服务 HTTP），旧颜色收到 SIGTERM 后先停 HTTP、等正在跑的任务结束、关闭隧道，**最后**才释放租约，新颜色 2 s 内接手（先 `reconcileTasks`）。续期发现租约被别人拿走 → 进程退出、由 restart 策略以 standby 身份重启，绝不出现两个 leader。开发环境默认 `always`（行为不变）。 |
 | API 端口 | 每色固定端口（3101/3102），proxy 切换 upstream。 |
 | scrcpy relay 监听端口 | 每色一个（3111/3112），`/scrcpy-relay*` 随 proxy 一起切换（relay 会话在哪个进程发起就由哪个进程监听）。 |
-| 设备 adb serial | 与颜色无关：redroid 是 `host.docker.internal:<5555–5604>`（sidecar 发布的端口），比特手机是 `host.docker.internal:<5700–5799>`（leader 绑在 docker0 上的 ssh 转发）。两色都在宿主机网络命名空间，STF 看到的 serial 不变。 |
+| 设备 adb serial | 与颜色无关：比特手机是 `host.docker.internal:<5700–5799>`（leader 绑在 docker0 上的 ssh 转发）。两色都在宿主机网络命名空间，STF 看到的 serial 不变。 |
 | 迁移 | 每次部署在启动新颜色**之前**由 `deploy.sh` 单独执行一次（`node dist/db/migrate.js`，随后执行幂等的 seed）。应用启动时不跑迁移。 |
 | 小时级调度 | 本来就幂等（idempotencyKey），而且只在 leader 上跑。 |
 
@@ -45,8 +45,7 @@
 ## 2. 服务器一次性准备（Ubuntu 24.04）
 
 1. Docker Engine + compose 插件（官方 apt 源），`flock`、`curl` 自带。部署用户：`adduser deploy && usermod -aG docker deploy`。
-2. 防火墙：供应商防火墙只放行 22、80、443。**Docker 发布的端口不受 ufw 控制**：redroid 的 sidecar 把 adb 端口发布在 0.0.0.0:5555–5604，必须在 `DOCKER-USER` 链挡住外部访问，例如
-   `iptables -I DOCKER-USER -i <公网网卡> -p tcp --dport 5555:5604 -j DROP`（并持久化）。STF 端口由 `deploy/stf.override.yml` 绑到 127.0.0.1。
+2. 防火墙：供应商防火墙只放行 22、80、443。STF 端口由 `deploy/stf.override.yml` 绑到 127.0.0.1。
    STF adb 容器访问 docker0 上的比特隧道端口：`ufw allow in from 172.16.0.0/12 to 172.17.0.1 port 5700:5799 proto tcp`（docs/08 §5.1）。
 3. 目录（`DEPLOY_DIR=/srv/cloudphone`）：
    ```bash

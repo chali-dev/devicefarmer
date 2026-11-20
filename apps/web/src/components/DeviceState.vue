@@ -13,7 +13,7 @@ import { INSTANCE_STATUS_COLOR } from './common/status'
  * priority: 风控暂停 (red; tooltip: reason + time; admins get 恢复) > not running (the lifecycle status: stopped grey,
  * starting/stopping blue, error red with the last error) > 离线 (running but adb doesn't see it, grey) > 忙 (an
  * automatic operation holds the device: collect / check / feed / reply / publish, blue) > 正常 (green). System / ADB /
- * STF readiness is in the tooltip instead of separate tags. A stopped external phone (BitBrowser) of a non-admin says
+ * STF readiness is in the tooltip instead of separate tags. A stopped phone (BitBrowser) of a non-admin says
  * 「未开机，请联系管理员」: only admins power those (billed).
  */
 const props = defineProps<{ instance: Instance; automation?: DeviceAutomation | null; resumable?: boolean; admin?: boolean }>()
@@ -31,7 +31,7 @@ const state = computed(() => {
       tip: t('devices.state.haltedTip', { reason: codeText(a.halted.code, undefined, a.halted.code), source: t(`risk.sources.${a.halted.source}`), time: fmtDateTime(a.halted.at) }) }
   }
   if (i.status !== 'running') {
-    if (i.sourceId && !props.admin && (i.status === 'stopped' || i.status === 'error')) {
+    if (!props.admin && (i.status === 'stopped' || i.status === 'error')) {
       return { key: i.status, badge: 'default' as const, label: t('devices.state.askAdmin'), tip: i.lastError ?? null }
     }
     const color = INSTANCE_STATUS_COLOR[i.status] ?? 'default'

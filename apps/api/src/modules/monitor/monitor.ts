@@ -1,11 +1,9 @@
-import { isNotNull } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import { config } from '../../config.js';
 import { db, schema } from '../../db/index.js';
 import type { Instance } from '../../db/schema.js';
-import { getProfile } from '../../profiles.js';
-import { adb, dockerHost, network, stf } from '../../services.js';
-import { checkGoogleHealth } from '../google/health.js';
+import { adb, stf } from '../../services.js';
+import { queueRequiredAppsCheck } from '../library/required.js';
 import { checkEgress } from '../instances/egress.js';
 import { updateInstance } from '../instances/repo.js';
 import { deviceStatusChanged, type DownReason } from '../notify/triggers.js';
@@ -13,16 +11,15 @@ import { sourceOf } from '../sources/index.js';
 import { noteAdbRtt } from '../system/connections.js';
 
 const BUSY: Instance['status'][] = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
-const GOOGLE_CHECK_MS = 60_000;
-const PROXY_CHECK_MS = 5 * 60_000;
-/** External phones' power/adb poll (BitBrowser's client API allows 1 request per second in total). */
-const EXT_INTERVAL_MS = 15_000;
+const EGRESS_CHECK_MS = 5 * 60_000;
+/** Power/adb poll (BitBrowser's client API allows 1 request per second in total). */
+const INTERVAL_MS = 15_000;
 
 type AdbStates = Map<string, string>;
 type StfDevices = Map<string, { present?: boolean; ready?: boolean; owner?: { email?: string } | null }>;
 
 /**
- * adb/boot/STF part of the reconciliation, shared by every engine: re-attaches dropped adb
+ * adb/boot/STF part of the reconciliation: re-attaches dropped adb
  * connections, claims the device in STF, and marks a device that is up again as running.
  */
 async function observeAdb(log: FastifyBaseLogger, inst: Instance, adbStates: AdbStates, stfBySerial: StfDevices, patch: Partial<Instance>): Promise<boolean> {
@@ -56,83 +53,19 @@ const clearDevice = (inst: Instance, patch: Partial<Instance>) => {
 };
 
 /**
- * Reconciles observed state into the DB. STF status lags behind reality
- * (it kept reporting ready while adb was offline), so health is decided by
- * our own checks: Docker state + adb state + boot_completed; STF is advisory.
+ * Reconciles observed state into the DB, every INTERVAL_MS (STF's status lags reality, so health is decided by our
+ * own checks: power state + adb state + boot_completed; STF is advisory). Per phone: power state from its source's
+ * driver, then its adb connection, then the adb/STF reconciliation. A phone switched off outside the platform
+ * becomes `stopped`; one switched on outside it is attached, becomes `running` once adb sees it booted, and gets
+ * the 必装应用 check (library/required.ts).
  */
-export function startMonitor(log: FastifyBaseLogger, intervalMs = 5000): () => void {
-  let running = false;
-
-  async function tick(): Promise<void> {
-    if (running) return;
-    running = true;
-    try {
-      const instances = (await db.select().from(schema.instances)).filter((i) => i.sourceId === null);
-      if (instances.length === 0) return;
-      const [containers, netStates, adbStates, stfDevices] = await Promise.all([
-        dockerHost.listStates(),
-        network.listStates(),
-        adb.states(),
-        stf.listDevices().catch((err) => { log.warn({ err }, 'STF unreachable'); return null; }),
-      ]);
-      const stfBySerial = new Map((stfDevices ?? []).map((d) => [d.serial, d]));
-
-      for (const inst of instances) {
-        if (BUSY.includes(inst.status)) continue;
-        const serial = adb.serialFor(inst.adbPort);
-        const c = containers.get(inst.id);
-        const patch: Partial<Instance> = {};
-        let reason: DownReason | undefined;
-
-        if (!c || c.state !== 'running') {
-          if (inst.status === 'running') {
-            patch.status = c ? 'stopped' : 'error';
-            reason = c ? 'container_exited' : 'container_missing';
-            patch.lastError = c ? `container ${c.state} unexpectedly` : 'container missing on Android host';
-          }
-          clearDevice(inst, patch);
-        } else if (inst.netContainerId && netStates.get(inst.id) !== 'running') {
-          // Android without its network sidecar has no network at all (namespace owner gone).
-          if (inst.status !== 'error') { patch.status = 'error'; patch.lastError = '网络边车未运行（请重启实例）'; reason = 'sidecar_down'; }
-        } else {
-          const booted = await observeAdb(log, inst, adbStates, stfBySerial, patch);
-          if (inst.containerId !== c.containerId) patch.containerId = c.containerId;
-          // Google services health for GApps profiles, at most once a minute.
-          const due = !inst.google || Date.now() - Date.parse(inst.google.checkedAt) > GOOGLE_CHECK_MS;
-          const proxyDue = inst.proxyId && inst.netContainerId && (!inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > PROXY_CHECK_MS);
-          if (proxyDue && booted) patch.proxyStatus = await network.check(inst.netContainerId!);
-          if (getProfile(inst.profile)?.gapps && booted && due) {
-            patch.google = await checkGoogleHealth(inst.adbPort).catch((err) => { log.warn({ err, instance: inst.name }, 'google health failed'); return inst.google; });
-          }
-        }
-        if (Object.keys(patch).length) await updateInstance(inst.id, patch);
-        await deviceStatusChanged(inst, patch.status, reason);
-      }
-    } catch (err) {
-      log.error({ err }, 'monitor tick failed');
-    } finally {
-      running = false;
-    }
-  }
-
-  const timer = setInterval(() => void tick(), intervalMs);
-  void tick();
-  const stopExt = startExternalMonitor(log);
-  return () => { clearInterval(timer); stopExt(); };
-}
-
-/**
- * External phones (device sources): power state from the source's driver, then its adb connection,
- * then the shared adb/STF reconciliation. A phone switched off outside the platform becomes
- * `stopped`; one switched on outside it is attached and becomes `running` once adb sees it booted.
- */
-function startExternalMonitor(log: FastifyBaseLogger): () => void {
+export function startMonitor(log: FastifyBaseLogger): () => void {
   let running = false;
   async function tick(): Promise<void> {
     if (running) return;
     running = true;
     try {
-      const rows = await db.select().from(schema.instances).where(isNotNull(schema.instances.sourceId));
+      const rows = await db.select().from(schema.instances);
       if (!rows.length) return;
       const [adbStates, stfDevices] = await Promise.all([adb.states(), stf.listDevices().catch(() => null)]);
       const stfBySerial = new Map((stfDevices ?? []).map((d) => [d.serial, d]));
@@ -159,8 +92,9 @@ function startExternalMonitor(log: FastifyBaseLogger): () => void {
           try {
             await src.driver.openAdb(src.cfg, src.target);
             const up = await observeAdb(log, inst, adbStates, stfBySerial, patch);
-            // Egress as the phone sees it (its source's proxy), every PROXY_CHECK_MS; in the background so a slow probe doesn't hold up the other phones.
-            const egressDue = !inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > PROXY_CHECK_MS;
+            if (patch.status === 'running') void queueRequiredAppsCheck(inst, null);
+            // Egress as the phone sees it (its source's proxy), every EGRESS_CHECK_MS; in the background so a slow probe doesn't hold up the other phones.
+            const egressDue = !inst.proxyStatus || Date.now() - Date.parse(inst.proxyStatus.checkedAt) > EGRESS_CHECK_MS;
             if (up && egressDue && (patch.status ?? inst.status) === 'running') {
               void checkEgress(inst).catch((err) => log.warn({ err, instance: inst.name }, 'external phone: egress check failed'));
             }
@@ -174,12 +108,12 @@ function startExternalMonitor(log: FastifyBaseLogger): () => void {
         await deviceStatusChanged(inst, patch.status, 'powered_off');
       }
     } catch (err) {
-      log.error({ err }, 'external monitor tick failed');
+      log.error({ err }, 'monitor tick failed');
     } finally {
       running = false;
     }
   }
-  const timer = setInterval(() => void tick(), EXT_INTERVAL_MS);
+  const timer = setInterval(() => void tick(), INTERVAL_MS);
   void tick();
   return () => clearInterval(timer);
 }

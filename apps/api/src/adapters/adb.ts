@@ -114,7 +114,7 @@ export class AdbAdapter {
   async egress(adbPort: number): Promise<ProxyStatus> {
     const checkedAt = new Date().toISOString();
     try {
-      return parseEgress(await this.shell(adbPort, egressScript('android'), 35_000), checkedAt, 'no egress from the device (offline or proxy unreachable)');
+      return parseEgress(await this.shell(adbPort, egressScript(), 35_000), checkedAt, 'no egress from the device (offline or proxy unreachable)');
     } catch (err) {
       return { checkedAt, ok: false, egressIp: null, latencyMs: null, dnsOk: false, error: (err as Error).message.slice(0, 300) };
     }
@@ -256,7 +256,7 @@ export class AdbAdapter {
    * Ensures the secure capture helper (CpCapture via app_process as the system user) is running
    * and returns a stream of [int32 len][JPEG] frames. The helper runs in the foreground of an adb
    * shell stream held here: backgrounded processes get killed when adbkit's shell connection
-   * closes, so the stream's lifetime is the helper's lifetime. Requires userdebug `su` (redroid).
+   * closes, so the stream's lifetime is the helper's lifetime. Requires `su` (userdebug builds).
    */
   async openSecureCapture(adbPort: number, dexPath: string, fps = 10, quality = 70): Promise<import('node:stream').Duplex> {
     const SOCK = 'cloudphone-capture';
@@ -280,6 +280,12 @@ export class AdbAdapter {
       }
     }
     return this.client.getDevice(this.serialFor(adbPort)).openLocal(`localabstract:${SOCK}`);
+  }
+
+  /** Whether a package is installed (`pm path`; also apps of the system image). */
+  async isInstalled(adbPort: number, pkg: string, timeoutMs?: number): Promise<boolean> {
+    if (!/^[a-zA-Z0-9_.]{3,150}$/.test(pkg)) throw new Error('invalid package name');
+    return /^package:/m.test(await this.shell(adbPort, `pm path ${pkg}`, timeoutMs));
   }
 
   /** Version of an installed package. */

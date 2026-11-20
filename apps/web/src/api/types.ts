@@ -12,25 +12,19 @@ export interface CustomRole { id: string; name: string; description: string | nu
 export interface Instance {
   id: string
   name: string
-  engine: 'redroid' | 'emulator' | 'bitbrowser'
-  /** Device source and the phone's id there (external phones, e.g. BitBrowser); null for local containers. */
-  sourceId: string | null
-  externalId: string | null
-  profile: string
-  image: string
+  /** Device source type: every device is an external phone of a device source (BitBrowser). */
+  engine: 'bitbrowser'
+  /** Device source and the phone's id there. */
+  sourceId: string
+  externalId: string
   adbPort: number
-  containerId: string | null
   status: InstanceStatus
   adbState: string | null
   bootCompleted: boolean
   stfReady: boolean
   lastError: string | null
-  google: GoogleHealth | null
-  netContainerId: string | null
-  /** Bound pool proxy (non-secret fields only). */
-  proxy: InstanceProxy | null
   proxyStatus: { checkedAt: string; ok: boolean; egressIp: string | null; latencyMs: number | null; dnsOk: boolean; error: string | null; country?: string | null; region?: string | null; city?: string | null } | null
-  spec: { width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string }
+  spec: { width: number; height: number; dpi: number }
   /** Social platforms allowed on the device; null = all. */
   allowedPlatforms: string[] | null
   createdAt: string
@@ -41,20 +35,11 @@ export interface Instance {
 
 export interface InstanceOwner { id: string; username: string; displayName: string | null }
 
-export interface GoogleHealth {
-  checkedAt: string
-  gms: { installed: boolean; version: string | null; running: boolean }
-  gsf: { installed: boolean; gsfId: string | null }
-  playStore: { installed: boolean; version: string | null }
-  youtube: { installed: boolean; version: string | null; playing: boolean }
-  googleAccounts: number
-}
-
 export interface InstalledApp { package: string; versionName: string | null; versionCode: string | null; protected: boolean }
 
 export interface LibraryApp {
   id: string; package: string; versionName: string | null; versionCode: string
-  files: { name: string; size: number; sha256: string }[]; preinstall: boolean; sourceInstance: string | null; createdAt: string
+  files: { name: string; size: number; sha256: string }[]; sourceInstance: string | null; createdAt: string
 }
 /** GET /api/library/:id/targets: only installable/update can be picked; installed ones are hidden. */
 export type LibraryTargetState = 'installable' | 'update' | 'installed' | 'installing' | 'offline' | 'busy'
@@ -72,36 +57,11 @@ export interface LibraryInstallLog {
   taskId: string; status: TaskStatus; errorCode: string | null; error: string | null
   createdAt: string; finishedAt: string | null
   instanceId: string | null; instanceName: string; deviceExists: boolean; operator: string | null
-  versionCode: string | null; versionName: string | null; preinstall: boolean
+  versionCode: string | null; versionName: string | null
 }
+/** 必装应用 (GET /api/library/required): packages every phone must have; missing ones are installed from BitBrowser's app store. */
+export interface RequiredApp { id: string; package: string; name: string; bitbrowserAppId: string; createdAt: string; updatedAt: string }
 
-export type ProxyType = 'socks5' | 'http'
-export type ProxyStatus = 'unchecked' | 'ok' | 'failed'
-export const PROXY_KINDS = ['static', 'mobile'] as const
-export type ProxyKind = (typeof PROXY_KINDS)[number]
-export const PROXY_STATUS_COLOR: Record<ProxyStatus, string> = { unchecked: 'default', ok: 'success', failed: 'error' }
-
-/** What any user who can see a device knows about its proxy (no credentials). */
-export interface InstanceProxy {
-  id: string; label: string | null; type: ProxyType; host: string; port: number
-  country: string | null; city: string | null; hasAuth: boolean; status: ProxyStatus
-}
-
-export interface ProxyCheck { at: string; ok: boolean; egressIp: string | null; latencyMs: number | null; country: string | null; city: string | null; error: string | null }
-
-/** Pool entry (admin API). The password is write-only: only `hasPassword` is returned. */
-export interface PoolProxy {
-  id: string; label: string | null; type: ProxyType; kind: ProxyKind; host: string; port: number; username: string | null; hasPassword: boolean
-  country: string | null; region: string | null; city: string | null; provider: string | null; notes: string | null
-  status: ProxyStatus; lastCheck: ProxyCheck | null; createdAt: string; updatedAt: string
-  boundInstance: { id: string; name: string } | null
-}
-
-export interface ProxyImportLine { line: number; input: string; status: 'created' | 'duplicate' | 'invalid'; id?: string; error?: string }
-export interface ProxyImportResult { dryRun: boolean; results: ProxyImportLine[]; created: number; duplicate: number; invalid: number }
-
-/** Short display of a device's / pool proxy. */
-export const proxyLabel = (p: { label: string | null; host: string; port: number }) => p.label || `${p.host}:${p.port}`
 /** Measured egress location: "IN · Maharashtra · Mumbai" (repeated parts dropped), or '' before a check with geo. */
 export const egressGeo = (s: Instance['proxyStatus'] | undefined) =>
   s?.country ? [s.country, s.region, s.city].filter((x, n, a) => x && a.indexOf(x) === n).join(' · ') : ''
@@ -115,8 +75,6 @@ export interface SourcePhone {
   id: string; name: string; detail: string | null; model: string | null; region: string | null; on: boolean | null
   instance: { id: string; name: string } | null
 }
-
-export interface Profile { id: string; label: string; engine: string; android: number | null; gapps: boolean; available: boolean; reason: string | null }
 
 export type TaskStatus = 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled'
 export const TASK_STATUSES: TaskStatus[] = ['pending', 'scheduled', 'running', 'success', 'failed', 'cancelled']
@@ -167,11 +125,6 @@ export type PlatformEvent =
   | { type: 'notification.created'; userId: string; notification: AppNotification }
 
 export const BUSY_STATUSES: InstanceStatus[] = ['creating', 'starting', 'stopping', 'restarting', 'deleting']
-/**
- * Start / stop / restart allowed in the UI (same rule as the API, instances.external_power_admin_only): external phones
- * (BitBrowser, `sourceId` set, power-on billed) only for admins; local containers for everyone with access.
- */
-export const canPower = (i: Pick<Instance, 'sourceId'>, admin: boolean) => admin || !i.sourceId
 
 export type MediaScope = 'public' | 'mine' | 'favorites' | 'all-users'
 export type MediaStatus = 'processing' | 'ready' | 'failed' | 'disabled'
@@ -249,11 +202,6 @@ export function auditActionText(action: string): string {
   return te(key) ? t(key) : action
 }
 
-/** Localized profile (image) label; falls back to the API's label. */
-export function profileLabel(id: string, fallback: string): string {
-  return te(`profiles.${id}`) ? t(`profiles.${id}`) : fallback
-}
-
 // ---------------------------------------------------------------- social accounts (社交账号)
 export type SocialLoginStatus = 'unknown' | 'logged_in' | 'logged_out' | 'needs_verification'
 export type SocialAccountStatus = 'active' | 'limited' | 'suspended' | 'disabled'
@@ -281,8 +229,6 @@ export interface SocialAccount {
   tags: string[]
   instanceId: string | null
   instance: { id: string; name: string; status: string; accessible: boolean } | null
-  /** Derived from the device's pool proxy (non-secret fields). */
-  proxy: InstanceProxy | null
   /** Measured egress of the linked device (only with a grant on it). */
   egress: { ip: string | null; country: string | null; region: string | null; city: string | null; checkedAt: string } | null
   loginStatus: SocialLoginStatus
@@ -467,7 +413,6 @@ export interface PublishCapability {
 export interface PublishPlatform { id: string; name: string; capability: PublishCapability; postTypes: PostType[]; known: boolean }
 
 // ---------------------------------------------------------------- dashboard (仪表板) + settings (设置)
-export interface DashboardCapacity { freeMb: number | null; error: string | null; checkedAt: string; fits: { profile: string; memEstimateMb: number; count: number }[] }
 /** 我的云机状态: the simplified 云机管理 state per device (DeviceState.vue), counted; 需要处理 = halted / error / offline / stopped external phones. */
 export interface DashboardDevices {
   total: number
@@ -487,9 +432,8 @@ export interface DashboardResponse {
   errors: Record<string, string>
 }
 export interface SystemInfo {
-  health: { ok: boolean; checks: Record<string, string>; capabilities: { kvm: boolean } }
-  capacity: DashboardCapacity
-  versions: { node: string; postgres: string | null; redis: string | null; docker: { version: string; os: string; arch: string; kernel: string | null } | null }
+  health: { ok: boolean; checks: Record<string, string> }
+  versions: { node: string; postgres: string | null; redis: string | null }
   env: string
   uptimeSec: number
   stf: { reachable: boolean; devices: number; present: number; ready: number }

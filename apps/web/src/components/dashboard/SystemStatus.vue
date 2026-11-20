@@ -7,9 +7,9 @@ import type { SystemInfo } from '../../api/types'
 
 /**
  * Dashboard → 系统状态 (admin only, read-only; moved here from the settings page): dependency health (real
- * checks shared with /api/health), versions, host capacity, STF. Loads GET /api/settings/system on its own
+ * checks shared with /api/health), versions, STF. Loads GET /api/settings/system on its own
  * (on mount + its refresh button), so the heavier health checks never slow down or join the dashboard's
- * 30 s polling. Since the dashboard simplification (2026-11-19) it is one line (health, free memory, STF, uptime);
+ * 30 s polling. Since the dashboard simplification (2026-11-19) it is one line (health, STF, uptime);
  * 详情 unfolds the full tables.
  */
 const { t } = useI18n()
@@ -37,7 +37,6 @@ const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.fl
         <a-tooltip :title="failing.join(', ') || undefined">
           <a-tag :color="info.health.ok ? 'success' : 'error'">{{ info.health.ok ? t('dashboard.system.allOk') : t('dashboard.system.degradedList', { list: failing.join(', ') }) }}</a-tag>
         </a-tooltip>
-        <span class="muted small">{{ t('dashboard.system.freeMem') }} {{ info.capacity.freeMb ?? '—' }} MiB</span>
         <span class="muted small">STF <a-badge :status="info.stf.reachable ? 'success' : 'error'" /></span>
         <span class="muted small">{{ t('dashboard.system.uptime', { v: uptime(info.uptimeSec) }) }} · {{ info.env }}</span>
       </template>
@@ -56,7 +55,6 @@ const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.fl
               <a-descriptions-item v-for="(v, k) in info.health.checks" :key="k" :label="k">
                 <a-badge :status="v === 'ok' ? 'success' : 'error'" :text="v === 'ok' ? 'OK' : v" />
               </a-descriptions-item>
-              <a-descriptions-item label="KVM">{{ info.health.capabilities.kvm ? t('common.yes') : t('common.no') }}</a-descriptions-item>
             </a-descriptions>
           </a-card>
         </a-col>
@@ -66,21 +64,6 @@ const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.fl
               <a-descriptions-item label="Node.js">{{ info.versions.node }}</a-descriptions-item>
               <a-descriptions-item label="PostgreSQL">{{ info.versions.postgres ?? '—' }}</a-descriptions-item>
               <a-descriptions-item label="Redis">{{ info.versions.redis ?? '—' }}</a-descriptions-item>
-              <a-descriptions-item :label="t('dashboard.system.dockerHost')">
-                <template v-if="info.versions.docker">{{ info.versions.docker.version }} · {{ info.versions.docker.os }}/{{ info.versions.docker.arch }} · {{ info.versions.docker.kernel ?? '' }}</template>
-                <template v-else>—</template>
-              </a-descriptions-item>
-            </a-descriptions>
-          </a-card>
-        </a-col>
-        <a-col :xs="24" :lg="12">
-          <a-card size="small" type="inner" :title="t('dashboard.system.capacity')">
-            <a-alert v-if="info.capacity.error" type="warning" show-icon :message="info.capacity.error" />
-            <a-descriptions v-else size="small" :column="1">
-              <a-descriptions-item :label="t('dashboard.system.freeMem')">{{ info.capacity.freeMb }} MiB</a-descriptions-item>
-              <a-descriptions-item v-for="f in info.capacity.fits" :key="f.profile" :label="f.profile">
-                {{ t('dashboard.system.fits', { n: f.count, mb: f.memEstimateMb }) }}
-              </a-descriptions-item>
             </a-descriptions>
           </a-card>
         </a-col>

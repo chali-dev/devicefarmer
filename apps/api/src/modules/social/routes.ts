@@ -2,10 +2,9 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql, type SQL } from 'd
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
+import { badRequest, conflict, forbidden, notFound, isUniqueViolation } from '../../lib/errors.js';
 import { assertPlatformEnabled } from '../../lib/platforms-enabled.js';
 import { isAdmin, type AuthUser } from '../auth/rbac.js';
-import { isUniqueViolation } from '../proxies/pool.js';
 import { requestAccountCheck } from './check.js';
 import { discoverDeviceAccounts, requestAccountSync } from './sync.js';
 import { assertAccountDevice } from './assign.js';

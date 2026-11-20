@@ -36,7 +36,8 @@ const router = createRouter({
         { path: 'platforms', redirect: '/settings' },
         { path: 'alert-channels', name: 'alert-channels', component: () => import('../views/AlertChannelsView.vue'), meta: { admin: true } },
         { path: 'risk', name: 'risk', component: () => import('../views/RiskView.vue'), meta: { admin: true } },
-        { path: 'proxies', name: 'proxies', component: () => import('../views/ProxiesView.vue'), meta: { admin: true } },
+        // 代理IP池 removed with redroid (2026-11-20): phones get their proxy from their source.
+        { path: 'proxies', redirect: '/instances' },
         { path: 'users', name: 'users', component: () => import('../views/UsersView.vue'), meta: { admin: true } },
         // 权限管理 = 角色菜单权限 (owner 2026-11-18; device assignment is 我的云机 → 分配).
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },

@@ -19,9 +19,9 @@ import { useInstancesStore } from '../stores/instances'
  * (its 连线 tab has the status/adb change history).
  */
 interface Row {
-  id: string; name: string; engine: string; sourceId: string | null; status: InstanceStatus
+  id: string; name: string; engine: string; sourceId: string; status: InstanceStatus
   adbState: string | null; bootCompleted: boolean; stfReady: boolean; lastError: string | null
-  proxyId: string | null; proxyStatus: Instance['proxyStatus']
+  proxyStatus: Instance['proxyStatus']
   lastOfflineAt: string | null
   adbRttMs: number | null; adbRttAt: string | null
   scrcpy: { viewers: number; link: 'relay' | 'adb' } | null
@@ -105,8 +105,7 @@ const columns = computed(() => [
             <span v-else class="muted">{{ t('sysadmin.conn.idle') }}</span>
           </template>
           <template v-else-if="column.key === 'proxy'">
-            <span v-if="!record.proxyId" class="muted">{{ t('sysadmin.conn.noProxy') }}</span>
-            <a-tooltip v-else-if="record.proxyStatus" :title="`${record.proxyStatus.error ?? ''} ${fmtDateTime(record.proxyStatus.checkedAt)}`">
+            <a-tooltip v-if="record.proxyStatus" :title="`${record.proxyStatus.error ?? ''} ${fmtDateTime(record.proxyStatus.checkedAt)}`">
               <a-tag :color="record.proxyStatus.ok ? 'green' : 'red'">{{ record.proxyStatus.ok ? t('sysadmin.conn.egressOk') : t('sysadmin.conn.egressFail') }}</a-tag>
               <span class="small">{{ record.proxyStatus.egressIp ?? '' }}</span>
             </a-tooltip>

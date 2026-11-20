@@ -28,10 +28,6 @@ export const AUDIT_EXCLUDED = new Set([
   'POST /api/auth/login',
   'POST /api/auth/captcha/verify',
   'POST /api/instances/:id/proxy/check',
-  'POST /api/proxies/:id/check',
-  'POST /api/proxies/check',
-  'POST /api/proxies/test',
-  'POST /api/instances/:id/google/check',
   'POST /api/settings/storage/test',
   'POST /api/tracked-accounts/parse',
   // Marking one's own notifications read or deleting them is per-user inbox state, not a configuration change
@@ -144,16 +140,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'grants.update', detail: ({ body }) => ({ scope: 'device', userIds: ids(body.userIds), count: ids(body.userIds).length }),
   },
   // devices (设备)
-  'POST /api/instances': {
-    action: 'device.create',
-    target: ({ body }) => `${body.namePrefix}-* × ${body.count}`,
-    detail: ({ body }) => ({
-      profile: body.profile, count: body.count, namePrefix: body.namePrefix,
-      width: body.width, height: body.height, dpi: body.dpi, memoryMb: body.memoryMb,
-      locale: body.locale, timezone: body.timezone, deviceName: body.deviceName,
-      proxyMode: body.proxyMode, force: body.force,
-    }),
-  },
   'POST /api/instances/external': { action: 'device.add_external', detail: ({ body }) => ({ sourceId: body.sourceId, phoneIds: Array.isArray(body.phoneIds) ? body.phoneIds : [] }) },
   'POST /api/device-sources': { action: 'device_source.create', target: ({ body }) => body.name as string, detail: ({ body }) => ({ type: body.type, config: body.config }) },
   'PATCH /api/device-sources/:id': { action: 'device_source.update', detail: ({ body }) => ({ name: body.name, config: body.config }) },
@@ -163,10 +149,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
     target: ({ body }) => instanceNames(ids(body.ids)),
     detail: ({ body }) => ({ action: body.action, ids: ids(body.ids), count: ids(body.ids).length }),
   },
-  'PATCH /api/instances/:id/settings': {
-    action: 'device.settings', detail: ({ body }) => ({ locale: body.locale, timezone: body.timezone, deviceName: body.deviceName }),
-  },
-  'PUT /api/instances/:id/proxy': { action: 'proxy.set', detail: ({ body }) => ({ proxyId: body.proxyId ?? null }) },
   'PUT /api/instances/:id/platforms': { action: 'device.platforms', detail: ({ body }) => ({ platforms: Array.isArray(body.platforms) ? body.platforms : null }) },
   'POST /api/instances/:id/apk': { action: 'app.install', detail: fileDetail },
   'POST /api/instances/:id/files': { action: 'file.upload', detail: fileDetail },
@@ -189,11 +171,15 @@ export const ACTIONS: Record<string, ActionSpec> = {
     action: 'library.upload',
     detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size } : undefined),
   },
-  'PATCH /api/library/:id': { action: 'library.update', detail: ({ body }) => ({ preinstall: body.preinstall }) },
   'POST /api/library/:id/install': {
     action: 'library.install', detail: ({ body }) => ({ instanceIds: ids(body.instanceIds), count: ids(body.instanceIds).length }),
   },
   'DELETE /api/library/:id': { action: 'library.delete' },
+  // 必装应用 (library/required.ts); the route sets the target (package)
+  'POST /api/library/required': { action: 'library.required_create', detail: ({ body }) => ({ package: body.package, appId: body.bitbrowserAppId }) },
+  'PUT /api/library/required/:id': { action: 'library.required_update', detail: ({ body }) => ({ package: body.package, appId: body.bitbrowserAppId }) },
+  'DELETE /api/library/required/:id': { action: 'library.required_delete' },
+  'POST /api/library/required/check': { action: 'library.required_check' },
   // media library (素材库)
   'POST /api/media/upload': {
     action: 'media.upload', target: ({ upload }) => upload?.filename,
@@ -226,24 +212,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
     }),
   },
   // proxy pool (代理管理). Usernames/passwords are never stored in the log.
-  'POST /api/proxies': {
-    action: 'proxy.create', target: ({ body }) => proxyText(body),
-    detail: ({ body }) => ({ type: body.type, kind: body.kind, host: body.host, port: body.port, auth: Boolean(body.username), label: body.label, provider: body.provider }),
-  },
-  'PUT /api/proxies/:id': {
-    action: 'proxy.update',
-    detail: ({ body }) => ({ fields: Object.keys(body).filter((k) => body[k] !== undefined && k !== 'password' && k !== 'username'), authChanged: body.password !== undefined || body.username !== undefined || undefined }),
-  },
-  'DELETE /api/proxies/:id': { action: 'proxy.delete' },
   // 批量操作: counts only (the route adds ok/skipped/changed); never hosts or credentials.
-  'POST /api/proxies/batch': {
-    action: ({ body }) => (body.action === 'delete' ? 'proxy.batch_delete' : body.action === 'set-kind' ? 'proxy.batch_set_kind' : 'proxy.batch_unknown'),
-    detail: ({ body }) => ({ action: body.action, count: ids(body.ids).length, kind: body.kind }),
-  },
-  'POST /api/proxies/import': {
-    action: 'proxy.import',
-    detail: ({ body }) => ({ defaultType: body.defaultType, kind: body.kind, dryRun: body.dryRun, lines: typeof body.text === 'string' ? body.text.split(/\r?\n/).filter((l) => l.trim()).length : 0 }),
-  },
   // social accounts (社交账号). Notes and error texts are not copied into the audit log.
   'POST /api/social/accounts': {
     action: 'social.account_create', target: ({ body }) => `${String(body.platform)} @${String(body.handle).replace(/^@+/, '')}`,
@@ -517,11 +486,6 @@ async function resolveTarget(pattern: string, id: string): Promise<string | null
   if (pattern.startsWith('/api/media/:id')) {
     const [r] = await db.select({ name: schema.mediaAssets.name }).from(schema.mediaAssets).where(eq(schema.mediaAssets.id, id));
     return r?.name ?? null;
-  }
-  if (pattern.startsWith('/api/proxies/:id')) {
-    const [r] = await db.select({ label: schema.proxies.label, type: schema.proxies.type, host: schema.proxies.host, port: schema.proxies.port })
-      .from(schema.proxies).where(eq(schema.proxies.id, id));
-    return r ? (r.label ? `${r.label} (${r.type}://${r.host}:${r.port})` : `${r.type}://${r.host}:${r.port}`) : null;
   }
   if (pattern.startsWith('/api/social/accounts/:id')) {
     const [r] = await db.select({ platform: schema.socialAccounts.platform, handle: schema.socialAccounts.handle }).from(schema.socialAccounts).where(eq(schema.socialAccounts.id, id));

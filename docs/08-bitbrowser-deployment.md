@@ -12,12 +12,12 @@
 
 理由：
 
-1. 比特客户端只有 Windows/macOS 版，而且是要有交互式桌面会话的 Electron 程序，没法放进 Linux 容器；我们的栈（Docker、STF、本地 redroid）又必须在 Linux 上。两者分开，Windows 更新或重启只影响比特来源，不影响 API、STF 和本地设备。
+1. 比特客户端只有 Windows/macOS 版，而且是要有交互式桌面会话的 Electron 程序，没法放进 Linux 容器；我们的栈（Docker、STF）又放在 Linux 上。两者分开，Windows 更新或重启只影响比特来源，不影响 API 和 STF。
 2. 用反向隧道时 Windows 不需要开任何入站端口。客户端本地 API **固定绑定 0.0.0.0、默认无鉴权**（见 §2），所以入站越少越安全。
 3. 隧道断了，Linux 上的 `127.0.0.1:54345` 会立刻返回 ECONNREFUSED。我们现在的代码对"连接挂起"处理很差（每次调用要等满 30 s 超时，而且请求是串行的），快速失败正好避开这个问题（见 §4）。
 4. 代码已经支持多个来源、多个客户端：每个客户端地址各有一条 1 req/s 队列。以后加客户端，只要加一个 Windows VPS 加一个端口（54346…）。
 
-方案 B（单台 Windows 加 WSL2）不推荐：VPS 上要嵌套虚拟化，Windows 更新会把整套服务一起重启，本地 redroid 也跑不了。
+方案 B（单台 Windows 加 WSL2）不推荐：VPS 上要嵌套虚拟化，Windows 更新会把整套服务一起重启。
 
 上线前必须做的小改动：本地 API Token 支持（`x-api-key`）、修复 `pkill` 参数的 bug、给只读调用设短超时并加熔断、隧道续期时先取新信息再关旧隧道、客户端与 API 时区对齐。完整清单见 §4.3。
 
@@ -62,7 +62,7 @@
 
 ### 3.1 候选方案
 
-- **A-SSH（推荐）**：Linux VPS（API、web、Postgres、Redis、STF，以及本地 redroid，如果主机支持 binder）加 Windows VPS（只装比特客户端）。Windows 用内置 OpenSSH 建反向隧道到 Linux，账号受限（`permitlisten`、无 shell）。
+- **A-SSH（推荐）**：Linux VPS（API、web、Postgres、Redis、STF）加 Windows VPS（只装比特客户端）。Windows 用内置 OpenSSH 建反向隧道到 Linux，账号受限（`permitlisten`、无 shell）。
 - **A-WG**：同 A，但两边用 WireGuard 互联。Linux 直接访问 `http://10.88.0.2:54345`，Windows 防火墙只放行 wg 网卡上来自 10.88.0.1 的流量。
 - **B**：一台 Windows（VPS 或独服）跑客户端，我们的栈跑在 WSL2 里（mirrored 网络）。
 - **C**：客户端继续放在店主的 Mac（或托管 Mac mini）上，经 WireGuard 或反向 SSH 接到 Linux VPS。
@@ -80,13 +80,12 @@
 | 成本（粗略） | Linux €15–40/月 + Windows €15–40/月（低价商），云大厂 Windows $70–150/月 | 同左 | 一台支持嵌套虚拟化的 Windows：$80–200/月（Azure Dv5/Ev5 级别等）| 托管 Mac mini 约 €60–120/月；自家 Mac 几乎零成本 | 独服 €50–120/月 + Windows 授权 |
 | 运维 | 两台机器；tunnel 用计划任务 + 循环脚本 | wg 是系统服务，开机即连，最省心 | WSL2 网络、端口、开机自启都是坑 | 依赖店主的机器 | 需要会 KVM/virtio；Windows 授权 |
 | 扩展到多客户端 | 每台 Windows 一个 Linux 端口（54345/54346…）| 每台一个 wg IP，最干净 | 难 | 难 | 一台独服跑多台 Windows VM |
-| 本地 redroid | 可以（看 Linux 主机是否支持 binder）| 可以 | **不可以**（Hyper-V/WSL 内核没有 binder，且是嵌套虚拟化）| 可以 | 可以 |
 
 ### 3.3 结论
 
 - **起步阶段（1 个比特账号、≤20 台手机）选 A-SSH**：零新增软件，符合店主现有偏好，配合现有代码表现最好。
 - **出现第 2 个账号/客户端，或 SSH 隧道经常需要人工干预时，改用 A-WG**（同时先把 §4.3 P0-3 的短超时和熔断做掉）。
-- 将来上独服做多主机调度（20–50 台 redroid）时，D 值得考虑：Windows 跑在同一台独服的 VM 里，省掉一个供应商。
+- 将来上独服时，D 值得考虑：Windows 跑在同一台独服的 VM 里，省掉一个供应商。
 - B 和 C 不作为生产方案。C 只适合作为过渡或开发环境（也就是现在的状态）。
 
 ### 3.4 机房位置与延迟
@@ -446,4 +445,4 @@ cd apps/api && BITBROWSER_API_URL=http://<WIN_TS_IP>:54345 npx tsx --env-file=..
 6. 是否要多个比特账号？员工子账号能否通过 Local API 操作主账号分享来的手机？
 7. 客户端自动更新会不会在无人值守时重启？更新后端口和 Token 设置是否保留？
 8. Linux VPS 放在 HK/SG（adb 吞吐好）还是 EU（relay 延迟低、离操作员近）？取决于是否把 relay 设为外部手机的默认源。建议先从候选机房实测到 HK 网关和 Mumbai 代理的延迟再定。
-9. 生产上是否继续保留本地 redroid？如果保留，Linux 主机要支持 binder（多数 KVM VPS 可以加载 `binder_linux`；本仓库只在 Lima VM 上验证过）。
+9. ~~生产上是否继续保留本地 redroid？~~ 已决定（店主 2026-11-20）：redroid 已移除，只用比特云手机，将来再对接其他云手机商。

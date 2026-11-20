@@ -13,7 +13,7 @@ import { pagination, TABLE_SIZE } from '../common/ui'
  * from instance_status_events). A single device's tasks, connection history and logcat stay in its log drawer.
  */
 interface DeviceLog {
-  id: number; instanceId: string; instanceName: string; sourceId: string | null; field: 'status' | 'adb'
+  id: number; instanceId: string; instanceName: string; sourceId: string; field: 'status' | 'adb'
   from: string | null; to: string | null; status: string; at: string; offline: boolean
 }
 const { t } = useI18n()

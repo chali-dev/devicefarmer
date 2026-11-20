@@ -83,7 +83,6 @@ export interface InstallLogItem {
   deviceExists: boolean;
   operator: string | null;
   versionCode: string | null; versionName: string | null;
-  preinstall: boolean;
 }
 
 
@@ -105,12 +104,12 @@ export async function installLog(user: AuthUser, pkg: string, limit: number, off
     db.select({ n: count() }).from(T).where(where),
   ]);
   const items = rows.map((r): InstallLogItem => {
-    const { library } = r.payload as { library: { versionCode: string; versionName: string | null; preinstall: boolean } };
+    const { library } = r.payload as { library: { versionCode: string; versionName: string | null } };
     return {
       taskId: r.id, status: r.status, errorCode: r.errorCode, error: r.error, createdAt: r.createdAt, finishedAt: r.finishedAt,
       instanceId: r.instanceId, instanceName: r.current ?? (r.label ?? '').split(' · ')[0]!, deviceExists: r.current != null,
       operator: r.operator ?? null,
-      versionCode: library.versionCode, versionName: library.versionName, preinstall: library.preinstall,
+      versionCode: library.versionCode, versionName: library.versionName,
     };
   });
   return { items, total: tot?.n ?? 0 };

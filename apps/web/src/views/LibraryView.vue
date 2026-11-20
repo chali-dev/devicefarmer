@@ -9,9 +9,13 @@ import PageContainer from '../components/common/PageContainer.vue'
 import { actionColumn, confirmDanger, pagination, TABLE_SIZE } from '../components/common/ui'
 import LibraryInstallModal from '../components/library/LibraryInstallModal.vue'
 import LibraryLogDrawer from '../components/library/LibraryLogDrawer.vue'
+import RequiredAppsCard from '../components/library/RequiredAppsCard.vue'
 import { useInstancesStore } from '../stores/instances'
 
-/** 应用库 (admin only since 2026-11-18, page and API): upload / update APKs in bulk, preinstall, install to devices. */
+/**
+ * 应用库 (admin only since 2026-11-18, page and API): 必装应用 (apps every phone must have, installed from BitBrowser's
+ * app store when missing) on top, then the APK library: upload / update APKs in bulk, install to devices.
+ */
 const { t } = useI18n()
 const apps = ref<LibraryApp[]>([])
 const loading = ref(false)
@@ -49,11 +53,6 @@ const sourceText = (s: string | null) => (s?.startsWith('upload:') ? t('library.
 
 const size = (a: LibraryApp) => `${(a.files.reduce((s, f) => s + f.size, 0) / 1048576).toFixed(1)} MB`
 
-async function setPreinstall(a: LibraryApp, v: boolean) {
-  try { await api('PATCH', `/api/library/${a.id}`, { preinstall: v }); await load() }
-  catch (e) { message.error(errorText(e)) }
-}
-
 function remove(a: LibraryApp) {
   confirmDanger({
     title: t('library.confirmDelete', { name: `${a.package} ${a.versionName ?? ''}`.trim() }), content: t('library.deleteContent'),
@@ -70,7 +69,6 @@ const columns = computed(() => [
   { title: t('library.version'), key: 'version', width: 200 },
   { title: t('library.files'), key: 'files', width: 140 },
   { title: t('library.source'), dataIndex: 'sourceInstance', key: 'source', width: 160 },
-  { title: t('library.preinstall'), key: 'preinstall', width: 110 },
   actionColumn(190),
 ])
 </script>
@@ -80,24 +78,22 @@ const columns = computed(() => [
     <template #title-suffix>
       <a-tooltip :title="t('library.howToBody')"><QuestionCircleOutlined class="muted" /></a-tooltip>
     </template>
-    <template #extra>
-      <a-tooltip :title="t('library.uploadTip')">
-        <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
-          <a-button type="primary" :loading="uploading"><template #icon><UploadOutlined /></template>{{ t('library.upload') }}</a-button>
-        </a-upload>
-      </a-tooltip>
-    </template>
-    <a-card :bordered="false">
-      <a-table :data-source="apps" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :pagination="pagination({ defaultPageSize: 50 })" :scroll="{ x: 1040 }"
+    <RequiredAppsCard />
+    <a-card :bordered="false" :title="t('library.listTitle')">
+      <template #extra>
+        <a-tooltip :title="t('library.uploadTip')">
+          <a-upload :accept="UPLOAD_ACCEPT" :show-upload-list="false" :before-upload="upload" :disabled="uploading">
+            <a-button type="primary" size="small" :loading="uploading"><template #icon><UploadOutlined /></template>{{ t('library.upload') }}</a-button>
+          </a-upload>
+        </a-tooltip>
+      </template>
+      <a-table :data-source="apps" :columns="columns" row-key="id" :size="TABLE_SIZE" :loading="loading" :pagination="pagination({ defaultPageSize: 50 })" :scroll="{ x: 930 }"
         :locale="{ emptyText: t('library.empty') }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'package'"><span class="mono">{{ record.package }}</span></template>
           <template v-else-if="column.key === 'version'">{{ record.versionName ?? '—' }} <span class="muted">({{ record.versionCode }})</span></template>
           <template v-else-if="column.key === 'files'">{{ t('library.apkCount', { n: record.files.length, size: size(record) }) }}</template>
           <template v-else-if="column.key === 'source'">{{ sourceText(record.sourceInstance) }}</template>
-          <template v-else-if="column.key === 'preinstall'">
-            <a-switch :checked="record.preinstall" size="small" @change="(v: any) => setPreinstall(record, v)" />
-          </template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button type="link" size="small" @click="target = record">{{ t('common.install') }}</a-button>

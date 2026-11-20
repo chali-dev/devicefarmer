@@ -90,12 +90,6 @@ export const useInstancesStore = defineStore('instances', () => {
     tasks.value = []
   }
 
-  async function create(body: { proxyMode: 'auto' | 'none' | 'pick'; proxyIds?: string[]; profile: string; count: number; namePrefix: string; width: number; height: number; dpi: number; memoryMb?: number; locale?: string; timezone?: string; deviceName?: string; appIds?: string[] }) {
-    const r = await api<{ instances: Instance[]; taskIds: string[] }>('POST', '/api/instances', body)
-    r.instances.forEach((i) => byId.value.set(i.id, i))
-    return r
-  }
-
   async function action(action: 'start' | 'stop' | 'restart' | 'delete', ids: string[]) {
     return api<{ accepted: { instanceId: string; taskId: string }[]; skipped: { instanceId: string; reason: string; code?: string }[] }>(
       'POST', '/api/instances/actions', { action, ids })
@@ -121,16 +115,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return (await api<{ lines: string[] }>('GET', `/api/instances/${id}/logcat?${p}`)).lines
   }
 
-  async function updateSettings(id: string, body: { locale?: string; timezone?: string; deviceName?: string }) {
-    return api<{ taskId: string | null }>('PATCH', `/api/instances/${id}/settings`, body)
-  }
-
-  async function googleCheck(id: string) {
-    const r = await api<{ google: Instance['google'] }>('POST', `/api/instances/${id}/google/check`)
-    const inst = byId.value.get(id)
-    if (inst) byId.value.set(id, { ...inst, google: r.google })
-    return r.google
-  }
-
-  return { onTaskEvent, onNotification, googleCheck, byId, list, tasks, loading, connected, refresh, connect, disconnect, create, action, installApp, uninstallApp, updateSettings, logcat }
+  return { onTaskEvent, onNotification, byId, list, tasks, loading, connected, refresh, connect, disconnect, action, installApp, uninstallApp, logcat }
 })

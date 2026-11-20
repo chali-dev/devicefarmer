@@ -177,6 +177,14 @@ export class BitBrowserClient {
     await this.call('/phone/shutdown', { id }, POWER_TIMEOUT_MS);
   }
 
+  /**
+   * Installs an app from BitBrowser's app store (`appId` = the store's id of that app version). Asynchronous on
+   * BitBrowser's side: the call returns before the app is on the phone (check with adb `pm path`).
+   */
+  async installApp(id: string, appId: string): Promise<void> {
+    await this.call('/phone/installApp', { id, appId }, POWER_TIMEOUT_MS);
+  }
+
   async adbEnable(id: string): Promise<void> {
     await this.call('/phone/adb/enable', { ids: [id] }, POWER_TIMEOUT_MS);
   }

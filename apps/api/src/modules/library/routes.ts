@@ -8,6 +8,7 @@ import { enqueue } from '../instances/queue.js';
 import { getInstance } from '../instances/repo.js';
 import { prepareUpload } from '../apps/package.js';
 import { installLog, installTargets } from './install.js';
+import { requiredAppRoutes } from './required.js';
 import { addUploadToLibrary, LIBRARY_TASK_REF, libraryInstallJob, libraryTaskRef, removeLibraryApp } from './library.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,8 +16,8 @@ import path from 'node:path';
 const Pkg = z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/);
 
 /**
- * App library (应用库, admin only since 2026-11-18): import from a device or upload, install to instances, preinstall on
- * new instances. Every route requires an admin (403 auth.admin_only otherwise), including the list, targets and logs.
+ * App library (应用库, admin only since 2026-11-18): import from a device or upload, install to devices; 必装应用
+ * (required.ts). Every route requires an admin (403 auth.admin_only otherwise), including the list, targets and logs.
  */
 async function libraryApp(id: string) {
   const [lib] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, id));
@@ -26,6 +27,7 @@ async function libraryApp(id: string) {
 
 export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.requireAdmin);
+  requiredAppRoutes(app);
 
   app.get('/api/library', async () => ({
     apps: await db.select().from(schema.libraryApps).orderBy(schema.libraryApps.package, desc(schema.libraryApps.createdAt)),
@@ -42,7 +44,7 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
   });
 
   /**
-   * Upload (library entries can be preinstalled on every new device). multipart, one file:
+   * Upload. multipart, one file:
    * .apk or a split bundle (.apks/.xapk/.apkm/.zip). Package and version are read from the manifests.
    */
   app.post('/api/library/upload', async (req) => {
@@ -56,17 +58,6 @@ export const libraryRoutes: FastifyPluginAsyncZod = async (app) => {
     } finally {
       await fs.promises.rm(path.dirname(prepared.apkPaths[0]!), { recursive: true, force: true });
     }
-  });
-
-  app.patch('/api/library/:id', {
-    schema: { params: z.object({ id: z.string().uuid() }), body: z.object({ preinstall: z.boolean() }) },
-  }, async (req) => {
-    const [row] = await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.id, req.params.id));
-    if (!row) throw notFound('library app not found', 'library.not_found');
-    // Only one version of a package is preinstalled.
-    if (req.body.preinstall) await db.update(schema.libraryApps).set({ preinstall: false }).where(eq(schema.libraryApps.package, row.package));
-    const [updated] = await db.update(schema.libraryApps).set({ preinstall: req.body.preinstall }).where(eq(schema.libraryApps.id, row.id)).returning();
-    return { app: updated };
   });
 
   /** Devices this entry can be installed on, with the installed version (live read over adb) and a state. */

@@ -14,3 +14,11 @@ export const unauthorized = (msg = 'Unauthorized', code?: string, params?: Error
 export const forbidden = (msg = 'Forbidden', code?: string, params?: ErrorParams) => new HttpError(403, msg, code, params);
 export const notFound = (msg = 'Not found', code?: string, params?: ErrorParams) => new HttpError(404, msg, code, params);
 export const conflict = (msg: string, code?: string, params?: ErrorParams) => new HttpError(409, msg, code, params);
+
+/** A Postgres unique violation (23505), optionally of one constraint / index name; looks through `cause` chains. */
+export function isUniqueViolation(err: unknown, constraint: string): boolean {
+  for (let e = err as { code?: string; constraint_name?: string; cause?: unknown } | undefined; e; e = e.cause as typeof e) {
+    if (e.code === '23505' && (!constraint || e.constraint_name === constraint)) return true;
+  }
+  return false;
+}

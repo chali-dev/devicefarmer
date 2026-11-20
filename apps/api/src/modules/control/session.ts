@@ -37,7 +37,7 @@ const ClientMsg = z.discriminatedUnion('type', [
   z.object({ type: z.literal('keyFrame') }),
 ]);
 
-const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered on redroid
+const SECURE_CHAR_GAP_MS = 120; // human-like pace; bursts get reordered
 
 /** An open session re-checks its user (disabled / removed), device grant and 我的云机 menu this often. */
 const RECHECK_MS = 15_000;

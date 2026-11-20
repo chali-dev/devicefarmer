@@ -40,7 +40,7 @@ export async function connectionPanel(viewer: AuthUser, now = new Date()) {
   const rows = await db.select({
     id: I.id, name: I.name, engine: I.engine, sourceId: I.sourceId, adbPort: I.adbPort, status: I.status,
     adbState: I.adbState, bootCompleted: I.bootCompleted, stfReady: I.stfReady, lastError: I.lastError,
-    proxyId: I.proxyId, proxyStatus: I.proxyStatus, updatedAt: I.updatedAt,
+    proxyStatus: I.proxyStatus, updatedAt: I.updatedAt,
     lastOfflineAt: agg.lastOfflineAt,
   }).from(I).leftJoin(agg, eq(agg.instanceId, I.id))
     .where(isAdmin(viewer) ? undefined : sql`exists (select 1 from ${schema.instanceGrants} g where g.instance_id = ${I.id} and g.user_id = ${viewer.id})`)

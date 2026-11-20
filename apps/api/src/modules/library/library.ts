@@ -23,8 +23,8 @@ export function libraryApks(app: LibraryApp): { apkPaths: string[]; sizes: numbe
 export const LIBRARY_TASK_REF = 'library_app';
 
 /** install-apk payload for a library app: APKs + which app version (kept in the task even if the entry is deleted). */
-export function libraryInstallJob(app: LibraryApp, preinstall = false) {
-  return { ...libraryApks(app), library: { package: app.package, versionCode: app.versionCode, versionName: app.versionName, preinstall } };
+export function libraryInstallJob(app: LibraryApp) {
+  return { ...libraryApks(app), library: { package: app.package, versionCode: app.versionCode, versionName: app.versionName } };
 }
 export const libraryTaskRef = (app: Pick<LibraryApp, 'id'>) => ({ refType: LIBRARY_TASK_REF, refId: app.id });
 
@@ -32,8 +32,7 @@ type LibraryFile = LibraryApp['files'][number];
 
 /**
  * Stores one app version: `fill` writes the APKs (base first) into a temp dir and returns them; the dir
- * then replaces any earlier copy of the same package+version, and the row is upserted. A newer version
- * takes over the preinstall flag from older ones of the same package.
+ * then replaces any earlier copy of the same package+version, and the row is upserted.
  */
 async function saveLibraryApp(
   v: { package: string; versionCode: string; versionName: string | null; sourceInstance: string },
@@ -50,10 +49,7 @@ async function saveLibraryApp(
       .values({ ...v, files })
       .onConflictDoUpdate({ target: [la.package, la.versionCode], set: { files, versionName: v.versionName, sourceInstance: v.sourceInstance, createdAt: new Date() } })
       .returning();
-    const moved = await db.update(la).set({ preinstall: sql`${la.id} = ${row!.id}` })
-      .where(and(eq(la.package, v.package), sql`exists (select 1 from library_apps o where o.package = ${v.package} and o.preinstall and o.id <> ${row!.id})`))
-      .returning();
-    return moved.find((r) => r.id === row!.id) ?? row!;
+    return row!;
   } finally {
     await fs.promises.rm(tmp, { recursive: true, force: true });
   }
@@ -107,24 +103,6 @@ async function sha256File(p: string): Promise<string> {
   const h = createHash('sha256');
   for await (const c of fs.createReadStream(p)) h.update(c as Buffer);
   return h.digest('hex');
-}
-
-/** Keeps the first entry per package (callers order by preference). */
-function onePerPackage(apps: LibraryApp[]): LibraryApp[] {
-  const seen = new Set<string>();
-  return apps.filter((a) => !seen.has(a.package) && !!seen.add(a.package));
-}
-
-/** Latest preinstall-flagged version per package. */
-export async function preinstallApps(): Promise<LibraryApp[]> {
-  return onePerPackage(await db.select().from(schema.libraryApps).where(eq(schema.libraryApps.preinstall, true)).orderBy(desc(schema.libraryApps.createdAt)));
-}
-
-/** Library entries by id, in the given order, one per package. Missing ids are ignored. */
-export async function libraryAppsByIds(ids: string[]): Promise<LibraryApp[]> {
-  if (!ids.length) return [];
-  const byId = new Map((await db.select().from(schema.libraryApps).where(inArray(schema.libraryApps.id, ids))).map((r) => [r.id, r]));
-  return onePerPackage(ids.flatMap((id) => byId.get(id) ?? []));
 }
 
 export async function removeLibraryApp(app: LibraryApp): Promise<void> {

@@ -19,6 +19,7 @@ import { db, schema, sqlClient } from './index.js';
  * - one public media asset 「示例素材」 (an image generated here, stored through the active storage backend with its
  *   thumbnail) in the public media category 「示例」;
  * - three public personas (人设) with a style and 3 范例 each (shared templates).
+ * The required apps (Instagram, YouTube) are created once the same way (settings row `seed.requiredApps`).
  * The samples (media + personas) are created once: the settings row `seed.samples` records it, so samples an admin
  * deleted are not re-created by a later seed (deploy.sh runs it on every deploy).
  */
@@ -190,6 +191,21 @@ if (samples) {
   await seedMedia();
   await seedPersonas();
   await db.insert(schema.settings).values({ key: SAMPLES_KEY, value: { at: new Date().toISOString() } }).onConflictDoNothing();
+}
+
+// 必装应用 (library/required.ts), once (settings row `seed.requiredApps`, so an entry an admin deleted stays deleted):
+// the apps of the owner's list 2026-11-20 with their BitBrowser app-store ids.
+const REQUIRED_KEY = 'seed.requiredApps';
+const [requiredSeeded] = await db.select().from(schema.settings).where(eq(schema.settings.key, REQUIRED_KEY));
+if (requiredSeeded) {
+  log('required apps: seeded before (unchanged)');
+} else {
+  const rows = await db.insert(schema.requiredApps).values([
+    { package: 'com.instagram.android', name: 'Instagram', bitbrowserAppId: '1760185069' },
+    { package: 'com.google.android.youtube', name: 'YouTube', bitbrowserAppId: '437836727' },
+  ]).onConflictDoNothing().returning();
+  await db.insert(schema.settings).values({ key: REQUIRED_KEY, value: { at: new Date().toISOString() } }).onConflictDoNothing();
+  log(`required apps: ${rows.length} created`);
 }
 
 await sqlClient.end();

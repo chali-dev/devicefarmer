@@ -2,10 +2,10 @@
 import { fmtDateTime } from '../i18n'
 import { CheckOutlined, InboxOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../api/client'
-import { canPower, egressGeo, proxyLabel, taskText, type InstalledApp, type PoolProxy, type Task } from '../api/types'
+import { egressGeo, taskText, type InstalledApp, type Task } from '../api/types'
 import { useRouter } from 'vue-router'
 import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
@@ -39,8 +39,6 @@ const tasks = computed(() => {
 const text = ref('')
 const secure = ref(false)
 const uploading = ref(false)
-const checking = ref(false)
-const google = computed(() => inst.value?.google ?? null)
 
 function sendText() {
   if (!text.value) return
@@ -48,17 +46,6 @@ function sendText() {
   if (secure.value) player.value?.typeSecure(text.value)
   else player.value?.paste(text.value)
   text.value = ''
-}
-
-async function checkGoogle() {
-  checking.value = true
-  try { await store.googleCheck(props.id) } catch (e) { message.error(errorText(e)) } finally { checking.value = false }
-}
-
-async function copyGsf() {
-  if (!google.value?.gsf.gsfId) return
-  try { await navigator.clipboard.writeText(google.value.gsf.gsfId); message.success(t('detail.copiedGsf')) }
-  catch { message.warning(t('detail.copyFailed')) }
 }
 
 async function upload(opt: { file: File; onSuccess?: (r: unknown) => void; onError?: (e: Error) => void }) {
@@ -98,33 +85,6 @@ function uninstall(pkg: string) {
 watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'uninstall-app') && t.status === 'success').length, () => void loadApps())
 watch(() => inst.value?.status, (s) => { if (s === 'running') void loadApps() }, { immediate: true })
 
-// ---- device settings (system settings only; hardware identity is not configurable)
-const settingsForm = reactive({ locale: '', timezone: '', deviceName: '' })
-const actual = ref<Record<string, string> | null>(null)
-const savingSettings = ref(false)
-const TIMEZONES = Intl.supportedValuesOf('timeZone')
-const LOCALES = ['zh-CN', 'zh-TW', 'zh-HK', 'en-US', 'en-GB', 'ja-JP', 'ko-KR', 'de-DE', 'fr-FR', 'es-ES', 'pt-BR', 'ru-RU', 'ar-SA', 'th-TH', 'vi-VN', 'id-ID']
-async function loadSettings() {
-  try {
-    const r = await api<{ configured: Record<string, string | undefined>; actual: Record<string, string> | null }>('GET', `/api/instances/${props.id}/settings`)
-    actual.value = r.actual
-    settingsForm.locale = r.configured.locale ?? r.actual?.locale ?? ''
-    settingsForm.timezone = r.configured.timezone ?? r.actual?.timezone ?? ''
-    settingsForm.deviceName = r.configured.deviceName ?? ''
-  } catch { /* shown as empty */ }
-}
-async function saveSettings() {
-  savingSettings.value = true
-  try {
-    const body = Object.fromEntries(Object.entries(settingsForm).filter(([, v]) => v)) as Record<string, string>
-    const r = await store.updateSettings(props.id, body)
-    message.success(r.taskId ? t('detail.settings.applying') : t('detail.settings.savedNextBoot'))
-  } catch (e) { message.error(errorText(e)) }
-  finally { savingSettings.value = false }
-}
-watch(() => tasks.value.find((t) => t.type === 'apply-settings')?.status, (s) => { if (s === 'success') void loadSettings() })
-onMounted(loadSettings)
-
 // ---- upload files (photos/videos) into the phone's shared storage
 const fileUploading = ref(false)
 const lastUploads = ref<string[]>([])
@@ -145,38 +105,8 @@ async function importToLibrary(pkg: string) {
   catch (e) { message.error(errorText(e)) }
 }
 
-// ---- network proxy: a pool proxy bound exclusively to this device (admins bind; credentials never reach the browser)
-const proxyChoice = ref<string | undefined>(undefined)
-const freeProxies = ref<PoolProxy[]>([])
-const proxySaving = ref(false)
+// ---- network: the proxy is set at the phone's source; the egress is measured on the phone itself
 const proxyChecking = ref(false)
-watch(() => inst.value?.proxy?.id, (id) => { proxyChoice.value = id }, { immediate: true })
-async function loadFreeProxies() {
-  if (!auth.isAdmin) return
-  try { freeProxies.value = (await api<{ proxies: PoolProxy[] }>('GET', '/api/proxies?bound=free')).proxies } catch { freeProxies.value = [] }
-}
-onMounted(loadFreeProxies)
-const proxyOptions = computed(() => {
-  const cur = inst.value?.proxy
-  const list = freeProxies.value.map((p) => ({
-    value: p.id,
-    label: `${proxyLabel(p)} · ${p.type.toUpperCase()} ${p.host}:${p.port}${p.country ? ` · ${p.country}` : ''} · ${t(`proxies.statusText.${p.status}`)}`,
-  }))
-  if (cur && !list.some((o) => o.value === cur.id)) list.unshift({ value: cur.id, label: `${proxyLabel(cur)} · ${cur.type.toUpperCase()} ${cur.host}:${cur.port}` })
-  return list
-})
-async function bindProxy(proxyId: string | null) {
-  proxySaving.value = true
-  try {
-    await api('PUT', `/api/instances/${props.id}/proxy`, { proxyId })
-    message.success(proxyId ? (inst.value?.netContainerId ? t('detail.proxy.hotSwitch') : t('detail.proxy.rebuild')) : t('detail.proxy.unbound'))
-    void loadFreeProxies()
-  } catch (e) { message.error(errorText(e)) }
-  finally { proxySaving.value = false }
-}
-function unbindProxy() {
-  confirmAction({ title: t('detail.proxy.confirmUnbind'), onOk: () => bindProxy(null) })
-}
 async function checkProxy() {
   proxyChecking.value = true
   try { await api('POST', `/api/instances/${props.id}/proxy/check`) }
@@ -193,9 +123,6 @@ async function screenshot() {
   finally { shooting.value = false }
 }
 
-/** Phone from a device source (e.g. BitBrowser): no proxy pool, locale/time zone owned by the source. */
-const isExternal = computed(() => !!inst.value?.sourceId)
-
 async function act(a: 'start' | 'stop' | 'restart') {
   const go = async () => {
     try {
@@ -210,7 +137,6 @@ async function act(a: 'start' | 'stop' | 'restart') {
     confirmAction({ title: t('devices.ext.billingTitle'), content: t('devices.ext.billingConfirm'), okText: t(`devices.${a}`), onOk: go })
   } else await go()
 }
-const busy = computed(() => ['creating', 'starting', 'stopping', 'restarting', 'deleting'].includes(inst.value?.status ?? ''))
 const appColumns = computed(() => [
   { title: t('detail.apps.package'), dataIndex: 'package', key: 'package' },
   { title: t('detail.apps.version'), key: 'version', width: 160 },
@@ -228,7 +154,7 @@ const appColumns = computed(() => [
     <template #title-suffix><StatusTag :status="inst.status" /></template>
     <template #extra>
       <a-button :loading="shooting" :disabled="inst.status !== 'running'" @click="screenshot">{{ t('detail.screenshot') }}</a-button>
-      <template v-if="canPower(inst, auth.isAdmin)">
+      <template v-if="auth.isAdmin">
         <a-button :disabled="inst.status === 'running'" @click="act('start')">{{ t('devices.start') }}</a-button>
         <a-button :disabled="inst.status !== 'running'" @click="act('stop')">{{ t('devices.stop') }}</a-button>
         <a-button @click="act('restart')">{{ t('devices.restart') }}</a-button>
@@ -243,7 +169,7 @@ const appColumns = computed(() => [
           <DevicePlayer
             v-if="inst.status === 'running'"
             ref="player"
-            :key="`${inst.id}-${inst.containerId}`"
+            :key="inst.id"
             :instance-id="inst.id"
             :width="inst.spec.width"
             :height="inst.spec.height"
@@ -256,50 +182,14 @@ const appColumns = computed(() => [
         <div class="stack">
           <a-card :bordered="false" :title="t('cloud.basic')">
             <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
-              <a-descriptions-item :label="t('detail.engine')">{{ isExternal ? t(`devices.ext.kinds.${inst.engine}`) : `${inst.engine} · ${inst.profile}` }}</a-descriptions-item>
+              <a-descriptions-item :label="t('detail.engine')">{{ t(`devices.ext.kinds.${inst.engine}`) }}</a-descriptions-item>
               <a-descriptions-item :label="t('detail.boot')">{{ inst.bootCompleted ? t('detail.bootDone') : t('detail.bootPending') }}</a-descriptions-item>
               <a-descriptions-item label="ADB">{{ inst.adbState ?? '—' }}</a-descriptions-item>
               <a-descriptions-item label="STF">{{ inst.stfReady ? t('detail.stfReady') : t('detail.stfNotReady') }}</a-descriptions-item>
               <a-descriptions-item :label="t('devices.colAdbPort')">{{ inst.adbPort }}</a-descriptions-item>
               <a-descriptions-item :label="t('devices.colResolution')">{{ inst.spec.width }}×{{ inst.spec.height }} @ {{ inst.spec.dpi }}dpi</a-descriptions-item>
-              <a-descriptions-item v-if="isExternal" :label="t('devices.ext.phoneId')" :span="2"><a-typography-text copyable>{{ inst.externalId }}</a-typography-text></a-descriptions-item>
-              <a-descriptions-item v-else :label="t('devices.colImage')" :span="2"><a-typography-text :ellipsis="{ tooltip: inst.image }" :content="inst.image" /></a-descriptions-item>
+              <a-descriptions-item :label="t('devices.ext.phoneId')" :span="2"><a-typography-text copyable>{{ inst.externalId }}</a-typography-text></a-descriptions-item>
             </a-descriptions>
-          </a-card>
-
-          <a-card v-if="inst.google || inst.profile.includes('gapps') || inst.engine === 'emulator'" :bordered="false" :title="t('detail.google.title')">
-            <template #extra>
-              <a-button size="small" :loading="checking" :disabled="inst.status !== 'running'" @click="checkGoogle">{{ t('detail.google.checkNow') }}</a-button>
-            </template>
-            <template v-if="google">
-              <a-space wrap :size="[0, 8]" style="margin-bottom: 12px">
-                <a-tag :color="google.gms.running ? 'green' : google.gms.installed ? 'orange' : 'red'">GMS {{ google.gms.version?.split(' ')[0] ?? t('detail.google.notInstalled') }}{{ google.gms.installed && !google.gms.running ? t('detail.google.notRunning') : '' }}</a-tag>
-                <a-tag :color="google.gsf.installed ? 'green' : 'red'">GSF {{ google.gsf.installed ? t('detail.google.installed') : t('detail.google.notInstalled') }}</a-tag>
-                <a-tooltip :title="t('detail.google.updateChannelTip')"><a-tag :color="google.playStore.installed ? 'default' : 'orange'">{{ t('detail.google.updateChannel', { state: google.playStore.installed ? t('detail.google.ok') : t('detail.google.missing') }) }}</a-tag></a-tooltip>
-                <a-tag :color="google.youtube.installed ? 'green' : 'default'">YouTube {{ google.youtube.installed ? google.youtube.version : t('detail.google.notInstalled') }}</a-tag>
-                <a-tag v-if="google.youtube.playing" color="blue">{{ t('detail.google.youtubePlaying') }}</a-tag>
-                <a-tag :color="google.googleAccounts ? 'green' : 'default'">{{ google.googleAccounts ? t('detail.google.accounts', { n: google.googleAccounts }) : t('detail.google.noAccount') }}</a-tag>
-              </a-space>
-              <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
-                <a-descriptions-item label="GSF ID">
-                  <template v-if="google.gsf.gsfId">
-                    <a-typography-text code>{{ google.gsf.gsfId }}</a-typography-text>
-                    <a-button type="link" size="small" @click="copyGsf">{{ t('common.copy') }}</a-button>
-                  </template>
-                  <span v-else class="muted">{{ t('detail.google.gsfPending') }}</span>
-                </a-descriptions-item>
-                <a-descriptions-item :label="t('detail.google.checkedAt')">{{ fmtDateTime(google.checkedAt) }}</a-descriptions-item>
-              </a-descriptions>
-              <a-alert v-if="!google.googleAccounts" type="info" show-icon style="margin-top: 12px">
-                <template #message>{{ t('detail.google.beforeLogin') }}</template>
-                <template #description>
-                  {{ t('detail.google.beforeLogin1') }}
-                  <a href="https://www.google.com/android/uncertified" target="_blank" rel="noopener noreferrer">google.com/android/uncertified</a>
-                  {{ t('detail.google.beforeLogin2') }}
-                </template>
-              </a-alert>
-            </template>
-            <a-empty v-else :description="t('detail.google.notChecked')" />
           </a-card>
 
           <a-card :bordered="false" :title="t('detail.input.title')">
@@ -362,25 +252,15 @@ const appColumns = computed(() => [
             <template #title>
               <a-space :size="4">
                 {{ t('detail.proxy.title') }}
-                <a-tooltip :title="isExternal ? t('devices.ext.proxyHint') : t('detail.proxy.killSwitch')"><QuestionCircleOutlined class="muted" /></a-tooltip>
+                <a-tooltip :title="t('devices.ext.proxyHint')"><QuestionCircleOutlined class="muted" /></a-tooltip>
               </a-space>
             </template>
             <template #extra>
-              <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running' || (!isExternal && !inst.netContainerId)" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
+              <a-button size="small" :loading="proxyChecking" :disabled="inst.status !== 'running'" @click="checkProxy">{{ t('detail.proxy.check') }}</a-button>
             </template>
             <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2 }">
               <a-descriptions-item :label="t('detail.proxy.current')" :span="2">
-                <span v-if="isExternal">{{ t('devices.ext.proxyShort') }}</span>
-                <a-space v-else-if="inst.proxy" wrap :size="4">
-                  <a-tag>{{ inst.proxy.type.toUpperCase() }}</a-tag>
-                  <span>{{ proxyLabel(inst.proxy) }}</span>
-                  <span class="muted">{{ inst.proxy.host }}:{{ inst.proxy.port }}</span>
-                  <StatusTag kind="proxy" :status="inst.proxy.status" />
-                </a-space>
-                <span v-else class="muted">{{ t('detail.proxy.none') }}</span>
-              </a-descriptions-item>
-              <a-descriptions-item v-if="inst.proxy && (inst.proxy.country || inst.proxy.city)" :label="t('detail.proxy.location')" :span="2">
-                {{ [inst.proxy.country, inst.proxy.city].filter(Boolean).join(' · ') }}
+                {{ t('devices.ext.proxyShort') }}
               </a-descriptions-item>
               <template v-if="inst.proxyStatus">
                 <a-descriptions-item :label="t('detail.proxy.egress')">
@@ -394,47 +274,9 @@ const appColumns = computed(() => [
                 <a-descriptions-item v-if="inst.proxyStatus.error" :label="t('common.error')">{{ inst.proxyStatus.error }}</a-descriptions-item>
               </template>
             </a-descriptions>
-            <a-space v-if="auth.isAdmin && !isExternal" wrap style="margin-top: 12px">
-              <a-select
-                v-model:value="proxyChoice" show-search option-filter-prop="label" :options="proxyOptions" :placeholder="t('detail.proxy.select')"
-                :disabled="busy" style="width: 320px; max-width: 100%"
-                @dropdown-visible-change="(o: boolean) => o && loadFreeProxies()"
-              />
-              <a-button type="primary" :loading="proxySaving" :disabled="!proxyChoice || busy" @click="bindProxy(proxyChoice!)">{{ t('detail.proxy.bindApply') }}</a-button>
-              <a-button v-if="inst.proxy" danger :loading="proxySaving" :disabled="busy" @click="unbindProxy">{{ t('detail.proxy.unbind') }}</a-button>
-              <a-button type="link" @click="router.push('/proxies')">{{ t('detail.proxy.manage') }}</a-button>
-            </a-space>
-            <div v-else-if="!isExternal" class="muted" style="margin-top: 12px">{{ t('detail.proxy.adminOnly') }}</div>
           </a-card>
 
           <DeviceSocialCard :instance-id="id" :allowed-platforms="inst.allowedPlatforms ?? null" />
-
-          <a-card :bordered="false" :title="t('detail.settings.title')">
-            <a-alert v-if="isExternal" type="info" show-icon :message="t('devices.ext.settingsHint')" style="margin-bottom: 16px" />
-            <a-form layout="vertical" :disabled="isExternal || busy">
-              <a-row :gutter="12">
-                <a-col :xs="24" :sm="8">
-                  <a-form-item :label="t('devices.form.locale')">
-                    <a-select v-model:value="settingsForm.locale" show-search allow-clear :placeholder="t('common.default')" :options="LOCALES.map((l) => ({ value: l, label: l }))" />
-                  </a-form-item>
-                </a-col>
-                <a-col :xs="24" :sm="8">
-                  <a-form-item :label="t('devices.form.timezone')">
-                    <a-select v-model:value="settingsForm.timezone" show-search allow-clear :placeholder="t('common.default')" :options="TIMEZONES.map((z) => ({ value: z, label: z }))" />
-                  </a-form-item>
-                </a-col>
-                <a-col :xs="24" :sm="8">
-                  <a-form-item :label="t('devices.form.deviceName')">
-                    <a-input v-model:value="settingsForm.deviceName" :placeholder="t('detail.settings.deviceNamePlaceholder')" :maxlength="40" />
-                  </a-form-item>
-                </a-col>
-              </a-row>
-              <a-space wrap>
-                <a-button v-if="!isExternal" type="primary" :loading="savingSettings" @click="saveSettings">{{ t('detail.proxy.saveApply') }}</a-button>
-                <span v-if="actual" class="muted small">{{ t('detail.settings.current', { locale: actual.locale || t('detail.settings.defaultLocale'), timezone: actual.timezone ?? '', release: actual.release ?? '', model: actual.model ?? '' }) }}</span>
-              </a-space>
-            </a-form>
-          </a-card>
 
           <a-card :bordered="false" :title="t('detail.tasksTitle')">
             <a-list :data-source="tasks" size="small" :locale="{ emptyText: t('detail.noTasks') }">

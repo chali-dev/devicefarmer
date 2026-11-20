@@ -189,6 +189,11 @@ const RULES: Rule[] = [
   [/^profiles read: (\d+) \(private (\d+), failed (\d+)\)$/, 'followProfilesRead', (m) => ({ n: m[1]!, priv: m[2]!, failed: m[3]! })],
   [/^profile visit failed$/, 'followProfileFailed', (_m, d) => ({ handle: String(d?.handle ?? '?') })],
   [/^feed collected: (\d+) posts \((\d+) new\), (\d+) comments \((\d+) new\)$/, 'feedCollected', (m) => ({ posts: m[1]!, newPosts: m[2]!, comments: m[3]!, newComments: m[4]! })],
+  // 必装应用 (task required-apps)
+  [/^required apps: (\d+)\/(\d+) installed$/, 'requiredChecked', (m) => ({ n: m[1]!, total: m[2]! })],
+  [/^install requested: (\S+)$/, 'requiredRequested', (m) => ({ pkg: m[1]! })],
+  [/^install request failed: (\S+)$/, 'requiredRequestFailed', (m) => ({ pkg: m[1]! })],
+  [/^installed: (\S+)$/, 'requiredInstalled', (m) => ({ pkg: m[1]! })],
   [/^task (\w+)$/, 'taskEnded', (m) => ({ status: status('tasks', m[1]!) })],
   // 定时采集 / 趋势热点
   [/^scheduled refresh skipped: (\S+)$/, 'scheduledSkipped', (m) => ({ msg: codeText(m[1]!, undefined, m[1]!) })],

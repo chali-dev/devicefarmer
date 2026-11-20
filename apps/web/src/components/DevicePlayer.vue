@@ -192,7 +192,7 @@ function wantKeyFrame() {
  * Playout buffer. Through a high-latency adb link (BitBrowser's SSH tunnel, ~0.3 s RTT, no adb
  * `delayed_ack`) frames arrive in bursts, one burst per round trip; painting only the newest frame per
  * display refresh then shows ~5-7 fps although ~20 arrive. So frames are shown at their own pts cadence,
- * delayed by the recent lateness (arrival - pts over JITTER_WINDOW_MS). On a smooth link (local redroid)
+ * delayed by the recent lateness (arrival - pts over JITTER_WINDOW_MS). On a smooth (local) link
  * that lateness is flat and the added delay stays near zero. Bounded by MAX_JITTER_MS.
  * The delay follows the JITTER_PERCENTILE of delta frames, not the maximum: key frames (~40 KB) need
  * several adb round trips there (measured ~0.6 s late) and would hold the whole stream back for seconds
@@ -450,7 +450,7 @@ function onPointerUp(e: PointerEvent) {
 }
 
 // Keyboard: special keys as key events; printable text is batched and pasted,
-// because per-key injection drops/reorders characters on redroid.
+// because per-key injection drops/reorders characters on Android.
 const SPECIAL: Record<string, string> = {
   Enter: 'enter', Backspace: 'del', Delete: 'forward_del', Tab: 'tab', Escape: 'back',
   ArrowUp: 'dpad_up', ArrowDown: 'dpad_down', ArrowLeft: 'dpad_left', ArrowRight: 'dpad_right',
