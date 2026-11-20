@@ -19,8 +19,8 @@ function initialLocale(): Locale {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved === 'zh-CN' || saved === 'en') return saved
   } catch { /* storage unavailable */ }
-  const nav = typeof navigator !== 'undefined' ? navigator.language || '' : ''
-  return nav.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+  // Default Chinese (owner 2026-11-20), whatever the browser's language; switched on the login page or in the header.
+  return 'zh-CN'
 }
 
 // Chinese (the fallback) is bundled; English is a separate chunk loaded before it is shown (loadLocale).

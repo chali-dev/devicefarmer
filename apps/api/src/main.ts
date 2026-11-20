@@ -87,6 +87,14 @@ app.setErrorHandler((err, req, reply) => {
 await app.register(cors, { origin: config.WEB_ORIGIN, credentials: false });
 await app.register(multipart, { limits: { fileSize: config.MAX_APK_MB * 1024 * 1024, files: 1 } });
 await app.register(websocket, { options: { maxPayload: 64 * 1024 } });
+// Keepalive for every browser WebSocket (/api/events, remote-control sessions): proxies and CDNs in front
+// (Cloudflare closes connections idle for ~100 s) would otherwise drop a quiet event stream or a session on a
+// static screen. Browsers answer pings by themselves.
+const wsKeepalive = setInterval(() => {
+  for (const c of app.websocketServer.clients) if (c.readyState === c.OPEN) c.ping();
+}, 30_000);
+wsKeepalive.unref();
+app.addHook('onClose', async () => clearInterval(wsKeepalive));
 await app.register(authPlugin);
 // Before every route: its hooks record mutating requests platform-wide.
 await app.register(auditPlugin);

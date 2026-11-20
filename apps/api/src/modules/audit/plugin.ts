@@ -2,6 +2,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
 import { db, schema } from '../../db/index.js';
+import { clientIp } from '../../lib/client-ip.js';
 import { recordAudit } from './audit.js';
 
 /**
@@ -631,7 +632,7 @@ async function buildEntry(req: FastifyRequest, key: string, status: number) {
     method: req.method,
     path: pattern,
     status,
-    ip: req.ip,
+    ip: clientIp(req),
     detail,
   };
 }

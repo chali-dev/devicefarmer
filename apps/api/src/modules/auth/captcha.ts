@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { config } from '../../config.js';
 import { HttpError } from '../../lib/errors.js';
+import { clientIp } from '../../lib/client-ip.js';
 
 /**
  * Slider puzzle captcha (拼图验证) for the login, self-hosted.
@@ -39,22 +40,6 @@ export const captchaKey = (id: string) => `captcha:${sha(id)}`;
 interface Stored { x: number; y: number; at: number; verified?: boolean }
 
 export const captchaEnabled = () => config.LOGIN_CAPTCHA === 'on';
-
-/**
- * Client address for the rate limit. Behind the reverse proxy (Caddy on the same host) every request comes
- * from loopback, so the last X-Forwarded-For entry (the address the proxy saw) is used then; a direct
- * connection from elsewhere can't forge it.
- */
-export function clientIp(req: FastifyRequest): string {
-  const peer = req.socket.remoteAddress ?? req.ip;
-  const loopback = peer === '::1' || peer.startsWith('127.') || peer.startsWith('::ffff:127.');
-  const xff = req.headers['x-forwarded-for'];
-  if (loopback && xff) {
-    const last = (Array.isArray(xff) ? xff.join(',') : xff).split(',').map((s) => s.trim()).filter(Boolean).pop();
-    if (last) return last.slice(0, 64);
-  }
-  return peer;
-}
 
 async function rateLimit(ip: string): Promise<void> {
   const key = `captcha:rate:${sha(ip).slice(0, 32)}:${Math.floor(Date.now() / 60_000)}`;

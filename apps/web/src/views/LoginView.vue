@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { CloudOutlined, LockOutlined, UserOutlined } from '@ant-design/icons-vue'
+import { CheckOutlined, CloudOutlined, GlobalOutlined, LockOutlined, UserOutlined } from '@ant-design/icons-vue'
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { errorText } from '../api/client'
+import { LOCALES, locale, setLocale, type Locale } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import PuzzleCaptcha, { type CaptchaAnswer } from '../components/auth/PuzzleCaptcha.vue'
 
@@ -18,6 +19,7 @@ const captcha = ref<CaptchaAnswer | null>(null)
 /** null until the first challenge is loaded; false = LOGIN_CAPTCHA=off on the server. */
 const captchaEnabled = ref<boolean | null>(null)
 const puzzle = ref<InstanceType<typeof PuzzleCaptcha> | null>(null)
+const localeLabel = () => LOCALES.find((l) => l.value === locale.value)?.label ?? locale.value
 
 async function submit() {
   if (captchaEnabled.value !== false && !captcha.value) {
@@ -42,6 +44,16 @@ async function submit() {
 
 <template>
   <div class="wrap">
+    <a-dropdown :trigger="['click']" placement="bottomRight">
+      <a-button type="text" class="lang" :aria-label="t('prefs.language')"><GlobalOutlined /> {{ localeLabel() }}</a-button>
+      <template #overlay>
+        <a-menu :selected-keys="[locale]" @click="({ key }: any) => setLocale(key as Locale)">
+          <a-menu-item v-for="l in LOCALES" :key="l.value">
+            <CheckOutlined :style="{ visibility: locale === l.value ? 'visible' : 'hidden' }" /> {{ l.label }}
+          </a-menu-item>
+        </a-menu>
+      </template>
+    </a-dropdown>
     <div class="box">
       <div class="brand">
         <span class="logo"><CloudOutlined /></span>
@@ -69,7 +81,7 @@ async function submit() {
 </template>
 
 <style scoped>
-.wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--cp-bg-layout); box-sizing: border-box; }
+.wrap { position: relative; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--cp-bg-layout); box-sizing: border-box; }
 .box { width: 100%; max-width: 380px; }
 .brand { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 24px; }
 .logo {
@@ -78,4 +90,5 @@ async function submit() {
 }
 .title { margin: 0; font-size: 22px; font-weight: 600; color: var(--cp-text); }
 .error { margin-bottom: 16px; }
+.lang { position: absolute; top: 16px; right: 16px; color: var(--cp-text-secondary); }
 </style>

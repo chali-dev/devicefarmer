@@ -1,6 +1,7 @@
 import { lt } from 'drizzle-orm';
 import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import { db, schema } from '../../db/index.js';
+import { clientIp } from '../../lib/client-ip.js';
 
 /** Safety net: any key matching this is dropped from `detail`, at any depth. */
 export const SENSITIVE_KEY = /pass|secret|token|key|credential|authorization/i;
@@ -68,7 +69,7 @@ export function recordAudit(log: FastifyBaseLogger, e: AuditEntry): void {
 
 /** Helper for routes that record explicitly (login): fills method/path/ip from the request. */
 export function auditRequest(req: FastifyRequest, e: Omit<AuditEntry, 'method' | 'path' | 'ip'>): void {
-  recordAudit(req.log, { ...e, method: req.method, path: req.routeOptions.url ?? req.url.split('?')[0]!, ip: req.ip });
+  recordAudit(req.log, { ...e, method: req.method, path: req.routeOptions.url ?? req.url.split('?')[0]!, ip: clientIp(req) });
 }
 
 /** Deletes audit entries older than `days` (系统配置 → 日志 操作日志, run by the hourly system maintenance). */

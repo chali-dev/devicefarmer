@@ -113,6 +113,10 @@ GitHub → Actions → **Deploy** → Run workflow：
 - `/api/health`：还要求 STF、adb、Docker 正常。可以在 `deploy.env` 里把 `READY_PATH` 改成 `/api/health`，但那样 STF 出问题时就无法部署（包括修复它的部署）。
 - 两个检查都不需要登录，所以登录页的拼图验证（`LOGIN_CAPTCHA`，默认 `on`）不影响部署。验证题存在 Redis（蓝绿两色共用），切换期间拿到的题在新颜色上同样有效。`GET /api/auth/captcha` 按客户端 IP 限流（`LOGIN_CAPTCHA_RATE`/分钟，默认 60）：经同机 Caddy 转发时取 `X-Forwarded-For` 的最后一项（Caddy 填的真实地址），直连时取对端地址。只有已有其他登录防护（例如前置 SSO 网关）的特殊部署才在 `app.env` 设 `LOGIN_CAPTCHA=off`。
 
+### 前面还有一层反向代理 / CDN（例如 1Panel 的 OpenResty + Cloudflare）
+
+Caddy 改用 `SITE_ADDRESS=:8080`，由本机的 OpenResty 反代到 `127.0.0.1:8080`（证书在 OpenResty 或 CDN 上）。OpenResty 的「真实 IP」设置：IP 来源 = CDN 的回源 IP 段（Cloudflare：`https://www.cloudflare.com/ips-v4` / `ips-v6`），Header = `CF-Connecting-IP`；反代配置里要有 `proxy_set_header X-Real-IP $remote_addr;`（1Panel 默认带）。`deploy.sh` 生成的 upstream 只对来自本机回环的 `/api/*` 请求把 `X-Real-IP` 作为 X-Forwarded-For 交给 API（验证码限流、操作日志的 IP），外部直连伪造的无效。OpenResty 还需要 `client_max_body_size`（上传）和较长的 `proxy_read_timeout`（WebSocket）；API 每 30 s 给浏览器 WebSocket 发 ping，CDN 不会因空闲断开。Cloudflare 免费版单个请求最大 100 MB。
+
 ## 6. 排障
 
 | 现象 | 处理 |
