@@ -4,3 +4,4 @@ dist/
 apps/api/var/
 *.log
 .DS_Store
+infra/dev-gateway/certs/

@@ -70,6 +70,22 @@ run() { # <name> [VAR=value …]
 echo "::group::migrate + seed"
 node --import tsx --env-file="$CI_ENV_FILE" src/db/migrate.ts
 node --import tsx --env-file="$CI_ENV_FILE" src/db/seed.ts
+# sysadmin-check proves a restore never reaches the main database "cloudphone" on the same server (read-only
+# probe before/after). Where it doesn't exist (CI), create it as an empty, migrated decoy; an existing one (a dev
+# machine) is never touched.
+MAIN_DB_URL=$(node -e 'const u = new URL(process.argv[1]); u.pathname = "/cloudphone"; console.log(u.toString())' "$DATABASE_URL")
+created=$(node --input-type=module -e '
+  import postgres from "postgres";
+  const admin = postgres(process.argv[1], { max: 1, onnotice: () => {} });
+  const [r] = await admin`select count(*)::int as n from pg_database where datname = ${"cloudphone"}`;
+  if (!r.n) await admin.unsafe("create database cloudphone");
+  await admin.end();
+  console.log(r.n ? "exists" : "created");
+' "$DATABASE_URL")
+if [ "$created" = created ]; then
+  DATABASE_URL=$MAIN_DB_URL node --import tsx --env-file="$CI_ENV_FILE" src/db/migrate.ts
+  echo "decoy main database cloudphone created (empty, migrated)"
+fi
 echo "::endgroup::"
 
 # A: default platform scope (captcha last: it uses up this IP's challenge budget for the minute)

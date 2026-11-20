@@ -1,0 +1,17 @@
+# Local dev entry https://cloudphone.test (docker-compose.dev.yml, profile `gateway`).
+# Vite (npm run dev:web, :5173) and the API (npm run dev:api, :3000) keep running on the Mac with hot reload;
+# this only gives them a domain. Vite proxies /api (incl. WebSockets) to the API, so one upstream is enough.
+# Certificate: mkcert (infra/dev-gateway/certs, gitignored); hosts: 127.0.0.1 cloudphone.test.
+{
+	admin off
+	auto_https disable_redirects
+}
+
+cloudphone.test {
+	tls /certs/cloudphone.test.pem /certs/cloudphone.test-key.pem
+	reverse_proxy host.docker.internal:5173
+}
+
+http://cloudphone.test {
+	redir https://cloudphone.test{uri} permanent
+}

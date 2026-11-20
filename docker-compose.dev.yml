@@ -16,6 +16,18 @@ services:
     ports: ["127.0.0.1:6380:6379"]
     volumes: [redis-data:/data]
     restart: unless-stopped
+  # Local domain https://cloudphone.test → Vite on the Mac (infra/dev-gateway/Caddyfile). Own profile because it
+  # takes ports 80/443 (stop other local gateways first, e.g. adloom's):
+  #   docker compose -f docker-compose.dev.yml --profile gateway up -d gateway
+  gateway:
+    image: caddy:2.11.6-alpine
+    profiles: [gateway]
+    ports: ["127.0.0.1:80:80", "127.0.0.1:443:443"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ./infra/dev-gateway/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/dev-gateway/certs:/certs:ro
+    restart: unless-stopped
 volumes:
   pg-data:
   redis-data:

@@ -13,7 +13,11 @@ docker compose -f infra/stf/docker-compose.yml up -d --build   # STF + RethinkDB
 limactl start redroid                                          # Linux VM that runs redroid (see below)
 
 npm run dev:api          # tsx watch, reads ../../.env; http://127.0.0.1:3000, /api/health checks every dependency
-npm run dev:web          # Vite on :5173, proxies /api (incl. WebSockets) to the API
+npm run dev:web          # Vite on 127.0.0.1:5173, proxies /api (incl. WebSockets) to the API
+# Local domain https://cloudphone.test (owner 2026-11-20; own gateway, not shared with adloom: it takes 80/443, so stop adloom's gateway first):
+#   once: mkcert -cert-file infra/dev-gateway/certs/cloudphone.test.pem -key-file infra/dev-gateway/certs/cloudphone.test-key.pem cloudphone.test
+#         echo '127.0.0.1 cloudphone.test' | sudo tee -a /etc/hosts
+docker compose -f docker-compose.dev.yml --profile gateway up -d gateway   # Caddy → Vite :5173; API and Vite keep hot reloading on the Mac
 npm run typecheck        # tsc (api) + vue-tsc (web); there is no linter
 npm run db:migrate && npm run db:seed    # migrate = drizzle migrate only (src/db/migrate.ts → run-migrations.ts, also used by restore); seed (src/db/seed.ts) = initial data, idempotent: built-in admin (ADMIN_USERNAME / ADMIN_PASSWORD, password only on creation), `demo-user` (role user) only when DEMO_USER_PASSWORD is set (password only on creation), and ONCE (settings row `seed.samples`, so deleted samples are not re-created; deploy.sh seeds on every deploy) the public media 「示例素材」 in public category 「示例」 + three public personas with 3 范例 each (「咖啡师小林」, 「健身教练 Max」, 「旅行博主小鹿」); rows found by name are never changed
 ADMIN_RESET_PASSWORD=1 npm run db:seed   # deliberately reset the built-in admin password to ADMIN_PASSWORD
