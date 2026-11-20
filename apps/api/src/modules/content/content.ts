@@ -261,7 +261,7 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
     db.select({ contentId: schema.contentMedia.contentId, a: schema.mediaAssets }).from(schema.contentMedia)
       .innerJoin(schema.mediaAssets, eq(schema.mediaAssets.id, schema.contentMedia.assetId))
       .where(and(inArray(schema.contentMedia.contentId, ids), isNull(schema.mediaAssets.deletedAt))).orderBy(asc(schema.contentMedia.position)),
-    db.select({ id: schema.users.id, username: schema.users.username }).from(schema.users)
+    db.select({ id: schema.users.id, username: schema.users.username, displayName: schema.users.displayName }).from(schema.users)
       .where(inArray(schema.users.id, [...new Set(rows.map((r) => r.userId))].concat(NONE))),
     publishCounts(db, ids),
     translationLangs(ids),
@@ -279,7 +279,8 @@ export async function toContentItems(rows: Content[], viewer: AuthUser) {
     ...r,
     /** 内容分类. */
     category: r.categoryId && cats.has(r.categoryId) ? categoryRef(cats.get(r.categoryId)!) : null,
-    ownerName: owners.find((o) => o.id === r.userId)?.username ?? null,
+    /** 作者: the owner's nickname, else the username. */
+    ownerName: ((o) => (o ? o.displayName || o.username : null))(owners.find((o) => o.id === r.userId)),
     tags: tagRows.filter((t) => t.contentId === r.id).map((t) => t.name),
     media: mediaRows.filter((m) => m.contentId === r.id).map((m) => mediaItem(m.a)),
     publishCounts: counts.get(r.id) ?? {},

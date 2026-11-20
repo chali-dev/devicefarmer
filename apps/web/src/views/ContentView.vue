@@ -670,7 +670,8 @@ async function submitBatchForm() {
         <a-select v-model:value="filters.lang" :placeholder="t('content.lang.filter')" allow-clear style="width: 140px" :options="langOptions" @change="search" />
         <a-tag v-if="filters.tag" closable @close="setTagFilter(undefined)">#{{ filters.tag }}</a-tag>
         <a-select v-if="auth.isAdmin" v-model:value="filters.ownerId" :placeholder="t('content.colAuthor')" allow-clear show-search option-filter-prop="label" style="width: 140px"
-          :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="filters.categoryId = undefined; search(); loadCategories()" />
+          
+          :options="users.map((u) => ({ value: u.id, label: u.displayName || u.username }))" @change="filters.categoryId = undefined; search(); loadCategories()" />
         <template #actions>
           <BatchActions :count="selectedKeys.length" :items="batchItems" @select="onBatch" @clear="selectedKeys = []" />
         </template>

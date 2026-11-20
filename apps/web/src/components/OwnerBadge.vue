@@ -23,7 +23,7 @@ const tip = computed(() => props.owners.map(props.label).join(t('common.listSep'
   <a-tooltip v-else :title="tip">
     <a-tag class="owner-badge" :class="{ multi: owners.length > 1 }" @click="emit('filter', first)">
       <template #icon><UserOutlined /></template>
-      <span class="name">{{ first.username }}</span><span v-if="owners.length > 1" class="more">+{{ owners.length - 1 }}</span>
+      <span class="name">{{ first.displayName || first.username }}</span><span v-if="owners.length > 1" class="more">+{{ owners.length - 1 }}</span>
     </a-tag>
   </a-tooltip>
 </template>
