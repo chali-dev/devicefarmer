@@ -16,6 +16,8 @@
 	@other not path /assets/*
 	header @other Cache-Control "no-cache"
 	header X-App-Version {$APP_VERSION}
+	# Private platform: never indexed (robots.txt + <meta name="robots"> too)
+	header X-Robots-Tag "noindex, nofollow, noarchive"
 	try_files {path} /index.html
 	file_server
 }
