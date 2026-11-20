@@ -4,7 +4,7 @@
  */
 const zhCN = {
   app: {
-    title: '云手机管理平台',
+    title: '自媒体管理平台',
   },
   common: {
     required: '请填写必填项',

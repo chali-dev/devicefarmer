@@ -54,7 +54,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       suspended: '封禁', disabled: '停用',
     },
     open: '查看',
-    test: '云手机管理平台：Telegram 告警测试消息',
+    test: '自媒体管理平台：Telegram 告警测试消息',
   },
   en: {
     prefix: ['[ALERT]', '[RECOVERED]'],
@@ -73,7 +73,7 @@ const TEXT: Record<TelegramLang, { prefix: [string, string]; kinds: Record<Alert
       suspended: 'suspended', disabled: 'disabled',
     },
     open: 'Open',
-    test: 'Cloud phone platform: Telegram alert test message',
+    test: 'Social Media Management Platform: Telegram alert test message',
   },
 };
 
