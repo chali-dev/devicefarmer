@@ -1,9 +1,11 @@
 /**
  * Alerts (告警通知) against the real API, DB, Redis and task centre (no mocks).
- * - device.down: placeholder `instances` rows (no Android container, adb ports 5591–5592) set to `running`;
- *   the API's real monitor finds no container and marks them `error`. The device "recovered" path of the
- *   monitor needs a real booted device, so recovery semantics are exercised by calling the real recover()
- *   from this script (the same function the monitor calls).
+ * - device.down: inert placeholder phones (scripts/lib/placeholder.ts: a device source whose config can't be
+ *   parsed, adb ports 5591–5592; the monitor skips them). An admin 启动 (POST /api/instances/actions start) runs the
+ *   real lifecycle op, which fails on the source → the task centre's onFailure marks the device `error` and raises
+ *   device.down (reason op_failed, op start). The "powered off" / "recovered" paths of the monitor need a real
+ *   BitBrowser client, so recovery semantics are exercised by calling the real recover() from this script (the same
+ *   function the monitor calls).
  * - account.problem: raised by the automatic account check on the cloud phone (social/check.ts; the manual "mark
  *   checked" route is gone: 404). The check needs a real phone (account-device-check.ts), so here the account's
  *   statuses are written as the check writes them and the real trigger accountChecked() it calls is called from
@@ -23,6 +25,9 @@ import { NOTIFY_CLEANUP_TASK, recover } from '../src/modules/notify/notify.js';
 import { accountChecked } from '../src/modules/notify/triggers.js';
 import { closeTaskQueues, createTask } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('alfake');
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const results: [string, boolean][] = [];
@@ -86,9 +91,9 @@ try {
   const [uA, uB] = userIds as [string, string];
   const A = await login(`ala${tag}`, pw);
   const B = await login(`alb${tag}`, pw);
-  const fakes = await db.insert(schema.instances).values([1, 2].map((n) => ({
-    name: `alfake-${tag}-${n}`, image: 'none', adbPort: 5590 + n, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const fakes = await ph.insert([1, 2].map((n) => ({
+    name: `alfake-${tag}-${n}`, adbPort: 5590 + n, status: 'stopped' as const,
+  })));
   fakeIds.push(...fakes.map((f) => f.id));
   refIds.push(...fakeIds);
   const [D1, D2] = fakes as [typeof fakes[0], typeof fakes[0]];
@@ -118,10 +123,18 @@ try {
     && r.body.kinds.some((k: any) => k.kind === 'account.discovered')
     && r.body.kinds.some((k: any) => k.kind === 'device.down' && k.recoverable) && !r.body.kinds.some((k: any) => k.kind === 'connection.expired') && !('accountCheckHours' in r.body.rules), r.text.slice(0, 300));
 
-  // ---------------------------------------------------------------- device.down through the real monitor
-  await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));
+  // ---------------------------------------------------------------- device.down through a real failed lifecycle op
+  // admin 启动 → the start task fails on the inert source → device error + device.down (op_failed)
+  const failStart = async (id: string) => {
+    const s = await http('POST', '/api/instances/actions', T, { action: 'start', ids: [id] });
+    const taskId = s.body?.accepted?.[0]?.taskId as string | undefined;
+    if (s.status !== 202 || !taskId) throw new Error(`start ${id}: ${s.status} ${s.text}`);
+    await waitFor(`start task of ${id} failed`, async () => (await db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)))[0]?.status === 'failed', 30_000);
+    await waitFor(`${id} error`, async () => (await db.select().from(schema.instances).where(eq(schema.instances.id, id)))[0]?.status === 'error', 30_000);
+  };
+  await failStart(D1.id);
   const nA = await waitFor('device.down for A', async () => (await notes(uA, D1.id, 'device.down')).at(0), 30_000);
-  check('monitor: device without container → error → alert to the granted user', nA.severity === 'error' && nA.params.status === 'error' && nA.params.reason === 'container_missing' && nA.params.name === D1.name && !nA.recovered, JSON.stringify(nA));
+  check('failed start (source unusable) → error → alert to the granted user', nA.severity === 'error' && nA.params.status === 'error' && nA.params.reason === 'op_failed' && nA.params.op === 'start' && nA.params.name === D1.name && !nA.recovered, JSON.stringify(nA));
   await sleep(500);
   check('admin receives the device alert too', (await notes(uT, D1.id, 'device.down')).length === 1);
   check('user B (no grant on D1) receives nothing', (await notes(uB, D1.id)).length === 0);
@@ -129,27 +142,25 @@ try {
   check('WebSocket: admin got own copy', wsT.got.some((e) => e.type === 'notification.created' && e.notification.refId === D1.id && e.notification.userId === uT));
   check('WebSocket: B got no notification event of D1', !wsB.got.some((e) => e.type === 'notification.created' && e.notification.refId === D1.id));
   // cooldown: the same problem again within the cooldown is not delivered again
-  await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));
-  await waitFor('D1 error again', async () => (await db.select().from(schema.instances).where(eq(schema.instances.id, D1.id)))[0]?.status === 'error', 30_000);
+  await failStart(D1.id);
   await sleep(1500);
   check('cooldown: second failure within the cooldown → no new alert', (await notes(uA, D1.id, 'device.down')).length === 1);
-  // recovery (real recover(); the monitor calls the same on error → running) → recovered notice, then a new failure alerts at once
+  // recovery (real recover(); the monitor calls the same on → running) → recovered notice, then a new failure alerts at once
   const recovered = await recover({ kind: 'device.down', refId: D1.id, params: { name: D1.name, status: 'running' } });
   const nRec = await waitFor('recovered notice', async () => (await notes(uA, D1.id, 'device.down')).find((x) => x.recovered), 10_000);
   check('recover(): "recovered" notice (info) to A', recovered && nRec.severity === 'info');
   check('recover() twice → nothing more (state already cleared)', !(await recover({ kind: 'device.down', refId: D1.id, params: { name: D1.name } })));
-  await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D1.id));
+  await failStart(D1.id);
   await waitFor('alert after recovery', async () => (await notes(uA, D1.id, 'device.down')).filter((x) => !x.recovered).length === 2, 30_000);
   check('after recovery the next failure alerts immediately (cooldown reset)', true);
 
   // kind off + notifyAdmins off
   await http('PUT', '/api/settings/alerts', T, { kinds: { 'device.down': { inApp: false } } });
-  await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D2.id));
-  await waitFor('D2 error', async () => (await db.select().from(schema.instances).where(eq(schema.instances.id, D2.id)))[0]?.status === 'error', 30_000);
+  await failStart(D2.id);
   await sleep(1500);
   check('kind switched off → no alert', (await notes(uB, D2.id)).length === 0 && (await notes(uT, D2.id)).length === 0);
   await http('PUT', '/api/settings/alerts', T, { kinds: { 'device.down': { inApp: true } }, notifyAdmins: false });
-  await db.update(schema.instances).set({ status: 'running' }).where(eq(schema.instances.id, D2.id));
+  await failStart(D2.id);
   await waitFor('B alert', async () => (await notes(uB, D2.id, 'device.down')).length === 1, 30_000);
   await sleep(500);
   check('notifyAdmins off → only the granted user (B), not the admin', (await notes(uT, D2.id)).length === 0);
@@ -229,7 +240,11 @@ try {
 } finally {
   for (const ws of sockets) ws.close();
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
-  if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  if (fakeIds.length) {
+    await db.delete(schema.tasks).where(inArray(schema.tasks.instanceId, fakeIds));
+    await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  }
+  await ph.cleanup();
   await db.delete(schema.socialAccounts).where(like(schema.socialAccounts.handle, `al_${tag}_%`));
   if (refIds.length) {
     await db.delete(N).where(inArray(N.refId, refIds.filter(Boolean)));

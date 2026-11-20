@@ -42,6 +42,9 @@ import '../src/modules/media/media.js'; // registers media-process (任务超时
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('pcfake');
 const results: [string, boolean][] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push([name, ok]); console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -165,17 +168,17 @@ try {
     check('task timeouts: a user gets 403 on GET and PUT', g.status === 403 && p.status === 403, `${g.status} ${p.status}`);
   }
   const B = await login(`pcb${tag}`, pw);
-  // The monitor marks container-less rows as error every 5 s. A test-only trigger keeps placeholder rows whose
-  // image is PINNED "online" (running + adb device); it is dropped in `finally`.
+  // Placeholders are inert external rows (the monitor skips them). A test-only trigger keeps those whose
+  // external_id starts with PINNED "online" (running + adb device) against any other writer; dropped in `finally`.
   await sqlClient.unsafe(`create or replace function pc_test_pin_online() returns trigger language plpgsql as $$
-    begin if new.image = '${PINNED}' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
+    begin if new.external_id like '${PINNED}%' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
   await sqlClient.unsafe('drop trigger if exists pc_test_pin_online on instances');
   await sqlClient.unsafe('create trigger pc_test_pin_online before update on instances for each row execute function pc_test_pin_online()');
-  const fakes = await db.insert(schema.instances).values([
-    { name: `pcfake-${tag}-on`, status: 'running' as const, adbState: 'device', image: PINNED },
-    { name: `pcfake-${tag}-off`, status: 'stopped' as const, adbState: null, image: 'none' },
-    { name: `pcfake-${tag}-on2`, status: 'running' as const, adbState: 'device', image: PINNED },
-  ].map((d, i) => ({ ...d, adbPort: 5570 + i, spec: { width: 720, height: 1280, dpi: 320 } }))).returning();
+  const fakes = await ph.insert([
+    { name: `pcfake-${tag}-on`, status: 'running' as const, adbState: 'device', externalId: `${PINNED}-${tag}-1` },
+    { name: `pcfake-${tag}-off`, status: 'stopped' as const, adbState: null },
+    { name: `pcfake-${tag}-on2`, status: 'running' as const, adbState: 'device', externalId: `${PINNED}-${tag}-2` },
+  ].map((d, i) => ({ ...d, adbPort: 5570 + i })));
   fakeIds.push(...fakes.map((f) => f.id));
   const [DON, DOFF, DON2] = fakes as [typeof fakes[0], typeof fakes[0], typeof fakes[0]];
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: [DON.id, DOFF.id, DON2.id] });
@@ -751,6 +754,7 @@ try {
   await db.delete(schema.contents).where(like(schema.contents.title, `pc-${tag}%`));
   if (ptIds.size) await db.delete(schema.tasks).where(and(eq(schema.tasks.refType, 'publish'), inArray(schema.tasks.refId, [...ptIds])));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  await ph.cleanup();
   await sqlClient.unsafe('drop trigger if exists pc_test_pin_online on instances').catch(() => undefined);
   await sqlClient.unsafe('drop function if exists pc_test_pin_online()').catch(() => undefined);
   const leftC = await db.select().from(schema.contents).where(like(schema.contents.title, `pc-${tag}%`));

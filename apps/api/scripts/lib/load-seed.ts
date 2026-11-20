@@ -12,8 +12,9 @@
  * in threads) · tracked accounts 100 s × 30 snapshots + 5 posts · tasks 2000 s × 3 logs · notifications 2000 s.
  */
 import { randomBytes } from 'node:crypto';
-import { inArray, like, or, sql } from 'drizzle-orm';
+import { eq, inArray, like, or, sql } from 'drizzle-orm';
 import { db, schema } from '../../src/db/index.js';
+import { placeholderValues } from './placeholder.js';
 
 export interface LoadSeed {
   devices: { id: string; userId: string }[];
@@ -35,9 +36,9 @@ export async function seedLoad(tag: string, scale: number, adminId: string, user
 
   // ------------------------------------------------------------ devices (placeholders), one user per phone
   const D = Math.min(50, 5 * scale);
-  const devs = await db.insert(schema.instances).values(Array.from({ length: D }, (_, i) => ({
-    name: `ld-${tag}-dev-${i}`, image: 'none', adbPort: 6100 + i, status: 'stopped' as const, adbState: null,
-    bootCompleted: false, spec: { width: 720, height: 1280, dpi: 320 },
+  const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `ld-${tag}-src`, config: { apiUrl: 'not a url' } }).returning();
+  const devs = await db.insert(schema.instances).values(Array.from({ length: D }, (_, i) => placeholderValues(src!.id, {
+    name: `ld-${tag}-dev-${i}`, adbPort: 6100 + i, status: 'stopped' as const, adbState: null, bootCompleted: false,
   }))).returning({ id: schema.instances.id });
   const devices = devs.map((d, i) => ({ id: d.id, userId: userIds[i % U]! }));
   await db.insert(schema.instanceGrants).values(devices.map((d) => ({ userId: d.userId, instanceId: d.id })));
@@ -184,4 +185,5 @@ export async function cleanupLoad(tag: string, userIds: string[], adminId: strin
   if (userIds.length) await db.delete(schema.users).where(inArray(schema.users.id, userIds));
   await db.delete(schema.mediaAssets).where(like(schema.mediaAssets.fileKey, `ld/${tag}/%`));
   if (devIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
+  await db.delete(schema.deviceSources).where(eq(schema.deviceSources.name, `ld-${tag}-src`));
 }

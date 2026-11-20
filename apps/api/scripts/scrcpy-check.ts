@@ -1,35 +1,28 @@
 /**
- * scrcpy screen source (高速画面) through the real remote-control WebSocket, like the browser.
- * Requires: API running, STF, Lima VM; the scrcpy server in infra/device-tools/scrcpy/out (fetch.sh). No mocks.
+ * scrcpy screen source (高速画面) through the real remote-control WebSocket, like the browser, on an EXISTING phone,
+ * read only. Requires: API running, STF; the scrcpy server in infra/device-tools/scrcpy/out (fetch.sh). No mocks.
  *
- *   npx tsx --env-file=../../.env scripts/scrcpy-check.ts                 # creates a redroid-13-gapps device "scchk-*", full run, deletes it
- *   npx tsx --env-file=../../.env scripts/scrcpy-check.ts --reuse <name>  # full run (incl. input) on an existing test device, not deleted
- *   npx tsx --env-file=../../.env scripts/scrcpy-check.ts --device <name> # video + clipboard READ only (no input at all), e.g. bit-ins-02
+ *   npx tsx --env-file=../../.env scripts/scrcpy-check.ts --device <name>   # video + clipboard READ only (no input at all), e.g. bit-ins-02
  *
- * Full run: codec info/config/key frame + fps/KB/s for scrcpy vs STF (with on-screen motion driven
- * over adb), VM CPU, a second concurrent viewer (fan-out), HOME key, tap, paste/typeSecure, device
- * clipboard messages, server gone after the last viewer left, touch timing over remote links (external-phone
- * path of the hub, in-process, touches delivered in clumps): over the relay a quick flick pages and a slow
- * drag doesn't fling (CpRelay replays the browser's spacing; needs out/cprelay.dex and the device reaching
- * this machine, RELAY_TEST_HOST, default Lima's 192.168.5.2), over adb a drag stops where the finger
- * stopped; STF fallback without the jar, RBAC.
+ * Checks: STF frames (fps / KB/s), switch to scrcpy (codec info, config + key frame, one server process on the phone,
+ * fps / KB/s / device CPU, key-frame request→arrival), a second concurrent viewer (fan-out), clipboard read, switching
+ * back to STF resumes its frames, the server stops after the last viewer left. Since redroid was removed (2026-11-20)
+ * there are no local test devices: the input / touch-timing / STF-fallback / RBAC parts (which needed a phone the
+ * test may type on) are gone; on a BitBrowser phone only this read-only mode is allowed.
  * phone-* devices are refused.
  */
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
 import { config } from '../src/config.js';
-import { joinScrcpy, scrcpyActive, scrcpyInfo } from '../src/modules/control/scrcpy-hub.js';
-import { startRelayListener } from '../src/modules/control/scrcpy-relay.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const WS = API.replace(/^http/, 'ws');
 const arg = (k: string) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined; };
-const videoOnlyName = arg('--device');
-const reuseName = arg('--reuse');
+const deviceName = arg('--device');
+if (!deviceName) throw new Error('usage: scrcpy-check.ts --device <name>   (read only, on an existing phone)');
 const MEASURE_S = Number(process.env.MEASURE_S ?? 10);
 const results: [string, 'pass' | 'fail' | 'skip', string?][] = [];
 
@@ -38,7 +31,6 @@ function check(name: string, ok: boolean, detail?: string) {
   console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
   if (!ok) throw new Error(`FAILED: ${name}`);
 }
-function skip(name: string, why: string) { results.push([name, 'skip', why]); console.log(`- ${name} skipped — ${why}`); }
 
 async function http<T = any>(method: string, p: string, token?: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(API + p, {
@@ -131,15 +123,12 @@ async function keyFrameRtt(s: Session, n = 5) {
   return { samples: ms, medianMs: ms.length ? ms[Math.floor(ms.length / 2)]! : null };
 }
 
-/** CPU busy % over an interval from /proc/stat (VM via limactl, or the device via adb). */
+/** CPU busy % over an interval from /proc/stat (the device via adb). */
 async function cpuStat(read: () => Promise<string>) {
   const parse = (t: string) => { const v = t.split('\n')[0]!.trim().split(/\s+/).slice(1).map(Number); const idle = v[3]! + (v[4] ?? 0); const total = v.reduce((a, b) => a + b, 0); return { idle, total }; };
   const a = parse(await read());
   return async () => { const b = parse(await read()); return Math.round(100 * (1 - (b.idle - a.idle) / (b.total - a.total))); };
 }
-const limaStat = async () => execFileSync('limactl', ['shell', 'redroid', 'cat', '/proc/stat'], { encoding: 'utf8' });
-let haveLima = false;
-try { execFileSync('limactl', ['list', 'redroid'], { stdio: 'ignore' }); haveLima = true; } catch { /* no VM CLI */ }
 
 /** CPU of the processes matching a pattern, in % of one core over an interval (utime+stime, 100 Hz ticks). */
 async function procCpu(port: number, pattern: string) {
@@ -154,10 +143,7 @@ async function procCpu(port: number, pattern: string) {
 const serverProcs = async (port: number) => Number((await adb.shell(port, 'ps -A -o ARGS | grep -c "[s]crcpy.Server"')).trim());
 
 let adminToken = '';
-let createdId: string | null = null;
-let userId: string | null = null;
 const jar = path.resolve(config.SCRCPY_SERVER_PATH);
-const jarAside = `${jar}.aside`;
 const measurements: Record<string, unknown> = {};
 try {
   const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
@@ -166,59 +152,18 @@ try {
   check('scrcpy server present', fs.existsSync(jar), jar);
   const list = (await http('GET', '/api/instances', adminToken)).body.instances as any[];
 
-  let inst: any;
-  const wanted = videoOnlyName ?? reuseName;
-  if (wanted) {
-    if (wanted.startsWith('phone-')) throw new Error('phone-* devices belong to the owner: refused');
-    inst = list.find((i) => i.name === wanted);
-    if (!inst) throw new Error(`no device named ${wanted}`);
-    if (reuseName && inst.sourceId) throw new Error('--reuse is for local test devices; use --device for external phones (video only)');
-  } else {
-    const created = await http('POST', '/api/instances', adminToken, { count: 1, namePrefix: 'scchk', profile: 'redroid-13-gapps', proxyMode: 'none' });
-    if (created.status === 409 || created.status === 507) { skip('create test device', `refused: ${JSON.stringify(created.body)}`); process.exit(2); }
-    check('test device created', created.status === 202, created.body.instances?.[0]?.name);
-    createdId = created.body.instances[0].id;
-    inst = await waitFor('device running + STF ready', async () => {
-      const r = await http('GET', `/api/instances/${createdId}`, adminToken);
-      const i = r.body.instance ?? r.body;
-      if (i.status === 'error') throw new Error(`device error: ${i.lastError}`);
-      return i.status === 'running' && i.stfReady ? i : null;
-    }, 300_000, 2000);
-  }
+  if (deviceName.startsWith('phone-')) throw new Error('phone-* devices belong to the owner: refused');
+  const inst = list.find((i) => i.name === deviceName);
+  if (!inst) throw new Error(`no device named ${deviceName}`);
   const port = inst.adbPort as number;
-  const local = !inst.sourceId;
-  console.log(`device ${inst.name} (${local ? 'redroid' : 'external'}, adb ${port}, ${inst.spec.width}x${inst.spec.height})${videoOnlyName ? ' — VIDEO ONLY, no input' : ''}`);
+  console.log(`device ${inst.name} (adb ${port}, ${inst.spec.width}x${inst.spec.height}) — VIDEO ONLY, no input`);
   check('no scrcpy server running before the test', (await serverProcs(port)) === 0);
 
-  // Motion for fps measurements (local test devices only): scroll Settings up and down over adb.
-  let motion: Promise<string> | null = null;
-  const startMotion = async () => {
-    if (videoOnlyName) return;
-    await adb.shell(port, 'am start -W -a android.settings.SETTINGS >/dev/null');
-    await sleep(1500);
-    // Slow drags (3 s each) keep the list moving almost continuously; bounded in time in case we die.
-    motion = adb.shell(port, `end=$(( $(date +%s) + ${MEASURE_S * 4 + 30} )); while [ $(date +%s) -lt $end ]; do input swipe 360 1100 360 300 3000; input swipe 360 300 360 1100 3000; done`, 600_000).catch(() => '');
-    await sleep(1000);
-  };
-  const stopMotion = async () => { if (motion) { await adb.shell(port, 'pkill -f "input swipe" || true').catch(() => undefined); motion = null; } };
-  const cpu = async () => ({
-    vm: local && haveLima ? await cpuStat(limaStat) : null,
-    device: await cpuStat(() => adb.shell(port, 'head -1 /proc/stat')),
-  });
-  const cpuEnd = async (c: Awaited<ReturnType<typeof cpu>>) => ({ vm: c.vm ? await c.vm() : null, device: await c.device() });
-
-  // ---- baseline: motion, no viewer
-  if (!videoOnlyName && local) {
-    await startMotion();
-    const c = await cpu();
-    await sleep(MEASURE_S * 1000);
-    measurements.baselineCpu = await cpuEnd(c);
-    console.log(`  baseline (motion, no viewer): CPU ${JSON.stringify(measurements.baselineCpu)}`);
-  }
+  const cpu = async () => ({ device: await cpuStat(() => adb.shell(port, 'head -1 /proc/stat')) });
+  const cpuEnd = async (c: Awaited<ReturnType<typeof cpu>>) => ({ device: await c.device() });
 
   // ---- STF
   {
-    if (!videoOnlyName && !motion) await startMotion();
     const s = session(adminToken, inst.id);
     await ready(s);
     await waitFor('first STF frame', () => s.st.firstJpegAt, 20_000).catch(() => 0);
@@ -249,7 +194,6 @@ try {
     measurements.scrcpy = { via: info.via, ttffMs: ttffScrcpy, ttffFromConnectMs: a.st.firstKeyAt - a.t0, ...r, cpu: await cpuEnd(c), captureProcCpuPctOfCore: await pc(), keyFrameRtt: await keyFrameRtt(a) };
     console.log(`  scrcpy: ${JSON.stringify(measurements.scrcpy)}`);
   }
-  await stopMotion();
 
   // ---- fan-out: second viewer gets a key frame; still one server
   const b = session(adminToken, inst.id);
@@ -265,73 +209,6 @@ try {
   const clip = await a.msg((m) => m.type === 'clipboard' && m.requested, 'clipboard read', 5000);
   check('device clipboard read', typeof clip.text === 'string', `${clip.text.length} chars`);
 
-  if (videoOnlyName) {
-    skip('input tests (HOME, tap, paste, typeSecure, clipboard change)', 'video-only run on an existing device');
-  } else {
-    const top = async () => (await adb.shell(port, 'dumpsys activity activities | grep -m1 -E "mResumedActivity|ResumedActivity:"')).trim();
-    // HOME key through scrcpy control
-    await adb.shell(port, 'am start -W -a android.settings.SETTINGS >/dev/null');
-    await waitFor('Settings resumed', async () => (await top()).includes('settings'), 10_000);
-    const before = await top();
-    a.send({ type: 'key', action: 'press', key: 'home' });
-    const after = await waitFor('HOME changes the resumed activity', async () => { const t = await top(); return t !== before && !t.includes('settings') ? t : null; }, 10_000);
-    check('HOME key via scrcpy changes the resumed activity', true, after.replace(/^.*?\{/, '{'));
-
-    // Tap via scrcpy touch (normalised coordinates, launcher Gallery icon as in smoke-adapters LAYOUT['13'])
-    await sleep(800);
-    const release = (await adb.shell(port, 'getprop ro.build.version.release')).trim();
-    const gallery = release === '13' ? [274 / 720, 860 / 1280] : [277 / 720, 799 / 1280];
-    const tap = (x: number, y: number) => {
-      a.send({ type: 'touch', ev: { type: 'gestureStart' } });
-      a.send({ type: 'touch', ev: { type: 'down', x, y } });
-      a.send({ type: 'touch', ev: { type: 'commit' } });
-      a.send({ type: 'touch', ev: { type: 'up' } });
-      a.send({ type: 'touch', ev: { type: 'commit' } });
-      a.send({ type: 'touch', ev: { type: 'gestureStop' } });
-    };
-    tap(gallery[0]!, gallery[1]!);
-    const opened = await waitFor('tap opens Gallery', async () => { const t = await top(); return t.toLowerCase().includes('gallery') ? t : null; }, 10_000).catch(() => null);
-    if (opened) check('tap via scrcpy opens the launcher icon', true, opened.replace(/^.*?\{/, '{'));
-    else skip('tap via scrcpy', `Gallery not opened (launcher layout differs?); top: ${await top()}`);
-
-    // Paste + typeSecure into the launcher's search box, read back with uiautomator
-    a.send({ type: 'key', action: 'press', key: 'home' });
-    await sleep(1200);
-    tap(400 / 720, (release === '13' ? 186 : 172) / 1280);
-    const searchOk = await waitFor('search activity', async () => (await top()).includes('quicksearchbox'), 10_000).then(() => true, () => false);
-    if (!searchOk) skip('paste/typeSecure read-back', 'search box not opened');
-    else {
-      await sleep(1000);
-      a.send({ type: 'paste', text: 'scrcpy 123' });
-      await a.msg((m) => m.type === 'pasted', 'pasted ack', 5000);
-      await sleep(800);
-      a.send({ type: 'typeSecure', text: 'xyz' });
-      await a.msg((m) => m.type === 'typed', 'typed ack', 10_000);
-      await sleep(800);
-      const dump = await adb.shell(port, 'uiautomator dump /sdcard/sc-ui.xml >/dev/null && cat /sdcard/sc-ui.xml; rm -f /sdcard/sc-ui.xml', 30_000);
-      const texts = [...dump.matchAll(/text="([^"]*)"/g)].map((m) => m[1]);
-      check('paste + typeSecure via scrcpy land in order', texts.some((t) => t === 'scrcpy 123xyz'), texts.filter(Boolean).slice(0, 5).join(' | '));
-    }
-    a.send({ type: 'key', action: 'press', key: 'home' });
-
-    // Our own paste is not echoed back as a "device clipboard changed" message …
-    await sleep(2500);
-    check('own paste is not announced as a device clipboard change', !b.msgs.some((m) => m.type === 'clipboard' && !m.requested));
-    a.send({ type: 'getClipboard' });
-    const own = await waitFor('clipboard read after paste', () => a.msgs.filter((m) => m.type === 'clipboard' && m.requested).at(1), 5000);
-    check('clipboard read returns the pasted text', own.text === 'scrcpy 123', own.text);
-    // … but a change made on the device by someone else is (here: STF's clipboard, from a viewer on the STF source)
-    const c = session(adminToken, inst.id);
-    await ready(c);
-    const text = `cp-clip-${Date.now()}`;
-    const pasteAt = Date.now();
-    c.send({ type: 'paste', text });
-    await c.msg((m) => m.type === 'pasted', 'STF paste ack', 10_000);
-    const pushed = await b.msg((m) => m.type === 'clipboard' && !m.requested && m.text === text, 'device clipboard message', 5000).catch(() => null);
-    check('device clipboard change reaches scrcpy viewers', !!pushed, pushed ? `${pushed.at - pasteAt} ms after sending the STF paste (polled every 1 s)` : 'not received');
-    await c.close();
-  }
-
   // ---- back to STF: its screen socket was paused ('off') and must resume
   b.send({ type: 'screenSource', source: 'stf' });
   await b.msg((m) => m.type === 'screenSource' && m.source === 'stf', 'switch back to STF', 5000);
@@ -346,161 +223,11 @@ try {
   await waitFor('server stopped', async () => (await serverProcs(port)) === 0, 15_000, 500);
   check('server process gone after the last viewer left', true);
 
-  // ---- external phones: a remote link delivers touches in clumps (adb through the BitBrowser tunnel: ~270 ms;
-  // the relay through the phone's proxy too) and scrcpy-server stamps each event with its injection time.
-  // Relay path: CpRelay replays the browser's spacing, so a quick flick pages (Reels; here the launcher's
-  // swipe-up to all apps, which also needs fling velocity) and a slow drag that stops doesn't fling.
-  // adb path: the hub holds the release (velocity 0): a drag stops where the finger stopped.
-  // Both run in-process against this local device (external path of the hub); the clumps are produced here.
-  if (videoOnlyName) skip('touch timing over remote links (external path)', 'video-only run');
-  else {
-    const viewer = { sendBinary() {}, sendJson() {}, buffered: () => 0, onEnd() {} };
-    const cfg = config as { SCRCPY_RELAY_URL?: string };
-    const CLUMP_MS = 270;
-    /** A vertical gesture with browser times, delivered in clumps every CLUMP_MS (what the link does). */
-    const gesture = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, X: number, y0: number, y1: number, durMs: number, n: number, stillMs = 0) => {
-      const t0 = performance.now();
-      const evs: { at: number; ev: Parameters<typeof hub.touch>[0] }[] = [{ at: 0, ev: { type: 'down', x: X, y: y0, t: t0 } }];
-      for (let i = 1; i <= n; i++) evs.push({ at: (durMs * i) / n, ev: { type: 'move', x: X, y: y0 + ((y1 - y0) * i) / n, t: t0 + (durMs * i) / n } });
-      evs.push({ at: durMs + stillMs + 4, ev: { type: 'up', t: t0 + durMs + stillMs + 4 } });
-      hub.touch(evs[0]!.ev);
-      for (let i = 1; i < evs.length;) {
-        const until = Math.ceil((performance.now() - t0 + 0.001) / CLUMP_MS) * CLUMP_MS;
-        await sleep(until - (performance.now() - t0));
-        while (i < evs.length && evs[i]!.at <= until) hub.touch(evs[i++]!.ev);
-      }
-    };
-    /** Spacing Android saw for the last events (dumpsys input RecentQueue) and the release velocity (px/s, last ≤ 100 ms, cut at 40 ms gaps). */
-    const seen = async () => {
-      const out = await adb.shell(port, 'dumpsys input | grep -A12 RecentQueue | grep MotionEvent');
-      const ev = [...out.matchAll(/eventTime=(\d+).*?action=(\w+).*?pointers=\[0: \([\d.]+, ([\d.]+)\)/g)].map((m) => ({ t: Number(m[1]) / 1e6, a: m[2]!, y: Number(m[3]) }));
-      const g = ev.slice(Math.max(0, ev.findLastIndex((e) => e.a === 'DOWN')), ev.findLastIndex((e) => e.a === 'UP') + 1);
-      const moves = g.filter((e) => e.a === 'MOVE');
-      const last = moves.at(-1), up = g.at(-1);
-      if (!last || !up) return { spacingMs: [], velocityPxS: 0 };
-      const w = [last];
-      for (let k = moves.length - 2; k >= 0 && last.t - moves[k]!.t <= 100 && w[0]!.t - moves[k]!.t <= 40; k--) w.unshift(moves[k]!);
-      const v = up.t - last.t > 40 || w.length < 2 ? 0 : Math.round(((w[0]!.y - last.y) / (last.t - w[0]!.t)) * 1000);
-      return { spacingMs: g.slice(1).map((e, k) => Math.round(e.t - g[k]!.t)), velocityPxS: v };
-    };
-    const ui = () => adb.shell(port, 'uiautomator dump /sdcard/sc-ui.xml >/dev/null && cat /sdcard/sc-ui.xml; rm -f /sdcard/sc-ui.xml', 30_000);
-    const rows = async () => new Map([...(await ui()).matchAll(/text="([^"]+)" resource-id="android:id\/title"[^>]*bounds="\[\d+,(\d+)\]/g)].map((m) => [m[1]!, Number(m[2])]));
-    const drag = Math.round(0.3 * inst.spec.height);
-    const allApps = async () => /apps_list_view/.test(await ui());
-    /**
-     * Swipe-up over 15 % of the height on an empty spot of the home screen: opens all apps only with fling
-     * velocity (measured with adb's input swipe: 192 px in 60 ms opens 4/4, in 120 ms or slower 0/4), like a Reels page.
-     */
-    const homeSwipe = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, durMs: number, n: number, stillMs: number) => {
-      // HOME while the launcher is already in front can leave the next swipe unanswered: only when needed
-      if (!(await adb.shell(port, 'dumpsys activity activities | grep -m1 ResumedActivity:')).includes('launcher')) await adb.shell(port, 'input keyevent 3');
-      else if (await allApps()) await adb.shell(port, 'input keyevent 4');
-      await sleep(2000);
-      await gesture(hub, 0.625, 0.55, 0.4, durMs, n, stillMs);
-      await sleep(1500);
-      return { allApps: await allApps(), ...(await seen()) };
-    };
-    /** Upward drag over 30 % of the height in the app list; px the first row moved (null: scrolled away). */
-    const listSwipe = async (hub: Awaited<ReturnType<typeof joinScrcpy>>, durMs: number, n: number, stillMs: number) => {
-      await adb.shell(port, 'am start -W -S -a android.settings.MANAGE_ALL_APPLICATIONS_SETTINGS >/dev/null');
-      await sleep(2500);
-      const [label, y0px] = [...(await rows())][0] ?? ['', 0];
-      await gesture(hub, 0.5, 0.8, 0.5, durMs, n, stillMs);
-      await sleep(3000);
-      const after = (await rows()).get(label);
-      return { moved: after === undefined ? null : y0px - after, ...(await seen()) };
-    };
-
-    // relay path: the device reaches this process's relay listener at the VM's host address (Lima: 192.168.5.2)
-    cfg.SCRCPY_RELAY_URL = `ws://${process.env.RELAY_TEST_HOST ?? '192.168.5.2'}:${config.SCRCPY_RELAY_PORT}/scrcpy-relay`;
-    startRelayListener({ info() {}, warn: (o, m) => console.warn(m, o) });
-    let hub = await joinScrcpy(port, viewer, true);
-    try {
-      const via = scrcpyInfo(port)?.link;
-      if (via !== 'relay') skip('touch timing over the relay', `relay did not connect from the device (via ${via}); set RELAY_TEST_HOST`);
-      else {
-        // the launcher itself misses an occasional flick with perfect timing (seen in ~1 of 6, also right after
-        // a miss with identical spacing): up to 3 tries
-        let flick = await homeSwipe(hub, 60, 4, 0), tries = 1;
-        while (!flick.allApps && tries < 3) { flick = await homeSwipe(hub, 60, 4, 0); tries++; }
-        measurements.relayFlick = { ...flick, tries };
-        check('relay: quick flick in clumps keeps its spacing and pages (home → all apps)', flick.allApps && flick.velocityPxS > 2000, `${JSON.stringify(flick)}, try ${tries}`);
-        const slow = await homeSwipe(hub, 700, 42, 150);
-        measurements.relaySlowPage = slow;
-        check('relay: slow drag of the same distance that stops does not page', !slow.allApps && slow.velocityPxS === 0, JSON.stringify(slow));
-        const ls = await listSwipe(hub, 900, 54, 150);
-        measurements.relaySlowList = ls;
-        check('relay: slow drag in a list stops where the finger stopped (no fling)', ls.moved !== null && ls.moved > 0 && ls.moved <= drag, `${JSON.stringify(ls)} (drag ${drag} px)`);
-        const lf = await listSwipe(hub, 150, 9, 0);
-        measurements.relayFlickList = lf;
-        check('relay: fast flick in a list flings past the finger', lf.moved === null || lf.moved > drag, `${JSON.stringify(lf)} (drag ${drag} px)`);
-        // untimed control messages still go straight through
-        await adb.shell(port, 'am start -W -a android.settings.SETTINGS >/dev/null');
-        await sleep(1000);
-        const k0 = Date.now();
-        hub.key('press', 'home');
-        await waitFor('HOME over the relay', async () => !(await adb.shell(port, 'dumpsys activity activities | grep -m1 ResumedActivity:')).includes('settings'), 5000, 50);
-        check('relay: HOME key (untimed) still works', true, `${Date.now() - k0} ms incl. adb polling`);
-      }
-    } finally {
-      hub.leave();
-    }
-    await waitFor('relay share closed', () => !scrcpyActive(port), 15_000, 200);
-
-    // adb path (no device-side helper): release held, velocity 0
-    cfg.SCRCPY_RELAY_URL = undefined;
-    hub = await joinScrcpy(port, viewer, true);
-    try {
-      const ls = await listSwipe(hub, 500, 15, 0);
-      measurements.adbList = ls;
-      check('adb: bursty drag on an external link stops where the finger stopped (no fling)', ls.moved !== null && ls.moved > 0 && ls.moved <= drag, `${JSON.stringify(ls)} (drag ${drag} px)`);
-    } finally {
-      hub.leave();
-    }
-  }
-
-  // ---- fallback to STF when the jar is missing (local file renamed for a moment)
-  if (videoOnlyName) skip('STF fallback without the jar', 'video-only run');
-  else {
-    fs.renameSync(jar, jarAside);
-    try {
-      const f = session(adminToken, inst.id);
-      await ready(f);
-      const r = await toScrcpy(f);
-      check('missing jar: falls back to STF with a coded reason', !r.ok && r.reply.source === 'stf' && r.reply.code === 'player.scrcpy_unavailable', r.reply.reason);
-      await waitFor('STF frames after fallback', () => f.st.jpeg > 0, 10_000);
-      check('STF frames keep coming after the fallback', true, `${f.st.jpeg} frame(s)`);
-      await f.close();
-    } finally {
-      fs.renameSync(jarAside, jar);
-    }
-  }
-
-  // ---- RBAC: a user without a grant on the device cannot open the session
-  if (videoOnlyName) skip('RBAC', 'video-only run');
-  else {
-    const uname = `sc-user-${Date.now() % 100000}`;
-    const upass = `pw-${crypto.randomUUID()}`;
-    const u = await http('POST', '/api/users', adminToken, { username: uname, password: upass, role: 'user' });
-    check('create user without a grant', u.status === 201);
-    userId = u.body.user.id;
-    const ut = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: uname, password: upass }))).body.token;
-    const s = session(ut, inst.id);
-    await waitFor('session refused', () => s.st.closeCode, 10_000);
-    check('user without control access is refused', s.st.closeCode === 4003, `close ${s.st.closeCode}`);
-  }
-
   console.log('\nMEASUREMENTS', JSON.stringify(measurements, null, 1));
 } catch (err) {
   console.error((err as Error).message);
   process.exitCode = 1;
 } finally {
-  if (fs.existsSync(jarAside) && !fs.existsSync(jar)) fs.renameSync(jarAside, jar);
-  if (adminToken && userId) await http('DELETE', `/api/users/${userId}`, adminToken);
-  if (adminToken && createdId && !process.argv.includes('--keep')) {
-    const r = await http('POST', '/api/instances/actions', adminToken, { action: 'delete', ids: [createdId] });
-    console.log(`teardown: delete test device → ${r.status}`);
-  }
   const counts = { pass: 0, fail: 0, skip: 0 };
   for (const [, r] of results) counts[r]++;
   console.log(`\n${counts.pass} passed, ${counts.fail} failed, ${counts.skip} skipped`);

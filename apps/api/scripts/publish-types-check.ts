@@ -20,6 +20,9 @@ import sharp from 'sharp';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('ptcfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -92,10 +95,10 @@ try {
   const A = await login(`ptca${tag}`, pw);
   const B = await login(`ptcb${tag}`, pw);
   await sqlClient.unsafe(`create or replace function ptc_test_pin_online() returns trigger language plpgsql as $$
-    begin if new.image = '${PINNED}' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
+    begin if new.external_id like '${PINNED}%' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
   await sqlClient.unsafe('drop trigger if exists ptc_test_pin_online on instances');
   await sqlClient.unsafe('create trigger ptc_test_pin_online before update on instances for each row execute function ptc_test_pin_online()');
-  const fakes = await db.insert(schema.instances).values([0, 1].map((i) => ({ name: `ptcfake-${tag}-on${i}`, status: 'running' as const, adbState: 'device', image: PINNED, adbPort: 5590 + i, spec: { width: 720, height: 1280, dpi: 320 } }))).returning();
+  const fakes = await ph.insert([0, 1].map((i) => ({ name: `ptcfake-${tag}-on${i}`, externalId: `${PINNED}-${tag}-${i}`, status: 'running' as const, adbState: 'device', adbPort: 5590 + i })));
   fakeIds.push(...fakes.map((f) => f.id));
   const [DON, DON2] = fakes;
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: fakeIds });
@@ -287,6 +290,7 @@ try {
   if (refIds.length) await db.delete(schema.tasks).where(and(eq(schema.tasks.refType, 'publish'), inArray(schema.tasks.refId, refIds)));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  await ph.cleanup();
   await sqlClient.unsafe('drop trigger if exists ptc_test_pin_online on instances').catch(() => undefined);
   await sqlClient.unsafe('drop function if exists ptc_test_pin_online()').catch(() => undefined);
   const left = await db.select().from(schema.publishTasks).where(inArray(schema.publishTasks.userId, userIds.length ? userIds : ['00000000-0000-0000-0000-000000000000']));

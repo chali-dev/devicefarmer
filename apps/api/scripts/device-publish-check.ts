@@ -30,6 +30,9 @@ import { firstGridItem, isGridEmpty, permalinkOf, pkTime } from '../src/modules/
 import { classifyIgDump, parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('dpcfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -93,10 +96,10 @@ try {
   const A = await login(`dpca${tag}`, pw);
   const B = await login(`dpcb${tag}`, pw);
   await sqlClient.unsafe(`create or replace function dpc_test_pin_online() returns trigger language plpgsql as $$
-    begin if new.image = '${PINNED}' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
+    begin if new.external_id like '${PINNED}%' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
   await sqlClient.unsafe('drop trigger if exists dpc_test_pin_online on instances');
   await sqlClient.unsafe('create trigger dpc_test_pin_online before update on instances for each row execute function dpc_test_pin_online()');
-  const fakes = await db.insert(schema.instances).values([0, 1, 2].map((i) => ({ name: `dpcfake-${tag}-${i}`, status: 'running' as const, adbState: 'device', image: PINNED, adbPort: 5571 + i, spec: { width: 720, height: 1280, dpi: 320 } }))).returning();
+  const fakes = await ph.insert([0, 1, 2].map((i) => ({ name: `dpcfake-${tag}-${i}`, externalId: `${PINNED}-${tag}-${i}`, status: 'running' as const, adbState: 'device', adbPort: 5571 + i })));
   fakeIds.push(...fakes.map((f) => f.id));
   const [D0, D1, D2] = fakes as [typeof fakes[number], typeof fakes[number], typeof fakes[number]];
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: fakeIds });
@@ -345,6 +348,7 @@ try {
   if (fakeIds.length) {
     await db.delete(schema.riskEvents).where(inArray(schema.riskEvents.instanceId, fakeIds));
     await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+    await ph.cleanup();
   }
   await sqlClient.unsafe('drop trigger if exists dpc_test_pin_online on instances');
   await sqlClient.unsafe('drop function if exists dpc_test_pin_online()');

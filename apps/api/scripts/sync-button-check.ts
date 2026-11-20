@@ -28,6 +28,9 @@ import { recordSyncCheck, syncFeedStep, syncFollowingStep } from '../src/modules
 import { haltDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('sbchk');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
@@ -83,9 +86,9 @@ try {
   const [uA] = userIds as [string, string];
   const A = await login(`sba${tag}`, pw);
   const B = await login(`sbb${tag}`, pw);
-  const devs = await db.insert(schema.instances).values([1, 2].map((n) => ({
-    name: `sbchk-${tag}-${n}`, image: 'none', adbPort: 5590 + n, status: 'running' as const, adbState: 'device', bootCompleted: true, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const devs = await ph.insert([1, 2].map((n) => ({
+    name: `sbchk-${tag}-${n}`, adbPort: 5590 + n, status: 'running' as const, adbState: 'device', bootCompleted: true,
+  })));
   devIds.push(...devs.map((d) => d.id));
   const [D1, D2] = devs as [typeof devs[0], typeof devs[0]];
   await http('PUT', `/api/instances/${D1.id}/grants`, admin, { userIds: [uA] });
@@ -251,6 +254,7 @@ try {
     await db.delete(schema.alertStates).where(inArray(schema.alertStates.key, devIds.map((id) => `${id}:instagram`)));
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   await db.delete(schema.settings).where(inArray(schema.settings.key, settingKeys));
   if (saved.length) await db.insert(schema.settings).values(saved);
   const failed = results.filter(([, ok]) => !ok).length;

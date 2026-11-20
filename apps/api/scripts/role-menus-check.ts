@@ -25,6 +25,9 @@ import { and, eq, gte, ilike, inArray } from 'drizzle-orm';
 import WebSocket from 'ws';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('rmfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -76,8 +79,8 @@ try {
   let r = await http('GET', '/api/settings/role-menus', T);
   const ALL = ['instances', 'personas', 'social', 'analytics', 'media', 'trending', 'content', 'publish', 'tasks'];
   check('GET role-menus: default = every grantable menu, no updatedAt', r.status === 200 && sameSet(r.body.menus, ALL) && sameSet(r.body.defaults, ALL)
-    && sameSet(r.body.grantable, ALL) && r.body.updatedAt === null && r.body.fixed.always.includes('dashboard') && r.body.fixed.adminOnly.includes('connections'), r.text.slice(0, 300));
-  check('admin login/me menus: every key incl. admin pages', ADMIN.menus.includes('permissions') && ADMIN.menus.includes('logs') && ADMIN.menus.includes('analytics'));
+    && sameSet(r.body.grantable, ALL) && r.body.updatedAt === null && r.body.fixed.always.includes('dashboard') && r.body.fixed.adminOnly.includes('connections') && !r.body.fixed.adminOnly.includes('proxies'), r.text.slice(0, 300));
+  check('admin login/me menus: every key incl. admin pages, no proxies (代理IP池 removed 2026-11-20)', ADMIN.menus.includes('permissions') && ADMIN.menus.includes('logs') && ADMIN.menus.includes('analytics') && !ADMIN.menus.includes('proxies'));
 
   const pw = randomBytes(12).toString('base64url');
   r = await http('POST', '/api/users', T, { username: `rm${tag}`, password: pw, role: 'user' });
@@ -98,11 +101,13 @@ try {
     http('PUT', '/api/settings/role-menus', T, { menus: ['connections'] }),
     http('PUT', '/api/settings/role-menus', T, { menus: ['media'], extra: 1 }),
     http('PUT', '/api/settings/role-menus', T, { menus: 'media' }),
+    http('PUT', '/api/settings/role-menus', T, { menus: ['proxies'] }),
   ]);
   check('PUT unknown key → 400 rbac.menu_unknown', bad[0]!.status === 400 && bad[0]!.body.code === 'rbac.menu_unknown' && bad[0]!.body.params.menu === 'nope');
   check('PUT admin-only / dashboard key → 400 rbac.menu_not_grantable', [bad[1]!, bad[2]!, bad[3]!].every((x) => x.status === 400 && x.body.code === 'rbac.menu_not_grantable'),
     [bad[1]!, bad[2]!, bad[3]!].map((x) => `${x.status} ${x.body?.code}`).join(','));
   check('PUT extra field / not an array → 400', bad[4]!.status === 400 && bad[5]!.status === 400);
+  check('PUT the removed proxies key → 400 rbac.menu_unknown', bad[6]!.status === 400 && bad[6]!.body.code === 'rbac.menu_unknown', `${bad[6]!.status} ${bad[6]!.body?.code}`);
   r = await http('GET', '/api/settings/role-menus', T);
   check('refused PUTs changed nothing', r.body.updatedAt === null && sameSet(r.body.menus, ALL));
   check('user GET/PUT role-menus → 403', (await http('GET', '/api/settings/role-menus', UT)).status === 403 && (await http('PUT', '/api/settings/role-menus', UT, { menus: [] })).status === 403);
@@ -133,7 +138,7 @@ try {
   const shared = await Promise.all(['/api/personas', '/api/tasks?limit=5', '/api/instances', '/api/instances/automation', '/api/social/accounts', '/api/media', '/api/dashboard', '/api/notifications']
     .map(async (p) => [p, (await http('GET', p, UT)).status] as const));
   check('shared endpoints still answer for the user', shared.every(([, s]) => s === 200), JSON.stringify(shared));
-  const [dev] = await db.insert(schema.instances).values({ name: `rmfake-${tag}-s`, image: 'none', adbPort: 5592, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+  const [dev] = await ph.insert({ name: `rmfake-${tag}-s`, adbPort: 5592, status: 'stopped' });
   fakeIds.push(dev!.id);
   await db.insert(schema.instanceGrants).values({ userId: userIds[0]!, instanceId: dev!.id });
   check('remote control session while 我的云机 is off → closed 4003', await sessionClose(UT, dev!.id) === 4003);
@@ -260,7 +265,7 @@ try {
   check('custom role: switched-off menus → 403 rbac.menu_disabled', Object.values(cDenied).every((v) => v === true), JSON.stringify(cDenied));
   const cOk = await Promise.all(['/api/analytics/summary?days=7', '/api/content-categories', '/api/personas', '/api/instances', '/api/dashboard'].map(async (p) => [p, (await http('GET', p, CT)).status] as const));
   check('custom role: its own menus + shared endpoints answer 200', cOk.every(([, st]) => st === 200), JSON.stringify(cOk));
-  const [devR] = await db.insert(schema.instances).values({ name: `rmfake-${tag}-r`, image: 'none', adbPort: 5585, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+  const [devR] = await ph.insert({ name: `rmfake-${tag}-r`, adbPort: 5585, status: 'stopped' });
   fakeIds.push(devR!.id);
   await db.insert(schema.instanceGrants).values({ userId: cuId, instanceId: devR!.id });
   check('custom role without 我的云机: remote control session → 4003', await sessionClose(CT, devR!.id) === 4003);
@@ -324,10 +329,10 @@ try {
     okRows.some((a) => JSON.stringify((a.detail as any)?.menus) === JSON.stringify(['content'])) && audit.some((a) => !a.ok && a.status === 400), `${audit.length} rows`);
 
   // ---------------------------------------------------------------- device logs (系统日志 → 设备日志)
-  const [dA, dB] = await db.insert(schema.instances).values([
-    { name: `rmfake-${tag}-a`, image: 'none', adbPort: 5593, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } },
-    { name: `rmfake-${tag}-b`, image: 'none', adbPort: 5594, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } },
-  ]).returning();
+  const [dA, dB] = await ph.insert([
+    { name: `rmfake-${tag}-a`, adbPort: 5593, status: 'stopped' },
+    { name: `rmfake-${tag}-b`, adbPort: 5594, status: 'stopped' },
+  ]);
   fakeIds.push(dA!.id, dB!.id);
   const base = Date.now() - 3600_000;
   const E = schema.instanceStatusEvents;
@@ -371,6 +376,7 @@ try {
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (roleIds.length) await db.delete(schema.roles).where(inArray(schema.roles.id, roleIds));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  await ph.cleanup();
   const left = fakeIds.length ? await db.select().from(schema.instances).where(inArray(schema.instances.id, fakeIds)) : [];
   check('cleanup: placeholder devices + users + roles removed, setting restored', left.length === 0);
   await sqlClient.end();

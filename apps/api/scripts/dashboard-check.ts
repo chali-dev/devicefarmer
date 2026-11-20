@@ -1,8 +1,9 @@
 /**
  * Dashboard (仪表板) + Settings (设置) test through the public API against the real API, DB and Redis (no mocks).
  * - Dashboard (simplified 2026-11-19: 我的云机状态 + 媒体号分析): GET /api/dashboard has only the `devices` widget.
- *   Placeholder devices in every 云机管理 state (stopped / error / creating / stopped external phone / running ok /
- *   running + device lock = busy / running without adb = offline / 风控暂停) are granted to users A and B; the
+ *   Placeholder devices (inert external rows, scripts/lib/placeholder.ts; every device is an external phone since
+ *   redroid was removed) in every 云机管理 state (stopped / error / creating / running ok / running + device lock =
+ *   busy / running without adb = offline / 风控暂停) are granted to users A and B; the
  *   widget's state counts and 需要处理 list are checked exactly per role (users never see others' devices; the admin
  *   sees the seeded delta over the baseline), admin ?userId= = that user's dashboard, RBAC. The 媒体号分析 section
  *   is GET /api/analytics/summary (exact numbers in analytics-check.ts); here: its `lastCheck` per account, RBAC,
@@ -20,6 +21,9 @@ import { eq, inArray, like, or, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders, type PlaceholderRow } from './lib/placeholder.js';
+
+const ph = placeholders('dbc');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -48,7 +52,7 @@ const tag = randomBytes(3).toString('hex');
 const now = Date.now();
 const ago = (ms: number) => new Date(now - ms);
 const H = 3600_000; const D = 24 * H;
-const PIN_ON = 'dbc-test-pin-on'; const PIN_OFF = 'dbc-test-pin-off';
+const PIN_ON = `dbc-pin-on-${tag}`; const PIN_OFF = `dbc-pin-off-${tag}`; // external_id prefixes the trigger keys on
 const redis = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: 2 });
 const T = await login(process.env.ADMIN_USERNAME!, process.env.ADMIN_PASSWORD!);
 const dash = async (token: string, q = '') => http('GET', `/api/dashboard?tz=UTC${q}`, token);
@@ -56,7 +60,6 @@ const dash = async (token: string, q = '') => http('GET', `/api/dashboard?tz=UTC
 const userIds: string[] = [];
 const instIds: string[] = [];
 const taskIds: string[] = [];
-let sourceId: string | null = null;
 let haltId: string | null = null;
 let retentionBefore: number | null | undefined;
 
@@ -75,27 +78,24 @@ try {
   const TA = await login(`dbc-${tag}-a`, pw); const TB = await login(`dbc-${tag}-b`, pw);
 
   // ---------------------------------------------------------------- seed: devices in every 云机管理 state
-  // Running placeholders are kept running by a test-only trigger (the monitor finds no container / adb for them).
+  // Running placeholders are kept running by a test-only trigger (the monitor skips inert rows, this guards any other writer).
   await sqlClient.unsafe(`create or replace function dbc_test_pin() returns trigger language plpgsql as $$
-    begin if new.image = '${PIN_ON}' then new.status := 'running'; new.adb_state := 'device';
-    elsif new.image = '${PIN_OFF}' then new.status := 'running'; new.adb_state := null; end if; return new; end $$`);
+    begin if new.external_id like '${PIN_ON}%' then new.status := 'running'; new.adb_state := 'device';
+    elsif new.external_id like '${PIN_OFF}%' then new.status := 'running'; new.adb_state := null; end if; return new; end $$`);
   await sqlClient.unsafe('drop trigger if exists dbc_test_pin on instances');
   await sqlClient.unsafe('create trigger dbc_test_pin before update on instances for each row execute function dbc_test_pin()');
-  const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `dbc-${tag}-src`, config: { apiUrl: 'http://127.0.0.1:9' } }).returning();
-  sourceId = src!.id;
-  const spec = { width: 720, height: 1280, dpi: 320 };
   const port = () => 42000 + Math.floor(Math.random() * 15000);
-  const dv = (n: string, v: Partial<typeof schema.instances.$inferInsert>) => ({ name: `dbc-${tag}-${n}`, image: 'none', adbPort: port(), status: 'stopped' as const, spec, ...v });
-  const devs = await db.insert(schema.instances).values([
-    dv('d1-stopped', {}), // not running, stopped on purpose: not listed
+  const dv = (n: string, v: Partial<PlaceholderRow> = {}): PlaceholderRow => ({ name: `dbc-${tag}-${n}`, adbPort: port(), status: 'stopped' as const, ...v });
+  const devs = await ph.insert([
+    dv('d1-stopped'), // not running, stopped (every phone is external now: only admins power it on): listed
     dv('d2-error', { status: 'error' }), // not running, listed (error)
     dv('d3-creating', { status: 'creating' }), // not running, not listed
-    dv('d4-ext-stopped', { sourceId, externalId: `x-${tag}` }), // stopped external phone: listed
-    dv('d5-ok', { image: PIN_ON, status: 'running', adbState: 'device' }), // 正常
-    dv('d6-busy', { image: PIN_ON, status: 'running', adbState: 'device' }), // 忙 (device lock below)
-    dv('d7-offline', { image: PIN_OFF, status: 'running', adbState: null }), // 离线: listed
-    dv('d8-halted', {}), // 风控暂停 wins over stopped: listed with its code
-  ]).returning();
+    dv('d4-stopped'), // stopped phone: listed
+    dv('d5-ok', { externalId: `${PIN_ON}-5`, status: 'running', adbState: 'device' }), // 正常
+    dv('d6-busy', { externalId: `${PIN_ON}-6`, status: 'running', adbState: 'device' }), // 忙 (device lock below)
+    dv('d7-offline', { externalId: `${PIN_OFF}-7`, status: 'running', adbState: null }), // 离线: listed
+    dv('d8-halted'), // 风控暂停 wins over stopped: listed with its code
+  ]);
   instIds.push(...devs.map((d) => d.id));
   const [D1, D2, D3, D4, D5, D6, D7, D8] = devs as (typeof devs[0])[];
   await db.insert(schema.instanceGrants).values([
@@ -115,14 +115,14 @@ try {
   check('user A: only the devices widget', ra.status === 200 && same(ra.body.order, ['devices']), j(ra.body.order));
   check('user A: granted devices only, counted by state (5: ok 1, offline 1, not running 3)',
     a.total === 5 && same(a.byState, { ok: 1, busy: 0, offline: 1, notRunning: 3, halted: 0 }), j(a.byState));
-  check('user A: needs attention = error, offline, stopped external (in that order; stopped local / creating not listed)',
-    a.attentionTotal === 3 && same(att(a), [['d2-error', 'error'], ['d7-offline', 'offline'], ['d4-ext-stopped', 'stopped']]), j(att(a)));
-  check('user A: attention rows carry id, status, external flag', a.attention[2].id === D4!.id && a.attention[2].external === true && a.attention[2].status === 'stopped' && a.attention[0].external === false);
+  check('user A: needs attention = error, offline, stopped phones (in that order, by name; creating not listed)',
+    a.attentionTotal === 4 && same(att(a), [['d2-error', 'error'], ['d7-offline', 'offline'], ['d1-stopped', 'stopped'], ['d4-stopped', 'stopped']]), j(att(a)));
+  check('user A: attention rows carry id, status, external flag (every phone is external)', a.attention[3].id === D4!.id && a.attention[3].status === 'stopped' && a.attention.every((x: any) => x.external === true));
 
   const rb = await dash(TB);
   const b = rb.body.widgets.devices;
   check('user B: 4 devices (busy 1, halted 1, not running 2)', b.total === 4 && same(b.byState, { ok: 0, busy: 1, offline: 0, notRunning: 2, halted: 1 }), j(b.byState));
-  check('user B: needs attention = halted (with code + time) first, then error',
+  check('user B: needs attention = halted (with code + time) first, then error (creating not listed)',
     same(att(b), [['d8-halted', 'halted'], ['d2-error', 'error']]) && b.attention[0].code === 'tracked.collector_challenge' && !!b.attention[0].at, j(b.attention));
   check("users never see each other's devices", !j(b).includes(D7!.id) && !j(b).includes(D4!.id) && !j(a).includes(D8!.id) && !j(a).includes(D6!.id));
 
@@ -132,8 +132,8 @@ try {
     adm.total - base.widgets.devices.total === 8 && adm.byState.ok - bs.ok === 1 && adm.byState.busy - bs.busy === 1 && adm.byState.offline - bs.offline === 1
     && adm.byState.notRunning - bs.notRunning === 4 && adm.byState.halted - bs.halted === 1, j(adm.byState));
   const mine = new Set(instIds);
-  check('admin: needs attention +4, seeded ones in priority order (halted, error, offline, stopped external)', adm.attentionTotal - base.widgets.devices.attentionTotal === 4
-    && (adm.attentionTotal > 10 || same(att({ attention: adm.attention.filter((x: any) => mine.has(x.id)) }), [['d8-halted', 'halted'], ['d2-error', 'error'], ['d7-offline', 'offline'], ['d4-ext-stopped', 'stopped']])), j(att(adm)));
+  check('admin: needs attention +5, seeded ones in priority order (halted, error, offline, stopped)', adm.attentionTotal - base.widgets.devices.attentionTotal === 5
+    && (adm.attentionTotal > 10 || same(att({ attention: adm.attention.filter((x: any) => mine.has(x.id)) }), [['d8-halted', 'halted'], ['d2-error', 'error'], ['d7-offline', 'offline'], ['d1-stopped', 'stopped'], ['d4-stopped', 'stopped']])), j(att(adm)));
 
   // ---------------------------------------------------------------- 媒体号分析 = GET /api/analytics/summary (the page's second request)
   const acc = await db.insert(schema.socialAccounts).values([
@@ -183,7 +183,7 @@ try {
   r = await http('GET', '/api/settings/config', T);
   check('config: env media defaults, no publish timeout (系统配置 → 任务超时) and no audit retention (settings now)', r.status === 200 && r.body.media?.imageMaxMb > 0 && !('publish' in r.body) && !('auditRetentionDays' in r.body), j(r.body));
   r = await http('GET', '/api/settings/system', T);
-  check('system: real health checks for postgres/redis/docker/adb/stf + versions', r.status === 200 && ['postgres', 'redis', 'docker', 'adb', 'stf'].every((k) => k in r.body.health.checks)
+  check('system: real health checks for postgres/redis/adb/stf (no docker since redroid was removed) + versions', r.status === 200 && ['postgres', 'redis', 'adb', 'stf'].every((k) => k in r.body.health.checks) && !('docker' in r.body.health.checks)
     && r.body.health.checks.postgres === 'ok' && typeof r.body.versions.postgres === 'string' && !r.text.includes(process.env.DATABASE_URL!), j(r.body.health));
   r = await http('GET', '/api/settings/storage', T);
   check('storage settings never return the S3 secret', r.status === 200 && !/secretAccessKey"\s*:/.test(r.text));
@@ -283,7 +283,7 @@ try {
   redis.disconnect();
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (instIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, instIds));
-  if (sourceId) await db.delete(schema.deviceSources).where(eq(schema.deviceSources.id, sourceId));
+  await ph.cleanup();
   const leftUsers = await db.select().from(schema.users).where(like(schema.users.username, `dbc-${tag}-%`));
   const leftRows = await db.select({ id: schema.instances.id }).from(schema.instances).where(like(schema.instances.name, `dbc-${tag}-%`));
   const leftTasks = await db.select({ id: schema.tasks.id }).from(schema.tasks).where(or(sql`${schema.tasks.type} = 'dbc-test'`, like(schema.tasks.instanceName, `dbc-${tag}-%`)));

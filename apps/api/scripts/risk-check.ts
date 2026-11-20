@@ -13,10 +13,10 @@
  * - comment replies without approval, draft first: a user's reply is a draft (no task) until 排程 (POST …/submit),
  *   which goes straight to `scheduled` (send task created) and on to awaiting_operator; the approve/reject endpoints are gone (404); the rules have no requireApproval
  *   (refused by the strict schema);
- * - power of external phones is admin only (owner decision 2026-11-18): an inert external placeholder (invalid source
- *   config, nothing listens; never a real BitBrowser phone) granted to the user: start / stop / restart → 403
- *   instances.external_power_admin_only and no task; in a batch the external one is skipped with that code while the
- *   user's local device passes the RBAC layer (stop of an already stopped one = skipped, nothing runs); an admin is not
+ * - power of phones is admin only (owner decision 2026-11-18; every device is an external phone since redroid was
+ *   removed on 2026-11-20): an inert placeholder (invalid source config, nothing listens; never a real BitBrowser
+ *   phone, scripts/lib/placeholder.ts) granted to the user: start / stop / restart → 403
+ *   instances.external_power_admin_only and no task; in a batch every phone is skipped with that code; an admin is not
  *   refused (same stopped device → only "already stopped", no power call);
  * - audit rows of the new actions.
  * Usage (from apps/api, API running): E2E_API=http://127.0.0.1:<port> API_PORT=<port> npx tsx --env-file=../../.env scripts/risk-check.ts
@@ -30,6 +30,9 @@ import { haltDevice } from '../src/modules/tracked/collector.js';
 import { scheduleAccountDeviceChecks } from '../src/modules/social/check.js';
 import { withCaptcha } from './lib/login.js';
 import { tryLink } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('riskchk');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -115,9 +118,9 @@ try {
   }
 
   // ---------------------------------------------------------------- placeholder devices, account limits from the new entry
-  const devs = await db.insert(schema.instances).values([1, 2].map((n) => ({
-    name: `riskchk-${tag}-${n}`, image: 'none', adbPort: 5580 + n, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const devs = await ph.insert([1, 2].map((n) => ({
+    name: `riskchk-${tag}-${n}`, adbPort: 5580 + n, status: 'stopped' as const,
+  })));
   devIds.push(...devs.map((d) => d.id));
   const [D1, D2] = devs as [typeof devs[0], typeof devs[0]];
   r = await http('PUT', '/api/social/settings', U, { limits: { instagram: 2 } });
@@ -201,11 +204,7 @@ try {
 
   // ---------------------------------------------------------------- external phone power: admin only (inert placeholder)
   {
-    const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `riskchk-src-${tag}`, config: { apiUrl: 'not a url' } }).returning();
-    const [E] = await db.insert(schema.instances).values({
-      name: `riskchk-${tag}-ext`, engine: 'bitbrowser', sourceId: src!.id, externalId: `riskchk-${tag}`, profile: 'bitbrowser', image: '',
-      adbPort: 5583, status: 'stopped', spec: { width: 1080, height: 2374, dpi: 480 },
-    }).returning();
+    const [E] = await ph.insert({ name: `riskchk-${tag}-ext`, adbPort: 5583, status: 'stopped', spec: { width: 1080, height: 2374, dpi: 480 } });
     devIds.push(E!.id);
     await http('PUT', `/api/users/${userId}/grants`, T, { instanceIds: [D1.id, E!.id] });
     const single = await Promise.all((['start', 'stop', 'restart'] as const).map((action) => http('POST', '/api/instances/actions', U, { action, ids: [E!.id] })));
@@ -214,15 +213,14 @@ try {
       single.every((x) => x.status === 403 && x.body.code === 'instances.external_power_admin_only') && eTasks.length === 0, single.map((x) => `${x.status}:${x.body?.code}`).join(','));
     r = await http('POST', '/api/instances/actions', U, { action: 'stop', ids: [E!.id, D1.id] });
     const sk = (r.body.skipped ?? []) as { instanceId: string; reason: string; code?: string }[];
-    check('user batch (external + own local): external skipped with the code, local passes RBAC (already stopped → skipped, nothing runs)',
+    check('user batch (two granted phones): both skipped with the code, nothing runs',
       r.status === 202 && r.body.accepted.length === 0 && sk.find((x) => x.instanceId === E!.id)?.code === 'instances.external_power_admin_only'
-      && sk.find((x) => x.instanceId === D1.id)?.reason === 'already stopped', r.text);
+      && sk.find((x) => x.instanceId === D1.id)?.code === 'instances.external_power_admin_only', r.text);
     r = await http('POST', '/api/instances/actions', T, { action: 'stop', ids: [E!.id] });
     check('admin is not refused for the external phone (stopped already → skipped, no power call)', r.status === 202 && r.body.skipped?.[0]?.reason === 'already stopped' && !r.body.skipped[0].code, r.text);
     const after = await db.select().from(schema.tasks).where(eq(schema.tasks.instanceId, E!.id));
     check('…still no task on the external placeholder', after.length === 0, String(after.length));
     await db.delete(schema.instances).where(eq(schema.instances.id, E!.id));
-    await db.delete(schema.deviceSources).where(eq(schema.deviceSources.id, src!.id));
   }
 
   // ---------------------------------------------------------------- 风控记录
@@ -320,6 +318,7 @@ try {
     await db.delete(schema.alertStates).where(inArray(schema.alertStates.key, devIds.map((id) => `${id}:instagram`)));
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   await db.delete(schema.settings).where(inArray(schema.settings.key, settingKeys));
   if (savedSettings.length) await db.insert(schema.settings).values(savedSettings);
   const failed = results.filter(([, ok]) => !ok).length;

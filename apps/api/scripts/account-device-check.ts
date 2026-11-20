@@ -78,7 +78,7 @@ const accIds: string[] = [];
 async function extDevice(name: string, adbPort: number, running: boolean) {
   const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `adchk-src-${name}-${tag}`, config: { apiUrl: 'not a url' } }).returning();
   const [row] = await db.insert(schema.instances).values({
-    name: `adchk-${name}-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `adchk-${name}`, profile: 'bitbrowser', image: '',
+    name: `adchk-${name}-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `adchk-${name}`,
     adbPort, status: running ? 'running' : 'stopped', adbState: running ? 'device' : null, bootCompleted: running, spec: { width: 720, height: 1280, dpi: 320 },
   }).returning();
   extRows.push({ source: src!.id, instance: row!.id });

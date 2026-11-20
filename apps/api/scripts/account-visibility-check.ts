@@ -21,6 +21,9 @@ import { accountChecked } from '../src/modules/notify/triggers.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
 import { applySync } from '../src/modules/social/sync.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('avfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -78,9 +81,9 @@ try {
   const [uA, uB] = userIds as [string, string];
   const A = await login(`ava${tag}`, pw);
   const B = await login(`avb${tag}`, pw);
-  const fakes = await db.insert(schema.instances).values([1, 2].map((n) => ({
-    name: `avfake-${tag}-${n}`, image: 'none', adbPort: 5597 + n, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const fakes = await ph.insert([1, 2].map((n) => ({
+    name: `avfake-${tag}-${n}`, adbPort: 5597 + n, status: 'stopped' as const,
+  })));
   fakeIds.push(...fakes.map((f) => f.id));
   const [D1, D2] = fakes as [typeof fakes[0], typeof fakes[0]];
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: [D1.id] });
@@ -334,6 +337,7 @@ try {
   if (pts.length) await db.delete(schema.tasks).where(inArray(schema.tasks.refId, pts.map((p) => p.id)));
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  await ph.cleanup();
   const left = userIds.length ? await db.select().from(schema.socialAccounts).where(inArray(schema.socialAccounts.userId, userIds)) : [];
   check('cleanup: users (accounts, contents, publish tasks) and placeholder devices removed', left.length === 0);
   await sqlClient.end();

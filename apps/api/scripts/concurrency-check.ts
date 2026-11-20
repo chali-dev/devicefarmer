@@ -14,6 +14,9 @@ import { db, schema, sqlClient } from '../src/db/index.js';
 import { deviceHalts, haltDevice, resumeDevice } from '../src/modules/tracked/collector.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('ccfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
@@ -52,6 +55,7 @@ const pw = randomBytes(12).toString('base64url');
 const SETTING_KEYS = ['system', 'risk.device', 'alerts.rules', 'comments.rules', 'social.limits', 'publish.device', 'ai', 'risk.halts', 'tasks.retention'];
 const savedSettings = await db.select().from(schema.settings).where(inArray(schema.settings.key, SETTING_KEYS));
 const cleanup: (() => Promise<unknown>)[] = [];
+cleanup.push(() => ph.cleanup()); // first in, so it runs last (after every row of the inert source is gone)
 
 /**
  * Lost-update check: `rounds` times, every body of `bodies(round)` is PUT at once (each changes another field);
@@ -73,9 +77,9 @@ async function placeholderDevices(n: number, name: string) {
   const taken = new Set((await db.select({ p: schema.instances.adbPort }).from(schema.instances)).map((r) => r.p));
   const ports = Array.from({ length: 10 }, (_, i) => 5561 + i).filter((p) => !taken.has(p)).slice(0, n);
   if (ports.length < n) throw new Error(`no free placeholder ports for ${n} devices`);
-  const rows = await db.insert(schema.instances).values(ports.map((adbPort, i) => ({
-    name: `ccfake-${tag}-${name}-${i + 1}`, image: 'none', adbPort, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const rows = await ph.insert(ports.map((adbPort, i) => ({
+    name: `ccfake-${tag}-${name}-${i + 1}`, adbPort, status: 'stopped' as const,
+  })));
   cleanup.push(() => db.delete(schema.instances).where(inArray(schema.instances.id, rows.map((r) => r.id))));
   return rows;
 }

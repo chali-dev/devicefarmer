@@ -71,7 +71,7 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
   # Typecheck + the integration checks that need no phone (apps/api/scripts/ci-checks.sh): the real API against
-  # real Postgres / Redis / Docker / an empty adb server, no STF, no redroid, no phones. Runs in parallel with
+  # real Postgres / Redis / an empty adb server (Docker only runs pg_dump), no STF, no phones. Runs in parallel with
   # build; deploy waits for both, so a failure means nothing is deployed (the pushed images are just unused).
   test:
     needs: prepare
@@ -115,7 +115,7 @@ jobs:
       - name: Environment for the test API
         run: |
           set -euo pipefail
-          d=$RUNNER_TEMP/cp; mkdir -p "$d"/{logs,assets,uploads,library,instances,out}
+          d=$RUNNER_TEMP/cp; mkdir -p "$d"/{logs,assets,uploads,library,out}
           cat >"$RUNNER_TEMP/ci.env" <<EOF
           NODE_ENV=development
           API_PORT=3170
@@ -135,11 +135,10 @@ jobs:
           ASSET_DIR=$d/assets
           UPLOAD_DIR=$d/uploads
           LIBRARY_DIR=$d/library
-          INSTANCE_DATA_ROOT=$d/instances
           PG_DUMP_CMD=docker run --rm -i --network host -e PGPASSWORD postgres:17.11-alpine3.23 pg_dump
           EOF
           sed -i 's/^ *//' "$RUNNER_TEMP/ci.env"
-          docker pull -q postgres:17.11-alpine3.23 >/dev/null && docker pull -q alpine:3.22 >/dev/null
+          docker pull -q postgres:17.11-alpine3.23 >/dev/null
       - name: Integration checks (no phone)
         working-directory: apps/api
         env:

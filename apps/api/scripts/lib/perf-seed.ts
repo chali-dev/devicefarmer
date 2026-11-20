@@ -44,9 +44,11 @@ function statements(v: typeof PERF_VOLUME, hash: string): string[] {
   return [
     `INSERT INTO users (id, username, password_hash, role, display_name)
      SELECT ${u('user', 'g')}, 'perf-u' || g, '${hash}', 'user', 'Perf user ' || g FROM generate_series(1, 3) g`,
-    `INSERT INTO instances (id, name, image, adb_port, status, spec, profile, created_at)
-     SELECT ${u('dev', 'g')}, 'perf-dev-' || lpad(g::text, 2, '0'), 'none', 5999 + g, 'stopped',
-            '{"width":720,"height":1280,"dpi":320}', 'redroid-13', ${ago('g', 120)} FROM generate_series(1, ${v.devices}) g`,
+    // devices are external phones of one INERT source (invalid apiUrl: the monitor skips them, see lib/placeholder.ts)
+    `INSERT INTO device_sources (id, type, name, config) VALUES (${u('src', '1')}, 'bitbrowser', 'perf-src', '{"apiUrl":"not a url"}')`,
+    `INSERT INTO instances (id, name, engine, source_id, external_id, adb_port, status, spec, created_at)
+     SELECT ${u('dev', 'g')}, 'perf-dev-' || lpad(g::text, 2, '0'), 'bitbrowser', ${u('src', '1')}, 'perf-dev-' || g, 5999 + g, 'stopped',
+            '{"width":720,"height":1280,"dpi":320}', ${ago('g', 120)} FROM generate_series(1, ${v.devices}) g`,
     // 45 devices assigned (one user each), 5 unassigned
     `INSERT INTO instance_grants (user_id, instance_id) SELECT ${U('g')}, ${u('dev', 'g')} FROM generate_series(1, ${v.devices - 5}) g`,
     `INSERT INTO instance_status_events (instance_id, field, "from", "to", status, at)
@@ -205,6 +207,7 @@ export async function cleanPerf(log = console.log): Promise<void> {
     await tx.unsafe(`DELETE FROM media_assets WHERE file_key LIKE 'perf/missing/%'`);
     await tx.unsafe(`DELETE FROM personas WHERE name LIKE 'perf persona %'`);
     await tx.unsafe(`DELETE FROM instances WHERE name LIKE 'perf-dev-%'`);
+    await tx.unsafe(`DELETE FROM device_sources WHERE name = 'perf-src'`);
   });
   log('perf seed removed');
 }

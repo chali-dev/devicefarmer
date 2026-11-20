@@ -27,6 +27,9 @@ import { refreshTrackedAccount, upsertPosts } from '../src/modules/tracked/track
 import { scheduleTrackedRefreshes } from '../src/modules/tracked/schedule.js';
 import { scheduleFeedCollects } from '../src/modules/feed/collect.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('trk');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -336,10 +339,10 @@ try {
 
     // ---- capacity per 采集手机 (every account on the phone; recomputed exactly from the DB)
     // A gets two placeholder phones (pA1 running, pA2 stopped), B one (pB); nothing listens on their adb ports.
-    const devs = await db.insert(schema.instances).values([1, 2, 3].map((n) => ({
-      name: `trk-${tag}-${n}`, image: 'none', adbPort: 5565 + n, status: (n === 2 ? 'stopped' : 'running') as 'running' | 'stopped', adbState: n === 2 ? null : 'device',
-      bootCompleted: n !== 2, spec: { width: 720, height: 1280, dpi: 320 },
-    }))).returning();
+    const devs = await ph.insert([1, 2, 3].map((n) => ({
+      name: `trk-${tag}-${n}`, adbPort: 5565 + n, status: (n === 2 ? 'stopped' : 'running') as 'running' | 'stopped', adbState: n === 2 ? null : 'device',
+      bootCompleted: n !== 2,
+    })));
     devIds.push(...devs.map((d) => d.id));
     [pA1, pA2, pB] = devs.map((d) => d.id) as [string, string, string];
     await db.insert(schema.instanceGrants).values([{ userId: A.id, instanceId: pA1 }, { userId: A.id, instanceId: pA2 }, { userId: B.id, instanceId: pB }]);
@@ -587,10 +590,10 @@ try {
       .onConflictDoUpdate({ target: schema.settings.key, set: { value: { ...halts0, [pA1]: { at: new Date().toISOString(), code: 'tracked.collector_challenge', source: 'collector', platform: 'instagram' } } } });
     cs = await codes(a2.id);
     const lh = (await http('GET', `/api/tracked-accounts/${a2.id}`, A.token)).body.account;
-    const ph = (await http('GET', '/api/tracked-accounts/phones', A.token)).body.items.find((x: any) => x.id === pA1);
+    const phonePick = (await http('GET', '/api/tracked-accounts/phones', A.token)).body.items.find((x: any) => x.id === pA1);
     check('halted phone: refresh / 同步 → 409 tracked.collector_halted, 立即采集 → 409 feed.device_halted; item + picker say halted',
       cs[0].status === 409 && cs[0].body.code === 'tracked.collector_halted' && cs[1].body.code === 'tracked.collector_halted' && cs[2].status === 409 && cs[2].body.code === 'feed.device_halted'
-      && lh.phone?.halted === true && lh.dataMode === 'device_unconfigured' && ph?.halted === true, cs.map((x) => `${x.status} ${x.body?.code}`).join(','));
+      && lh.phone?.halted === true && lh.dataMode === 'device_unconfigured' && phonePick?.halted === true, cs.map((x) => `${x.status} ${x.body?.code}`).join(','));
     await db.update(schema.settings).set({ value: halts0 }).where(eq(schema.settings.key, 'risk.halts'));
     // own phone set, not halted: queued, the placeholder phone is offline → the task fails tracked.collector_offline
     await http('PATCH', `/api/tracked-accounts/${a2.id}`, A.token, { refreshIntervalHours: null });
@@ -728,6 +731,7 @@ try {
     }
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   if (accountIds.length) await db.delete(schema.tasks).where(inArray(schema.tasks.refId, accountIds));
   // rows of the admin (采集手机 checks) are not removed by deleting the test users

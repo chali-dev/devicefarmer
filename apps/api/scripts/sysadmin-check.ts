@@ -7,8 +7,8 @@
  *   (backup → marker row + setting changed → restore → both back; safety backup listed + downloadable; source row ok;
  *   task log steps; audit row kept), the safety backup imported back, the main DB "cloudphone" untouched (read-only probe).
  * - System logs: ring + daily file, level/text/time filters, redaction of secret-looking values.
- * - Connection monitoring: status history written by repo.updateInstance (directly and by the monitor)
- *   on placeholder device rows (adb ports 5595–5597, no containers), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
+ * - Connection monitoring: status history written by repo.updateInstance (directly and by a failed admin restart)
+ *   on inert placeholder phones (scripts/lib/placeholder.ts, adb ports 5595–5597), last offline time, history ranges, admin only (a user gets 403 even for a granted device).
  * - Retention (系统配置 → 日志, one form): log files, device history, audit log (env AUDIT_RETENTION_DAYS = default
  *   only), task logs (tasks.retention, null = keep), 风控记录, notifications (alerts.rules, one stored value):
  *   strict validation, defaults, single stored values, and POST /api/system/maintenance (the hourly purge) still deletes
@@ -32,6 +32,9 @@ import { updateInstance } from '../src/modules/instances/repo.js';
 import { storageFor } from '../src/modules/settings/storage.js';
 import { REDACTED, redactLog } from '../src/modules/system/logs.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('sysfake');
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const results: [string, boolean][] = [];
@@ -378,11 +381,11 @@ try {
   check('maintenance deletes log files past retention', !fs.existsSync(oldFile) && (m4.body.result?.logFilesDeleted ?? []).includes('2000-01-01'), JSON.stringify(m4.body.result));
 
   // ---------------------------------------------------------------- connection history
-  const fakes = await db.insert(schema.instances).values([
-    { name: `sysfake-${tag}-1`, image: 'none', adbPort: 5595, status: 'running' as const, adbState: 'device', spec: { width: 720, height: 1280, dpi: 320 } },
-    { name: `sysfake-${tag}-2`, image: 'none', adbPort: 5596, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 } },
-    { name: `sysfake-${tag}-3`, image: 'none', adbPort: 5597, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 } },
-  ]).returning();
+  const fakes = await ph.insert([
+    { name: `sysfake-${tag}-1`, adbPort: 5595, status: 'running' as const, adbState: 'device' },
+    { name: `sysfake-${tag}-2`, adbPort: 5596, status: 'stopped' as const },
+    { name: `sysfake-${tag}-3`, adbPort: 5597, status: 'stopped' as const },
+  ]);
   fakeIds.push(...fakes.map((f) => f.id));
   const [D1, D2, D3] = fakes as [typeof fakes[0], typeof fakes[0], typeof fakes[0]];
   // D2: deliberate stop cycle through repo.updateInstance (no offline event), and a write without status/adb (no row)
@@ -391,16 +394,22 @@ try {
   await updateInstance(D2.id, { status: 'stopped' });
   await updateInstance(D2.id, { lastError: 'x' });
   await updateInstance(D2.id, { status: 'stopped' }); // unchanged: no row
-  // D1: "running" with adb "device" but no container → the monitor marks it error and clears adb (an offline event).
-  const panelD1 = await waitFor('monitor transition', async () => {
+  // D1: "running" with adb "device" (an inert placeholder: the monitor skips it). adb lost as the monitor writes it
+  // (repo.updateInstance, an offline event), then a real admin 重启 whose op fails on the unusable source → error.
+  await updateInstance(D1.id, { adbState: null });
+  const rs = await http('POST', '/api/instances/actions', T, { action: 'restart', ids: [D1.id] });
+  check('admin restart of D1 accepted (one task)', rs.status === 202 && rs.body.accepted?.length === 1, JSON.stringify(rs.body));
+  const panelD1 = await waitFor('failed restart → error', async () => {
     const r = await http('GET', '/api/system/connections', T);
     const d = (r.body.devices as any[]).find((x) => x.id === D1.id);
-    return d && d.lastOfflineAt ? d : null;
+    return d && d.status === 'error' && d.lastOfflineAt ? d : null;
   }, 30_000);
-  check('monitor transition recorded (running → error, adb lost) as last offline time', panelD1.status === 'error' && !!panelD1.lastOfflineAt, JSON.stringify(panelD1));
+  check('transitions recorded (adb lost, restart failed → error) with a last offline time', panelD1.status === 'error' && !!panelD1.lastOfflineAt, JSON.stringify(panelD1));
   const h1 = (await http('GET', `/api/system/connections/${D1.id}/history`, T)).body.events as any[];
-  check('D1 history: status running→error and adb device→null, both offline', h1.some((e) => e.field === 'status' && e.from === 'running' && e.to === 'error' && e.offline)
-    && h1.some((e) => e.field === 'adb' && e.from === 'device' && e.to === null && e.offline), JSON.stringify(h1));
+  check('D1 history: adb device→null (offline), running→restarting→stopping (not offline), stopping→error (offline)', h1.some((e) => e.field === 'adb' && e.from === 'device' && e.to === null && e.offline)
+    && h1.some((e) => e.field === 'status' && e.from === 'running' && e.to === 'restarting' && !e.offline)
+    && h1.some((e) => e.field === 'status' && e.from === 'restarting' && e.to === 'stopping' && !e.offline)
+    && h1.some((e) => e.field === 'status' && e.from === 'stopping' && e.to === 'error' && e.offline), JSON.stringify(h1));
   const h2 = (await http('GET', `/api/system/connections/${D2.id}/history`, T)).body.events as any[];
   check('D2 history: exactly the 3 real status changes, no offline event', h2.length === 3 && h2.every((e) => e.field === 'status' && !e.offline)
     && h2.map((e) => `${e.from}>${e.to}`).join(',') === 'stopping>stopped,starting>stopping,stopped>starting', JSON.stringify(h2));
@@ -523,7 +532,11 @@ try {
 } finally {
   if (clearTaskIds.length) await db.delete(schema.tasks).where(inArray(schema.tasks.id, clearTaskIds));
   await db.delete(schema.riskEvents).where(like(schema.riskEvents.code, 'test.clear_%'));
-  if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  if (fakeIds.length) {
+    await db.delete(schema.tasks).where(inArray(schema.tasks.instanceId, fakeIds));
+    await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
+  }
+  await ph.cleanup();
   if (userId) await http('DELETE', `/api/users/${userId}`, T);
   for (const id of backupIds) await http('DELETE', `/api/system/backups/${id}`, T);
   if (before) {

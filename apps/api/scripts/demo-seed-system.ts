@@ -1,10 +1,10 @@
 /**
  * Demo data + verification for 云手机管理 (non-device parts) and 系统管理, against the real API (no mocks).
  * Seeds (idempotent): demo users (demo-user shared with the other demo seeders, demo-ops admin, demo-viewer,
- * demo-disabled), ~17 pool proxies over static/mobile (fake TEST-NET / .invalid endpoints, never
- * bound to devices), the two APKs in the app library (preinstall left off), two disabled Telegram demo
- * channels (fake token, never tested/sent). Then verifies filters, sealing of secrets, import counts,
- * exclusivity, library metadata, user rules, RBAC (with a temporary grant for demo-user that is revoked
+ * demo-disabled), the two APKs in the app library, two disabled Telegram demo channels (fake token, never
+ * tested/sent). (The proxy pool and the library's 预装 flag were removed with redroid on 2026-11-20; --clean
+ * still deletes demo proxies of older runs if the API has them.) Then verifies sealing of secrets, library
+ * metadata, user rules, RBAC (with a temporary grant for demo-user that is revoked
  * again), audit, tasks, logs, backup failure, settings. Never touches the devices themselves.
  *
  * Usage (from apps/api, API running):
@@ -93,47 +93,12 @@ const DEMO_USERS: { username: string; role: 'admin' | 'user'; disabled?: boolean
   { username: 'demo-viewer', role: 'user' },
   { username: 'demo-disabled', role: 'user', disabled: true },
 ];
-type P = { type: 'socks5' | 'http'; kind: 'static' | 'mobile'; host: string; port: number; username?: string; password?: string; label: string; country?: string; region?: string; city?: string; provider?: string; notes?: string };
-// TEST-NET ranges (RFC 5737) and .invalid names: well-formed, never routable / resolvable.
-const PROXIES: P[] = [
-  { type: 'socks5', kind: 'static', host: '203.0.113.11', port: 1080, username: 'demo_us1', password: 'DemoPw-us1-x7Q', label: 'demo-US-洛杉矶-01', country: 'US', region: 'California', city: 'Los Angeles', provider: 'DemoNet ISP', notes: '演示数据：住宅静态 IP' },
-  { type: 'socks5', kind: 'static', host: '203.0.113.12', port: 1080, username: 'demo_us2', password: 'DemoPw-us2-k3M', label: 'demo-US-纽约-02', country: 'US', region: 'New York', city: 'New York', provider: 'DemoNet ISP' },
-  { type: 'http', kind: 'static', host: '203.0.113.21', port: 8080, username: 'demo_jp1', password: 'DemoPw-jp1-r9T', label: 'demo-JP-东京-01', country: 'JP', region: 'Tokyo', city: 'Tokyo', provider: 'DemoNet ISP' },
-  { type: 'socks5', kind: 'static', host: '203.0.113.31', port: 1080, username: 'demo_de1', password: 'DemoPw-de1-p2L', label: 'demo-DE-法兰克福-01', country: 'DE', region: 'Hesse', city: 'Frankfurt', provider: 'Example Hosting' },
-  { type: 'http', kind: 'static', host: '203.0.113.41', port: 3128, label: 'demo-SG-新加坡-01（无认证）', country: 'SG', city: 'Singapore', provider: 'Example Hosting', notes: '演示数据：无用户名密码' },
-  { type: 'socks5', kind: 'static', host: 'sg-static.demo-proxy.invalid', port: 1080, username: 'demo_sg2', password: 'DemoPw-sg2-z4C', label: 'demo-SG-新加坡-02', country: 'SG', city: 'Singapore', provider: 'DemoNet ISP' },
-  { type: 'socks5', kind: 'static', host: '203.0.113.51', port: 1080, username: 'demo_gb1', password: 'DemoPw-gb1-w8E', label: 'demo-GB-伦敦-01', country: 'GB', region: 'England', city: 'London', provider: 'Example Hosting' },
-  { type: 'socks5', kind: 'mobile', host: '198.51.100.31', port: 5000, username: 'demo_4g_us1', password: 'DemoPw-4g-us1', label: 'demo-4G-US-T-Mobile', country: 'US', city: 'Dallas', provider: 'MobileDemo', notes: '演示数据：4G 移动出口' },
-  { type: 'socks5', kind: 'mobile', host: '198.51.100.32', port: 5000, username: 'demo_4g_us2', password: 'DemoPw-4g-us2', label: 'demo-4G-US-Verizon', country: 'US', city: 'Chicago', provider: 'MobileDemo' },
-  { type: 'socks5', kind: 'mobile', host: '198.51.100.33', port: 5000, username: 'demo_5g_gb', password: 'DemoPw-5g-gb', label: 'demo-5G-GB-EE', country: 'GB', city: 'Manchester', provider: 'MobileDemo' },
-  { type: 'http', kind: 'mobile', host: 'mobile-de.demo-proxy.invalid', port: 8000, username: 'demo_4g_de', password: 'DemoPw-4g-de', label: 'demo-4G-DE-Vodafone', country: 'DE', city: 'Berlin', provider: 'MobileDemo' },
-];
-// Demo proxies of the removed 'dynamic' kind (older runs created them): deleted by the seed and by --clean when unbound.
-const LEGACY_PROXIES = [
-  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-a1' },
-  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-b2' },
-  { host: 'gw.rotating.demo-proxy.invalid', port: 7777, username: 'demo_rot-session-c3' },
-  { host: '198.51.100.20', port: 9000, username: 'demo_dyn_jp' },
-  { host: '198.51.100.21', port: 9000, username: 'demo_dyn_kr' },
-];
-const isLegacy = (p: any) => LEGACY_PROXIES.some((d) => d.host === p.host && d.port === p.port && d.username === p.username);
-// Imported via /api/proxies/import (kind static, provider ImportDemo, country CA); line 4 duplicates line 1, line 5 is invalid.
-const IMPORT_TEXT = [
-  '# 演示导入（demo import）',
-  'socks5://demo_imp1:DemoPw-imp1@192.0.2.61:1080',
-  'demo_imp2:DemoPw-imp2@192.0.2.62:1080',
-  '192.0.2.63:1080:demo_imp3:DemoPw-imp3',
-  'socks5://demo_imp1:other@192.0.2.61:1080',
-  'ftp://192.0.2.64:21',
-  'http://192.0.2.65:8080',
-].join('\n');
-const IMPORT_HOSTS = ['192.0.2.61', '192.0.2.62', '192.0.2.63', '192.0.2.65'];
 const CHANNELS = [
   { name: 'demo-Telegram-运维群（已停用）', kinds: ['device.down', 'task.failed'], minSeverity: 'warning', chatId: '-1001234567890', language: 'zh-CN' },
   { name: 'demo-Telegram-ops-en (disabled)', kinds: [] as string[], minSeverity: null, chatId: '@demo_ops_channel', language: 'en' },
 ];
 const fakeBotToken = (i: number) => `1234567${i}:AAdemoFakeTokenNotReal_${'x'.repeat(10)}${i}`;
-const allSecrets = () => [...PROXIES.map((p) => p.password).filter(Boolean) as string[], 'DemoPw-imp1', 'DemoPw-imp2', 'DemoPw-imp3', ...CHANNELS.map((_, i) => fakeBotToken(i))];
+const allSecrets = () => CHANNELS.map((_, i) => fakeBotToken(i));
 
 // ---------------------------------------------------------------- main
 const T = await login(ADMIN, ADMIN_PW);
@@ -152,17 +117,11 @@ process.exit(failed.length ? 1 : 0);
 
 // ================================================================= clean
 async function clean() {
-  const proxies = (await http('GET', '/api/proxies', T)).body.proxies as any[];
-  const mine = new Set([...state.proxies,
-    ...proxies.filter((p) => PROXIES.some((d) => d.host === p.host && d.port === p.port && (d.username ?? null) === p.username) || IMPORT_HOSTS.includes(p.host) || isLegacy(p)).map((p) => p.id)]);
   let n = 0;
-  for (const id of mine) {
-    const p = proxies.find((x) => x.id === id);
-    if (!p) continue;
-    if (p.boundInstance) { info(`proxy ${p.host}:${p.port} is bound to ${p.boundInstance.name}: left alone`); continue; }
-    if ((await http('DELETE', `/api/proxies/${id}`, T)).status === 204) n++;
-  }
-  info(`proxies deleted: ${n}`);
+  // demo proxies of older runs (the pool API is gone since 2026-11-20; nothing to do then)
+  const px = await http('GET', '/api/proxies', T);
+  if (px.status === 200) for (const id of state.proxies) if ((await http('DELETE', `/api/proxies/${id}`, T)).status === 204) n++;
+  if (n) info(`proxies deleted: ${n}`);
   const lib = (await http('GET', '/api/library', T)).body.apps as any[];
   n = 0;
   for (const id of state.library) if (lib.some((a) => a.id === id) && (await http('DELETE', `/api/library/${id}`, T)).status === 204) n++;
@@ -229,27 +188,6 @@ async function seed() {
   fs.writeFileSync(MY_CRED_FILE, `# demo users of demo-seed-system.ts (local only)\n${Object.entries(myCreds).map(([k, v]) => `${k}=${v}`).join('\n')}\n`, { mode: 0o600 });
   info(`users: demo-ops (admin), demo-viewer (user), demo-disabled (user, disabled); passwords in ${MY_CRED_FILE}`);
 
-  // ---- proxies
-  const existing = (await http('GET', '/api/proxies', T)).body.proxies as any[];
-  let created = 0;
-  for (const p of existing.filter(isLegacy)) {
-    if (p.boundInstance) { info(`legacy demo proxy ${p.host}:${p.port} is bound to ${p.boundInstance.name}: left alone`); continue; }
-    if ((await http('DELETE', `/api/proxies/${p.id}`, T)).status === 204) state.proxies = state.proxies.filter((id: string) => id !== p.id);
-  }
-  for (const p of PROXIES) {
-    const hit = existing.find((e) => e.type === p.type && e.host === p.host && e.port === p.port && e.username === (p.username ?? null));
-    if (hit) { if (!state.proxies.includes(hit.id)) state.proxies.push(hit.id); continue; }
-    const r = await http('POST', '/api/proxies', T, p);
-    if (r.status !== 201) throw new Error(`proxy ${p.host}: ${r.status} ${r.body?.code}`);
-    state.proxies.push(r.body.proxy.id); created++;
-  }
-  const imp = await http('POST', '/api/proxies/import', T, { text: IMPORT_TEXT, kind: 'static', provider: 'ImportDemo', country: 'CA', defaultType: 'socks5' });
-  for (const r of imp.body.results ?? []) if (r.id && !state.proxies.includes(r.id)) state.proxies.push(r.id);
-  const after = (await http('GET', '/api/proxies', T)).body.proxies as any[];
-  for (const p of after) if (IMPORT_HOSTS.includes(p.host) && !state.proxies.includes(p.id)) state.proxies.push(p.id);
-  info(`proxies: ${created} created now, import created ${imp.body.created}/dup ${imp.body.duplicate}/invalid ${imp.body.invalid}; ${state.proxies.length} demo proxies in the pool`);
-  saveState(state);
-
   // ---- library
   const lib0 = (await http('GET', '/api/library', T)).body.apps as any[];
   for (const f of APKS) {
@@ -293,87 +231,7 @@ async function verify() {
   const secrets = allSecrets();
   const leaks = (s: string) => secrets.filter((x) => s.includes(x));
 
-  // ------------------------------------------------ proxies
-  let r = await http('GET', '/api/proxies', T);
-  const pool = r.body.proxies as any[];
-  const demo = pool.filter((p) => state.proxies.includes(p.id));
-  check('proxy pool lists all demo proxies', demo.length === PROXIES.length + IMPORT_HOSTS.length, `${demo.length}`);
-  check('no proxy row exposes a password / passwordEnc', pool.every((p) => !('password' in p) && !('passwordEnc' in p)) && leaks(r.text).length === 0, leaks(r.text).join(','));
-  const withPw = PROXIES.filter((p) => p.password).length;
-  check('hasPassword true exactly on entries that have one', demo.filter((p) => p.hasPassword).length === withPw + 3, `${demo.filter((p) => p.hasPassword).length}`);
-  const kc = r.body.kindCounts;
-  for (const k of ['static', 'mobile'] as const) {
-    const f = await http('GET', `/api/proxies?kind=${k}`, T);
-    check(`?kind=${k} returns only ${k} (count matches kindCounts)`, f.body.proxies.every((p: any) => p.kind === k) && f.body.proxies.length === kc[k], `${f.body.proxies.length} vs ${kc[k]}`);
-  }
-  check('kindCounts sum = pool size', kc.static + kc.mobile === pool.length);
-  r = await http('GET', `/api/proxies?q=${encodeURIComponent('东京')}`, T);
-  check('?q= search by label (东京)', r.body.proxies.length >= 1 && r.body.proxies.every((p: any) => /东京/.test(`${p.label}${p.city}${p.notes}`)));
-  r = await http('GET', `/api/proxies?q=${encodeURIComponent('MobileDemo, ImportDemo')}`, T);
-  check('?q= comma terms match any (provider)', r.body.proxies.filter((p: any) => state.proxies.includes(p.id)).length === 4 + IMPORT_HOSTS.length, `${r.body.proxies.length}`);
-  r = await http('GET', '/api/proxies?country=jp', T);
-  check('?country= is case-insensitive', r.body.proxies.length >= 1 && r.body.proxies.every((p: any) => p.country === 'JP'));
-  r = await http('GET', '/api/proxies?bound=free', T);
-  check('?bound=free includes every demo proxy (none bound)', demo.every((p) => r.body.proxies.some((x: any) => x.id === p.id)));
-  r = await http('GET', '/api/proxies?status=bogus', T);
-  check('invalid status filter → 400', r.status === 400);
-
-  // edit persists; password write-only (omitted keeps)
-  const target = demo.find((p) => p.host === '203.0.113.12')!;
-  const origNotes = target.notes;
-  r = await http('PUT', `/api/proxies/${target.id}`, T, { notes: '演示：已编辑的备注', city: 'Brooklyn' });
-  const reread = (await http('GET', '/api/proxies', T)).body.proxies.find((p: any) => p.id === target.id);
-  check('edit (notes/city) persists, status unchanged, password kept', r.status === 200 && reread.notes === '演示：已编辑的备注' && reread.city === 'Brooklyn' && reread.hasPassword && reread.status === target.status);
-  await http('PUT', `/api/proxies/${target.id}`, T, { notes: origNotes ?? null, city: 'New York' });
-  r = await http('PUT', `/api/proxies/${target.id}`, T, { kind: 'mobile' });
-  check('edit kind static → mobile persists', r.status === 200 && r.body.proxy.kind === 'mobile');
-  await http('PUT', `/api/proxies/${target.id}`, T, { kind: 'static' });
-  // endpoint change resets status; password change on an existing row stays sealed
-  const noAuth = demo.find((p) => p.host === '203.0.113.41')!;
-  r = await http('PUT', `/api/proxies/${noAuth.id}`, T, { password: 'x-only-pw' });
-  check('password without username → 400 proxy.password_without_username (edit)', r.status === 400 && r.body.code === 'proxy.password_without_username', JSON.stringify(r.body));
-  r = await http('POST', '/api/proxies', T, { type: 'http', host: '203.0.113.99', port: 1, password: 'x' });
-  check('password without username → 400 (create)', r.status === 400 && r.body.code === 'proxy.password_without_username');
-  // exclusivity / uniqueness
-  const dup = PROXIES[0]!;
-  r = await http('POST', '/api/proxies', T, { ...dup, password: 'other', label: 'dup' });
-  check('duplicate endpoint (type+host+port+user) → 409 proxy.duplicate', r.status === 409 && r.body.code === 'proxy.duplicate', JSON.stringify(r.body));
-  r = await http('POST', '/api/proxies', T, { ...dup, username: 'demo_other_user', label: 'tmp-same-host-other-user' });
-  check('same host:port with another username is a separate entry (201)', r.status === 201);
-  const tmpId = r.body?.proxy?.id;
-  if (tmpId) {
-    r = await http('PUT', `/api/proxies/${tmpId}`, T, { username: dup.username });
-    check('edit into an existing endpoint → 409 proxy.duplicate', r.status === 409 && r.body.code === 'proxy.duplicate', JSON.stringify(r.body));
-    r = await http('DELETE', `/api/proxies/${tmpId}`, T);
-    check('delete a free proxy → 204, then 404', r.status === 204 && (await http('DELETE', `/api/proxies/${tmpId}`, T)).status === 404);
-  }
-  r = await http('POST', '/api/proxies', T, { type: 'socks5', host: 'bad host!', port: 1080 });
-  check('malformed host → 400', r.status === 400);
-  r = await http('POST', '/api/proxies', T, { type: 'socks5', host: '203.0.113.9', port: 70000 });
-  check('port out of range → 400', r.status === 400);
-  // import: dry run on the same text = everything duplicate/invalid now
-  r = await http('POST', '/api/proxies/import', T, { text: IMPORT_TEXT, dryRun: true });
-  check('import dry-run of the seeded text: 0 created, 5 duplicate, 1 invalid', r.body.created === 0 && r.body.duplicate === 5 && r.body.invalid === 1, JSON.stringify({ c: r.body.created, d: r.body.duplicate, i: r.body.invalid }));
-  check('import results mask passwords', leaks(r.text).length === 0 && /\*\*\*@/.test(r.text), leaks(r.text).join(','));
-  const fresh = `socks5://demo_dry:DemoPw-dry@192.0.2.199:1080\n192.0.2.199:1080:demo_dry:x\nnot a proxy`;
-  r = await http('POST', '/api/proxies/import', T, { text: fresh, dryRun: true });
-  check('import dry-run: new line created, in-text duplicate, invalid line; nothing stored', r.body.created === 1 && r.body.duplicate === 1 && r.body.invalid === 1
-    && !(await http('GET', '/api/proxies?q=192.0.2.199', T)).body.proxies.length, JSON.stringify(r.body));
-  // connectivity check against fake endpoints: fails cleanly
-  const inv = demo.find((p) => p.host === 'sg-static.demo-proxy.invalid')!;
-  r = await http('POST', `/api/proxies/${inv.id}/check`, T);
-  check('check of a fake (.invalid) proxy → status failed with an error, no password in it', r.status === 200 && r.body.proxy.status === 'failed' && !!r.body.proxy.lastCheck?.error && leaks(r.text).length === 0, JSON.stringify(r.body?.proxy?.lastCheck));
-  const toBatch = demo.filter((p) => ['gw.rotating.demo-proxy.invalid', 'mobile-de.demo-proxy.invalid'].includes(p.host)).map((p) => p.id);
-  r = await http('POST', '/api/proxies/check', T, { ids: toBatch });
-  check(`batch check of ${toBatch.length} fake proxies → all failed`, r.status === 200 && r.body.failed === toBatch.length && r.body.ok === 0, JSON.stringify({ ok: r.body?.ok, failed: r.body?.failed }));
-  r = await http('GET', '/api/proxies?status=failed', T);
-  check('?status=failed lists the checked ones', toBatch.concat(inv.id).every((id) => r.body.proxies.some((p: any) => p.id === id)));
-  r = await http('GET', '/api/proxies?status=unchecked', T);
-  check('?status=unchecked excludes them', r.body.proxies.every((p: any) => p.status === 'unchecked') && !r.body.proxies.some((p: any) => p.id === inv.id));
-  r = await http('POST', '/api/proxies/test', T, { type: 'socks5', host: 'unsaved.demo-proxy.invalid', port: 1080, username: 'demo_t', password: 'DemoPw-unsaved-secret' });
-  check('test of an unsaved fake config → ok:false, password not echoed', r.status === 200 && r.body.result.ok === false && !r.text.includes('DemoPw-unsaved-secret'), r.text);
-  r = await http('GET', `/api/proxies/${inv.id}/usage`, T);
-  check('usage of a demo proxy: not bound, empty history', r.status === 200 && r.body.boundInstance === null && Array.isArray(r.body.history));
+  let r: Awaited<ReturnType<typeof http<any>>>;
 
   // ------------------------------------------------ library
   const lib = (await http('GET', '/api/library', T)).body.apps as any[];
@@ -389,7 +247,7 @@ async function verify() {
     try { manifest = execFileSync('unzip', ['-p', f, 'AndroidManifest.xml'], { maxBuffer: 64 << 20 }); } catch { /* */ }
     const has = (s: string) => manifest.includes(Buffer.from(s, 'utf16le')) || manifest.includes(Buffer.from(s, 'utf8'));
     check(`${row.package}: package + versionName found in the APK's AndroidManifest.xml`, manifest.length > 0 && has(row.package) && (!row.versionName || has(row.versionName)), `${row.package} ${row.versionName}`);
-    check(`${row.package}: versionCode is decimal, source upload:${ADMIN}, preinstall off`, /^\d+$/.test(row.versionCode) && row.sourceInstance === `upload:${ADMIN}` && row.preinstall === false, JSON.stringify({ v: row.versionCode, s: row.sourceInstance, p: row.preinstall }));
+    check(`${row.package}: versionCode is decimal, source upload:${ADMIN}, no preinstall field`, /^\d+$/.test(row.versionCode) && row.sourceInstance === `upload:${ADMIN}` && !('preinstall' in row), JSON.stringify({ v: row.versionCode, s: row.sourceInstance }));
     info(`${row.package} ${row.versionName} (${row.versionCode}) sha256 ${sha.slice(0, 16)}… ${bytes.length} B`);
   }
   const fdroid = lib.find((a) => a.package === 'org.fdroid.fdroid' && state.library.includes(a.id));
@@ -398,11 +256,7 @@ async function verify() {
     r = await http('POST', '/api/library/upload', T, fd);
     check('re-upload of the same version keeps the same entry id', r.status === 200 && r.body.app.id === fdroid.id);
     r = await http('PATCH', `/api/library/${fdroid.id}`, T, { preinstall: true });
-    const on = (await http('GET', '/api/library', T)).body.apps.find((a: any) => a.id === fdroid.id);
-    check('preinstall toggle on persists', r.status === 200 && on.preinstall === true);
-    r = await http('PATCH', `/api/library/${fdroid.id}`, T, { preinstall: false });
-    const off = (await http('GET', '/api/library', T)).body.apps.find((a: any) => a.id === fdroid.id);
-    check('preinstall toggle off persists (left off: new devices get nothing)', r.status === 200 && off.preinstall === false);
+    check('the removed 预装 PATCH → 404', r.status === 404, String(r.status));
   }
   { const fd = new FormData(); fd.append('file', new Blob([Buffer.from('not a zip')]), 'junk.apk');
     r = await http('POST', '/api/library/upload', T, fd);
@@ -503,7 +357,7 @@ async function verify() {
       && (await http('GET', '/api/users', T)).body.users.find((u: any) => u.id === uid).instanceIds.includes(dev.id));
     const mine = (await http('GET', '/api/instances', UT)).body.instances as any[];
     check(`${UTname} sees exactly its granted devices`, mine.length === [...new Set([...before, dev.id])].length && mine.some((i) => i.id === dev.id), mine.map((i) => i.name).join(','));
-    check('device view for a user has no proxy credentials', !/"username"|"password"|passwordEnc/.test(JSON.stringify(mine.map((i) => i.proxy ?? null))));
+    check('device view for a user has no proxy credentials', !/"username"|"password"|passwordEnc/.test(JSON.stringify(mine)));
     r = await http('GET', '/api/system/connections', UT);
     check('connection monitoring is admin only (user 403)', r.status === 403);
     r = await http('GET', `/api/system/connections/${dev.id}/history?hours=24`, UT);
@@ -512,15 +366,13 @@ async function verify() {
       r = await http('GET', `/api/system/connections/${o.id}/history`, UT);
       check('user cannot read another device\'s history (403)', r.status === 403);
     }
-    const denied: [string, string][] = [['GET', '/api/proxies'], ['GET', '/api/users'], ['GET', '/api/audit'], ['GET', '/api/audit/export.csv'], ['GET', '/api/system/logs'],
+    const denied: [string, string][] = [['GET', '/api/users'], ['GET', '/api/audit'], ['GET', '/api/audit/export.csv'], ['GET', '/api/system/logs'],
       ['GET', '/api/system/backups'], ['POST', '/api/system/backups'], ['GET', '/api/system/settings'], ['GET', '/api/alert-channels'], ['GET', '/api/settings/alerts'],
-      ['GET', '/api/settings/storage'], ['GET', '/api/settings/tasks'], ['GET', '/api/settings/system'], ['GET', '/api/device-sources'], ['POST', '/api/proxies/import']];
+      ['GET', '/api/settings/storage'], ['GET', '/api/settings/tasks'], ['GET', '/api/settings/system'], ['GET', '/api/device-sources']];
     const res = await Promise.all(denied.map(([m, p]) => http(m, p, UT, m === 'POST' ? { text: '' } : undefined)));
     check('user gets 403 on every admin page/API', res.every((x) => x.status === 403), denied.map(([m, p], i) => `${m} ${p}=${res[i]!.status}`).filter((_, i) => res[i]!.status !== 403).join(', '));
     r = await http('GET', '/api/library', UT);
     check('user cannot list the library (403, admin only)', r.status === 403);
-    r = await http('PATCH', `/api/library/${state.library[0]}`, UT, { preinstall: true });
-    check('user cannot toggle library preinstall (403)', r.status === 403);
     r = await http('DELETE', `/api/library/${state.library[0]}`, UT);
     check('user cannot delete from the library (403)', r.status === 403);
     { const fd = new FormData(); fd.append('file', new Blob([Buffer.from('x')]), 'x.apk');

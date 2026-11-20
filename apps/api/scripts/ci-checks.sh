@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Runs the integration checks that need no phone, STF or redroid (the `test` job of .github/workflows/deploy.yml;
-# also usable locally). Real API, real Postgres / Redis / Docker / adb server, no mocks.
+# Runs the integration checks that need no phone or STF (the `test` job of .github/workflows/deploy.yml; also
+# usable locally). Real API, real Postgres / Redis / adb server, no mocks. Devices are inert placeholder phones
+# (scripts/lib/placeholder.ts); every device is an external phone since redroid was removed (2026-11-20).
 #
 #   CI_ENV_FILE=<env file> scripts/ci-checks.sh        (from apps/api)
 #
 # CI_ENV_FILE holds the API's environment (DATABASE_URL, REDIS_URL, JWT_SECRET, ADMIN_PASSWORD, STF_* pointing
-# at a closed port, LOG_DIR/ASSET_DIR/UPLOAD_DIR/LIBRARY_DIR/INSTANCE_DATA_ROOT in a scratch folder, PG_DUMP_CMD,
-# API_PORT, E2E_API). The database is migrated + seeded here. Needs: a Docker daemon (device delete runs a
-# helper container; the monitor lists containers), an adb server on STF_ADB_HOST:STF_ADB_PORT (empty is fine),
-# ffmpeg/ffprobe, pg_dump/pg_restore ≥ 17 via PG_DUMP_CMD, outbound HTTPS (Anthropic / Telegram / YouTube
-# invalid-key checks). Three API starts: A = default platforms, B = persona-prompt's capture listener,
+# at a closed port, LOG_DIR/ASSET_DIR/UPLOAD_DIR/LIBRARY_DIR in a scratch folder, PG_DUMP_CMD, API_PORT, E2E_API).
+# The database is migrated + seeded here. Needs: an adb server on STF_ADB_HOST:STF_ADB_PORT (empty is fine),
+# ffmpeg/ffprobe, pg_dump/pg_restore ≥ 17 via PG_DUMP_CMD (Docker only if PG_DUMP_CMD runs it in a container),
+# outbound HTTPS (Anthropic / Telegram / YouTube invalid-key checks). Three API starts: A = default platforms, B = persona-prompt's capture listener,
 # C = ENABLED_PLATFORMS=all. Stops at the first failing script and prints its output and the API log.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -92,7 +92,7 @@ echo "::endgroup::"
 start_api A TASKS_TEST_HANDLERS=1
 for n in security platforms platform-scope role-menus account-visibility account-sync targets personas persona-drafts \
   content-categories content-batch content-tags-ui translation publish-lang publish-types device-publish risk feed \
-  following notifications media media-process proxy-batch alert-channels tasks sysadmin captcha; do
+  following notifications media media-process required-apps alert-channels tasks sysadmin captcha; do
   run "$n"
 done
 

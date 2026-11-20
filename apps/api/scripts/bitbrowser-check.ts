@@ -6,7 +6,7 @@
  * address refused, in-use source can't be deleted), Local API token (sealed, write-only, kept/cleared,
  * sent as x-api-key), client time zone (expiry parsing), client health + fast failure on a dead
  * client, phone list, add, a phone that is off stays
- * `stopped` (also after a few monitor rounds), duplicate add, proxy/settings refused, audit, delete
+ * `stopped` (also after a few monitor rounds), duplicate add, proxy/settings endpoints gone (404), audit, delete
  * leaves the phone in BitBrowser untouched.
  *
  * `--power` (BILLED: powers a phone on until the test shuts it down): start → SSH tunnel → adb → STF
@@ -151,9 +151,9 @@ try {
   r = await http('GET', `/api/device-sources/${sourceId}/phones`, T);
   check('phone list shows the device it was added as', r.body.phones.find((p: any) => p.id === free.id)?.instance?.id === dev.id);
   r = await http('PUT', `/api/instances/${dev.id}/proxy`, T, { proxyId: null });
-  check('bind proxy → 409 engine_unsupported', r.status === 409 && r.body.code === 'instances.engine_unsupported', r.text);
+  check('bind proxy: endpoint removed with the proxy pool → 404', r.status === 404, r.text);
   r = await http('PATCH', `/api/instances/${dev.id}/settings`, T, { locale: 'zh-CN' });
-  check('device settings → 409 engine_unsupported', r.status === 409 && r.body.code === 'instances.engine_unsupported', r.text);
+  check('device settings: endpoint removed with redroid → 404', r.status === 404, r.text);
   console.log('  waiting 35 s for monitor rounds…');
   await new Promise((res) => setTimeout(res, 35_000));
   const still = await instance(T, dev.id);

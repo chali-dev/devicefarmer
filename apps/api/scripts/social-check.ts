@@ -12,6 +12,9 @@ import { and, eq, inArray, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
 import { tryLink } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('scfake');
 
 const API = `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -39,7 +42,6 @@ const tag = randomBytes(3).toString('hex');
 const h = (s: string) => `sc_${tag}_${s}`;
 const userIds: string[] = [];
 const fakeIds: string[] = [];
-let proxyId = '';
 const [limitsBefore] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'social.limits'));
 // Audit/task timestamps come from Postgres (defaultNow), whose clock may differ from this host's
 // (Docker Desktop VM drift): take the start time from the database.
@@ -55,9 +57,9 @@ try {
   const [uA, uB] = userIds as [string, string];
   const A = await login(`sca${tag}`, pw);
   const B = await login(`scb${tag}`, pw);
-  const fakes = await db.insert(schema.instances).values([1, 2, 3, 4].map((n) => ({
-    name: `scfake-${tag}-${n}`, image: 'none', adbPort: 5585 + n, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const fakes = await ph.insert([1, 2, 3, 4].map((n) => ({
+    name: `scfake-${tag}-${n}`, adbPort: 5585 + n, status: 'stopped' as const,
+  })));
   fakeIds.push(...fakes.map((f) => f.id));
   const [D1, D2, D3, D4] = fakes as [typeof fakes[0], typeof fakes[0], typeof fakes[0], typeof fakes[0]];
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: [D1.id] });
@@ -138,7 +140,7 @@ try {
   await http('PUT', '/api/social/settings', T, { limits: { instagram: 1 } });
   check('an account of B linked to a device B has no grant on', (await tryLink(b1, D1.id)) === null);
   r = await http('GET', `/api/social/accounts/${b1}`, B);
-  check('owner without a grant sees the device as not accessible and no proxy', r.status === 200 && r.body.account.instance?.accessible === false && r.body.account.proxy === null);
+  check('owner without a grant sees the device as not accessible and no egress (no proxy field since the pool was removed)', r.status === 200 && r.body.account.instance?.accessible === false && r.body.account.egress === null && !('proxy' in r.body.account));
 
   // ---------------------------------------------------------------- allowed platforms per device (null = all)
   r = await http('PUT', `/api/instances/${D2.id}/platforms`, B, { platforms: ['instagram'] });
@@ -174,16 +176,16 @@ try {
   check('audit device.platforms with from → to', pa.filter((a) => a.ok).length === 3 && pa.some((a) => JSON.stringify((a.detail as any)?.platforms) === '[]' && JSON.stringify((a.detail as any)?.from) === '["instagram","facebook"]'),
     JSON.stringify(pa.map((a) => a.detail)));
 
-  // ---------------------------------------------------------------- derived proxy
-  const [px] = await db.insert(schema.proxies).values({ label: `sc-${tag}`, type: 'socks5', host: '192.0.2.77', port: 1080, username: 'scuser', passwordEnc: 'v1:dummy' }).returning();
-  proxyId = px!.id;
-  await db.update(schema.instances).set({ proxyId }).where(eq(schema.instances.id, D1.id));
+  // ---------------------------------------------------------------- derived egress (the phone's measured egress; the proxy pool was removed 2026-11-20)
+  const checkedAt = new Date().toISOString();
+  await db.update(schema.instances).set({ proxyStatus: { checkedAt, ok: true, egressIp: '192.0.2.77', latencyMs: 80, dnsOk: true, error: null, country: 'JP', region: 'Tokyo', city: 'Tokyo' } })
+    .where(eq(schema.instances.id, D1.id));
   r = await http('GET', `/api/social/accounts/${a1}`, A);
-  check('proxy is derived from the device (no credentials)', r.body.account.proxy?.id === proxyId && r.body.account.proxy.host === '192.0.2.77'
-    && !r.text.includes('scuser') && !r.text.includes('v1:dummy') && r.body.account.proxy.hasAuth === true, r.text.slice(0, 300));
-  await db.update(schema.instances).set({ proxyId: null }).where(eq(schema.instances.id, D1.id));
+  check('egress is derived from the device (ip + geo + time)', r.body.account.egress?.ip === '192.0.2.77' && r.body.account.egress.country === 'JP'
+    && r.body.account.egress.city === 'Tokyo' && r.body.account.egress.checkedAt === checkedAt && !('proxy' in r.body.account), r.text.slice(0, 300));
+  await db.update(schema.instances).set({ proxyStatus: null }).where(eq(schema.instances.id, D1.id));
   r = await http('GET', `/api/social/accounts/${a1}`, A);
-  check('device proxy removed → account shows no proxy', r.body.account.proxy === null);
+  check('device egress cleared → account shows no egress', r.body.account.egress === null);
 
   // ---------------------------------------------------------------- isolation (404 for others' rows)
   r = await http('GET', `/api/social/accounts/${a1}`, B);
@@ -390,7 +392,7 @@ try {
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, T);
   await db.delete(schema.socialAccounts).where(like(schema.socialAccounts.handle, `sc_${tag}_%`));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
-  if (proxyId) await db.delete(schema.proxies).where(eq(schema.proxies.id, proxyId));
+  await ph.cleanup();
   if (limitsBefore) await db.update(schema.settings).set({ value: limitsBefore.value }).where(eq(schema.settings.key, 'social.limits'));
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'social.limits'));
   const left = await db.select().from(schema.socialAccounts).where(like(schema.socialAccounts.handle, `sc_${tag}_%`));

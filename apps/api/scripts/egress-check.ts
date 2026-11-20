@@ -1,13 +1,15 @@
 /**
  * Egress location (出口 IP / 国家 / 城市) of devices. Real infrastructure, no mocks.
  *
- *   npx tsx --env-file=../../.env scripts/egress-check.ts          # parsing + a local test device "egchk-*" (created, deleted)
+ *   npx tsx --env-file=../../.env scripts/egress-check.ts          # parsing + the recheck endpoint on an inert placeholder
  *   npx tsx --env-file=../../.env scripts/egress-check.ts --bit    # + read-only probe on the BitBrowser phone (adb 5700) and
- *                                                                  #   the recheck endpoint for an external phone (see below)
+ *                                                                  #   the recheck endpoint for it (see below)
  *
  * Parsing: egressScript output → ProxyStatus (valid, ipinfo answering for another IP → no geo, broken JSON,
- * no egress, no curl). Local device: recheck endpoint (sidecar netns path) stores the shape, the adb probe
- * runs on the device itself, RBAC (user without grant → 403, with grant → 200), no secrets in the response.
+ * no egress, no curl). Placeholder (scripts/lib/placeholder.ts: inert source, running, nothing on its adb port):
+ * recheck RBAC (user without grant → 403/404, with grant → 200), an unreachable phone is stored as ok=false with
+ * the reason, a stopped phone → 409 instances.not_running, no secrets in the response. (The local redroid device
+ * with its sing-box sidecar was removed on 2026-11-20.)
  * --bit: the adb probe on host.docker.internal:5700 (two HTTPS GETs from the phone, nothing else), then an
  * external device row in THIS API's DB pointing at that adb port, whose source config is deliberately invalid
  * so this instance's external monitor skips it (never powers it, never opens a second SSH tunnel); only the
@@ -19,6 +21,7 @@ import { db, schema } from '../src/db/index.js';
 import { egressScript, geoOf, parseEgress } from '../src/lib/egress.js';
 import { adb } from '../src/services.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const BIT_PORT = Number(process.env.BIT_ADB_PORT ?? 5700);
@@ -37,21 +40,12 @@ async function http<T = any>(method: string, p: string, token?: string, body?: u
   });
   return { status: res.status, body: (await res.json().catch(() => null)) as T };
 }
-async function waitFor<T>(label: string, fn: () => Promise<T | null | undefined | false>, timeoutMs: number, everyMs = 2000): Promise<T> {
-  const t0 = Date.now();
-  for (;;) {
-    const v = await fn().catch(() => null);
-    if (v) return v;
-    if (Date.now() - t0 > timeoutMs) throw new Error(`timeout: ${label}`);
-    await new Promise((r) => setTimeout(r, everyMs));
-  }
-}
 const SHAPE = ['checkedAt', 'ok', 'egressIp', 'latencyMs', 'dnsOk', 'error'];
 const shapeOk = (s: any) => s && SHAPE.every((k) => k in s) && typeof s.ok === 'boolean' && !Number.isNaN(Date.parse(s.checkedAt));
 const SECRET = /password|passwordEnc|secret|token|apiKey/i;
 
 let adminToken = '';
-let createdId: string | null = null;
+const ph = placeholders('egchk');
 let userId: string | null = null;
 let userToken = '';
 let extIds: { source: string; instance: string } | null = null;
@@ -71,51 +65,33 @@ try {
   check('parse: non-IP answer is not an egress IP', !garbage.ok && garbage.egressIp === null);
   check('parse: no curl on the device', parseEgress('nocurl=1\nip=\n', at, 'x').error!.includes('curl'));
   check('geoOf: parsed object form (pool check)', geoOf({ ip: '1.2.3.4', country: 'DE', city: 'Berlin' }, '1.2.3.4').country === 'DE' && geoOf({ ip: '1.2.3.5', country: 'DE' }, '1.2.3.4').country === undefined);
-  check('android script has no busybox-only commands', !egressScript('android').includes('nslookup') && egressScript('busybox').includes('nslookup'));
+  check('device script has no busybox-only commands (nslookup)', !egressScript().includes('nslookup'));
 
   const login = await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD }));
   check('admin login', login.status === 200);
   adminToken = login.body.token;
 
-  // ---- local test device: sidecar path through the API, adb probe on the device itself
-  const created = await http('POST', '/api/instances', adminToken, { count: 1, namePrefix: 'egchk', profile: 'redroid-12', proxyMode: 'none' });
-  if (created.status === 409 || created.status === 507) skip('local device', `refused: ${JSON.stringify(created.body)}`);
-  else {
-    check('test device created', created.status === 202, created.body.instances?.[0]?.name);
-    createdId = created.body.instances[0].id as string;
-    const inst = await waitFor('device running', async () => {
-      const i = (await http('GET', `/api/instances/${createdId}`, adminToken)).body.instance;
-      if (i?.status === 'error') throw new Error(`device error: ${i.lastError}`);
-      return i?.status === 'running' && i.bootCompleted ? i : null;
-    }, 300_000);
-    const r = await http('POST', `/api/instances/${createdId}/proxy/check`, adminToken);
-    check('recheck (local, sidecar netns, direct)', r.status === 200 && shapeOk(r.body.proxyStatus), JSON.stringify(r.body.proxyStatus));
-    const s = r.body.proxyStatus;
-    check('local direct egress measured with geo', s.ok && /^\d+\.\d+\.\d+\.\d+$/.test(s.egressIp) && typeof s.country === 'string', `${s.egressIp} ${s.country} ${s.region} ${s.city}`);
-    const stored = (await http('GET', `/api/instances/${createdId}`, adminToken)).body.instance;
-    check('stored in instances.proxy_status (same shape)', stored.proxyStatus?.checkedAt === s.checkedAt && stored.proxyStatus.egressIp === s.egressIp);
-    // adb probe on the device itself (what external phones use); AOSP redroid may lack curl → reported, not thrown
-    const viaAdb = await adb.egress(inst.adbPort);
-    check('adb probe on the local device returns the shape', shapeOk(viaAdb), JSON.stringify(viaAdb));
-    if (viaAdb.ok) check('adb probe egress = sidecar egress (same netns)', viaAdb.egressIp === s.egressIp, viaAdb.egressIp ?? '');
-    else check('adb probe failure is explained', !!viaAdb.error, viaAdb.error ?? '');
-
-    // RBAC
-    const uname = `eg-user-${Date.now() % 100000}`;
-    const upass = `pw-${crypto.randomUUID()}`;
-    const u = await http('POST', '/api/users', adminToken, { username: uname, password: upass, role: 'user' });
-    check('create user', u.status === 201);
-    userId = u.body.user.id;
-    const ut = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: uname, password: upass }))).body.token;
-    userToken = ut;
-    const denied = await http('POST', `/api/instances/${createdId}/proxy/check`, ut);
-    check('user without grant cannot recheck', denied.status === 403 || denied.status === 404, String(denied.status));
-    await http('PUT', `/api/users/${userId}/grants`, adminToken, { instanceIds: [createdId] });
-    const allowed = await http('POST', `/api/instances/${createdId}/proxy/check`, ut);
-    check('user with grant can recheck', allowed.status === 200 && shapeOk(allowed.body.proxyStatus));
-    const seen = (await http('GET', `/api/instances/${createdId}`, ut)).body.instance;
-    check('user sees the egress, no secrets', !!seen.proxyStatus && !SECRET.test(JSON.stringify(seen.proxyStatus)) && !SECRET.test(JSON.stringify(allowed.body)));
-  }
+  // ---- recheck endpoint on an inert placeholder: RBAC + an unreachable phone (nothing listens on its adb port)
+  const [dev, stopped] = await ph.insert([
+    { name: `egchk-${Date.now() % 100000}-run`, adbPort: 5577, status: 'running', adbState: 'device', bootCompleted: true },
+    { name: `egchk-${Date.now() % 100000}-off`, adbPort: 5578, status: 'stopped' },
+  ]);
+  const uname = `eg-user-${Date.now() % 100000}`;
+  const upass = `pw-${crypto.randomUUID()}`;
+  const u = await http('POST', '/api/users', adminToken, { username: uname, password: upass, role: 'user' });
+  check('create user', u.status === 201);
+  userId = u.body.user.id;
+  userToken = (await http('POST', '/api/auth/login', undefined, await withCaptcha(API, { username: uname, password: upass }))).body.token;
+  const denied = await http('POST', `/api/instances/${dev!.id}/proxy/check`, userToken);
+  check('user without grant cannot recheck', denied.status === 403 || denied.status === 404, String(denied.status));
+  await http('PUT', `/api/users/${userId}/grants`, adminToken, { instanceIds: [dev!.id, stopped!.id] });
+  const allowed = await http('POST', `/api/instances/${dev!.id}/proxy/check`, userToken);
+  const ps = allowed.body?.proxyStatus;
+  check('user with grant can recheck; unreachable phone → ok=false with the reason', allowed.status === 200 && shapeOk(ps) && ps.ok === false && ps.egressIp === null && !!ps.error, JSON.stringify(allowed.body));
+  const seen = (await http('GET', `/api/instances/${dev!.id}`, userToken)).body.instance;
+  check('stored in instances.proxy_status, user sees it, no secrets', seen.proxyStatus?.checkedAt === ps.checkedAt && !SECRET.test(JSON.stringify(seen.proxyStatus)) && !SECRET.test(JSON.stringify(allowed.body)));
+  const off = await http('POST', `/api/instances/${stopped!.id}/proxy/check`, userToken);
+  check('stopped phone → 409 instances.not_running', off.status === 409 && (off.body as any)?.code === 'instances.not_running', String(off.status));
 
   // ---- BitBrowser phone (read-only)
   if (!process.argv.includes('--bit')) skip('BitBrowser phone', 'pass --bit');
@@ -129,18 +105,18 @@ try {
       // External row in this instance's DB only, unusable for the monitor (invalid source config).
       const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `egchk-src-${Date.now()}`, config: { apiUrl: 'not a url' } }).returning();
       const [row] = await db.insert(schema.instances).values({
-        name: `egchk-ext-${Date.now() % 100000}`, engine: 'bitbrowser', sourceId: src!.id, externalId: 'egchk', profile: 'bitbrowser', image: '',
+        name: `egchk-ext-${Date.now() % 100000}`, engine: 'bitbrowser', sourceId: src!.id, externalId: 'egchk',
         adbPort: BIT_PORT, status: 'running', adbState: 'device', bootCompleted: true, spec: { width: 720, height: 1280, dpi: 320 },
       }).returning();
       extIds = { source: src!.id, instance: row!.id };
       const r = await http('POST', `/api/instances/${row!.id}/proxy/check`, adminToken);
       check('recheck (external phone, probe on the phone)', r.status === 200 && r.body.proxyStatus?.ok && r.body.proxyStatus.country === direct.country, JSON.stringify(r.body.proxyStatus));
       const pub = (await http('GET', `/api/instances/${row!.id}`, adminToken)).body.instance;
-      check('external: stored and public (proxy null, egress set)', pub.proxy === null && pub.proxyStatus?.egressIp === r.body.proxyStatus.egressIp);
+      check('external: stored and public (no proxy field, egress set)', !('proxy' in pub) && pub.proxyStatus?.egressIp === r.body.proxyStatus.egressIp);
       if (userToken) {
         const denied = await http('POST', `/api/instances/${row!.id}/proxy/check`, userToken);
         check('external: user without grant cannot recheck', denied.status === 403 || denied.status === 404, String(denied.status));
-      } else skip('external RBAC', 'no test user (local part skipped)');
+      } else skip('external RBAC', 'no test user');
     }
   }
 } catch (err) {
@@ -153,10 +129,7 @@ try {
     console.log('teardown: external test row removed from the DB');
   }
   if (adminToken && userId) await http('DELETE', `/api/users/${userId}`, adminToken);
-  if (adminToken && createdId && !process.argv.includes('--keep')) {
-    const r = await http('POST', '/api/instances/actions', adminToken, { action: 'delete', ids: [createdId] });
-    console.log(`teardown: delete test device → ${r.status}`);
-  }
+  await ph.cleanup();
   const counts = { pass: 0, fail: 0, skip: 0 };
   for (const [, r] of results) counts[r]++;
   console.log(`\n${counts.pass} passed, ${counts.fail} failed, ${counts.skip} skipped`);

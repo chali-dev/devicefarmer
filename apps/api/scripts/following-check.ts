@@ -37,6 +37,9 @@ import { haltDevice } from '../src/modules/tracked/collector.js';
 import { classifyIgDump, parseUiDump } from '../src/modules/tracked/instagram-device.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('fwchk');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -90,10 +93,10 @@ try {
   const [uA, uB] = userIds as [string, string];
   const A = await login(`fwa${tag}`, pw);
   const B = await login(`fwb${tag}`, pw);
-  const devs = await db.insert(schema.instances).values([1, 2, 3].map((n) => ({
-    name: `fwchk-${tag}-${n}`, image: 'none', adbPort: 5575 + n, status: (n === 3 ? 'stopped' : 'running') as 'running' | 'stopped', adbState: n === 3 ? null : 'device',
-    bootCompleted: n !== 3, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const devs = await ph.insert([1, 2, 3].map((n) => ({
+    name: `fwchk-${tag}-${n}`, adbPort: 5575 + n, status: (n === 3 ? 'stopped' : 'running') as 'running' | 'stopped', adbState: n === 3 ? null : 'device',
+    bootCompleted: n !== 3,
+  })));
   devIds.push(...devs.map((d) => d.id));
   const [d1, d2, d3] = devs as [typeof devs[0], typeof devs[0], typeof devs[0]];
   for (const [u, d] of [[uA, d1], [uB, d2], [uA, d3]] as const) await db.insert(schema.instanceGrants).values({ userId: u, instanceId: d.id }).onConflictDoNothing();
@@ -357,6 +360,7 @@ try {
     await db.delete(schema.alertStates).where(inArray(schema.alertStates.key, devIds.map((id) => `${id}:instagram`)));
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   await db.delete(schema.settings).where(inArray(schema.settings.key, settingKeys));
   if (savedSettings.length) await db.insert(schema.settings).values(savedSettings);
   const failed = results.filter(([, ok]) => !ok).length;

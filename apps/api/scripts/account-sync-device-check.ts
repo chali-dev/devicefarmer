@@ -93,7 +93,7 @@ try {
   const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `asdchk-src-${tag}`, config: { apiUrl: 'not a url' } }).returning();
   ext.source = src!.id;
   const [phone] = await db.insert(schema.instances).values({
-    name: `asdchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: 'asdchk-bit', profile: 'bitbrowser', image: '',
+    name: `asdchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: 'asdchk-bit',
     adbPort: BIT_PORT, status: 'running', adbState: 'device', bootCompleted: true, spec: { width: 720, height: 1280, dpi: 320 },
   }).returning();
   ext.instance = phone!.id;

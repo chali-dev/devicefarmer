@@ -12,12 +12,14 @@
  */
 import { randomBytes } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
-import net from 'node:net';
 import { zipSync } from 'fflate';
 import WebSocket from 'ws';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('secfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -49,7 +51,6 @@ const tag = randomBytes(3).toString('hex');
 const PW = `Sc-${randomBytes(6).toString('hex')}`;
 const userIds: string[] = [];
 const devIds: string[] = [];
-const proxyIds: string[] = [];
 const [prevMenus] = await db.select().from(schema.settings).where(eq(schema.settings.key, 'rbac.userMenus'));
 const ALL_MENUS = ['instances', 'personas', 'social', 'analytics', 'media', 'trending', 'content', 'publish', 'tasks'];
 
@@ -129,9 +130,9 @@ try {
   // FAILED tasks user 1 created back then (rows written in the DB, like a task from before the reassignment).
   const u3 = `sec3-${tag}`;
   const u3Id = await createUser(u3);
-  const [dev] = await db.insert(schema.instances).values({
-    name: `secfake-${tag}`, image: 'none', adbPort: 5602, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 },
-  }).returning();
+  const [dev] = await ph.insert({
+    name: `secfake-${tag}`, adbPort: 5602, status: 'stopped',
+  });
   devIds.push(dev!.id);
   r = await http('PUT', `/api/instances/${dev!.id}/grants`, A, { userIds: [u1Id] });
   check('retry: phone assigned to user 1', r.status === 200, r.text);
@@ -140,7 +141,7 @@ try {
   const accId = r.body.account.id as string;
   await linkAccount(accId, dev!.id);
   const failedTask = async (type: string, payload: Record<string, unknown>, refType: string, refId: string) => (await db.insert(schema.tasks).values({
-    type, status: 'failed', createdBy: u1Id, label: dev!.name, refType, refId, payload, attempts: 1, errorCode: 'test.fixture', error: 'fixture', finishedAt: new Date(),
+    type, status: 'failed', createdBy: u1Id, instanceName: dev!.name, refType, refId, payload, attempts: 1, errorCode: 'test.fixture', error: 'fixture', finishedAt: new Date(),
   }).returning())[0]!.id;
   const syncTask = await failedTask('account-device-sync', { instanceId: dev!.id, ownerId: u1Id }, 'instance', dev!.id);
   const syncTask2 = await failedTask('account-device-sync', { instanceId: dev!.id, ownerId: u1Id }, 'instance', dev!.id);
@@ -192,46 +193,17 @@ try {
   check('apps: a bundle declaring ~4 GB unpacked → 400 apps.too_large (nothing inflated)', ir.status === 400 && ir.body?.code === 'apps.too_large', `${ir.status} ${JSON.stringify(ir.body)}`);
   check('apps: API still answers after the bomb', (await http('GET', '/api/ready', null)).status === 200);
 
-  // ------------------------------------------------------------ proxy test must not send the stored password elsewhere
-  // Two local SOCKS5 listeners record the username/password a client offers (RFC 1929), then refuse.
-  const socks = () => new Promise<{ port: number; seen: string[]; close: () => void }>((resolve) => {
-    const seen: string[] = [];
-    const srv = net.createServer((sock) => {
-      let stage = 0;
-      sock.on('data', (d) => {
-        if (stage === 0) { stage = 1; sock.write(Buffer.from([5, d.subarray(2, 2 + d[1]!).includes(2) ? 2 : 0xff])); return; }
-        const ul = d[1]!; const user = d.subarray(2, 2 + ul).toString(); const pl = d[2 + ul]!;
-        seen.push(`${user}:${d.subarray(3 + ul, 3 + ul + pl).toString()}`);
-        sock.end(Buffer.from([1, 1]));
-      });
-      sock.on('error', () => undefined);
-    });
-    srv.listen(0, '127.0.0.1', () => resolve({ port: (srv.address() as net.AddressInfo).port, seen, close: () => srv.close() }));
-  });
-  const s1 = await socks();
-  const s2 = await socks();
-  const proxyPw = `pw-${tag}`;
-  r = await http('POST', '/api/proxies', A, { type: 'socks5', host: '127.0.0.1', port: s1.port, username: `u${tag}`, password: proxyPw, label: `sec-${tag}` });
-  check('proxy: admin adds a pool proxy with a password', r.status === 201, r.text);
-  proxyIds.push(r.body.proxy.id);
-  r = await http('POST', '/api/proxies/test', A, { id: proxyIds[0], type: 'socks5', host: '127.0.0.1', port: s1.port, username: `u${tag}` });
-  check('proxy test: same endpoint + username reuses the stored password (listener got it)', r.status === 200 && s1.seen.includes(`u${tag}:${proxyPw}`), `${r.status} ${JSON.stringify(s1.seen)}`);
-  r = await http('POST', '/api/proxies/test', A, { id: proxyIds[0], type: 'socks5', host: '127.0.0.1', port: s2.port, username: `u${tag}` });
-  check('proxy test: another port with the same username → the stored password is NOT sent there', r.status === 200 && !s2.seen.some((x) => x.includes(proxyPw)), `${r.status} ${JSON.stringify(s2.seen)}`);
-  r = await http('POST', '/api/proxies/test', A, { id: proxyIds[0], type: 'socks5', host: '127.0.0.1', port: s2.port, username: `u${tag}`, password: 'typed-again' });
-  check('proxy test: another port with the password typed again works as before', r.status === 200 && s2.seen.includes(`u${tag}:typed-again`), JSON.stringify(s2.seen));
-  s1.close(); s2.close();
   void u1Id;
 } finally {
   if (prevMenus) await db.insert(schema.settings).values({ key: prevMenus.key, value: prevMenus.value })
     .onConflictDoUpdate({ target: schema.settings.key, set: { value: prevMenus.value } });
   else await db.delete(schema.settings).where(eq(schema.settings.key, 'rbac.userMenus'));
-  for (const id of proxyIds) await http('DELETE', `/api/proxies/${id}`, A);
   if (devIds.length) {
     await db.delete(schema.tasks).where(inArray(schema.tasks.instanceId, devIds));
     await db.delete(schema.tasks).where(inArray(schema.tasks.refId, devIds));
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   for (const id of userIds) await http('DELETE', `/api/users/${id}`, A);
   await sqlClient.end();
 }

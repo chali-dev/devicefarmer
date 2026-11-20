@@ -23,6 +23,9 @@ import { closeTaskQueues, createTask, type CreateTaskInput } from '../src/module
 import '../src/modules/tasks/test-handlers.js';
 import type { TestPayload } from '../src/modules/tasks/test-handlers.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('tcfake');
 
 const PORT = Number(process.env.API_PORT ?? 3000);
 const API = `http://127.0.0.1:${PORT}`;
@@ -72,9 +75,9 @@ try {
     users.push({ id: u.body.user.id, token: await login(name, pass), name });
   }
   const [A, B] = users as [typeof users[0], typeof users[0]];
-  const [dev] = await db.insert(schema.instances).values({
-    name: `tcfake-${tag}`, image: 'none', adbPort: 41000 + Math.floor(Math.random() * 9000), status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 },
-  }).returning();
+  const [dev] = await ph.insert({
+    name: `tcfake-${tag}`, adbPort: 41000 + Math.floor(Math.random() * 9000), status: 'stopped',
+  });
   fakeInstances.push(dev!.id);
   await http('PUT', `/api/users/${B.id}/grants`, admin, { instanceIds: [dev!.id] });
 
@@ -292,6 +295,7 @@ try {
     await db.delete(schema.tasks).where(eq(schema.tasks.instanceId, id));
     await db.delete(schema.instances).where(eq(schema.instances.id, id));
   }
+  await ph.cleanup();
   for (const u of users) await http('DELETE', `/api/users/${u.id}`, admin);
   await closeTaskQueues();
   await events.close();

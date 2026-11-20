@@ -46,6 +46,9 @@ import * as draftsModule from '../src/modules/ai/drafts.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
 import { linkAccount } from './lib/social-link.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('pdcfake');
 
 const API = process.env.E2E_API ?? 'http://127.0.0.1:3000';
 const results: [string, boolean][] = [];
@@ -366,10 +369,10 @@ try {
     // device-publish-check) → the device method is tried, adb doesn't see the phone → operator.
     const PINNED = 'pdc-ai-pinned-online';
     await sqlClient.unsafe(`create or replace function pdc_ai_pin_online() returns trigger language plpgsql as $$
-      begin if new.image = '${PINNED}' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
+      begin if new.external_id like '${PINNED}%' then new.status := 'running'; new.adb_state := 'device'; end if; return new; end $$`);
     await sqlClient.unsafe('drop trigger if exists pdc_ai_pin_online on instances');
     await sqlClient.unsafe('create trigger pdc_ai_pin_online before update on instances for each row execute function pdc_ai_pin_online()');
-    const [fake] = await db.insert(schema.instances).values({ name: `pdcfake-${tag}`, status: 'running', adbState: 'device', image: PINNED, adbPort: 5588, spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+    const [fake] = await ph.insert({ name: `pdcfake-${tag}`, externalId: `${PINNED}-${tag}`, status: 'running', adbState: 'device', adbPort: 5588 });
     fakeIds.push(fake!.id);
     await http('PUT', `/api/instances/${fake!.id}/grants`, T, { userIds: [A.id] });
     await linkAccount(igAen.id, fake!.id);
@@ -471,6 +474,7 @@ try {
   if (sharedTemplateIds.length) await db.delete(schema.commentTemplates).where(inArray(schema.commentTemplates.id, sharedTemplateIds));
   if (mediaIds.length) await db.delete(schema.mediaAssets).where(inArray(schema.mediaAssets.id, mediaIds)).catch((e) => console.log(`cleanup media: ${e}`));
   if (fakeIds.length) await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds)).catch((e) => console.log(`cleanup devices: ${e}`));
+  await ph.cleanup().catch((e) => console.log(`cleanup source: ${e}`));
   await sqlClient.unsafe('drop trigger if exists pdc_ai_pin_online on instances').catch(() => undefined);
   await sqlClient.unsafe('drop function if exists pdc_ai_pin_online()').catch(() => undefined);
   if (settingsBefore) await db.update(schema.settings).set({ value: settingsBefore }).where(eq(schema.settings.key, 'ai'));

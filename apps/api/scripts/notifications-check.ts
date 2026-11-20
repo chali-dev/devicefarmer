@@ -21,6 +21,9 @@ import { events } from '../src/lib/events.js';
 import { notify, recover } from '../src/modules/notify/notify.js';
 import { closeTaskQueues } from '../src/modules/tasks/core.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('ncfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 const results: [string, boolean][] = [];
@@ -74,7 +77,7 @@ try {
   const [uA, uB] = userIds as [string, string];
   const A = await login(`nca${tag}`, pw);
   const B = await login(`ncb${tag}`, pw);
-  const [dev] = await db.insert(schema.instances).values({ name: `ncfake-${tag}`, image: 'none', adbPort: 5589, status: 'stopped', spec: { width: 720, height: 1280, dpi: 320 } }).returning();
+  const [dev] = await ph.insert({ name: `ncfake-${tag}`, adbPort: 5589, status: 'stopped' });
   fakeIds.push(dev!.id);
   await http('PUT', `/api/users/${uA}/grants`, T, { instanceIds: [dev!.id] });
 
@@ -96,7 +99,7 @@ try {
   // One real alert through notify(): A (granted) gets it live.
   const wsA = await socket(A);
   sockets.push(wsA.ws);
-  const alert = { kind: 'device.down' as const, refId: dev!.id, params: { name: dev!.name, status: 'error', reason: 'container_missing' } };
+  const alert = { kind: 'device.down' as const, refId: dev!.id, params: { name: dev!.name, status: 'error', reason: 'powered_off' } };
   const delivered = await notify(alert);
   await sleep(800);
   const [real] = await db.select().from(N).where(and(eq(N.userId, uA), eq(N.refId, dev!.id)));
@@ -228,6 +231,7 @@ try {
     await db.delete(schema.alertStates).where(inArray(schema.alertStates.key, fakeIds));
     await db.delete(schema.instances).where(inArray(schema.instances.id, fakeIds));
   }
+  await ph.cleanup();
   const leftUsers = userIds.length ? await db.select().from(schema.users).where(inArray(schema.users.id, userIds)) : [];
   const leftNotes = userIds.length ? await db.select().from(N).where(inArray(N.userId, userIds)) : [];
   check('cleanup: test users, their notifications, the placeholder device and its alert state removed', leftUsers.length === 0 && leftNotes.length === 0);

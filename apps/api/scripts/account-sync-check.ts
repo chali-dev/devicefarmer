@@ -30,6 +30,9 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { applySync, discoverOnDevice, discoveryAction, recordSyncCheck } from '../src/modules/social/sync.js';
 import { withCaptcha } from './lib/login.js';
+import { placeholders } from './lib/placeholder.js';
+
+const ph = placeholders('syfake');
 
 const API = process.env.E2E_API ?? `http://127.0.0.1:${process.env.API_PORT ?? 3000}`;
 if (/:3000\b/.test(API)) throw new Error('refusing to run against the main API (port 3000): set E2E_API and API_PORT to the test API');
@@ -90,10 +93,10 @@ try {
   const [uA, uB, uC] = userIds as [string, string, string];
   const A = await login(`sya${tag}`, pw);
   const B = await login(`syb${tag}`, pw);
-  const devs = await db.insert(schema.instances).values([5583, 5584, 5590, 5591].map((port, n) => ({
-    name: `syfake-${tag}-${n + 1}`, image: 'none', adbPort: port, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
+  const devs = await ph.insert([5583, 5584, 5590, 5591].map((port, n) => ({
+    name: `syfake-${tag}-${n + 1}`, adbPort: port, status: 'stopped' as const,
     allowedPlatforms: n === 3 ? ['tiktok'] : null,
-  }))).returning();
+  })));
   devIds.push(...devs.map((d) => d.id));
   const [D1, D2, D3, D4] = devs as [typeof devs[0], typeof devs[0], typeof devs[0], typeof devs[0]];
   // D1: A only; D2: A + B (legacy data: the API refuses a second user now, so B's row is written in the DB); D3: nobody;
@@ -350,9 +353,9 @@ try {
   check('sync ok again → account.problem recovered (alert state inactive)', st0?.active === false, JSON.stringify(st0));
 
   // ---------------------------------------------------------------- accounts follow the phone's assignment
-  const mv = await db.insert(schema.instances).values([5586, 5587].map((port, n) => ({
-    name: `syfake-${tag}-m${n + 1}`, image: 'none', adbPort: port, status: 'stopped' as const, spec: { width: 720, height: 1280, dpi: 320 },
-  }))).returning();
+  const mv = await ph.insert([5586, 5587].map((port, n) => ({
+    name: `syfake-${tag}-m${n + 1}`, adbPort: port, status: 'stopped' as const,
+  })));
   devIds.push(...mv.map((x) => x.id));
   const [D5, D6] = mv as [typeof mv[0], typeof mv[0]];
   const adminActor = { id: adminRow!.id, username: adminRow!.username, role: 'admin' as const };
@@ -554,6 +557,7 @@ try {
     await db.delete(schema.riskEvents).where(inArray(schema.riskEvents.instanceId, devIds));
     await db.delete(schema.instances).where(inArray(schema.instances.id, devIds));
   }
+  await ph.cleanup();
   await db.delete(schema.settings).where(inArray(schema.settings.key, settingKeys));
   if (saved.length) await db.insert(schema.settings).values(saved);
   const failed = results.filter(([, ok]) => !ok).length;

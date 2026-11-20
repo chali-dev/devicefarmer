@@ -136,7 +136,7 @@ try {
   const U = await login(`dpd${tag}`, pw);
   const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `dpchk-src-${tag}`, config: { apiUrl: 'not a url' } }).returning();
   const [dev] = await db.insert(schema.instances).values({
-    name: `dpchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `dpchk-${tag}`, profile: 'bitbrowser', image: '',
+    name: `dpchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `dpchk-${tag}`,
     adbPort: BIT_PORT, status: 'running', adbState: 'device', bootCompleted: true, spec: { width: 1080, height: 2374, dpi: 480 },
   }).returning();
   extRows.push({ source: src!.id, instance: dev!.id });

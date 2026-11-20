@@ -111,7 +111,7 @@ try {
   const U = await login(`fdd${tag}`, pw);
   const [src] = await db.insert(schema.deviceSources).values({ type: 'bitbrowser', name: `fdchk-src-${tag}`, config: { apiUrl: 'not a url' } }).returning();
   const [phone] = await db.insert(schema.instances).values({
-    name: `fdchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `fdchk-${tag}`, profile: 'bitbrowser', image: '',
+    name: `fdchk-bit-${tag}`, engine: 'bitbrowser', sourceId: src!.id, externalId: `fdchk-${tag}`,
     adbPort: BIT_PORT, status: 'running', adbState: 'device', bootCompleted: true, spec: { width: 1080, height: 2374, dpi: 480 },
   }).returning();
   extRows.push({ source: src!.id, instance: phone!.id });
