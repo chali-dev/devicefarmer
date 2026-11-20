@@ -34,12 +34,21 @@ const TextHints = z.object({
   youtube: z.object({ title: z.string().trim().max(100).optional(), description: z.string().max(5000).optional() }).strict().optional(),
   instagram: Hints.shape.instagram, tiktok: Hints.shape.tiktok, facebook: Hints.shape.facebook,
 }).strict();
-const TranslationBody = z.object({ title: z.string().trim().min(1).max(200), body: z.string().max(5000).optional(), platformHints: TextHints.optional() });
+/**
+ * A translation: its text (body / platform texts). The title is optional (owner 2026-11-20: Instagram publishes no title;
+ * empty = the content's 内部名称), but a translation must carry some text.
+ */
+const TranslationBody = z.object({ title: z.string().trim().max(200).default(''), body: z.string().max(5000).optional(), platformHints: TextHints.optional() })
+  .refine((b) => Boolean(b.title || b.body?.trim() || hintTexts(b.platformHints).some((x) => x.trim())), { message: 'translation is empty' });
 const LangParams = z.object({ id: z.string().uuid(), lang: Lang });
 const ct = schema.contentTranslations;
 
 const Editable = {
-  title: z.string().trim().min(1).max(200),
+  /**
+   * 内部名称 (shown as the list title, never published on Instagram). Optional since 2026-11-20 (人工发文 needn't write
+   * Chinese): empty → `fallbackName` (first line of the source text, else 未命名内容); the editor derives a better one.
+   */
+  title: z.string().trim().max(200),
   /**
    * Source language: fixed to Chinese (zh-CN) since 2026-11-18. Accepted only as zh-CN on create, and only unchanged on
    * update (older contents keep their source language, read-only; one without any may be set to zh-CN); anything else
@@ -73,6 +82,9 @@ async function assertContentWords(contentId: string | null, targetIds: string[] 
   await assertNoBannedWords([...await accountPersonaIds(ids), aiPersonaId], texts);
 }
 const UpdateBody = z.object({ ...Editable, title: Editable.title.optional() });
+
+/** 内部名称 when none was given: the first non-empty line of the text (≤ 50 chars), else 未命名内容. */
+export const fallbackName = (body: string | undefined) => (body ?? '').split('\n').map((l) => l.trim()).find(Boolean)?.slice(0, 50) ?? '未命名内容';
 
 /** Key-order independent JSON (undefined values dropped), to tell a changed value from the stored one. */
 const stable = (v: unknown): string => (v && typeof v === 'object' && !Array.isArray(v)
@@ -180,6 +192,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
 
   app.post('/api/contents', { schema: { body: CreateBody } }, async (req, reply) => {
     const b = req.body;
+    if (!b.title) b.title = fallbackName(b.body);
     const owner = await resolveOwner(req.user, b.ownerId);
     const media = await assertUsableMedia(req.user, owner, b.mediaIds ?? []);
     const targets = await assertTargetAccounts(req.user, owner.id, b.targetIds ?? []);
@@ -249,6 +262,7 @@ export const contentRoutes: FastifyPluginAsyncZod = async (app) => {
   app.put('/api/contents/:id', { schema: { params: Id, body: UpdateBody } }, async (req) => {
     const cur = await visibleContent(req.user, req.params.id);
     const b = req.body;
+    if (b.title === '') b.title = fallbackName(b.body ?? cur.body);
     // 已发布的内容不能编辑: checked first (before media / banned-word validation) and again under the row lock.
     await assertUnlockedChange(db, cur, b);
     const media = b.mediaIds ? await assertUsableMedia(req.user, await ownerOf(cur.userId), b.mediaIds) : null;

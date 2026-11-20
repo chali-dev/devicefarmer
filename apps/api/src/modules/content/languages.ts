@@ -77,5 +77,5 @@ export function textsForAccount(content: Pick<Content, 'lang' | 'title' | 'body'
   if (account.lang === content.lang) return source(null);
   const tr = translations.find((x) => x.lang === account.lang);
   if (!tr) return source('translation_missing');
-  return { lang: tr.lang, source: 'translation', fallback: null, title: tr.title, body: tr.body, hints: (tr.platformHints ?? {}) as AccountTexts['hints'] };
+  return { lang: tr.lang, source: 'translation', fallback: null, title: tr.title || content.title, body: tr.body, hints: (tr.platformHints ?? {}) as AccountTexts['hints'] };
 }

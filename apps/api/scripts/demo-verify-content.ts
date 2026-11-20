@@ -412,7 +412,7 @@ try {
   r = await http('PUT', `/api/contents/${nc.id}`, U, { stage: 'draft' });
   check('ready → draft', r.status === 200 && r.body.content.status === 'draft');
   r = await http('PUT', `/api/contents/${nc.id}`, U, { title: '' });
-  check('empty title → 400', r.status === 400);
+  check('empty title → 内部名称 from the text (or 未命名内容)', r.status === 200 && r.body.content.title.length > 0);
   r = await http('PUT', `/api/contents/${nc.id}`, U, { mediaIds: Array.from({ length: 21 }, () => pubReady.id) });
   check('more than 20 media → 400', r.status === 400);
   // media referenced by a content (no publish task): delete behaviour

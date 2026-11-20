@@ -328,8 +328,9 @@ const wantedLangs = computed(() => {
   return (form.targets.length ? fromTargets : editorLangs.value).filter((l) => l !== sourceLang.value)
 })
 const emptyTr = (f: TrForm) => !f.title.trim() && !Object.values(f.texts).some((x) => x.trim()) && !Object.values(cleanHints(f.hints)).length
-/** 已填 = title and text present; otherwise 缺少译文 (publishing to that language then uses the Chinese original). */
-const trFilled = (f: TrForm) => Boolean(f.title.trim() && Object.values(f.texts).some((x) => x.trim()))
+/** 已填 = some text (the title is optional: Instagram publishes none); otherwise 缺少译文 (that language then uses the Chinese original). */
+const trFilled = (f: TrForm) => Object.values(f.texts).some((x) => x.trim())
+const sourceFilled = () => Object.values(form.texts).some((x) => x.trim())
 const isSaved = (lang: string) => lang in trOrig.value
 function syncLangs() {
   const want = wantedLangs.value
@@ -339,6 +340,34 @@ function syncLangs() {
   if (langTab.value !== SRC && !kept.some((f) => f.lang === langTab.value)) langTab.value = SRC
 }
 watch(wantedLangs, syncLangs)
+/**
+ * 中文原稿可留空 (owner 2026-11-20): when every target account posts in one non-source language and nothing is written
+ * in Chinese yet, the editor opens that language's tab (the Chinese one may stay empty).
+ */
+const onlyForeign = computed(() => form.targets.length > 0 && targetAccounts.value.length > 0
+  && targetAccounts.value.every((a) => a.lang && a.lang !== sourceLang.value))
+watch([wantedLangs, onlyForeign], () => {
+  if (locked.value || langTab.value !== SRC || !onlyForeign.value || sourceFilled()) return
+  const first = wantedLangs.value.find((l) => trs.value.some((f) => f.lang === l))
+  if (first) langTab.value = first
+})
+/** Under 发布目标: which accounts post in which language (source = Chinese, also for accounts without a language). */
+const langSummary = computed(() => {
+  const by = new Map<string, string[]>()
+  for (const a of targetAccounts.value) {
+    const l = a.lang && a.lang !== sourceLang.value ? a.lang : (sourceLang.value ?? SOURCE_LANG)
+    by.set(l, [...(by.get(l) ?? []), `@${a.handle}`])
+  }
+  return [...by.entries()].map(([l, accs]) => ({ lang: l, accounts: accs }))
+})
+/**
+ * Accounts that would publish an empty text: they use the Chinese source (no language, Chinese, or no filled
+ * translation in theirs) while it is empty though another language has text (the API refuses: publish.text_missing).
+ */
+const textMissing = computed(() => {
+  if (sourceFilled() || !trs.value.some(trFilled)) return []
+  return targetAccounts.value.filter((a) => !a.lang || a.lang === sourceLang.value || !trs.value.some((f) => f.lang === a.lang && trFilled(f)))
+})
 /** Target accounts per language (tab tooltip). */
 const langAccounts = (lang: string) => targetAccounts.value.filter((a) => a.lang === lang).map((a) => `@${a.handle}`)
 /** A needed, never-saved block would come straight back, so only saved or no longer needed blocks can be closed. */
@@ -452,11 +481,11 @@ onBeforeUnmount(() => clearTimeout(mediaPoll))
 
 /** Saves the editor; resolves to the saved content, or null when validation or a request failed (already shown). */
 async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
-  if (!form.title.trim()) { langTab.value = SRC; message.warning(t('content.titleRequired')); return null }
   // Empty blocks that were never saved (added for a target language, nothing written yet) are not saved.
   const toSave = trs.value.filter((f) => isSaved(f.lang) || !emptyTr(f))
-  const untitled = toSave.find((f) => !f.title.trim())
-  if (untitled) { langTab.value = untitled.lang; message.warning(t('content.lang.needTitle', { lang: langName(untitled.lang) })); return null }
+  const emptySaved = toSave.find((f) => emptyTr(f))
+  if (emptySaved) { langTab.value = emptySaved.lang; message.warning(t('content.lang.emptySaved', { lang: langName(emptySaved.lang) })); return null }
+  if (!form.title.trim()) form.title = deriveName()
   saving.value = true
   try {
     const { body: text, platformHints } = joinTexts(form.texts, form.hints)
@@ -489,7 +518,15 @@ async function save(stage: 'draft' | 'ready'): Promise<Content | null> {
     return saved
   } catch (e) { message.error(errorText(e)); return null } finally { saving.value = false }
 }
-/** 排程发布 / 立即发布 in the editor: save as ready (closes the editor), then the publishing step for that content. */
+/**
+ * 内部名称 when left empty: the first line of the Chinese text, else of a translation, else the first media name, else
+ * 未命名内容 + time (≤ 50 chars). It is the list title only; Instagram publishes no title.
+ */
+function deriveName(): string {
+  const firstLine = (texts: Record<string, string>) => Object.values(texts).flatMap((x) => x.split('\n')).map((l) => l.trim()).find(Boolean)
+  const name = firstLine(form.texts) ?? trs.value.map((f) => f.title.trim() || firstLine(f.texts)).find(Boolean) ?? form.media[0]?.name
+  return (name ?? t('content.untitled', { at: dayjs().format('MM-DD HH:mm') })).slice(0, 50)
+}
 /**
  * 立即发布 / 排程发布 straight from the editor (owner 2026-11-19 「点立即发布直接创建发布任务；点排程就配置下时间；不要再多一个弹窗」):
  * save, then distribute to the content's 发布目标 (minus accounts it is already published on) with the post type of the
@@ -502,6 +539,11 @@ const pastDay = (d: Dayjs) => d.isBefore(dayjs(), 'day')
 function openSchedule(v: boolean) { if (v && !schedAt.value) schedAt.value = dayjs().add(1, 'hour').startOf('hour'); schedOpen.value = v }
 async function saveAndPublish(at: Dayjs | null) {
   if (!form.targets.length) { message.warning(t('content.publishNoTargets')); return }
+  if (textMissing.value.length && previewType.value !== 'story') {
+    langTab.value = SRC
+    message.warning(t('content.lang.textMissing', { accounts: textMissing.value.map((a) => `@${a.handle}`).join('、') }))
+    return
+  }
   if (at && !at.isAfter(dayjs())) { message.warning(t('distribute.pickTime')); return }
   const c = await save('ready')
   if (!c) return
@@ -714,6 +756,19 @@ async function submitBatchForm() {
     </a-alert>
     <a-row :gutter="24">
     <a-col :xs="24" :lg="15">
+    <a-form layout="vertical" :disabled="locked">
+      <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
+        <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []; form.categoryId = undefined" />
+      </a-form-item>
+      <a-form-item :label="t('content.targets.label')">
+        <ContentTargetPicker v-model="form.targets" :owner-id="targetOwner" @accounts="(a: SocialAccount[]) => (targetAccounts = a)" />
+        <div v-if="langSummary.length" class="muted small lang-summary">
+          <span v-for="g in langSummary" :key="g.lang">{{ t('content.lang.summaryItem', { lang: langName(g.lang), accounts: g.accounts.join('、') }) }}</span>
+        </div>
+      </a-form-item>
+    </a-form>
+
+    <!-- 文案 per language: only the texts live in the language tabs; targets, media, category are shared (owner 2026-11-20). -->
     <a-alert v-if="sourceLang && sourceLang !== SOURCE_LANG" type="info" show-icon class="lang-missing" :message="t('content.lang.legacySource', { lang: langName(sourceLang) })" />
     <a-tabs v-model:active-key="langTab" type="editable-card" size="small" hide-add class="lang-tabs" @edit="onLangTabEdit">
       <a-tab-pane :key="SRC" :closable="false">
@@ -727,12 +782,12 @@ async function submitBatchForm() {
         </template>
       </a-tab-pane>
     </a-tabs>
-    <div v-if="trs.some((f) => !trFilled(f))" class="muted small lang-hint">{{ t('content.lang.missingHint') }}</div>
+    <div v-if="!currentTr && onlyForeign && !sourceFilled()" class="muted small lang-hint">{{ t('content.lang.sourceOptional') }}</div>
+    <div v-else-if="trs.some((f) => !trFilled(f))" class="muted small lang-hint">{{ t('content.lang.missingHint') }}</div>
+    <a-alert v-if="textMissing.length" type="warning" show-icon class="lang-missing"
+      :message="t('content.lang.textMissing', { accounts: textMissing.map((a) => `@${a.handle}`).join('、') })" />
 
     <a-form v-if="currentTr" :key="currentTr.lang" layout="vertical" :disabled="locked">
-      <a-form-item :label="t('content.fieldTitle')" required>
-        <a-input v-model:value="currentTr.title" :maxlength="200" show-count :placeholder="form.title" />
-      </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="trTabs" :values="currentTr.texts">
           <template #extra><TemplateInsert :persona-ids="editorPersonas" @insert="insertTemplate" /></template>
@@ -744,17 +799,7 @@ async function submitBatchForm() {
         </PlatformTextTabs>
       </a-form-item>
     </a-form>
-
     <a-form v-show="!currentTr" layout="vertical" :disabled="locked">
-      <a-form-item v-if="!editing && auth.isAdmin" :label="t('content.owner')">
-        <a-select v-model:value="form.ownerId" show-search option-filter-prop="label" :options="users.map((u) => ({ value: u.id, label: u.username }))" @change="form.targets = []; form.categoryId = undefined" />
-      </a-form-item>
-      <a-form-item :label="t('content.targets.label')">
-        <ContentTargetPicker v-model="form.targets" :owner-id="targetOwner" @accounts="(a: SocialAccount[]) => (targetAccounts = a)" />
-      </a-form-item>
-      <a-form-item :label="t('content.fieldTitle')" required>
-        <a-input v-model:value="form.title" :maxlength="200" show-count />
-      </a-form-item>
       <a-form-item :label="t('content.caption')">
         <PlatformTextTabs v-model:active="textTab" :tabs="sourceTabs" :values="form.texts">
           <template #extra><TemplateInsert :persona-ids="editorPersonas" @insert="insertTemplate" /></template>
@@ -773,7 +818,24 @@ async function submitBatchForm() {
           </template>
         </PlatformTextTabs>
       </a-form-item>
+    </a-form>
+
+    <a-form layout="vertical" :disabled="locked">
+      <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
+        <MediaStrip :media="form.media" :size="88" :editable="!locked" @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
+        <a-space style="margin-top: 8px" wrap>
+          <a-button :disabled="locked || form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
+          <ContentMediaUpload :disabled="locked || form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
+        </a-space>
+        <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
+        <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
+      </a-form-item>
       <a-row :gutter="12">
+        <a-col :xs="24" :sm="12">
+          <a-form-item :label="t('content.fieldName')" :extra="t('content.fieldNameHint')">
+            <a-input v-model:value="form.title" :maxlength="200" :placeholder="t('content.fieldNamePlaceholder')" />
+          </a-form-item>
+        </a-col>
         <a-col :xs="24" :sm="12">
           <a-form-item :label="t('content.fieldCategory')">
             <a-select v-model:value="form.categoryId" :options="formCategoryOptions" :dropdown-style="{ minWidth: '240px' }" allow-clear show-search option-filter-prop="label" :placeholder="t('content.uncategorized')">
@@ -789,18 +851,9 @@ async function submitBatchForm() {
           </a-form-item>
         </a-col>
       </a-row>
-      <a-form-item :label="t('content.fieldMedia', { n: form.media.length })">
-        <MediaStrip :media="form.media" :size="88" :editable="!locked" @move="moveMedia" @remove="(i: number) => form.media.splice(i, 1)" />
-        <a-space style="margin-top: 8px" wrap>
-          <a-button :disabled="locked || form.media.length >= MAX_MEDIA" @click="pickerOpen = true"><template #icon><PlusOutlined /></template>{{ t('content.addMedia') }}</a-button>
-          <ContentMediaUpload :disabled="locked || form.media.length >= MAX_MEDIA" :blocked="uploadBlocked" :owner-id="uploadOwner" :owner-name="uploadOwnerName" @uploaded="onUploaded" />
-        </a-space>
-        <div v-if="uploadBlocked || uploadOwner" class="muted small media-hint">{{ uploadBlocked || t('content.uploadOwnerHint', { user: uploadOwnerName || '?' }) }}</div>
-        <div v-if="processingMedia.length" class="muted small media-hint">{{ t('content.mediaProcessingHint', { n: processingMedia.length }) }}</div>
-      </a-form-item>
     </a-form>
 
-    <template v-if="editing && editorTasks.length && !currentTr">
+    <template v-if="editing && editorTasks.length">
       <a-divider orientation="left" plain>{{ t('content.tasksOf') }}</a-divider>
       <div class="pt-groups">
         <div v-for="item in editorTaskGroups" :key="item.id" class="pt-group">
@@ -881,6 +934,7 @@ async function submitBatchForm() {
 .lang-tabs { margin-bottom: 12px; }
 .lang-missing { margin-bottom: 8px; }
 .lang-hint { margin: -4px 0 8px; }
+.lang-summary { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; }
 .tab-field { margin-top: 16px; margin-bottom: 0; }
 .preview-col { position: sticky; top: 0; padding-bottom: 16px; }
 .new-category { display: flex; gap: 4px; padding: 4px 8px; }

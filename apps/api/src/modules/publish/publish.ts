@@ -76,6 +76,10 @@ const lockPair = (tx: Tx, contentId: string, accountId: string) =>
  * The snapshot of one target: the content's texts in the account's language (`textsForAccount`: its translation, else
  * the source; a platform text of the content wins over the body) and the content's options (privacy). Nothing per account.
  */
+/** A translation with any text (body or a platform text). */
+const hasText = (tr: { body: string; platformHints: unknown }) => Boolean(tr.body.trim()
+  || Object.values((tr.platformHints ?? {}) as Record<string, Record<string, unknown> | undefined>).some((h) => Object.values(h ?? {}).some((v) => typeof v === 'string' && v.trim())));
+
 function postFor(content: Content, texts: AccountTexts, platform: string, postType: PostType) {
   const h = texts.hints[platform] ?? {};
   const opts = ((content.platformHints ?? {}) as AccountTexts['hints'])[platform] ?? {};
@@ -133,6 +137,13 @@ export async function distribute(user: AuthUser, content: Content, targets: Dist
       if (!isAdmin(user) && acc.userId !== content.userId) throw badRequest('账号不属于内容所有者', 'publish.account_not_owner');
       const texts = textsForAccount(locked, translations, acc);
       const post = postFor(locked, texts, acc.platform, t.postType ?? 'feed');
+      // 中文原稿可留空 (owner 2026-11-20): an account that falls back to the source while the source has no text, though
+      // the content is written in another language, would post an empty caption → refused (a media-only content with no
+      // text anywhere, and types without a caption (stories), still go).
+      if (texts.source === 'source' && !post.caption.trim() && postTypeRule(acc.platform, post.postType)?.caption !== false && translations.some(hasText)) {
+        const lang = acc.lang ?? locked.lang ?? '';
+        throw badRequest(`@${acc.handle} 使用${lang}发文，但该语言没有文案`, 'publish.text_missing', { account: acc.handle, lang });
+      }
       await assertNoBannedWords([acc.personaId], [post.title, post.caption], tx);
       const bad = validateForPlatform(acc.platform, media, post);
       if (bad) throw badRequest(`@${acc.handle}: ${bad.message}`, bad.code, { ...bad.params, account: acc.handle });

@@ -8,6 +8,9 @@
  *   language; snapshots don't follow later edits of the translation or the account language.
  * - Older content whose source is not Chinese: an account in that language gets the source, a zh-CN account the
  *   Chinese translation, another language falls back to the source.
+ * - 中文原稿可留空 (2026-11-20): empty title → 内部名称 fallback, a translation without a title, an account that would
+ *   publish the empty Chinese source while another language has text → 400 publish.text_missing (stories and media-only
+ *   contents still go).
  * Usage (from apps/api, API running; default ENABLED_PLATFORMS is enough):
  *   E2E_API=http://127.0.0.1:3000 npx tsx --env-file=../../.env scripts/publish-lang-check.ts
  */
@@ -110,6 +113,33 @@ try {
   const o1 = c2t.find((x) => x.accountId === en.id); const o2 = c2t.find((x) => x.accountId === hi.id);
   check("every account gets the content's text in its language (en translation, Hindi translation)", o1?.caption === 'EN IG caption' && o1?.lang === 'en' && o2?.caption === 'HI body' && o2?.lang === 'hi',
     JSON.stringify([o1, o2].map((x) => x && { c: x.caption, l: x.lang })));
+
+  // ---------------------------------------------------------------- 中文原稿可留空 (owner 2026-11-20)
+  r = await http('POST', '/api/contents', A, { title: '', body: '', mediaIds: [img], stage: 'ready' });
+  const c3: string = r.body.content?.id;
+  check('a content without title and Chinese text is created (内部名称 fallback 未命名内容)', r.status === 201 && r.body.content.title === '未命名内容', r.text.slice(0, 160));
+  r = await http('PUT', `/api/contents/${c3}/translations/en`, A, { body: 'Only English' });
+  check('a translation without a title is saved (title "")', r.status === 201 && r.body.translation.title === '', r.text.slice(0, 160));
+  r = await http('POST', `/api/contents/${c3}/distribute`, A, { targets: [{ accountId: en.id, scheduledAt: tomorrow }] });
+  (r.body.created ?? []).forEach((x: any) => ptIds.push(x.id));
+  const c3en = (r.body.created ?? [])[0];
+  check('en account → English text (lang en)', r.status === 201 && c3en?.caption === 'Only English' && c3en?.lang === 'en', r.text.slice(0, 200));
+  const zh3 = await acc('zh3', 'zh-CN'); // `zh` was switched to en above
+  for (const [name, a] of [['zh-CN account', zh3], ['account without language', none], ['pt-BR account (no translation)', pt]] as const) {
+    r = await http('POST', `/api/contents/${c3}/distribute`, A, { targets: [{ accountId: a.id, scheduledAt: tomorrow }] });
+    check(`${name} with an empty Chinese source → 400 publish.text_missing, nothing created`, r.status === 400 && r.body?.code === 'publish.text_missing' && r.body?.params?.account === a.handle,
+      `${r.status} ${r.text.slice(0, 160)}`);
+  }
+  r = await http('POST', `/api/contents/${c3}/distribute`, A, { targets: [{ accountId: hi.id, scheduledAt: tomorrow, postType: 'story' }] });
+  (r.body.created ?? []).forEach((x: any) => ptIds.push(x.id));
+  check('a story (no caption) to the hi account still goes', r.status === 201, r.text.slice(0, 160));
+  r = await http('POST', '/api/contents', A, { title: 'media only', mediaIds: [img], stage: 'ready' });
+  const c4: string = r.body.content?.id;
+  r = await http('POST', `/api/contents/${c4}/distribute`, A, { targets: [{ accountId: none.id, scheduledAt: tomorrow }] });
+  (r.body.created ?? []).forEach((x: any) => ptIds.push(x.id));
+  check('a content without any text anywhere (media only) still publishes', r.status === 201, r.text.slice(0, 160));
+  r = await http('PUT', `/api/contents/${c4}`, A, { title: '', body: 'First line\nsecond' });
+  check('PUT with an empty title → name from the first line', r.status === 200 && r.body.content.title === 'First line', r.text.slice(0, 160));
 
   // ---------------------------------------------------------------- older content with an English source
   const [old] = await db.insert(schema.contents).values({ userId: uid, title: `plc-${tag} old`, body: 'English source body', lang: 'en', stage: 'ready', status: 'ready', platformHints: {} }).returning();

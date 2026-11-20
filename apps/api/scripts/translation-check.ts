@@ -118,7 +118,10 @@ try {
   const privacy = await http('PUT', `/api/contents/${c1.id}/translations/en`, A.token, { title: 'x', platformHints: { youtube: { privacy: 'public' } } });
   check('translation hints are text only (privacy refused)', privacy.status === 400);
   const empty = await http('PUT', `/api/contents/${c1.id}/translations/en`, A.token, { title: '  ' });
-  check('translation title required', empty.status === 400);
+  check('an empty translation (no title, no text) → 400', empty.status === 400);
+  const noTitle = await http('PUT', `/api/contents/${c1.id}/translations/en`, A.token, { body: `Body ${SECRET_TEXT}` });
+  check('translation without a title (text only) → 200, title ""', noTitle.status === 200 && noTitle.body.translation.title === '', `${noTitle.status} ${noTitle.text.slice(0, 120)}`);
+  await http('PUT', `/api/contents/${c1.id}/translations/en`, A.token, { title: `English ${SECRET_TEXT}`, body: `Body ${SECRET_TEXT}`, platformHints: { instagram: { caption: `IG ${SECRET_TEXT}` } } });
   const badLang = await http('PUT', `/api/contents/${c1.id}/translations/x_y`, A.token, { title: 'x' });
   check('invalid language code 400', badLang.status === 400);
   const same = await http('PUT', `/api/contents/${c1.id}/translations/zh-cn`, A.token, { title: 'x' });
