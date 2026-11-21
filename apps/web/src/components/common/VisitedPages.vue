@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { CloseOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '../../stores/auth'
-import { navLabel, useMenuLocation } from './menu'
+import { navLabel, PAGE_KEYS, useMenuLocation } from './menu'
 
 /**
  * 历史路由 bar under the header (owner 2026-11-19): the last MAX pages this user opened in this browser.
@@ -32,7 +32,8 @@ const storageKey = (id: string) => `${PREFIX}${id}`
 function load(id: string): Visit[] {
   try {
     const v = JSON.parse(localStorage.getItem(storageKey(id)) ?? '[]')
-    return Array.isArray(v) ? v.filter((x) => x && typeof x.path === 'string' && typeof x.fullPath === 'string' && typeof x.key === 'string').slice(0, MAX) : []
+    return Array.isArray(v) ? v.filter((x) => x && typeof x.path === 'string' && typeof x.fullPath === 'string' && typeof x.key === 'string'
+      && PAGE_KEYS.includes(x.key)).slice(0, MAX) /* a removed page (e.g. 连线监控, merged 2026-11-21) drops out */ : []
   } catch { return [] }
 }
 function save() {

@@ -50,13 +50,26 @@ const columns = computed(() => [
   { title: t('devices.colEgress'), key: 'egress', width: 170 },
   { title: t('devices.colAdbPort'), dataIndex: 'adbPort', key: 'adbPort', width: 100 },
   { title: t('devices.colResolution'), key: 'spec', width: 140 },
+  ...(connOn.value ? [
+    { title: t('sysadmin.conn.adb'), key: 'adb', width: 110 },
+    { title: t('sysadmin.conn.stf'), key: 'stf', width: 90 },
+    { title: t('sysadmin.conn.scrcpy'), key: 'scrcpy', width: 140 },
+    { title: t('sysadmin.conn.rtt'), key: 'rtt', width: 110 },
+    { title: t('sysadmin.conn.lastOffline'), key: 'lastOffline', width: 170 },
+  ] : []),
   actionColumn(190),
 ])
 
 // ---- status group filter (?status= from dashboard links) and owner filter (admin only)
-type StatusGroup = 'running' | 'stopped' | 'busy' | 'error'
-const statusFilter = ref<StatusGroup | undefined>(queryParam<StatusGroup>(useRoute().query, 'status', ['running', 'stopped', 'busy', 'error']))
-const inGroup = (i: Instance, g: StatusGroup) => (g === 'busy' ? BUSY_STATUSES.includes(i.status) : i.status === g)
+type StatusGroup = 'running' | 'stopped' | 'busy' | 'error' | 'issue'
+const statusFilter = ref<StatusGroup | undefined>(queryParam<StatusGroup>(useRoute().query, 'status', ['running', 'stopped', 'busy', 'error', 'issue']))
+/**
+ * 仅异常 (from the former 连线监控, merged 2026-11-21): error, a running phone whose adb or STF isn't ready,
+ * a failed egress check, or 风控暂停.
+ */
+const isIssue = (i: Instance) => i.status === 'error' || (i.status === 'running' && (i.adbState !== 'device' || !i.stfReady))
+  || i.proxyStatus?.ok === false || !!automation.value[i.id]?.halted
+const inGroup = (i: Instance, g: StatusGroup) => (g === 'issue' ? isIssue(i) : g === 'busy' ? BUSY_STATUSES.includes(i.status) : i.status === g)
 const ownerFilter = ref<InstanceOwner | null>(null)
 // ?id= from device-name links on other pages (deviceListLink): only that device, highlighted; never opens remote control.
 const route = useRoute()
@@ -87,6 +100,7 @@ const statusOptions = computed(() => [
   { value: 'stopped', label: `${t('status.stopped')} (${counts.value.stopped})` },
   { value: 'busy', label: `${t('devices.busy')} (${counts.value.busy})` },
   { value: 'error', label: `${t('devices.error')} (${counts.value.error})` },
+  { value: 'issue', label: `${t('devices.onlyIssues')} (${store.list.filter(isIssue).length})` },
 ])
 
 // ---- selection over the visible rows
@@ -102,11 +116,13 @@ function toggleOne(id: string, on: boolean) {
 
 // ---- layout preferences (per browser)
 const PREF_KEY = 'devicefarmer.cloudPhones.view'
-function readPref(): { view: 'grid' | 'table'; panel: boolean } {
-  try { const p = JSON.parse(localStorage.getItem(PREF_KEY) ?? '{}'); return { view: p.view === 'table' ? 'table' : 'grid', panel: p.panel !== false } }
-  catch { return { view: 'grid', panel: true } }
+function readPref(): { view: 'grid' | 'table'; panel: boolean; conn: boolean } {
+  try { const p = JSON.parse(localStorage.getItem(PREF_KEY) ?? '{}'); return { view: p.view === 'table' ? 'table' : 'grid', panel: p.panel !== false, conn: p.conn === true } }
+  catch { return { view: 'grid', panel: true, conn: false } }
 }
 const pref = reactive(readPref())
+// /connections (the former 连线监控 page) redirects to ?view=table&conn=1.
+if (route.query.conn === '1') { pref.view = 'table'; pref.conn = true }
 watch(pref, (p) => { try { localStorage.setItem(PREF_KEY, JSON.stringify(p)) } catch { /* private mode */ } })
 /**
  * 我的云机 (every role; owner's menu list 2026-11-18). Non-admins: grid only, no side list, no selection / batch menu /
@@ -334,6 +350,25 @@ void loadAutomation()
 const automationTimer = setInterval(() => { if (!document.hidden) void loadAutomation() }, 10_000)
 onUnmounted(() => clearInterval(automationTimer))
 
+// ---- 连线详情 (admin, table view; the former 连线监控 page merged here 2026-11-21, owner 「按方案合并」):
+// extra columns from GET /api/system/connections (admin only), polled with the automation state.
+interface ConnRow {
+  id: string; adbState: string | null; stfReady: boolean; lastOfflineAt: string | null
+  adbRttMs: number | null; adbRttAt: string | null; scrcpy: { viewers: number; link: 'relay' | 'adb' } | null
+}
+const connOn = computed(() => auth.isAdmin && view.value === 'table' && pref.conn)
+const conn = ref<Record<string, ConnRow>>({})
+async function loadConn() {
+  if (!connOn.value) return
+  try { conn.value = Object.fromEntries((await api<{ devices: ConnRow[] }>('GET', '/api/system/connections')).devices.map((d) => [d.id, d])) }
+  catch { /* columns show — */ }
+}
+watch(connOn, (on) => { if (on) void loadConn() }, { immediate: true })
+const connTimer = setInterval(() => { if (!document.hidden) void loadConn() }, 10_000)
+onUnmounted(() => clearInterval(connTimer))
+const adbColor = (s: string | null) => (s === 'device' ? 'green' : s ? 'red' : 'default')
+const rttColor = (ms: number) => (ms < 100 ? 'green' : ms < 500 ? 'orange' : 'red')
+
 // ---- per-device log drawer
 const logOpen = ref(false)
 const logId = ref<string | null>(null)
@@ -399,6 +434,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         <a-tag v-if="focusId" closable color="blue" @close="clearFocus">{{ t('devices.focusTag', { name: store.byId.get(focusId)?.name ?? focusId.slice(0, 8) }) }}</a-tag>
         <template v-if="auth.isAdmin" #actions>
           <BatchActions :count="selectedKeys.length" :items="batchItems" @select="(k: string) => onMenu(k as MenuKey, selectedKeys)" @clear="selectedKeys = []" />
+          <a-checkbox v-if="view === 'table'" v-model:checked="pref.conn">{{ t('devices.connDetail') }}</a-checkbox>
           <a-segmented v-model:value="pref.view" :options="[{ value: 'grid', label: t('cloud.viewGrid') }, { value: 'table', label: t('cloud.viewTable') }]" />
         </template>
       </SearchBar>
@@ -410,7 +446,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
         row-key="id"
         :size="TABLE_SIZE"
         :pagination="pagination({ defaultPageSize: 50 })"
-        :scroll="{ x: auth.isAdmin ? 1300 : 1100 }"
+        :scroll="{ x: auth.isAdmin ? (connOn ? 1920 : 1300) : 1100 }"
         :row-class-name="(r: Instance) => (r.id === focusId ? 'row-focus' : '')"
         :row-selection="{ selectedRowKeys: selectedKeys, onChange: (k: any[]) => (selectedKeys = k as string[]) }"
       >
@@ -442,6 +478,26 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
           <template v-else-if="column.key === 'spec'">
             {{ record.spec.width }}×{{ record.spec.height }}
           </template>
+          <template v-else-if="column.key === 'adb'">
+            <a-tag :color="adbColor(record.adbState)">{{ record.adbState ?? '—' }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'stf'">
+            <a-tag :color="record.stfReady ? 'green' : 'default'">{{ record.stfReady ? t('sysadmin.conn.ready') : t('sysadmin.conn.notReady') }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'scrcpy'">
+            <template v-if="conn[record.id]?.scrcpy">
+              <a-tag color="blue">{{ t(`sysadmin.conn.link.${conn[record.id]!.scrcpy!.link}`) }}</a-tag>
+              <span class="muted small">{{ t('sysadmin.conn.viewers', { n: conn[record.id]!.scrcpy!.viewers }) }}</span>
+            </template>
+            <span v-else class="muted">{{ t('sysadmin.conn.idle') }}</span>
+          </template>
+          <template v-else-if="column.key === 'rtt'">
+            <a-tooltip v-if="conn[record.id]?.adbRttMs != null" :title="t('sysadmin.conn.measuredAt', { at: fmtDateTime(conn[record.id]!.adbRttAt) })">
+              <a-tag :color="rttColor(conn[record.id]!.adbRttMs!)">{{ conn[record.id]!.adbRttMs }} ms</a-tag>
+            </a-tooltip>
+            <span v-else class="muted">—</span>
+          </template>
+          <template v-else-if="column.key === 'lastOffline'">{{ conn[record.id]?.lastOfflineAt ? fmtDateTime(conn[record.id]!.lastOfflineAt) : '—' }}</template>
           <template v-else-if="column.key === 'ops'">
             <a-space :size="0">
               <a-button size="small" type="link" :disabled="record.status !== 'running'" @click="openPhone(record.id)">{{ t('devices.control') }}</a-button>

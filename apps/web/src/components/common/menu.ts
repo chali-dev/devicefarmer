@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, ref, watchEffect, type Component } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  AlertOutlined, ApiOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ControlOutlined,
+  AlertOutlined, AppstoreOutlined, CalendarOutlined, CloudOutlined, ControlOutlined,
   FileSearchOutlined, FileTextOutlined, FireOutlined, IdcardOutlined, KeyOutlined, MobileOutlined, PictureOutlined, ProfileOutlined, ReadOutlined,
   RiseOutlined, SafetyOutlined, ScheduleOutlined, SecurityScanOutlined, SettingOutlined, ShareAltOutlined, SolutionOutlined, TeamOutlined,
   UserOutlined, WarningOutlined,
@@ -9,8 +9,11 @@ import {
 import { t } from '../../i18n'
 
 export type MenuGroupKey = 'devices' | 'matrix' | 'content' | 'accounts' | 'risk' | 'system'
-/** `feature`: shown only while the platform scope offers it (GET /api/platforms → features, stores/platforms.ts). */
-export interface MenuItem { key: string; icon: Component; feature?: 'trending' }
+/**
+ * `feature`: shown only while the platform scope offers it (GET /api/platforms → features, stores/platforms.ts).
+ * `soon`: shown but not clickable (greyed, tooltip `nav.soon.<key>`); the route itself stays reachable by URL.
+ */
+export interface MenuItem { key: string; icon: Component; feature?: 'trending'; soon?: boolean }
 /** `flat`: the items sit directly in the sidebar's first level (no group header, no breadcrumb level; owner 2026-11-18). */
 export interface MenuGroup { key: MenuGroupKey; icon: Component; items: MenuItem[]; flat?: boolean }
 
@@ -23,14 +26,14 @@ export interface MenuGroup { key: MenuGroupKey; icon: Component; items: MenuItem
  */
 export const MENU_GROUPS: MenuGroup[] = [
   { key: 'devices', flat: true, icon: CloudOutlined, items: [
-    { key: 'instances', icon: MobileOutlined }, { key: 'connections', icon: ApiOutlined },
+    { key: 'instances', icon: MobileOutlined },
     { key: 'library', icon: AppstoreOutlined },
   ] },
   { key: 'matrix', flat: true, icon: ShareAltOutlined, items: [
     { key: 'personas', icon: IdcardOutlined }, { key: 'social', icon: TeamOutlined }, { key: 'analytics', icon: RiseOutlined },
   ] },
   { key: 'content', flat: true, icon: ReadOutlined, items: [
-    { key: 'media', icon: PictureOutlined }, { key: 'trending', icon: FireOutlined, feature: 'trending' },
+    { key: 'media', icon: PictureOutlined }, { key: 'trending', icon: FireOutlined, feature: 'trending', soon: true },
     { key: 'content', icon: FileTextOutlined }, { key: 'publish', icon: CalendarOutlined },
   ] },
   { key: 'accounts', icon: SolutionOutlined, items: [
@@ -46,11 +49,16 @@ export const MENU_GROUPS: MenuGroup[] = [
 
 export const MENU_KEYS = ['dashboard', ...MENU_GROUPS.flatMap((g) => g.items.map((it) => it.key))]
 /** Pages outside the sidebar (opened from the header, e.g. the user menu's 通知中心): own title, no group. */
-const PAGE_KEYS = [...MENU_KEYS, 'notifications']
+export const PAGE_KEYS = [...MENU_KEYS, 'notifications']
 
 /** Label of a menu item (the same for every role): the sidebar, the breadcrumb and the page title use this. */
 export function navLabel(key: string): string {
   return t(`nav.${key}`)
+}
+
+/** Tooltip of a `soon` menu item (趋势热点 since 2026-11-21: Instagram trending not built yet). */
+export function navSoonText(key: string): string {
+  return t(`nav.soon.${key}`)
 }
 
 /** Menu position of the current route: `/instances/abc` → group devices, item instances (null = dashboard / unknown). */

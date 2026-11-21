@@ -18,7 +18,7 @@ import { isDark, setThemeMode } from '../theme'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
 import { useNotificationsStore } from '../stores/notifications'
-import { MENU_GROUPS, navLabel, pageCrumb, useMenuLocation } from '../components/common/menu'
+import { MENU_GROUPS, navLabel, navSoonText, pageCrumb, useMenuLocation } from '../components/common/menu'
 import { usePlatformsStore } from '../stores/platforms'
 
 const auth = useAuthStore()
@@ -156,17 +156,19 @@ async function savePassword() {
         </a-menu-item>
         <template v-for="g in visibleGroups" :key="`group-${g.key}`">
           <template v-if="g.flat">
-            <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
+            <a-menu-item v-for="it in g.items" :key="it.key" :disabled="it.soon" :title="it.soon ? `${navLabel(it.key)} · ${navSoonText(it.key)}` : undefined" @click="router.push(`/${it.key}`)">
               <component :is="it.icon" />
-              <span>{{ navLabel(it.key) }}</span>
+              <a-tooltip v-if="it.soon && !collapsed" :title="navSoonText(it.key)" placement="right"><span>{{ navLabel(it.key) }}</span></a-tooltip>
+              <span v-else>{{ navLabel(it.key) }}</span>
             </a-menu-item>
           </template>
           <a-sub-menu v-else :key="`group-${g.key}`">
             <template #icon><component :is="g.icon" /></template>
             <template #title>{{ t(`nav.group.${g.key}`) }}</template>
-            <a-menu-item v-for="it in g.items" :key="it.key" @click="router.push(`/${it.key}`)">
+            <a-menu-item v-for="it in g.items" :key="it.key" :disabled="it.soon" :title="it.soon ? `${navLabel(it.key)} · ${navSoonText(it.key)}` : undefined" @click="router.push(`/${it.key}`)">
               <component :is="it.icon" />
-              <span>{{ navLabel(it.key) }}</span>
+              <a-tooltip v-if="it.soon && !collapsed" :title="navSoonText(it.key)" placement="right"><span>{{ navLabel(it.key) }}</span></a-tooltip>
+              <span v-else>{{ navLabel(it.key) }}</span>
             </a-menu-item>
           </a-sub-menu>
         </template>

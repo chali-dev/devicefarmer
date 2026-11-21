@@ -116,7 +116,6 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     const where: SQL[] = [];
     if (!isAdmin(req.user)) where.push(eq(sa.userId, req.user.id));
     else if (qy.ownerId) where.push(eq(sa.userId, qy.ownerId));
-    if (qy.platform) where.push(eq(sa.platform, qy.platform));
     if (qy.instanceId === 'none') where.push(isNull(sa.instanceId));
     else if (qy.instanceId) where.push(eq(sa.instanceId, qy.instanceId));
     if (qy.personaId === 'none') where.push(isNull(sa.personaId));
@@ -136,11 +135,16 @@ export const socialRoutes: FastifyPluginAsyncZod = async (app) => {
     for (const t of tags) {
       where.push(sql`exists (select 1 from social_account_tags at join social_tags t on t.id = at.tag_id where at.account_id = ${sa.id} and lower(t.name) = ${t})`);
     }
+    // 我的媒体号 platform tabs (owner 2026-11-21 「分IG/YOUTUBE 2个页签」): counts under every filter except platform.
+    const byPlatformRows = await db.select({ platform: sa.platform, n: sql<number>`count(*)::int` }).from(sa)
+      .where(where.length ? and(...where) : undefined).groupBy(sa.platform);
+    const byPlatform = Object.fromEntries(byPlatformRows.map((r) => [r.platform, r.n]));
+    if (qy.platform) where.push(eq(sa.platform, qy.platform));
     const cond = where.length ? and(...where) : undefined;
     const [{ total } = { total: 0 }] = await db.select({ total: sql<number>`count(*)::int` }).from(sa).where(cond);
     const rows = await db.select().from(sa).where(cond).orderBy(desc(sa.createdAt), desc(sa.id))
       .limit(qy.pageSize).offset((qy.page - 1) * qy.pageSize);
-    return { items: await toItems(req.user, rows), total, page: qy.page, pageSize: qy.pageSize };
+    return { items: await toItems(req.user, rows), total, byPlatform, page: qy.page, pageSize: qy.pageSize };
   });
 
   /** Tags used by the accounts the caller can see (filter suggestions). */

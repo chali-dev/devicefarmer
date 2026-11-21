@@ -9,7 +9,7 @@
 # at a closed port, LOG_DIR/ASSET_DIR/UPLOAD_DIR/LIBRARY_DIR in a scratch folder, PG_DUMP_CMD, API_PORT, E2E_API).
 # The database is migrated + seeded here. Needs: an adb server on STF_ADB_HOST:STF_ADB_PORT (empty is fine),
 # ffmpeg/ffprobe, pg_dump/pg_restore ≥ 17 via PG_DUMP_CMD (Docker only if PG_DUMP_CMD runs it in a container),
-# outbound HTTPS (Anthropic / Telegram / YouTube invalid-key checks). Three API starts: A = default platforms, B = persona-prompt's capture listener,
+# outbound HTTPS (Anthropic / Telegram / YouTube invalid-key checks). Three API starts: A = ENABLED_PLATFORMS=instagram, B = persona-prompt's capture listener,
 # C = ENABLED_PLATFORMS=all. Stops at the first failing script and prints its output and the API log.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -88,17 +88,17 @@ if [ "$created" = created ]; then
 fi
 echo "::endgroup::"
 
-# A: default platform scope (captcha last: it uses up this IP's challenge budget for the minute)
-start_api A TASKS_TEST_HANDLERS=1
+# A: Instagram only (platform-scope proves the switch with YouTube off; captcha last: it uses up this IP's challenge budget for the minute)
+start_api A ENABLED_PLATFORMS=instagram TASKS_TEST_HANDLERS=1
 for n in security platforms platform-scope role-menus account-visibility account-sync targets personas persona-drafts \
   content-categories content-batch content-tags-ui translation publish-lang publish-types device-publish risk feed \
   following notifications media media-process required-apps alert-channels tasks sysadmin captcha; do
-  run "$n"
+  run "$n" ENABLED_PLATFORMS=instagram
 done
 
 # B: persona-prompt records what the SDK sends on its own listener
-start_api B ANTHROPIC_BASE_URL=http://127.0.0.1:3359
-run persona-prompt
+start_api B ENABLED_PLATFORMS=instagram ANTHROPIC_BASE_URL=http://127.0.0.1:3359
+run persona-prompt ENABLED_PLATFORMS=instagram
 
 # C: every platform (API and scripts)
 start_api C ENABLED_PLATFORMS=all TASKS_TEST_HANDLERS=1

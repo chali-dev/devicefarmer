@@ -113,7 +113,6 @@
 **A. 云手机管理**
 - `views/InstancesView.vue`（799 行，网格/表格双视图 + 自定义 `.toolbar`）：外框换 PageContainer，工具栏保留功能但统一按钮/间距；表格部分按第 5 节；创建 Modal 已是 800 宽 → `MODAL_WIDTH.lg`；多处 `Modal.confirm`。
 - `views/InstanceDetailView.vue`：多卡片详情页；PageContainer（标题=设备名，`extra`=电源操作），卡片 `:bordered="false"`，`a-descriptions` 统一。
-- `views/ConnectionsView.vue`：标准列表；`adbColor/rttColor` 可留（等级色），`pagination`、`actionColumn`。
 - `views/LibraryView.vue`：标准列表 + 安装 Modal。
 - 组件：`CloudPhoneDrawer.vue`、`DeviceLogDrawer.vue`（任务状态 → `StatusTag kind="task"`）、`DeviceThumb.vue`、`DevicePlayer.vue`（只看样式，不动逻辑）、`social/DeviceSocialCard.vue`。
 

@@ -79,7 +79,7 @@ try {
   let r = await http('GET', '/api/settings/role-menus', T);
   const ALL = ['instances', 'personas', 'social', 'analytics', 'media', 'trending', 'content', 'publish', 'tasks'];
   check('GET role-menus: default = every grantable menu, no updatedAt', r.status === 200 && sameSet(r.body.menus, ALL) && sameSet(r.body.defaults, ALL)
-    && sameSet(r.body.grantable, ALL) && r.body.updatedAt === null && r.body.fixed.always.includes('dashboard') && r.body.fixed.adminOnly.includes('connections') && !r.body.fixed.adminOnly.includes('proxies'), r.text.slice(0, 300));
+    && sameSet(r.body.grantable, ALL) && r.body.updatedAt === null && r.body.fixed.always.includes('dashboard') && r.body.fixed.adminOnly.includes('library') && !r.body.fixed.adminOnly.includes('proxies') && !r.body.fixed.adminOnly.includes('connections'), r.text.slice(0, 300));
   check('admin login/me menus: every key incl. admin pages, no proxies (代理IP池 removed 2026-11-20)', ADMIN.menus.includes('permissions') && ADMIN.menus.includes('logs') && ADMIN.menus.includes('analytics') && !ADMIN.menus.includes('proxies'));
 
   const pw = randomBytes(12).toString('base64url');
@@ -98,16 +98,17 @@ try {
     http('PUT', '/api/settings/role-menus', T, { menus: ['nope'] }),
     http('PUT', '/api/settings/role-menus', T, { menus: ['users'] }),
     http('PUT', '/api/settings/role-menus', T, { menus: ['dashboard'] }),
-    http('PUT', '/api/settings/role-menus', T, { menus: ['connections'] }),
+    http('PUT', '/api/settings/role-menus', T, { menus: ['library'] }),
     http('PUT', '/api/settings/role-menus', T, { menus: ['media'], extra: 1 }),
     http('PUT', '/api/settings/role-menus', T, { menus: 'media' }),
     http('PUT', '/api/settings/role-menus', T, { menus: ['proxies'] }),
+    http('PUT', '/api/settings/role-menus', T, { menus: ['connections'] }),
   ]);
   check('PUT unknown key → 400 rbac.menu_unknown', bad[0]!.status === 400 && bad[0]!.body.code === 'rbac.menu_unknown' && bad[0]!.body.params.menu === 'nope');
   check('PUT admin-only / dashboard key → 400 rbac.menu_not_grantable', [bad[1]!, bad[2]!, bad[3]!].every((x) => x.status === 400 && x.body.code === 'rbac.menu_not_grantable'),
     [bad[1]!, bad[2]!, bad[3]!].map((x) => `${x.status} ${x.body?.code}`).join(','));
   check('PUT extra field / not an array → 400', bad[4]!.status === 400 && bad[5]!.status === 400);
-  check('PUT the removed proxies key → 400 rbac.menu_unknown', bad[6]!.status === 400 && bad[6]!.body.code === 'rbac.menu_unknown', `${bad[6]!.status} ${bad[6]!.body?.code}`);
+  check('PUT the removed proxies / connections keys → 400 rbac.menu_unknown', [bad[6]!, bad[7]!].every((x) => x.status === 400 && x.body.code === 'rbac.menu_unknown'), [bad[6]!, bad[7]!].map((x) => `${x.status} ${x.body?.code}`).join(','));
   r = await http('GET', '/api/settings/role-menus', T);
   check('refused PUTs changed nothing', r.body.updatedAt === null && sameSet(r.body.menus, ALL));
   check('user GET/PUT role-menus → 403', (await http('GET', '/api/settings/role-menus', UT)).status === 403 && (await http('PUT', '/api/settings/role-menus', UT, { menus: [] })).status === 403);

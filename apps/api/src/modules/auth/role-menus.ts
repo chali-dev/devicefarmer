@@ -30,7 +30,8 @@ export type GrantableMenu = (typeof GRANTABLE_MENUS)[number];
 /** Every other sidebar key: always on (dashboard) or admin only. Known so that a PUT can tell "not grantable" from "unknown". */
 export const FIXED_MENUS = {
   always: ['dashboard'],
-  adminOnly: ['connections', 'library', 'users', 'audit', 'permissions', 'risk-events', 'risk', 'alert-channels', 'logs', 'settings'],
+  // 'connections' (连线监控) was merged into 我的云机 on 2026-11-21 (owner 「按方案合并」): no longer a menu key.
+  adminOnly: ['library', 'users', 'audit', 'permissions', 'risk-events', 'risk', 'alert-channels', 'logs', 'settings'],
 } as const;
 export const DEFAULT_USER_MENUS: GrantableMenu[] = [...GRANTABLE_MENUS];
 

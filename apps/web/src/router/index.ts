@@ -42,7 +42,8 @@ const router = createRouter({
         // 权限管理 = 角色菜单权限 (owner 2026-11-18; device assignment is 我的云机 → 分配).
         { path: 'permissions', name: 'permissions', component: () => import('../views/PermissionsView.vue'), meta: { admin: true } },
         { path: 'audit', name: 'audit', component: () => import('../views/AuditView.vue'), meta: { admin: true } },
-        { path: 'connections', name: 'connections', component: () => import('../views/ConnectionsView.vue'), meta: { admin: true } },
+        // 连线监控 merged into 我的云机 (owner 2026-11-21 「按方案合并」): table view with 连线详情.
+        { path: 'connections', redirect: { path: '/instances', query: { view: 'table', conn: '1' } } },
         { path: 'risk-events', name: 'risk-events', component: () => import('../views/RiskEventsView.vue'), meta: { admin: true } },
         { path: 'logs', name: 'logs', component: () => import('../views/LogsView.vue'), meta: { admin: true } },
         // 系统维护 dissolved (owner 2026-11-18): backups → 系统配置 备份与保留, logs → 系统日志.

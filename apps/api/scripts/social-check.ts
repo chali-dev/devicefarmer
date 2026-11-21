@@ -254,6 +254,18 @@ try {
   check('search matches tags', r.body.total === 2);
   r = await http('GET', `/api/social/accounts?q=${encodeURIComponent(h('alpha'))}&platform=youtube`, A);
   check('search + platform filter', r.body.total === 1 && r.body.items[0].id === y1);
+  // 我的媒体号 platform tabs: byPlatform counts every platform under the other filters, not the platform one.
+  {
+    const all = (await http('GET', '/api/social/accounts?pageSize=200', A)).body;
+    const yt = (await http('GET', '/api/social/accounts?platform=youtube&pageSize=200', A)).body;
+    const per: Record<string, number> = {};
+    for (const it of all.items) per[it.platform] = (per[it.platform] ?? 0) + 1;
+    check('byPlatform = per-platform counts, unchanged by ?platform=', JSON.stringify(all.byPlatform) === JSON.stringify(yt.byPlatform)
+      && Object.keys(per).length > 0 && Object.entries(per).every(([k, n]) => all.byPlatform[k] === n) && yt.total === per.youtube
+      && yt.items.every((x: any) => x.platform === 'youtube'), JSON.stringify({ all: all.byPlatform, yt: yt.byPlatform, per }));
+    const q = (await http('GET', `/api/social/accounts?q=${encodeURIComponent(h('alpha'))}&platform=tiktok`, A)).body;
+    check('byPlatform follows the other filters (q)', q.total === 0 && q.byPlatform.youtube === 1, JSON.stringify(q.byPlatform));
+  }
   r = await http('GET', `/api/social/accounts?pageSize=1&page=2`, A);
   check('pagination', r.body.total === 2 && r.body.items.length === 1 && r.body.page === 2);
 

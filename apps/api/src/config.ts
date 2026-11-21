@@ -99,9 +99,10 @@ const Env = z.object({
   /**
    * Social platforms switched on (comma list of platform ids, or `all`). Every platform's code stays in the
    * registries; a disabled one is left out of option lists, refused for anything new (platform.disabled)
-   * and skipped by the schedulers. Existing rows stay readable.
+   * and skipped by the schedulers. Existing rows stay readable. Default instagram + youtube (owner 2026-11-21
+   * 「可以再加入youtube支持」: the existing YouTube code, no cloud-phone automation for it).
    */
-  ENABLED_PLATFORMS: z.string().default('instagram'),
+  ENABLED_PLATFORMS: z.string().default('instagram,youtube'),
   /** Tracked accounts: YouTube Data API v3 base URL (override only for a compatible test endpoint). The key lives in settings. */
   YOUTUBE_API_BASE: z.string().url().default('https://www.googleapis.com/youtube/v3'),
   /**

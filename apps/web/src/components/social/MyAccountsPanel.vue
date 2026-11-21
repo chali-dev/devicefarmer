@@ -70,6 +70,24 @@ const filters = reactive({
 })
 
 const platformName = (id: string) => platforms.value.find((p) => p.id === id)?.name ?? id
+/** Accounts per platform under the other filters (list `byPlatform`). */
+const byPlatform = ref<Record<string, number>>({})
+/**
+ * One tab per platform (owner 2026-11-21 「我的媒体号分IG/YOUTUBE 2个页签」): the enabled ones, plus a disabled
+ * platform that still has accounts (rows stay listed). `?platform=` keeps the tab; default the first.
+ */
+const platformTabs = computed(() => {
+  const ids = platforms.value.map((p) => p.id)
+  for (const [id, n] of Object.entries(byPlatform.value)) if (n && !ids.includes(id)) ids.push(id)
+  return ids
+})
+function setPlatform(id: string) {
+  if (filters.platform === id) return
+  filters.platform = id
+  selectedKeys.value = []
+  void router.replace({ query: { ...route.query, platform: id } })
+  search()
+}
 const loginText = (s: SocialLoginStatus) => t(`social.login.${s}`)
 const accountText = (s: SocialAccountStatus) => t(`social.account.${s}`)
 
@@ -83,9 +101,10 @@ async function loadMeta() {
     ])
     accountLangs.value = langs.configured
     platforms.value = p.platforms
+    if (!filters.platform && p.platforms[0]) { filters.platform = p.platforms[0].id; void load() }
     personas.value = [...pub.personas, ...own.personas]
     if (auth.isAdmin && !users.value.length) users.value = (await api<{ users: ManagedUser[] }>('GET', '/api/users')).users
-  } catch (e) { message.error(errorText(e)) }
+  } catch (e) { message.error(errorText(e)); if (!loaded.value) void load() }
 }
 
 async function load() {
@@ -95,9 +114,10 @@ async function load() {
     if (filters.q.trim()) p.set('q', filters.q.trim())
     for (const k of ['platform', 'personaId', 'lang', 'loginStatus', 'accountStatus', 'ownerId', 'instanceId'] as const) if (filters[k]) p.set(k, filters[k]!)
     if (filters.exception) p.set('exception', 'true')
-    const r = await api<{ items: SocialAccount[]; total: number }>('GET', `/api/social/accounts?${p}`)
+    const r = await api<{ items: SocialAccount[]; total: number; byPlatform: Record<string, number> }>('GET', `/api/social/accounts?${p}`)
     items.value = r.items
     total.value = r.total
+    byPlatform.value = r.byPlatform ?? {}
     loaded.value = true
     const ids = new Set(r.items.map((x) => x.id))
     selectedKeys.value = selectedKeys.value.filter((k) => ids.has(k))
@@ -106,11 +126,12 @@ async function load() {
 }
 function search() { page.current = 1; void load() }
 function reset() {
-  Object.assign(filters, { q: '', platform: undefined, personaId: undefined, lang: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, ownerId: undefined, instanceId: undefined })
-  if (route.query.instanceId) void router.replace({ query: { tab: route.query.tab } })
+  Object.assign(filters, { q: '', personaId: undefined, lang: undefined, loginStatus: undefined, accountStatus: undefined, exception: false, ownerId: undefined, instanceId: undefined })
+  if (route.query.instanceId) void router.replace({ query: { tab: route.query.tab, ...(filters.platform ? { platform: filters.platform } : {}) } })
   search()
 }
-onMounted(() => { void loadMeta(); void load() })
+// The list waits for the platform tab (loadMeta picks the first one when ?platform= is not given).
+onMounted(() => { void loadMeta(); if (filters.platform) void load() })
 watch(() => route.query.instanceId, (v) => { filters.instanceId = typeof v === 'string' ? v : undefined; search() })
 watch(() => route.query.q, (v) => { if (typeof v === 'string') { filters.q = v; search() } }) // alert links (/social?q=handle)
 
@@ -182,7 +203,7 @@ const formPersonas = computed(() => personasFor(formOwner.value))
 
 function openAdd() {
   editing.value = null
-  Object.assign(form, blank())
+  Object.assign(form, blank(), { platform: platforms.value.some((p) => p.id === filters.platform) ? filters.platform : undefined })
   formRef.value?.clearValidate()
   editOpen.value = true
 }
@@ -252,10 +273,10 @@ function onSynced(accountId: string) {
   void load()
   void loadMeta()
 }
-const filtersActive = computed(() => !!(filters.q.trim() || filters.platform || filters.personaId || filters.lang || filters.loginStatus || filters.accountStatus
+const filtersActive = computed(() => !!(filters.q.trim() || filters.personaId || filters.lang || filters.loginStatus || filters.accountStatus
   || filters.exception || filters.ownerId || filters.instanceId))
 /** Three-step guide while the viewer has no account at all (not just none matching a filter). */
-const showGuide = computed(() => loaded.value && !loading.value && total.value === 0 && !filtersActive.value)
+const showGuide = computed(() => loaded.value && !loading.value && !Object.values(byPlatform.value).some((n) => n > 0) && !filtersActive.value)
 
 // ---------------------------------------------------------------- detail (动态 / 帖子 / 回复记录), opened by clicking a row
 const feedOpen = ref(false)
@@ -401,11 +422,13 @@ async function submitBatchForm() {
     </a-card>
 
     <div>
+      <a-tabs :active-key="filters.platform" size="small" class="platform-tabs" @change="(k: any) => setPlatform(String(k))">
+        <a-tab-pane v-for="id in platformTabs" :key="id">
+          <template #tab><PlatformTag :platform="id" :name="`${platformName(id)} (${byPlatform[id] ?? 0})`" /></template>
+        </a-tab-pane>
+      </a-tabs>
       <SearchBar :loading="loading" @reset="reset">
         <a-input-search v-model:value="filters.q" :placeholder="t('social.searchPlaceholder')" allow-clear style="width: 240px" @search="search" />
-        <a-select v-model:value="filters.platform" :placeholder="t('social.colPlatform')" allow-clear style="width: 130px" @change="search">
-          <a-select-option v-for="p in platforms" :key="p.id" :value="p.id"><PlatformTag :platform="p.id" :name="p.name" /></a-select-option>
-        </a-select>
         <a-select v-model:value="filters.lang" :placeholder="t('social.colLang')" allow-clear show-search option-filter-prop="label" style="width: 130px"
           :options="langFilterOptions" @change="search" />
         <a-select v-model:value="filters.loginStatus" :placeholder="t('social.colLogin')" allow-clear style="width: 130px" @change="search">
@@ -625,6 +648,7 @@ async function submitBatchForm() {
 <style scoped>
 .cp-panel { display: flex; flex-direction: column; gap: var(--cp-gap); min-width: 0; }
 .batch-hint { margin-top: 6px; }
+.platform-tabs :deep(.ant-tabs-nav) { margin-bottom: 8px; }
 .err-icon { color: var(--cp-error); margin-left: 4px; }
 .guide-title { font-weight: 600; margin-bottom: 12px; }
 .acct { display: flex; align-items: center; gap: 10px; min-width: 0; }
