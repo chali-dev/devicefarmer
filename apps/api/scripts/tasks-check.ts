@@ -4,7 +4,7 @@
  *   src/modules/tasks/test-handlers.ts). This script registers the same type in its own process
  *   only to create tasks (createTask writes the row and adds the BullMQ job; the API's worker runs it).
  * - Needs no Android device: device-op checks use placeholder `instances` rows (stopped, no containers),
- *   and only ops that fail before touching Docker (uninstall-app needs a running device).
+ *   and only ops that fail before touching Docker (import-app needs a running device).
  * - Part 2 (`--restart`) kills the API listening on API_PORT (kill -9) and starts it again
  *   (node --import tsx, TASKS_TEST_HANDLERS=1, log: $TASKS_API_LOG or ./var/tasks-check-api.log) to
  *   check startup reconciliation and stall handling. The restarted API keeps running afterwards.
@@ -193,7 +193,7 @@ try {
   check('retry of a successful task → 409 tasks.not_retryable_status', r.status === 409 && r.body.code === 'tasks.not_retryable_status');
 
   // ---------------------------------------------------------------- device op on the new core (no Docker touched)
-  const devTask = (await createTask({ type: 'uninstall-app', instance: dev!, label: `tcfake-${tag} · com.example.none`, payload: { package: 'com.example.none' }, userId: null })).task;
+  const devTask = (await createTask({ type: 'import-app', instance: dev!, label: `tcfake-${tag} · com.example.none`, payload: { package: 'com.example.none' }, userId: null })).task;
   taskIds.push(devTask.id);
   const devDone = await waitStatus(devTask.id, ['success', 'failed']);
   const [devAfter] = await db.select().from(schema.instances).where(eq(schema.instances.id, dev!.id));

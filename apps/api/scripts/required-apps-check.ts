@@ -4,7 +4,9 @@
  *   validation (bad package, non-digit BitBrowser app id, missing name, extra field → 400), duplicate package →
  *   409 library.required_taken (also on PUT), unknown id → 404 library.required_not_found; audit rows
  *   library.required_create / _update / _delete / _check with the package as target.
- * - 立即检查 POST /api/library/required/check {instanceIds?} → 202 {taskIds, skipped}: a stopped phone is skipped
+ * - 安装 per app: GET /api/library/required/:id/targets (live read per phone; placeholders read as offline/probe),
+ *   POST …/:id/install {instanceIds} (skips with codes, one task per phone for that app, de-duplicated).
+ * - full check POST /api/library/required/check {instanceIds?} → 202 {taskIds, skipped}: a stopped phone is skipped
  *   (no task); with an empty list nothing is queued even for a running phone; an inert placeholder phone
  *   (scripts/lib/placeholder.ts: running + adb device in the DB, nothing on its adb port) gets ONE `required-apps`
  *   task that fails on adb (code asserted below); an unfinished check of that phone (DB fixture) is returned instead
@@ -13,7 +15,7 @@
  * Usage (from apps/api, test API running): E2E_API=http://127.0.0.1:<port> npx tsx --env-file=../../.env scripts/required-apps-check.ts
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { and, eq, gte, inArray, like } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, like } from 'drizzle-orm';
 import { db, schema, sqlClient } from '../src/db/index.js';
 import { withCaptcha } from './lib/login.js';
 import { placeholders } from './lib/placeholder.js';
@@ -62,7 +64,7 @@ try {
   const userRes = await Promise.all(([
     ['GET', '/api/library/required'], ['POST', '/api/library/required', { sourceType: 'bitbrowser', package: `com.req${tag}.x`, name: 'x', storeAppId: '1' }],
     ['PUT', `/api/library/required/${someId}`, { sourceType: 'bitbrowser', package: `com.req${tag}.x`, name: 'x', storeAppId: '1' }], ['DELETE', `/api/library/required/${someId}`],
-    ['POST', '/api/library/required/check', {}],
+    ['POST', '/api/library/required/check', {}], ['GET', `/api/library/required/${someId}/targets`], ['GET', `/api/library/required/device/${someId}`], ['POST', `/api/library/required/${someId}/install`, { instanceIds: [randomUUID()] }],
   ] as [string, string, unknown?][]).map(([m, p, b]) => http(m, p, U, b).then((x) => [`${m} ${p}`, x] as const)));
   const bad = userRes.filter(([, x]) => x.status !== 403 || x.body?.code !== 'auth.admin_only');
   check('user: 403 auth.admin_only on every 必装应用 route', !bad.length, bad.map(([k, x]) => `${k}=${x.status} ${x.body?.code}`).join(', '));
@@ -137,12 +139,52 @@ try {
   const [A2] = await db.insert(R).values({ sourceType: 'bitbrowser', package: pkgA, name: 'Alpha', storeAppId: '123' }).onConflictDoNothing().returning();
   void A2;
 
+  // 安装 (row): picker of one app + install on the picked phones
+  r = await http('GET', `/api/library/required/${A2!.id}/targets`, T);
+  const tOn = r.body?.devices?.find((d: { id: string }) => d.id === on!.id);
+  const tOff = r.body?.devices?.find((d: { id: string }) => d.id === off!.id);
+  check('targets of an app: 200, running placeholder → offline/probe (adb read fails), stopped → offline/stopped, users listed',
+    r.status === 200 && tOn?.state === 'offline' && tOn.reason === 'probe' && tOff?.state === 'offline' && tOff.reason === 'stopped' && Array.isArray(tOn.users), r.text.slice(0, 400));
+  r = await http('GET', `/api/library/required/${randomUUID()}/targets`, T);
+  check('targets of an unknown app → 404 library.required_not_found', r.status === 404 && r.body?.code === 'library.required_not_found', r.text);
+  r = await http('POST', `/api/library/required/${A2!.id}/install`, T, { instanceIds: [off!.id, randomUUID()] });
+  check('install: stopped → skipped instances.not_running, unknown → instances.not_found, no task',
+    r.status === 202 && r.body.taskIds.length === 0 && r.body.skipped.map((x: { code: string }) => x.code).sort().join() === 'instances.not_found,instances.not_running', r.text);
+  const r5 = await http('POST', `/api/library/required/${A2!.id}/install`, T, { instanceIds: [] });
+  const r6 = await http('POST', `/api/library/required/${randomUUID()}/install`, T, { instanceIds: [on!.id] });
+  check('install: empty list → 400, unknown app → 404', r5.status === 400 && r6.status === 404, `${r5.status} ${r6.status}`);
+  r = await http('POST', `/api/library/required/${A2!.id}/install`, T, { instanceIds: [on!.id] });
+  const iid = r.body?.taskIds?.[0] as string | undefined;
+  if (iid) taskIds.push(iid);
+  const again = await http('POST', `/api/library/required/${A2!.id}/install`, T, { instanceIds: [on!.id] });
+  const [itask] = iid ? await db.select().from(schema.tasks).where(eq(schema.tasks.id, iid)) : [];
+  check('install on a running phone → one required-apps task for that app (refType required_app, payload.appIds), a second click returns it',
+    r.status === 202 && !!itask && itask.type === 'required-apps' && itask.refType === 'required_app' && itask.refId === A2!.id
+      && JSON.stringify((itask.payload as { appIds?: string[] }).appIds) === JSON.stringify([A2!.id]) && again.body?.taskIds?.[0] === iid, `${r.text} ${again.text}`);
+  const idone = await waitFor('install task finished', async () => {
+    const t = (await http('GET', `/api/tasks/${iid}`, T)).body?.task;
+    return t && ['success', 'failed', 'cancelled'].includes(t.status) ? t : null;
+  }, 90_000);
+  check('…it fails on adb like the full check (placeholder unreachable)', idone.status === 'failed', idone.status);
+
+  // 云机管理 → 安装应用: the app store list of one phone with its state
+  r = await http('GET', `/api/library/required/device/${on!.id}`, T);
+  const dOn = r.body?.apps?.find((x: { id: string }) => x.id === A2!.id);
+  const rOff = await http('GET', `/api/library/required/device/${off!.id}`, T);
+  const rNo = await http('GET', `/api/library/required/device/${randomUUID()}`, T);
+  check('device list: running placeholder online, app unread (null, adb fails); stopped → online false, installed null; unknown → 404',
+    r.status === 200 && r.body.online === true && dOn?.installed === null && typeof dOn?.installing === 'boolean'
+      && rOff.status === 200 && rOff.body.online === false && rOff.body.apps.every((x: { installed: unknown }) => x.installed === null)
+      && rNo.status === 404 && rNo.body?.code === 'instances.not_found', `${r.text.slice(0, 300)} ${rOff.status} ${rNo.status}`);
+  r = await http('POST', '/api/apps/uninstall', T, { instanceIds: [on!.id], package: 'com.example.x' });
+  check('uninstall endpoint removed → 404', r.status === 404, String(r.status));
+
   // an unfinished check of the phone (DB fixture) is returned instead of a second task
   const [fx] = await db.insert(schema.tasks).values({ type: 'required-apps', status: 'scheduled', payload: {}, instanceId: on!.id, instanceName: `${on!.name} · 必装应用`, runAt: new Date(Date.now() + 3600_000) }).returning();
   taskIds.push(fx!.id);
   r = await http('POST', '/api/library/required/check', T, { instanceIds: [on!.id] });
   check('unfinished check of the phone → the same task id, no second task', r.status === 202 && r.body.taskIds.length === 1 && r.body.taskIds[0] === fx!.id
-    && (await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'required-apps'), eq(schema.tasks.instanceId, on!.id)))).length === 1, r.text);
+    && (await db.select().from(schema.tasks).where(and(eq(schema.tasks.type, 'required-apps'), eq(schema.tasks.instanceId, on!.id), isNull(schema.tasks.refId)))).length === 1, r.text);
   await db.delete(schema.tasks).where(eq(schema.tasks.id, fx!.id));
 
   // a real run: one task, then it fails on adb (nothing listens on the placeholder's port)
@@ -174,6 +216,7 @@ try {
     && audit.some((a) => a.action === 'library.required_create' && a.ok && (a.detail as any)?.appId === '123'), JSON.stringify(audit.filter((a) => a.action === 'library.required_create').map((a) => [a.target, a.detail])));
   check('audit: update + delete with the package as target', ok('library.required_update', pkgB) && ok('library.required_delete', pkgB));
   check('audit: check recorded', ok('library.required_check'));
+  check('audit: install recorded with the package as target', ok('library.required_install', pkgA));
   check('audit: refused user attempts recorded (403)', audit.some((a) => a.action === 'library.required_create' && a.status === 403));
 } catch (err) {
   check(`unexpected error: ${(err as Error).stack}`, false);

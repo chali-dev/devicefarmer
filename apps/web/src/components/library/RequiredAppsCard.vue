@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { PlusOutlined, SyncOutlined } from '@ant-design/icons-vue'
+import { CloudDownloadOutlined, PlusOutlined } from '@ant-design/icons-vue'
 import { message, type FormInstance } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, errorText } from '../../api/client'
 import type { RequiredApp } from '../../api/types'
 import { actionColumn, confirmDanger, MODAL_WIDTH } from '../common/ui'
+import RequiredInstallModal from './RequiredInstallModal.vue'
 
 /**
- * 必装应用 (应用库, admin only; owner 2026-11-20 「开机时侦测缺的就装」「必装应用要显示比特云，保持可扩性」): packages every
+ * 应用市场 (formerly 必装应用, renamed by the owner 2026-11-21; 应用库, admin only; owner 2026-11-20 「开机时侦测缺的就装」
+ * 「必装应用要显示比特云，保持可扩性」): packages every
  * phone of a device source type must have, one tab per source type with an app store (API `sourceTypes`; only 比特云
  * today, another vendor = one more tab + its `library.required.stores.<type>` texts). Each time a phone is attached /
  * powered on, a `required-apps` task checks its type's list over adb and asks the source to install missing ones from
- * its app store (by the store's app id). 立即检查 queues that check on every running phone.
- * API: GET/POST /api/library/required, PUT/DELETE …/:id, POST …/check.
+ * its app store (by the store's app id). Each row's 安装 opens a picker of that type's phones without the app
+ * (RequiredInstallModal) and queues the install of that one app on the picked ones.
+ * API: GET/POST /api/library/required, PUT/DELETE …/:id, GET …/:id/targets, POST …/:id/install.
  */
 const { t, te } = useI18n()
 const apps = ref<RequiredApp[]>([])
@@ -42,7 +45,7 @@ const columns = computed(() => [
   { title: t('library.required.name'), dataIndex: 'name', key: 'name', width: 180 },
   { title: t('library.package'), dataIndex: 'package', key: 'package', width: 260 },
   { title: storeText(activeType.value, 'appId'), dataIndex: 'storeAppId', key: 'appId', width: 160 },
-  actionColumn(130),
+  actionColumn(170),
 ])
 
 // ---- 新增 / 编辑 (3 fields → Modal)
@@ -91,24 +94,14 @@ function remove(a: RequiredApp) {
   })
 }
 
-// ---- 立即检查: every running phone
-const checking = ref(false)
-async function checkNow() {
-  checking.value = true
-  try {
-    const r = await api<{ taskIds: string[] }>('POST', '/api/library/required/check', {})
-    if (r.taskIds.length) message.success(t('library.required.checkQueued', { n: r.taskIds.length }))
-    else message.info(t('library.required.checkNone'))
-  } catch (e) { message.error(errorText(e)) }
-  finally { checking.value = false }
-}
+// ---- 安装 (row): pick phones for one app
+const installApp = ref<RequiredApp | null>(null)
 </script>
 
 <template>
   <a-card :bordered="false" :title="t('library.required.title')">
     <template #extra>
       <a-space wrap>
-        <a-button size="small" :loading="checking" :disabled="!apps.length" @click="checkNow"><template #icon><SyncOutlined /></template>{{ t('library.required.check') }}</a-button>
         <a-button size="small" type="primary" @click="openEdit()"><template #icon><PlusOutlined /></template>{{ t('library.required.add') }}</a-button>
       </a-space>
     </template>
@@ -122,6 +115,7 @@ async function checkNow() {
         <template v-if="column.key === 'package' || column.key === 'appId'"><span class="mono">{{ column.key === 'package' ? record.package : record.storeAppId }}</span></template>
         <template v-else-if="column.key === 'ops'">
           <a-space :size="0">
+            <a-button type="link" size="small" @click="installApp = record as RequiredApp"><template #icon><CloudDownloadOutlined /></template>{{ t('library.required.install') }}</a-button>
             <a-button type="link" size="small" @click="openEdit(record as RequiredApp)">{{ t('common.edit') }}</a-button>
             <a-button type="link" size="small" danger @click="remove(record as RequiredApp)">{{ t('common.delete') }}</a-button>
           </a-space>
@@ -141,6 +135,8 @@ async function checkNow() {
       </a-form-item>
     </a-form>
   </a-modal>
+
+  <RequiredInstallModal :app="installApp" :label="installApp ? storeText(installApp.sourceType, 'label') : ''" @close="installApp = null" />
 </template>
 
 <style scoped>

@@ -61,6 +61,12 @@ export interface LibraryInstallLog {
 }
 /** 必装应用 (GET /api/library/required): packages every phone must have; missing ones are installed from BitBrowser's app store. */
 /** 必装应用 per device source type (`sourceType` = device_sources.type with an app store). */
+/** 应用市场 安装 picker row (GET /api/library/required/:id/targets). */
+export interface RequiredTarget {
+  id: string; name: string; status: string; users: string[]
+  state: 'missing' | 'installed' | 'installing' | 'offline' | 'busy'
+  reason?: string
+}
 export interface RequiredApp { id: string; sourceType: string; package: string; name: string; storeAppId: string; createdAt: string; updatedAt: string }
 
 /** Measured egress location: "IN · Maharashtra · Mumbai" (repeated parts dropped), or '' before a check with geo. */

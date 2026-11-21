@@ -3,7 +3,7 @@ import { inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
-import { isProtectedPackage, mediaTarget } from '../../adapters/adb.js';
+import { mediaTarget } from '../../adapters/adb.js';
 import { adb } from '../../services.js';
 import { assertInstanceAccess, assertInstancesAccess } from '../auth/rbac.js';
 import { enqueue } from '../instances/queue.js';
@@ -17,7 +17,7 @@ import { config } from '../../config.js';
 
 const Ids = z.array(z.string().uuid()).min(1).max(100);
 
-/** App management: list, batch install/update (APK or split bundle), batch uninstall. */
+/** App management: list, batch install/update (APK or split bundle). Uninstalling was removed (owner 2026-11-21 「卸载应用功能移除」). */
 export const appRoutes: FastifyPluginAsyncZod = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
@@ -76,21 +76,5 @@ export const appRoutes: FastifyPluginAsyncZod = async (app) => {
     } finally {
       await fs.promises.rm(tmpDir, { recursive: true, force: true });
     }
-  });
-
-  app.post('/api/apps/uninstall', {
-    schema: { body: z.object({ instanceIds: Ids, package: z.string().regex(/^[a-zA-Z0-9_.]{3,150}$/) }) },
-  }, async (req, reply) => {
-    if (isProtectedPackage(req.body.package)) throw badRequest(`${req.body.package} 是平台组件（远程控制依赖），不能卸载`, 'apps.protected_package', { package: req.body.package });
-    await assertInstancesAccess(req.user, req.body.instanceIds, 'operate');
-    const rows = await db.select().from(schema.instances).where(inArray(schema.instances.id, req.body.instanceIds));
-    const accepted: { instanceId: string; taskId: string }[] = [];
-    const skipped: { instanceId: string; reason: string }[] = [];
-    for (const r of rows) {
-      if (r.status !== 'running') { skipped.push({ instanceId: r.id, reason: `not running (${r.status})` }); continue; }
-      accepted.push({ instanceId: r.id, taskId: await enqueue('uninstall-app', r, req.user.id, { package: req.body.package }, req.body.package) });
-    }
-    reply.code(202);
-    return { accepted, skipped };
   });
 };

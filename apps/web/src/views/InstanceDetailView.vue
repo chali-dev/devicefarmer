@@ -11,7 +11,7 @@ import DevicePlayer from '../components/DevicePlayer.vue'
 import { downloadScreenshot, uploadDeviceFile } from '../api/device'
 import PageContainer from '../components/common/PageContainer.vue'
 import StatusTag from '../components/common/StatusTag.vue'
-import { actionColumn, confirmAction, confirmDanger } from '../components/common/ui'
+import { actionColumn, confirmAction } from '../components/common/ui'
 import DeviceSocialCard from '../components/social/DeviceSocialCard.vue'
 import { useInstancesStore } from '../stores/instances'
 import { useAuthStore } from '../stores/auth'
@@ -72,17 +72,8 @@ async function loadApps() {
   catch (e) { message.error(errorText(e)) }
   finally { appsLoading.value = false }
 }
-function uninstall(pkg: string) {
-  confirmDanger({
-    title: t('detail.apps.confirmUninstall', { pkg }), content: t('detail.apps.uninstallContent'), okText: t('common.uninstall'),
-    onOk: async () => {
-      try { await store.uninstallApp([props.id], pkg); message.success(t('detail.apps.uninstallSubmitted')) }
-      catch (e) { message.error(errorText(e)) }
-    },
-  })
-}
-// refresh the list when an install/uninstall task for this instance finishes
-watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'uninstall-app') && t.status === 'success').length, () => void loadApps())
+// refresh the list when an install task for this instance finishes (uninstalling was removed, owner 2026-11-21)
+watch(() => tasks.value.filter((t) => (t.type === 'install-apk' || t.type === 'required-apps') && t.status === 'success').length, () => void loadApps())
 watch(() => inst.value?.status, (s) => { if (s === 'running') void loadApps() }, { immediate: true })
 
 // ---- upload files (photos/videos) into the phone's shared storage
@@ -241,7 +232,6 @@ const appColumns = computed(() => [
                   <a-tag v-if="record.protected">{{ t('detail.apps.platform') }}</a-tag>
                   <a-space v-else :size="0">
                     <a-button v-if="auth.isAdmin" type="link" size="small" @click="importToLibrary(record.package)">{{ t('detail.apps.addToLibrary') }}</a-button>
-                    <a-button type="link" size="small" danger @click="uninstall(record.package)">{{ t('common.uninstall') }}</a-button>
                   </a-space>
                 </template>
               </template>

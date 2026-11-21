@@ -17,7 +17,7 @@ import DevicePlayer from './DevicePlayer.vue'
 import StatusTag from './common/StatusTag.vue'
 
 /** Slide-in remote control for one cloud phone: screen + side tools on the left, info and actions on the right. */
-type MenuKey = 'start' | 'stop' | 'restart' | 'delete' | 'install' | 'uninstall'
+type MenuKey = 'start' | 'stop' | 'restart' | 'delete' | 'install'
 const props = defineProps<{ instanceId: string | null }>()
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ (e: 'menu', key: MenuKey, ids: string[]): void; (e: 'log', id: string): void }>()
@@ -217,11 +217,10 @@ const network = computed<Row[]>(() => {
                 <a-button type="primary" size="small" :disabled="!running || !text" @click="sendText">{{ t('common.send') }}</a-button>
               </a-space>
 
-              <h4>{{ t('cloud.apps') }}</h4>
-              <a-space wrap>
+              <template v-if="auth.isAdmin">
+                <h4>{{ t('cloud.apps') }}</h4>
                 <a-button :disabled="!running" @click="menu('install')">{{ t('devices.installApp') }}</a-button>
-                <a-button :disabled="!running" @click="menu('uninstall')">{{ t('devices.uninstallApp') }}</a-button>
-              </a-space>
+              </template>
 
               <h4>{{ t('cloud.maintenance') }}</h4>
               <a-space wrap>

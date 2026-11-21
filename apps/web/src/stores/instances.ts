@@ -105,9 +105,6 @@ export const useInstancesStore = defineStore('instances', () => {
     return api<BatchResult & { apks: number }>('POST', '/api/apps/install', fd)
   }
 
-  async function uninstallApp(ids: string[], pkg: string) {
-    return api<BatchResult>('POST', '/api/apps/uninstall', { instanceIds: ids, package: pkg })
-  }
 
   /** Android logcat (read-only); keyword filtering happens server-side. */
   async function logcat(id: string, q: { lines: number; level: 'E' | 'W' | 'I' | 'D'; q?: string }) {
@@ -115,5 +112,5 @@ export const useInstancesStore = defineStore('instances', () => {
     return (await api<{ lines: string[] }>('GET', `/api/instances/${id}/logcat?${p}`)).lines
   }
 
-  return { onTaskEvent, onNotification, byId, list, tasks, loading, connected, refresh, connect, disconnect, action, installApp, uninstallApp, logcat }
+  return { onTaskEvent, onNotification, byId, list, tasks, loading, connected, refresh, connect, disconnect, action, installApp, logcat }
 })

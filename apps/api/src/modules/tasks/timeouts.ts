@@ -10,7 +10,7 @@ import { db, schema } from '../../db/index.js';
  *
  * Not listed (hard-coded on purpose): schedulers / cleanups / alert sends (collection-schedule, tasks-cleanup,
  * notifications-cleanup, notify-*) and the device lifecycle ops (create / start / stop /
- * restart / delete / uninstall-app) which have no timeout: a timeout there would fail the task (and mark the device
+ * restart / delete) which have no timeout: a timeout there would fail the task (and mark the device
  * error) while the source is still powering the phone.
  */
 export const TASK_TIMEOUTS_KEY = 'tasks.timeouts';

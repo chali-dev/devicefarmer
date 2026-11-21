@@ -208,13 +208,6 @@ export class AdbAdapter {
     }).sort((a, b) => a.package.localeCompare(b.package));
   }
 
-  async uninstall(adbPort: number, pkg: string): Promise<void> {
-    if (!/^[a-zA-Z0-9_.]{3,150}$/.test(pkg)) throw new Error('invalid package name');
-    if (isProtectedPackage(pkg)) throw new Error(`${pkg} is a platform component (remote control) and cannot be uninstalled`);
-    const r = await this.shell(adbPort, `pm uninstall ${pkg}`, 60_000);
-    if (!/Success/.test(r)) throw new Error(`uninstall failed: ${r.trim()}`);
-  }
-
   /**
    * Copies a file to shared storage and registers it with MediaStore so Gallery and
    * app pickers (e.g. Instagram) see it immediately.

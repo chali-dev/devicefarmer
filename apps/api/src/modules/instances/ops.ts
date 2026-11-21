@@ -169,7 +169,3 @@ export async function opPushAsset(id: string, assetId: string): Promise<void> {
   await withMediaFile(asset, (local) => adb.pushMedia(inst.adbPort, local, remote));
 }
 
-export async function opUninstallApp(id: string, pkg: string): Promise<void> {
-  const inst = await mustBeRunning(id);
-  await adb.uninstall(inst.adbPort, pkg);
-}

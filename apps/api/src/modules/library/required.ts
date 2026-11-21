@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { db, schema } from '../../db/index.js';
@@ -10,6 +10,7 @@ import { getInstance } from '../instances/repo.js';
 import { appStoreTypes, driverFor, sourceOf } from '../sources/index.js';
 import type { SourceType } from '../sources/types.js';
 import { createTask, registerTaskHandler, TaskError } from '../tasks/core.js';
+import { mapLimit } from './install.js';
 
 /**
  * 必装应用 (owner 2026-11-20, 「开机时侦测缺的就装」): apps every phone must have (e.g. Instagram, YouTube), one list
@@ -43,24 +44,33 @@ const RA = schema.requiredApps;
 export const listRequiredApps = (sourceType?: SourceType) =>
   db.select().from(RA).where(sourceType ? eq(RA.sourceType, sourceType) : undefined).orderBy(asc(RA.sourceType), asc(RA.name));
 
-const unfinished = async (instanceId: string) => {
-  const [t] = await db.select({ id: schema.tasks.id }).from(schema.tasks).where(and(
-    eq(schema.tasks.type, REQUIRED_TYPE), eq(schema.tasks.instanceId, instanceId), inArray(schema.tasks.status, ['pending', 'scheduled', 'running']),
+export const REQUIRED_APP_REF = 'required_app';
+const OPEN = ['pending', 'scheduled', 'running'] as const;
+/** An unfinished task of the phone that covers `appId`: a full check (no ref) or that app's install. */
+const unfinished = async (instanceId: string, appId?: string) => {
+  const T = schema.tasks;
+  const [t] = await db.select({ id: T.id }).from(T).where(and(
+    eq(T.type, REQUIRED_TYPE), eq(T.instanceId, instanceId), inArray(T.status, [...OPEN]),
+    appId ? or(isNull(T.refId), eq(T.refId, appId)) : isNull(T.refId),
   )).limit(1);
   return t ?? null;
 };
 
 /**
- * Queues the check for one phone; no-op without required apps, and returns the queued / running one instead of a
- * second task. Never throws (it runs after a phone was attached, which must not fail because of it).
+ * Queues the check for one phone (every required app of its source type, or only `app`: 应用市场 → 安装); no-op
+ * without required apps, and returns an unfinished task that already covers it instead of a second one. Never throws
+ * (it runs after a phone was attached, which must not fail because of it).
  */
-export async function queueRequiredAppsCheck(inst: Pick<Instance, 'id' | 'name' | 'engine'>, userId: string | null): Promise<string | null> {
+export async function queueRequiredAppsCheck(inst: Pick<Instance, 'id' | 'name' | 'engine'>, userId: string | null, app?: RequiredApp): Promise<string | null> {
   try {
-    if (!(await listRequiredApps(inst.engine)).length) return null;
+    if (!app && !(await listRequiredApps(inst.engine)).length) return null;
     return await withMutex(`task:${REQUIRED_TYPE}:${inst.id}`, async () => {
-      const open = await unfinished(inst.id);
+      const open = await unfinished(inst.id, app?.id);
       if (open) return open.id;
-      const { task } = await createTask({ type: REQUIRED_TYPE, userId, instance: inst, label: `${inst.name} · 必装应用` });
+      const { task } = await createTask({
+        type: REQUIRED_TYPE, userId, instance: inst, label: `${inst.name} · ${app ? `安装 ${app.name}` : '必装应用'}`,
+        ...(app ? { refType: REQUIRED_APP_REF, refId: app.id, payload: { appIds: [app.id] } } : {}),
+      });
       return task.id;
     });
   } catch {
@@ -79,7 +89,9 @@ registerTaskHandler(REQUIRED_TYPE, {
     const inst = ctx.task.instanceId ? await getInstance(ctx.task.instanceId) : undefined;
     if (!inst) throw new TaskError('tasks.target_gone', 'device no longer exists');
     if (inst.status !== 'running' || inst.adbState !== 'device') throw new TaskError('instances.not_running', 'device is not running');
-    const apps = await listRequiredApps(inst.engine);
+    const only = (ctx.payload as { appIds?: string[] } | null)?.appIds;
+    const apps = (await listRequiredApps(inst.engine)).filter((a) => !only || only.includes(a.id));
+    if (only && !apps.length) throw new TaskError('library.required_not_found', 'required app no longer exists');
     const missing: RequiredApp[] = [];
     for (const a of apps) if (!(await adb.isInstalled(inst.adbPort, a.package))) missing.push(a);
     await ctx.log('info', `required apps: ${apps.length - missing.length}/${apps.length} installed`, { missing: missing.map((a) => a.package) });
@@ -118,6 +130,44 @@ registerTaskHandler(REQUIRED_TYPE, {
   },
 });
 
+const BUSY = ['creating', 'starting', 'stopping', 'restarting', 'deleting'];
+const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_CONCURRENCY = 6;
+/**
+ * missing – running, the app is absent (selectable); installed – present (hidden in the picker); installing – an
+ * unfinished task covers it; offline – not running / adb not attached / the read failed; busy – lifecycle op running.
+ */
+export type RequiredTargetState = 'missing' | 'installed' | 'installing' | 'offline' | 'busy';
+export interface RequiredTarget { id: string; name: string; status: string; users: string[]; state: RequiredTargetState; reason?: string }
+
+/** 安装 picker of one app: every phone of its source type, the app read live (`pm path`, read only). */
+export async function requiredTargets(app: RequiredApp): Promise<{ devices: RequiredTarget[] }> {
+  const I = schema.instances;
+  const T = schema.tasks;
+  const [rows, grants, pending] = await Promise.all([
+    db.select({ id: I.id, name: I.name, status: I.status, adbPort: I.adbPort, adbState: I.adbState }).from(I).where(eq(I.engine, app.sourceType)).orderBy(I.name),
+    db.select({ instanceId: schema.instanceGrants.instanceId, name: schema.users.username, nick: schema.users.displayName })
+      .from(schema.instanceGrants).innerJoin(schema.users, eq(schema.users.id, schema.instanceGrants.userId)),
+    db.select({ instanceId: T.instanceId }).from(T)
+      .where(and(eq(T.type, REQUIRED_TYPE), inArray(T.status, [...OPEN]), or(isNull(T.refId), eq(T.refId, app.id)))),
+  ]);
+  const usersOf = new Map<string, string[]>();
+  for (const g of grants) usersOf.set(g.instanceId, [...(usersOf.get(g.instanceId) ?? []), g.nick || g.name]);
+  const running = new Set(pending.map((p) => p.instanceId));
+  const devices = await mapLimit(rows, PROBE_CONCURRENCY, async (r): Promise<RequiredTarget> => {
+    const base = { id: r.id, name: r.name, status: r.status, users: usersOf.get(r.id) ?? [] };
+    if (BUSY.includes(r.status)) return { ...base, state: 'busy', reason: r.status };
+    if (r.status !== 'running') return { ...base, state: 'offline', reason: r.status };
+    if (r.adbState !== 'device') return { ...base, state: 'offline', reason: 'adb' };
+    let has: boolean;
+    try { has = await adb.isInstalled(r.adbPort, app.package, PROBE_TIMEOUT_MS); }
+    catch { return { ...base, state: 'offline', reason: 'probe' }; }
+    if (has) return { ...base, state: 'installed' };
+    return { ...base, state: running.has(r.id) ? 'installing' : 'missing' };
+  });
+  return { devices };
+}
+
 /** Admin routes (registered inside libraryRoutes, so they share its requireAdmin hook). */
 export function requiredAppRoutes(r: Parameters<FastifyPluginAsyncZod>[0]) {
   const taken = (err: unknown) => {
@@ -128,6 +178,61 @@ export function requiredAppRoutes(r: Parameters<FastifyPluginAsyncZod>[0]) {
   /** `sourceTypes` = the device source types with an app store (one tab each in the UI). */
   r.get('/api/library/required', async () => ({ apps: await listRequiredApps(), sourceTypes: appStoreTypes() }));
 
+  const appOf = async (id: string) => {
+    const [a] = await db.select().from(RA).where(eq(RA.id, id));
+    if (!a) throw notFound('required app not found', 'library.required_not_found');
+    return a;
+  };
+  const Id = z.object({ id: z.string().uuid() });
+
+  /**
+   * 云机管理 → 安装应用 of one phone: the app store list of its source type, each read live (`pm path`; null = not
+   * running / adb not attached / read failed) and whether an unfinished task covers it.
+   */
+  r.get('/api/library/required/device/:id', { schema: { params: Id } }, async (req) => {
+    const inst = await getInstance(req.params.id);
+    if (!inst) throw notFound('device not found', 'instances.not_found');
+    const T = schema.tasks;
+    const [apps, open] = await Promise.all([
+      listRequiredApps(inst.engine),
+      db.select({ refId: T.refId }).from(T).where(and(eq(T.type, REQUIRED_TYPE), eq(T.instanceId, inst.id), inArray(T.status, [...OPEN]))),
+    ]);
+    const online = inst.status === 'running' && inst.adbState === 'device';
+    const full = open.some((o) => o.refId == null);
+    const items = await mapLimit(apps, PROBE_CONCURRENCY, async (a) => ({
+      id: a.id,
+      installed: online ? await adb.isInstalled(inst.adbPort, a.package, PROBE_TIMEOUT_MS).catch(() => null) : null,
+      installing: full || open.some((o) => o.refId === a.id),
+    }));
+    return { online, apps: items };
+  });
+
+  /** 安装 picker of one app. */
+  r.get('/api/library/required/:id/targets', { schema: { params: Id } }, async (req) => requiredTargets(await appOf(req.params.id)));
+
+  /** 安装 one app on the picked phones of its source type: one task per phone (an unfinished one covering it is returned). */
+  r.post('/api/library/required/:id/install', {
+    schema: { params: Id, body: z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(500) }).strict() },
+  }, async (req, reply) => {
+    const app = await appOf(req.params.id);
+    const I = schema.instances;
+    const ids = [...new Set(req.body.instanceIds)];
+    const rows = await db.select({ id: I.id, name: I.name, status: I.status, engine: I.engine }).from(I).where(inArray(I.id, ids));
+    const taskIds: string[] = [];
+    const skipped: { id: string; code: string }[] = [];
+    for (const id of ids) {
+      const inst = rows.find((x) => x.id === id);
+      if (!inst) { skipped.push({ id, code: 'instances.not_found' }); continue; }
+      if (inst.engine !== app.sourceType) { skipped.push({ id, code: 'library.required_wrong_source' }); continue; }
+      if (inst.status !== 'running') { skipped.push({ id, code: 'instances.not_running' }); continue; }
+      const t = await queueRequiredAppsCheck(inst, req.user.id, app);
+      if (t) taskIds.push(t); else skipped.push({ id, code: 'common.busy' });
+    }
+    if (req.audit) { req.audit.target = app.package; req.audit.extra = { devices: taskIds.length }; }
+    reply.code(202);
+    return { taskIds, skipped };
+  });
+
   r.post('/api/library/required', { schema: { body: Body } }, async (req, reply) => {
     const [row] = await db.insert(RA).values(req.body as typeof RA.$inferInsert).returning().catch(taken);
     if (req.audit) req.audit.target = row!.package;
@@ -135,7 +240,7 @@ export function requiredAppRoutes(r: Parameters<FastifyPluginAsyncZod>[0]) {
     return { app: row };
   });
 
-  r.put('/api/library/required/:id', { schema: { params: z.object({ id: z.string().uuid() }), body: Body } }, async (req) => {
+  r.put('/api/library/required/:id', { schema: { params: Id, body: Body } }, async (req) => {
     const [row] = await db.update(RA).set(req.body as typeof RA.$inferInsert).where(eq(RA.id, req.params.id)).returning().catch(taken);
     if (!row) throw notFound('required app not found', 'library.required_not_found');
     if (req.audit) req.audit.target = row.package;
@@ -149,7 +254,7 @@ export function requiredAppRoutes(r: Parameters<FastifyPluginAsyncZod>[0]) {
     reply.code(204);
   });
 
-  /** 立即检查: queues the check on every running phone (or the given ones). */
+  /** Full check (+ install of what is missing) on the given phones (no list = every running phone); API only. */
   r.post('/api/library/required/check', {
     schema: { body: z.object({ instanceIds: z.array(z.string().uuid()).min(1).max(500).optional() }).strict() },
   }, async (req, reply) => {

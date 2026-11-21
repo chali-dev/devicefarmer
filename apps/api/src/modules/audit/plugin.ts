@@ -158,10 +158,6 @@ export const ACTIONS: Record<string, ActionSpec> = {
     target: ({ upload }) => instanceNames(upload?.instanceIds ?? []),
     detail: ({ upload }) => (upload ? { filename: upload.filename, size: upload.size, instanceIds: upload.instanceIds ?? [], count: upload.instanceIds?.length ?? 0 } : undefined),
   },
-  'POST /api/apps/uninstall': {
-    action: 'app.uninstall', target: ({ body }) => body.package as string,
-    detail: ({ body }) => ({ package: body.package, instanceIds: ids(body.instanceIds), count: ids(body.instanceIds).length }),
-  },
   // app library (应用库)
   'POST /api/library/import': {
     action: 'library.import', target: ({ body }) => body.package as string,
@@ -180,6 +176,7 @@ export const ACTIONS: Record<string, ActionSpec> = {
   'PUT /api/library/required/:id': { action: 'library.required_update', detail: ({ body }) => ({ sourceType: body.sourceType, package: body.package, appId: body.storeAppId }) },
   'DELETE /api/library/required/:id': { action: 'library.required_delete' },
   'POST /api/library/required/check': { action: 'library.required_check' },
+  'POST /api/library/required/:id/install': { action: 'library.required_install', detail: ({ body }) => ({ devices: Array.isArray(body.instanceIds) ? body.instanceIds.length : 0 }) },
   // media library (素材库)
   'POST /api/media/upload': {
     action: 'media.upload', target: ({ upload }) => upload?.filename,

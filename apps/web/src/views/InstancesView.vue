@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { fmtDateTime } from '../i18n'
-import { DownOutlined, ExclamationCircleOutlined, InboxOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { DownOutlined, ExclamationCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoreOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message, Modal } from 'ant-design-vue'
 import { computed, defineAsyncComponent, h, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -17,6 +17,7 @@ import BatchActions, { type BatchItem } from '../components/common/BatchActions.
 import PageContainer from '../components/common/PageContainer.vue'
 import SearchBar from '../components/common/SearchBar.vue'
 import SyncFromDeviceModal from '../components/social/SyncFromDeviceModal.vue'
+import StoreInstallModal from '../components/library/StoreInstallModal.vue'
 import { actionColumn, confirmDanger, MODAL_WIDTH, pagination, TABLE_SIZE } from '../components/common/ui'
 import { useAuthStore } from '../stores/auth'
 import { useInstancesStore } from '../stores/instances'
@@ -131,7 +132,7 @@ function filterByOwner(o: InstanceOwner) {
 const ownerName = (o: InstanceOwner) => o.displayName ? t('permissions.userLabel', { display: o.username, username: o.displayName }) : o.username
 
 // ---- actions menu (row and batch)
-type MenuKey = Action | 'install' | 'uninstall' | 'sync' | 'assign' | 'assign-batch' | 'unassign'
+type MenuKey = Action | 'install' | 'sync' | 'assign' | 'assign-batch' | 'unassign'
 const isBusy = (i: Instance) => BUSY_STATUSES.includes(i.status)
 /** Whether an action makes sense for this device's current status. */
 function canDo(key: MenuKey, i: Instance) {
@@ -139,7 +140,8 @@ function canDo(key: MenuKey, i: Instance) {
   if ((key === 'start' || key === 'stop' || key === 'restart') && !auth.isAdmin) return false
   if (key === 'start') return i.status !== 'running'
   if (key === 'stop' || key === 'restart') return i.status !== 'stopped'
-  if (key === 'install' || key === 'uninstall' || key === 'sync') return i.status === 'running'
+  if (key === 'install' && !auth.isAdmin) return false
+  if (key === 'install' || key === 'sync') return i.status === 'running'
   return true
 }
 /** 批量操作 menu; confirmations (delete/stop/restart, billed power-on) stay in run(). */
@@ -147,9 +149,8 @@ const batchItems = computed<BatchItem[]>(() => [
   { key: 'start', label: t('devices.start') },
   { key: 'stop', label: t('devices.stop') },
   { key: 'restart', label: t('devices.restart') },
-  { key: 'install', label: t('devices.installApp') },
-  { key: 'uninstall', label: t('devices.uninstallApp') },
   ...(auth.isAdmin ? [
+    { key: 'install', label: t('devices.installApp') },
     { key: 'assign-batch', label: t('permissions.assignToSelected') },
     { key: 'unassign', label: t('permissions.unassignSelected') },
     { key: 'delete', label: t('devices.delete'), danger: true },
@@ -158,7 +159,7 @@ const batchItems = computed<BatchItem[]>(() => [
 function onMenu(key: MenuKey, ids: string[]) {
   if (key === 'assign' || key === 'assign-batch' || key === 'unassign') openAssign(key === 'assign' ? 'set' : key === 'assign-batch' ? 'assign' : 'clear', ids)
   else if (key === 'sync') void openSync(ids[0]!)
-  else if (key === 'install' || key === 'uninstall') openApp(key, ids)
+  else if (key === 'install') storeIds.value = [...ids]
   else void run(key, ids)
 }
 
@@ -220,30 +221,8 @@ async function run(action: Action, ids: string[]) {
   }
 }
 
-// ---- batch app install / uninstall
-const appOpen = ref(false)
-const appMode = ref<'install' | 'uninstall'>('install')
-const appFile = ref<File | null>(null)
-const appPkg = ref('')
-const appBusy = ref(false)
-const appIds = ref<string[]>([])
-function openApp(mode: 'install' | 'uninstall', ids: string[]) {
-  if (!ids.length) return
-  appMode.value = mode; appIds.value = [...ids]; appFile.value = null; appPkg.value = ''; appOpen.value = true
-}
-function pickFile(f: File) { appFile.value = f; return false }
-async function submitApp() {
-  appBusy.value = true
-  try {
-    const r = appMode.value === 'install'
-      ? await (appFile.value ? store.installApp(appIds.value, appFile.value) : Promise.reject(new Error(t('devices.chooseApk'))))
-      : await (appPkg.value ? store.uninstallApp(appIds.value, appPkg.value.trim()) : Promise.reject(new Error(t('devices.enterPackage'))))
-    message.success(t('devices.submittedTasks', { n: r.accepted.length }))
-    if (r.skipped.length) message.warning(t('common.skipped', { n: r.skipped.length, reasons: [...new Set(r.skipped.map((x) => x.reason))].join(t('common.reasonSep')) }))
-    appOpen.value = false
-  } catch (e) { message.error(errorText(e)) }
-  finally { appBusy.value = false }
-}
+// ---- 安装应用 (admin): the 应用市场 list of the phones' source types (StoreInstallModal)
+const storeIds = ref<string[] | null>(null)
 
 // ---- 新增云手机: phones of a device source (BitBrowser); nothing is powered on here
 const createOpen = ref(false)
@@ -474,8 +453,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                     <a-menu-item key="start" :disabled="!canDo('start', record as Instance)">{{ t('devices.start') }}</a-menu-item>
                     <a-menu-item key="stop" :disabled="!canDo('stop', record as Instance)">{{ t('devices.stop') }}</a-menu-item>
                     <a-menu-item key="restart" :disabled="!canDo('restart', record as Instance)">{{ t('devices.restart') }}</a-menu-item>
-                    <a-menu-item key="install" :disabled="!canDo('install', record as Instance)">{{ t('devices.installApp') }}</a-menu-item>
-                    <a-menu-item key="uninstall" :disabled="!canDo('uninstall', record as Instance)">{{ t('devices.uninstallApp') }}</a-menu-item>
+                    <a-menu-item v-if="auth.isAdmin" key="install" :disabled="!canDo('install', record as Instance)">{{ t('devices.installApp') }}</a-menu-item>
                     <a-menu-item key="sync" :disabled="!canDo('sync', record as Instance)">{{ t('devices.syncAccounts') }}</a-menu-item>
                     <a-menu-item v-if="auth.isAdmin" key="assign">{{ t('permissions.assign') }}</a-menu-item>
                     <template v-if="auth.isAdmin">
@@ -518,8 +496,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
                     <a-menu-item key="start" :disabled="!canDo('start', i)">{{ t('devices.start') }}</a-menu-item>
                     <a-menu-item key="stop" :disabled="!canDo('stop', i)">{{ t('devices.stop') }}</a-menu-item>
                     <a-menu-item key="restart" :disabled="!canDo('restart', i)">{{ t('devices.restart') }}</a-menu-item>
-                    <a-menu-item key="install" :disabled="!canDo('install', i)">{{ t('devices.installApp') }}</a-menu-item>
-                    <a-menu-item key="uninstall" :disabled="!canDo('uninstall', i)">{{ t('devices.uninstallApp') }}</a-menu-item>
+                    <a-menu-item v-if="auth.isAdmin" key="install" :disabled="!canDo('install', i)">{{ t('devices.installApp') }}</a-menu-item>
                     <a-menu-item key="sync" :disabled="!canDo('sync', i)">{{ t('devices.syncAccounts') }}</a-menu-item>
                     <a-menu-item key="assign">{{ t('permissions.assign') }}</a-menu-item>
                     <a-menu-item key="log">{{ t('devices.log') }}</a-menu-item>
@@ -633,16 +610,7 @@ watch(showFailed, (v) => { if (!v) failedOpen.value = false })
     </template>
   </a-modal>
 
-  <a-modal v-model:open="appOpen" :width="MODAL_WIDTH.sm" :title="t('devices.appTitle', { mode: appMode === 'install' ? t('devices.installUpdate') : t('devices.uninstallApp'), target: appIds.length === 1 ? store.byId.get(appIds[0]!)?.name ?? '' : t('devices.nDevices', { n: appIds.length }) })" :confirm-loading="appBusy" :ok-text="appMode === 'install' ? t('common.install') : t('common.uninstall')" :cancel-text="t('common.cancel')" :ok-button-props="{ danger: appMode === 'uninstall' }" @ok="submitApp">
-    <template v-if="appMode === 'install'">
-      <a-upload-dragger accept=".apk,.apks,.xapk,.apkm,.zip" :multiple="false" :show-upload-list="false" :before-upload="pickFile as any">
-        <p class="ant-upload-drag-icon"><InboxOutlined /></p>
-        <p class="ant-upload-text">{{ appFile ? t('devices.fileInfo', { name: appFile.name, size: (appFile.size / 1048576).toFixed(1) }) : t('devices.pickApk') }}</p>
-        <p class="ant-upload-hint">{{ t('devices.installHint') }}</p>
-      </a-upload-dragger>
-    </template>
-    <a-input v-else v-model:value="appPkg" :placeholder="t('devices.packagePlaceholder')" />
-  </a-modal>
+  <StoreInstallModal :instance-ids="storeIds" @close="storeIds = null" />
 
   <a-modal v-model:open="failedOpen" :title="t('devices.failedTitle')" :footer="null" :width="MODAL_WIDTH.lg">
     <a-table :data-source="failedTasks" :columns="failedColumns" row-key="id" size="small" :scroll="{ x: 640 }" :pagination="pagination({ defaultPageSize: 10, hideOnSinglePage: true })">
